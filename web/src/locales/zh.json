@@ -1,0 +1,46 @@
+{
+  "nav": {
+    "alerts": "实时告警",
+    "metrics": "指标面板",
+    "config": "系统配置"
+  },
+  "header": {
+    "title": "ATLAS",
+    "subtitle": "统一可观测性网关"
+  },
+  "stats": {
+    "activeAlerts": "活跃告警",
+    "events24h": "24小时事件数",
+    "systemLoad": "系统负载",
+    "networkIO": "网络吞吐"
+  },
+  "alerts": {
+    "title": "实时告警流",
+    "connected": "已连接",
+    "source": "来源"
+  },
+  "actions": {
+    "title": "快捷操作",
+    "ackAll": "全部确认",
+    "pause": "暂停通知",
+    "export": "导出日志",
+    "diagnostics": "系统诊断"
+  },
+  "status": {
+    "title": "系统状态",
+    "db": "数据库",
+    "bot": "飞书机器人",
+    "uptime": "运行时间",
+    "connected": "已连接",
+    "active": "运行中 ({{count}})"
+  },
+  "theme": {
+    "light": "浅色模式",
+    "dark": "深色模式",
+    "system": "跟随系统"
+  },
+  "lang": {
+    "zh": "中文",
+    "en": "English"
+  }
+}
