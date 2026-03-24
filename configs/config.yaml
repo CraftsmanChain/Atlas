@@ -1,0 +1,14 @@
+gateway:
+  port: ":9999"
+storage:
+  dsn: "atlas.db"
+feishu:
+  bots:
+    #- enabled: true
+    #  webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/YOUR_WEBHOOK_URL_HERE"
+    #  enable_signature: false
+    #  secret: ""
+    - enabled: true
+      webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/821763c4-ddaf-4718-8333-cd22b9d2825b"
+      enable_signature: true
+      secret: "6YTxT8LmVo1SsJoKXJyTgd"

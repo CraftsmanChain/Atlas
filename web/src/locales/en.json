@@ -1,0 +1,46 @@
+{
+  "nav": {
+    "alerts": "Alerts",
+    "metrics": "Metrics",
+    "config": "Config"
+  },
+  "header": {
+    "title": "ATLAS",
+    "subtitle": "Unified Observability Gateway"
+  },
+  "stats": {
+    "activeAlerts": "Active Alerts",
+    "events24h": "Events / 24h",
+    "systemLoad": "System Load",
+    "networkIO": "Network I/O"
+  },
+  "alerts": {
+    "title": "Live Alert Stream",
+    "connected": "Connected",
+    "source": "Source"
+  },
+  "actions": {
+    "title": "Quick Actions",
+    "ackAll": "Acknowledge All",
+    "pause": "Pause Notifications",
+    "export": "Export Logs",
+    "diagnostics": "System Diagnostics"
+  },
+  "status": {
+    "title": "System Status",
+    "db": "Database",
+    "bot": "Feishu Bot",
+    "uptime": "Uptime",
+    "connected": "Connected",
+    "active": "Active ({{count}})"
+  },
+  "theme": {
+    "light": "Light Mode",
+    "dark": "Dark Mode",
+    "system": "System"
+  },
+  "lang": {
+    "zh": "中文",
+    "en": "English"
+  }
+}
