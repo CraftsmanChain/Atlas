@@ -10,6 +10,7 @@ type Config struct {
 	Gateway GatewayConfig `yaml:"gateway"`
 	Storage StorageConfig `yaml:"storage"`
 	Feishu  FeishuConfig  `yaml:"feishu"`
+	Logging LoggingConfig `yaml:"logging"`
 }
 
 type GatewayConfig struct {
@@ -22,6 +23,10 @@ type StorageConfig struct {
 
 type FeishuConfig struct {
 	Bots []FeishuBotConfig `yaml:"bots"`
+}
+
+type LoggingConfig struct {
+	Dir string `yaml:"dir"`
 }
 
 type FeishuBotConfig struct {
@@ -49,6 +54,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Storage.DSN == "" {
 		cfg.Storage.DSN = "atlas.db"
+	}
+	if cfg.Logging.Dir == "" {
+		cfg.Logging.Dir = "logs"
 	}
 
 	return &cfg, nil

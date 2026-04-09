@@ -53,6 +53,16 @@ func (h *Handler) HandleAlertWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf(
+		"[Gateway] Alert received: source=%s level=%s host=%s message=%q labels=%v timestamp=%s",
+		event.Source,
+		event.Level,
+		event.Host,
+		event.Message,
+		event.Labels,
+		event.Timestamp.Format("2006-01-02T15:04:05Z07:00"),
+	)
+
 	// 异步交给 Analyzer 处理，不阻塞网关返回
 	go h.analyzer.Process(&event)
 
