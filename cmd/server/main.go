@@ -8,6 +8,7 @@ import (
 	"atlas/internal/analyzer"
 	ig "atlas/internal/gateway"
 	"atlas/pkg/config"
+	"atlas/pkg/logging"
 	"atlas/pkg/notifier"
 	"atlas/pkg/storage"
 )
@@ -23,8 +24,16 @@ func main() {
 			Gateway: config.GatewayConfig{Port: ":8080"},
 			Storage: config.StorageConfig{DSN: "atlas.db"},
 			Feishu:  config.FeishuConfig{Bots: []config.FeishuBotConfig{}},
+			Logging: config.LoggingConfig{Dir: "logs"},
 		}
 	}
+
+	logWriter, err := logging.InitGlobalLogger(cfg.Logging.Dir)
+	if err != nil {
+		log.Fatalf("Failed to initialize logger: %v", err)
+	}
+	defer logWriter.Close()
+	log.Printf("Logger initialized. dir=%s", cfg.Logging.Dir)
 
 	// 2. 初始化 SQLite 数据库
 	db, err := storage.InitDB(cfg.Storage.DSN)
