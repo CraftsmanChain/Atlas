@@ -27,14 +27,14 @@ func NewAlertAnalyzer(db *storage.DB, notifier *notifier.FeishuNotifier) *AlertA
 		notifier:    notifier,
 		recentCache: make(map[string]*api.AlertEvent),
 	}
-	
+
 	// 启动定期清理缓存的 goroutine，防止内存泄漏 (暂时设置为1小时清理)
 	go analyzer.cleanupCache()
 	return analyzer
 }
 
 // Process 接收一条告警并进行处理
-func (a *AlertAnalyzer) Process(event *api.AlertEvent) {
+func (a *AlertAnalyzer) Process(event *api.AlertEvent) error {
 	// 1. 生成告警指纹 (用于去重)
 	fingerprint := a.generateFingerprint(event)
 
@@ -57,16 +57,18 @@ func (a *AlertAnalyzer) Process(event *api.AlertEvent) {
 			a.recentCache[fingerprint] = cachedEvent
 		}
 	}
-	
+
 	if exists {
 		// 发现重复告警，不丢弃而是累加次数更新
 		cachedEvent.RepeatCount++
 		cachedEvent.LastSeenAt = now
+		event.ID = cachedEvent.ID
 		// 注意：实际更新数据库时我们要基于原有的ID进行更新
 		a.mu.Unlock()
 
 		if err := a.db.Save(cachedEvent).Error; err != nil {
 			log.Printf("[Analyzer] Failed to update repeated alert in DB: %v", err)
+			return err
 		} else {
 			log.Printf("[Analyzer] Updated repeated alert: %s (Count: %d)", event.Message, cachedEvent.RepeatCount)
 		}
@@ -75,7 +77,7 @@ func (a *AlertAnalyzer) Process(event *api.AlertEvent) {
 		if a.notifier != nil {
 			a.notifier.SendAlert(cachedEvent, true)
 		}
-		return
+		return nil
 	}
 
 	// 首次出现的告警
@@ -87,6 +89,7 @@ func (a *AlertAnalyzer) Process(event *api.AlertEvent) {
 	// 存入数据库
 	if err := a.db.Create(event).Error; err != nil {
 		log.Printf("[Analyzer] Failed to save new alert to DB: %v", err)
+		return err
 	} else {
 		log.Printf("[Analyzer] Processed and saved new alert: [%s] %s", event.Level, event.Message)
 	}
@@ -95,6 +98,7 @@ func (a *AlertAnalyzer) Process(event *api.AlertEvent) {
 	if a.notifier != nil {
 		a.notifier.SendAlert(event, false)
 	}
+	return nil
 }
 
 // generateFingerprint 简单生成告警的唯一哈希指纹

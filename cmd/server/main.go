@@ -21,7 +21,7 @@ func main() {
 	if err != nil {
 		log.Printf("Failed to load config, using default settings. Error: %v", err)
 		cfg = &config.Config{
-			Gateway: config.GatewayConfig{Port: ":8080"},
+			Gateway: config.GatewayConfig{Port: ":8080", WebhookToken: ""},
 			Storage: config.StorageConfig{DSN: "atlas.db"},
 			Feishu:  config.FeishuConfig{Bots: []config.FeishuBotConfig{}},
 			Logging: config.LoggingConfig{Dir: "logs"},
@@ -48,7 +48,7 @@ func main() {
 	alertAnalyzer := analyzer.NewAlertAnalyzer(db, feishuNotifier)
 
 	// 5. 初始化网关 Handler
-	handler := ig.NewHandler(db, alertAnalyzer)
+	handler := ig.NewHandler(db, alertAnalyzer, cfg.Gateway.WebhookToken)
 
 	// 6. 注册路由
 	mux := http.NewServeMux()
@@ -68,6 +68,7 @@ func main() {
 
 	// 6.3 Gateway 路由 (原 Gateway 服务的功能，用于接收外部推送)
 	mux.HandleFunc("/api/v1/webhook/alert", handler.HandleAlertWebhook)
+	mux.HandleFunc("/api/v1/alerts/failures", handler.HandleFailedIngestions)
 	mux.HandleFunc("/api/v1/push/metrics", handler.HandleMetricsPush)
 
 	// 7. 启动服务

@@ -9,10 +9,43 @@ function App() {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
+  const [failedIngestions, setFailedIngestions] = useState<Array<{
+    id: number;
+    source: string;
+    level: string;
+    message: string;
+    process_status: string;
+    callback_status: string;
+    process_attempts: number;
+    callback_attempts: number;
+    process_last_error: string;
+    callback_last_error: string;
+    updated_at: string;
+  }>>([]);
 
   // 避免 hydration mismatch
   useEffect(() => {
     setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    let timer: number | undefined;
+    const loadFailures = async () => {
+      try {
+        const resp = await fetch('/api/v1/alerts/failures?limit=8');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        setFailedIngestions(Array.isArray(data.items) ? data.items : []);
+      } catch {
+        // 前端独立开发模式下，后端未联通时忽略错误，避免页面抖动。
+      } finally {
+        timer = window.setTimeout(loadFailures, 15000);
+      }
+    };
+    loadFailures();
+    return () => {
+      if (timer) window.clearTimeout(timer);
+    };
   }, []);
 
   const toggleLanguage = () => {
@@ -243,6 +276,35 @@ function App() {
                   <div className="w-full bg-surface h-1.5 rounded-full overflow-hidden mt-2 border border-border/50">
                     <div className="bg-primary h-full w-[99%] shadow-[0_0_12px_var(--glow-color)]"></div>
                   </div>
+                </div>
+              </div>
+
+              <div className="glass-panel p-6 rounded-2xl border-t-4 border-t-accent/50">
+                <h3 className="text-sm font-medium text-textMuted mb-4 uppercase tracking-wider">
+                  {t('ingestionFailures.title')}
+                </h3>
+                <p className="text-xs text-textMuted mb-3">
+                  {t('ingestionFailures.count', { count: failedIngestions.length })}
+                </p>
+                <div className="space-y-3 max-h-56 overflow-y-auto">
+                  {failedIngestions.length === 0 ? (
+                    <div className="text-xs text-success">{t('ingestionFailures.none')}</div>
+                  ) : (
+                    failedIngestions.map((item) => (
+                      <div key={item.id} className="rounded-lg border border-border/60 bg-surface/40 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs text-textMain truncate">{item.message}</span>
+                          <span className={`text-[10px] uppercase px-2 py-0.5 rounded ${getLevelColor(item.level)}`}>{item.level || 'unknown'}</span>
+                        </div>
+                        <div className="mt-1 text-[11px] text-textMuted">
+                          {t('alerts.source')}: {item.source || '-'} | #{item.id}
+                        </div>
+                        <div className="mt-1 text-[11px] text-accent break-words">
+                          {item.process_status === 'failed' ? item.process_last_error : item.callback_last_error}
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             </div>

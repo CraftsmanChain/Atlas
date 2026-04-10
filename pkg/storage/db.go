@@ -26,6 +26,7 @@ func InitDB(dsn string) (*DB, error) {
 	// 自动迁移模式，确保数据库表结构和代码模型一致
 	err = db.AutoMigrate(
 		&api.AlertEvent{},
+		&api.AlertIngestionRecord{},
 		&api.LogEntry{},
 		&api.SystemMetrics{},
 		&api.HealthScore{},
@@ -33,7 +34,7 @@ func InitDB(dsn string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	log.Println("Database migration completed.")
 
 	return &DB{db}, nil
@@ -47,4 +48,18 @@ func (db *DB) SaveAlertEvent(event *api.AlertEvent) error {
 // SaveSystemMetrics 存储系统指标
 func (db *DB) SaveSystemMetrics(metrics *api.SystemMetrics) error {
 	return db.Create(metrics).Error
+}
+
+// ListFailedIngestions 查询最近失败的告警处理记录（处理失败或回调失败）。
+func (db *DB) ListFailedIngestions(limit int) ([]api.AlertIngestionRecord, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	var records []api.AlertIngestionRecord
+	err := db.
+		Where("process_status = ? OR callback_status = ?", "failed", "failed").
+		Order("updated_at DESC").
+		Limit(limit).
+		Find(&records).Error
+	return records, err
 }
