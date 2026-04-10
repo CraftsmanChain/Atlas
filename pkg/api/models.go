@@ -33,16 +33,18 @@ func (m *StringMap) Scan(value interface{}) error {
 
 // AlertEvent 表示系统接收到的原始或经过增强的告警事件
 type AlertEvent struct {
-	ID          string    `json:"id" gorm:"primaryKey"`
-	Source      string    `json:"source" gorm:"index"`
-	Level       string    `json:"level" gorm:"index"`
-	Message     string    `json:"message"`
-	Labels      StringMap `json:"labels" gorm:"type:text"`
-	Host        string    `json:"host" gorm:"index"`
-	Timestamp   time.Time `json:"timestamp" gorm:"index"`
-	IsProcessed bool      `json:"is_processed"`
-	RepeatCount int       `json:"repeat_count" gorm:"default:1"` // 记录重复次数
-	LastSeenAt  time.Time `json:"last_seen_at"`                  // 最后一次出现的时间
+	ID            string    `json:"id" gorm:"primaryKey"`
+	Source        string    `json:"source" gorm:"index"`
+	Level         string    `json:"level" gorm:"index"`
+	Message       string    `json:"message"`
+	Labels        StringMap `json:"labels" gorm:"type:text"`
+	Host          string    `json:"host" gorm:"index"`
+	Timestamp     time.Time `json:"timestamp" gorm:"index"`
+	IsProcessed   bool      `json:"is_processed"`
+	RepeatCount   int       `json:"repeat_count" gorm:"default:1"` // 记录重复次数
+	LastSeenAt    time.Time `json:"last_seen_at"`                  // 最后一次出现的时间
+	CallbackURL   string    `json:"callback_url" gorm:"-"`
+	CallbackToken string    `json:"callback_token" gorm:"-"`
 }
 
 // LogEntry 表示 Agent 收集到的系统故障或异常日志条目
@@ -72,4 +74,26 @@ type HealthScore struct {
 	Score     float64   `json:"score"`
 	Reason    string    `json:"reason"`
 	Timestamp time.Time `json:"timestamp"`
+}
+
+// AlertIngestionRecord 记录 webhook 告警异步处理与回调确认全链路状态。
+type AlertIngestionRecord struct {
+	ID                 uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	EventID            string    `json:"event_id" gorm:"index"`
+	Source             string    `json:"source" gorm:"index"`
+	Host               string    `json:"host" gorm:"index"`
+	Level              string    `json:"level" gorm:"index"`
+	Message            string    `json:"message"`
+	RawPayload         string    `json:"raw_payload" gorm:"type:text"`
+	ProcessStatus      string    `json:"process_status" gorm:"index"` // processing/success/failed
+	ProcessAttempts    int       `json:"process_attempts"`
+	ProcessLastError   string    `json:"process_last_error" gorm:"type:text"`
+	CallbackURL        string    `json:"callback_url"`
+	CallbackStatus     string    `json:"callback_status" gorm:"index"` // disabled/pending/success/failed
+	CallbackAttempts   int       `json:"callback_attempts"`
+	CallbackLastError  string    `json:"callback_last_error" gorm:"type:text"`
+	CallbackHTTPStatus int       `json:"callback_http_status"`
+	CallbackLastAt     time.Time `json:"callback_last_at"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }

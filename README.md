@@ -56,6 +56,7 @@ go build -o bin/atlas-server cmd/server/main.go
 ```yaml
 gateway:
   port: ":8080"
+  webhook_token: "" # 可选。建议生产环境设置并要求请求头 X-Webhook-Token
 storage:
   dsn: "atlas.db"
 feishu:
@@ -77,7 +78,10 @@ npm run dev
 ## 📡 API 接口说明
 
 - `POST /api/v1/webhook/alert` - 接收外部告警推送 (例如 Prometheus Alertmanager)
+- `GET /api/v1/alerts/failures` - 查询异步处理失败记录（用于页面展示与排障）
 - `GET /api/v1/status` - 系统健康与状态检查
+
+详细对接文档见: `docs/webhook-alert-api.md`
 
 ## 🛠 技术栈
 

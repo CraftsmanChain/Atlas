@@ -1,5 +1,6 @@
 gateway:
   port: ":8080"
+  webhook_token: ""
 storage:
   dsn: "atlas.db"
 feishu:

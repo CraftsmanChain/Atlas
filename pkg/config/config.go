@@ -14,7 +14,8 @@ type Config struct {
 }
 
 type GatewayConfig struct {
-	Port string `yaml:"port"`
+	Port         string `yaml:"port"`
+	WebhookToken string `yaml:"webhook_token"`
 }
 
 type StorageConfig struct {

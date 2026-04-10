@@ -34,6 +34,11 @@
     "connected": "Connected",
     "active": "Active ({{count}})"
   },
+  "ingestionFailures": {
+    "title": "Async Failure Records",
+    "count": "Recent failures: {{count}}",
+    "none": "No failure records"
+  },
   "theme": {
     "light": "Light Mode",
     "dark": "Dark Mode",
