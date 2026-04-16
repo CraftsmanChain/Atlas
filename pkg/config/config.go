@@ -14,8 +14,9 @@ type Config struct {
 }
 
 type GatewayConfig struct {
-	Port         string `yaml:"port"`
-	WebhookToken string `yaml:"webhook_token"`
+	Port               string `yaml:"port"`
+	WebhookToken       string `yaml:"webhook_token"`
+	FeishuWebhookToken string `yaml:"feishu_webhook_token"`
 }
 
 type StorageConfig struct {

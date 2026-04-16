@@ -10,6 +10,9 @@ import (
 // StringMap 帮助 GORM 处理 JSON 字典
 type StringMap map[string]string
 
+// StringList 帮助 GORM 处理 JSON 数组
+type StringList []string
+
 // Value 将 StringMap 转换为 JSON 字符串存入数据库
 func (m StringMap) Value() (driver.Value, error) {
 	if m == nil {
@@ -29,6 +32,27 @@ func (m *StringMap) Scan(value interface{}) error {
 		return errors.New("type assertion to []byte failed")
 	}
 	return json.Unmarshal(bytes, m)
+}
+
+// Value 将 StringList 转换为 JSON 字符串存入数据库
+func (l StringList) Value() (driver.Value, error) {
+	if l == nil {
+		return nil, nil
+	}
+	return json.Marshal(l)
+}
+
+// Scan 将数据库中的 JSON 字符串解析为 StringList
+func (l *StringList) Scan(value interface{}) error {
+	if value == nil {
+		*l = StringList{}
+		return nil
+	}
+	bytes, ok := value.([]byte)
+	if !ok {
+		return errors.New("type assertion to []byte failed")
+	}
+	return json.Unmarshal(bytes, l)
 }
 
 // AlertEvent 表示系统接收到的原始或经过增强的告警事件
@@ -96,4 +120,24 @@ type AlertIngestionRecord struct {
 	CallbackLastAt     time.Time `json:"callback_last_at"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+// AIAnalysisReport 记录 AI 分析任务和结果，为后续告警 / 日志 / 健康分析链路预留统一模型。
+type AIAnalysisReport struct {
+	ID                 uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	IngestionRecordID  uint       `json:"ingestion_record_id" gorm:"index"`
+	EventID            string     `json:"event_id" gorm:"index"`
+	AnalysisType       string     `json:"analysis_type" gorm:"index"` // alert_rca/log_analysis/health_explanation
+	Status             string     `json:"status" gorm:"index"`        // pending/completed/blocked/failed
+	Model              string     `json:"model"`
+	PromptVersion      string     `json:"prompt_version"`
+	Severity           string     `json:"severity" gorm:"index"`
+	Summary            string     `json:"summary" gorm:"type:text"`
+	ProbableCauses     StringList `json:"probable_causes" gorm:"type:text"`
+	RecommendedActions StringList `json:"recommended_actions" gorm:"type:text"`
+	Evidence           StringList `json:"evidence" gorm:"type:text"`
+	Confidence         float64    `json:"confidence"`
+	ErrorMessage       string     `json:"error_message" gorm:"type:text"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }

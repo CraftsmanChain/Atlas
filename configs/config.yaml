@@ -1,6 +1,5 @@
 gateway:
   port: ":8080"
-  webhook_token: ""
 storage:
   dsn: "atlas.db"
 feishu:
@@ -9,5 +8,3 @@ feishu:
       webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/YOUR_WEBHOOK_URL"
       enable_signature: false
       secret: ""
-logging:
-  dir: "logs"
