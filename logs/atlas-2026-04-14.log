@@ -1,0 +1,12 @@
+2026/04/14 17:59:28.038801 main.go:36: Logger initialized. dir=logs
+2026/04/14 17:59:28.040244 db.go:24: Database connection established.
+2026/04/14 17:59:28.048587 db.go:39: Database migration completed.
+2026/04/14 18:03:12.406908 main.go:36: Logger initialized. dir=logs
+2026/04/14 18:03:12.408183 db.go:24: Database connection established.
+2026/04/14 18:03:12.410115 db.go:39: Database migration completed.
+2026/04/14 18:03:42.370448 main.go:36: Logger initialized. dir=logs
+2026/04/14 18:03:42.375070 db.go:24: Database connection established.
+2026/04/14 18:03:42.376958 db.go:39: Database migration completed.
+2026/04/14 18:03:54.483411 handler.go:253: [Gateway] Alert received: source=alertmanager level=warning host=4090GPU-03 message="XID故障-低优先级" labels=map[DCGM_FI_DRIVER_VERSION:565.77 Hostname:4090GPU-03 UUID:GPU-78b7fc57-0fe4-8cb9-d802-09c6f1cf4b99 alertname:XID故障-低优先级 device:nvidia3 device_type:RTX4090 err_code:43 err_msg:GPU stopped processing gpu:3 instance:10.114.4.23 modelName:NVIDIA GeForce RTX 4090 pci_bus_id:00000000:61:00.0 sent_at:2026-03-21 14:19:05 severity_text:次要 starts_at_text:2026-03-21 14:18:51 suggestion:尝试自行解决 trigger_value:43] timestamp=2026-03-21T14:18:51+08:00
+2026/04/14 18:03:54.483472 handler.go:262: [Gateway] Alert raw payload: {"msg_type":"text","content":{"text":"XID故障-低优先级\n级别状态:  次要 [啊？]Triggered\n告警名称: XID故障-低优先级\n告警标签:\n - DCGM_FI_DRIVER_VERSION: 565.77\n - Hostname: 4090GPU-03\n - UUID: GPU-78b7fc57-0fe4-8cb9-d802-09c6f1cf4b99\n - device: nvidia3\n - device_type: RTX4090\n - err_code: 43\n - err_msg: GPU stopped processing\n - gpu: 3\n - instance: 10.114.4.23\n - modelName: NVIDIA GeForce RTX 4090\n - pci_bus_id: 00000000:61:00.0\n - suggestion: 尝试自行解决\n触发时间: 2026-03-21 14:18:51\n发送时间: 2026-03-21 14:19:05\n触发时值:  43"}}
+2026/04/14 18:03:54.486832 alert.go:94: [Analyzer] Processed and saved new alert: [warning] XID故障-低优先级

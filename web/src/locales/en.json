@@ -9,15 +9,65 @@
     "subtitle": "Unified Observability Gateway"
   },
   "stats": {
-    "activeAlerts": "Active Alerts",
-    "events24h": "Events / 24h",
-    "systemLoad": "System Load",
-    "networkIO": "Network I/O"
+    "received": "Received Records",
+    "analysisReady": "Drafts Ready",
+    "failedCount": "Failed Records",
+    "hosts": "Affected Hosts"
   },
   "alerts": {
     "title": "Live Alert Stream",
     "connected": "Connected",
     "source": "Source"
+  },
+  "ingestions": {
+    "title": "Recent Ingestions",
+    "connected": "Ingestion Link Online",
+    "none": "No ingestions yet",
+    "host": "Host",
+    "detail": "Parsed Details",
+    "noLabels": "No parsed labels",
+    "filteredCount": "{{filtered}} / {{total}} records",
+    "searchPlaceholder": "Search message, host, source, labels or raw payload",
+    "moreLabels": "more labels",
+    "expandLabels": "Expand labels",
+    "collapseLabels": "Collapse labels",
+    "remainingLabels": "{{count}} more labels hidden",
+    "filters": {
+      "allHosts": "All hosts",
+      "allSources": "All sources",
+      "allLevels": "All levels",
+      "labelKey": "Label key",
+      "labelValue": "Label value",
+      "clear": "Clear filters",
+      "summary": "Filters: host={{host}} · source={{source}} · level={{level}}",
+      "any": "Any"
+    }
+  },
+  "analysis": {
+    "title": "Analysis Draft",
+    "loading": "Loading analysis result",
+    "empty": "Select an ingestion record",
+    "pending": "Analysis draft is not ready yet",
+    "confidence": "Confidence",
+    "updated": "Updated",
+    "causes": "Probable Causes",
+    "actions": "Recommended Actions",
+    "evidence": "Evidence"
+  },
+  "detail": {
+    "back": "Back to ingestion list",
+    "receivedAt": "Received At",
+    "analysisId": "Analysis Report ID",
+    "analysisType": "Analysis Type",
+    "rawPayload": "Raw Payload",
+    "viewPayload": "View raw payload",
+    "hidePayload": "Hide raw payload",
+    "payloadCollapsed": "Raw payload is collapsed",
+    "noPayload": "No raw payload"
+  },
+  "panels": {
+    "comingSoon": "This panel is coming soon",
+    "hint": "The current phase prioritizes alert ingestion, detail view and analysis flow."
   },
   "actions": {
     "title": "Quick Actions",

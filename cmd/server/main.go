@@ -1,9 +1,12 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 
 	"atlas/internal/analyzer"
 	ig "atlas/internal/gateway"
@@ -16,17 +19,20 @@ import (
 func main() {
 	fmt.Println("Starting Atlas Server...")
 
+	configPath := resolveConfigPath()
+
 	// 1. 加载配置文件
-	cfg, err := config.LoadConfig("configs/config.yaml")
+	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		log.Printf("Failed to load config, using default settings. Error: %v", err)
 		cfg = &config.Config{
-			Gateway: config.GatewayConfig{Port: ":8080", WebhookToken: ""},
+			Gateway: config.GatewayConfig{Port: ":8080", WebhookToken: "", FeishuWebhookToken: ""},
 			Storage: config.StorageConfig{DSN: "atlas.db"},
 			Feishu:  config.FeishuConfig{Bots: []config.FeishuBotConfig{}},
 			Logging: config.LoggingConfig{Dir: "logs"},
 		}
 	}
+	applyRuntimeOverrides(cfg)
 
 	logWriter, err := logging.InitGlobalLogger(cfg.Logging.Dir)
 	if err != nil {
@@ -48,7 +54,12 @@ func main() {
 	alertAnalyzer := analyzer.NewAlertAnalyzer(db, feishuNotifier)
 
 	// 5. 初始化网关 Handler
-	handler := ig.NewHandler(db, alertAnalyzer, cfg.Gateway.WebhookToken)
+	handler := ig.NewHandler(
+		db,
+		alertAnalyzer,
+		cfg.Gateway.WebhookToken,
+		cfg.Gateway.FeishuWebhookToken,
+	)
 
 	// 6. 注册路由
 	mux := http.NewServeMux()
@@ -68,6 +79,9 @@ func main() {
 
 	// 6.3 Gateway 路由 (原 Gateway 服务的功能，用于接收外部推送)
 	mux.HandleFunc("/api/v1/webhook/alert", handler.HandleAlertWebhook)
+	mux.HandleFunc("/open-apis/bot/v2/hook/", handler.HandleFeishuBotWebhook)
+	mux.HandleFunc("/api/v1/alerts/ingestions", handler.HandleRecentIngestions)
+	mux.HandleFunc("/api/v1/alerts/ingestions/", handler.HandleIngestionSubresources)
 	mux.HandleFunc("/api/v1/alerts/failures", handler.HandleFailedIngestions)
 	mux.HandleFunc("/api/v1/push/metrics", handler.HandleMetricsPush)
 
@@ -77,4 +91,38 @@ func main() {
 	if err := http.ListenAndServe(port, mux); err != nil {
 		log.Fatalf("Atlas Server failed to start: %v", err)
 	}
+}
+
+func resolveConfigPath() string {
+	var configPath string
+	flag.StringVar(&configPath, "config", "", "path to Atlas config file")
+	flag.Parse()
+
+	if strings.TrimSpace(configPath) != "" {
+		return strings.TrimSpace(configPath)
+	}
+	if envPath := strings.TrimSpace(os.Getenv("ATLAS_CONFIG")); envPath != "" {
+		return envPath
+	}
+	return "configs/config.yaml"
+}
+
+func applyRuntimeOverrides(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	if port := strings.TrimSpace(os.Getenv("ATLAS_PORT")); port != "" {
+		cfg.Gateway.Port = normalizeListenPort(port)
+	}
+}
+
+func normalizeListenPort(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+	if strings.HasPrefix(value, ":") {
+		return value
+	}
+	return ":" + value
 }

@@ -2,6 +2,13 @@
 
 本文档用于告警平台（如 Prometheus Alertmanager、Grafana、Zabbix 或自定义告警系统）对接 Atlas 的告警接收接口。
 
+当前支持两种接入方式：
+
+- Atlas 原生结构化接口：`POST /api/v1/webhook/alert`
+- 飞书兼容接口：`POST /open-apis/bot/v2/hook/{token}`
+
+如果你的告警平台当前只支持“发送飞书机器人消息”，优先使用飞书兼容接口。详细规范见：`docs/feishu-alert-ingestion-spec-v1.md`
+
 ## 1. 接口信息
 
 - 方法: `POST`
@@ -15,6 +22,12 @@
 http://<atlas-host>:8080/api/v1/webhook/alert
 ```
 
+飞书兼容示例 URL:
+
+```text
+http://<atlas-host>:8080/open-apis/bot/v2/hook/<your-token>
+```
+
 ## 2. 鉴权（可选，推荐启用）
 
 当 `configs/config.yaml` 中配置了 `gateway.webhook_token` 非空时，请求头必须携带:
@@ -26,6 +39,11 @@ http://<atlas-host>:8080/api/v1/webhook/alert
 - `401 Unauthorized`
 
 如果未配置 `gateway.webhook_token`（为空字符串），则不校验该头。
+
+飞书兼容接口的鉴权规则：
+
+- 当配置 `gateway.feishu_webhook_token` 非空时，路径中的 `{token}` 必须与配置一致
+- 当该配置为空时，Atlas 接受任意非空 token，仅建议用于本地调试
 
 ## 3. 请求体格式
 
@@ -148,3 +166,104 @@ curl -X POST "http://127.0.0.1:8080/api/v1/webhook/alert" \
   "total": 1
 }
 ```
+
+## 8. 飞书兼容接入示例
+
+推荐发送结构化文本：
+
+```bash
+curl -X POST "http://127.0.0.1:8080/open-apis/bot/v2/hook/your-ingestion-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "msg_type":"text",
+    "content":{
+      "text":"[atlas-alert]\nsource=prometheus\nlevel=critical\nhost=gpu-node-01\nlabels=gpu=3,cluster=train-a\nmessage=GPU temperature is too high"
+    }
+  }'
+```
+
+如果外部告警平台暂时不能发送结构化文本，也可以先发送普通文本，Atlas 会按如下规则兜底：
+
+- `source=feishu`
+- `level=info`
+- `message=原始文本`
+
+## 9. 最近接收记录接口
+
+- 方法: `GET`
+- 路径: `/api/v1/alerts/ingestions`
+- 查询参数: `limit`（可选，默认 20，最大 200）
+
+返回示例:
+
+```json
+{
+  "items": [
+    {
+      "id": 123,
+      "event_id": "a1b2c3d4e5f6g7h8",
+      "source": "alertmanager",
+      "host": "4090GPU-03",
+      "level": "warning",
+      "message": "XID故障-低优先级",
+      "process_status": "success",
+      "callback_status": "disabled",
+      "labels": {
+        "gpu": "3",
+        "err_code": "43",
+        "err_msg": "GPU stopped processing"
+      },
+      "ai_report_status": "pending"
+    }
+  ],
+  "total": 1
+}
+```
+
+说明：
+
+- 该接口用于核对 Atlas 是否成功接收到告警，以及解析后的关键字段是否符合预期
+- 当接收记录已经成功归一化到 `AlertEvent` 时，会返回对应的 `labels`
+- Atlas 当前会为每条接收记录预创建一条 `AIAnalysisReport` 占位记录，便于后续接入 AI 分析链路
+
+## 10. 接收记录 AI 分析报告接口
+
+- 方法: `GET`
+- 路径: `/api/v1/alerts/ingestions/{id}/analysis`
+
+返回示例:
+
+```json
+{
+  "id": 15,
+  "ingestion_record_id": 123,
+  "event_id": "a1b2c3d4e5f6g7h8",
+  "analysis_type": "alert_rca",
+  "status": "completed",
+  "model": "atlas-placeholder",
+  "prompt_version": "v1-rule-draft",
+  "severity": "warning",
+  "summary": "GPU XID alert detected on 4090GPU-03; prioritize hardware, driver and PCIe checks",
+  "probable_causes": [
+    "GPU driver or hardware fault indicated by XID event",
+    "PCIe, power or thermal instability affecting the GPU"
+  ],
+  "recommended_actions": [
+    "Check XID error code, dmesg and recent GPU logs on the affected host",
+    "Compare the affected GPU with peer GPUs on the same host"
+  ],
+  "evidence": [
+    "message=XID故障-低优先级",
+    "level=warning",
+    "err_code=43",
+    "gpu=3"
+  ],
+  "confidence": 0.72
+}
+```
+
+说明：
+
+- 当前阶段返回的是规则化生成的分析草稿，不是大模型结果
+- 该结果用于先打通 `告警 -> 分析报告` 链路
+- 后续接入真模型时，会继续沿用 `AIAnalysisReport` 这张表

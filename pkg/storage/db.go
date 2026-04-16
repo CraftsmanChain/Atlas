@@ -27,6 +27,7 @@ func InitDB(dsn string) (*DB, error) {
 	err = db.AutoMigrate(
 		&api.AlertEvent{},
 		&api.AlertIngestionRecord{},
+		&api.AIAnalysisReport{},
 		&api.LogEntry{},
 		&api.SystemMetrics{},
 		&api.HealthScore{},
@@ -62,4 +63,65 @@ func (db *DB) ListFailedIngestions(limit int) ([]api.AlertIngestionRecord, error
 		Limit(limit).
 		Find(&records).Error
 	return records, err
+}
+
+// ListRecentIngestions 查询最近接收的告警记录，用于接收链路展示。
+func (db *DB) ListRecentIngestions(limit int) ([]api.AlertIngestionRecord, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	var records []api.AlertIngestionRecord
+	err := db.
+		Order("created_at DESC").
+		Limit(limit).
+		Find(&records).Error
+	return records, err
+}
+
+// GetAlertEventByID 查询指定事件。
+func (db *DB) GetAlertEventByID(eventID string) (*api.AlertEvent, error) {
+	if eventID == "" {
+		return nil, nil
+	}
+	var event api.AlertEvent
+	if err := db.Where("id = ?", eventID).First(&event).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &event, nil
+}
+
+// GetLatestAIAnalysisReportForIngestion 查询某条接收记录最新的 AI 报告。
+func (db *DB) GetLatestAIAnalysisReportForIngestion(ingestionRecordID uint) (*api.AIAnalysisReport, error) {
+	if ingestionRecordID == 0 {
+		return nil, nil
+	}
+	var report api.AIAnalysisReport
+	if err := db.
+		Where("ingestion_record_id = ?", ingestionRecordID).
+		Order("updated_at DESC").
+		First(&report).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &report, nil
+}
+
+// GetAIAnalysisReportByID 查询指定 AI 分析报告。
+func (db *DB) GetAIAnalysisReportByID(reportID uint) (*api.AIAnalysisReport, error) {
+	if reportID == 0 {
+		return nil, nil
+	}
+	var report api.AIAnalysisReport
+	if err := db.Where("id = ?", reportID).First(&report).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &report, nil
 }

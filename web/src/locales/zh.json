@@ -9,15 +9,65 @@
     "subtitle": "统一可观测性网关"
   },
   "stats": {
-    "activeAlerts": "活跃告警",
-    "events24h": "24小时事件数",
-    "systemLoad": "系统负载",
-    "networkIO": "网络吞吐"
+    "received": "接收记录数",
+    "analysisReady": "已生成草稿",
+    "failedCount": "失败记录数",
+    "hosts": "影响主机数"
   },
   "alerts": {
     "title": "实时告警流",
     "connected": "已连接",
     "source": "来源"
+  },
+  "ingestions": {
+    "title": "最近接收记录",
+    "connected": "接收链路在线",
+    "none": "暂无接收记录",
+    "host": "主机",
+    "detail": "解析详情",
+    "noLabels": "暂无解析标签",
+    "filteredCount": "当前 {{filtered}} / {{total}} 条",
+    "searchPlaceholder": "搜索消息、主机、来源、标签或原始 payload",
+    "moreLabels": "更多标签",
+    "expandLabels": "展开更多 labels",
+    "collapseLabels": "收起 labels",
+    "remainingLabels": "还有 {{count}} 个 labels 未展开",
+    "filters": {
+      "allHosts": "全部主机",
+      "allSources": "全部来源",
+      "allLevels": "全部等级",
+      "labelKey": "标签 Key",
+      "labelValue": "标签 Value",
+      "clear": "清空筛选",
+      "summary": "筛选条件: host={{host}} · source={{source}} · level={{level}}",
+      "any": "任意"
+    }
+  },
+  "analysis": {
+    "title": "分析草稿",
+    "loading": "正在加载分析结果",
+    "empty": "请选择一条接收记录",
+    "pending": "分析草稿尚未生成",
+    "confidence": "置信度",
+    "updated": "更新时间",
+    "causes": "可能原因",
+    "actions": "建议动作",
+    "evidence": "证据"
+  },
+  "detail": {
+    "back": "返回接收记录列表",
+    "receivedAt": "接收时间",
+    "analysisId": "分析报告 ID",
+    "analysisType": "分析类型",
+    "rawPayload": "原始 Payload",
+    "viewPayload": "查看原始 payload",
+    "hidePayload": "收起原始 payload",
+    "payloadCollapsed": "原始 payload 已折叠",
+    "noPayload": "暂无原始 payload"
+  },
+  "panels": {
+    "comingSoon": "该面板稍后开放",
+    "hint": "当前阶段优先完成告警接收、详情与分析链路。"
   },
   "actions": {
     "title": "快捷操作",
