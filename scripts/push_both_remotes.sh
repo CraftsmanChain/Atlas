@@ -11,25 +11,16 @@ if [[ -z "$repo_root" ]]; then
   echo "当前目录不是 Git 仓库。"
   exit 1
 fi
-
 cd "$repo_root"
 
-if ! git remote get-url "$gitlab_remote" >/dev/null 2>&1; then
-  echo "未找到 GitLab 远端: $gitlab_remote"
-  exit 1
-fi
-
+# 添加 GitHub remote（如果不存在）
 if ! git remote get-url "$github_remote" >/dev/null 2>&1; then
   git remote add "$github_remote" "$github_url"
   echo "已添加 GitHub 远端: $github_remote -> $github_url"
 fi
 
+# ====================== 强制覆盖默认配置 ======================
 config_path="configs/config.yaml"
-if [[ ! -f "$config_path" ]]; then
-  echo "未找到 $config_path"
-  exit 1
-fi
-
 cat > "$config_path" <<'EOF'
 gateway:
   port: ":8080"
@@ -51,13 +42,32 @@ if git diff --cached --quiet; then
   exit 0
 fi
 
-read -r -p "请输入本次提交信息: " commit_message
-if [[ -z "${commit_message// }" ]]; then
-  echo "提交信息不能为空。"
-  exit 1
-fi
+# ====================== 输入提交信息 + 确认 ======================
+while true; do
+  read -r -p "请输入本次提交信息: " commit_message
+
+  # 去掉前后空格后检查是否为空
+  if [[ -z "${commit_message// }" ]]; then
+    echo "提交信息不能为空，请重新输入。"
+    continue
+  fi
+
+  # 打印出来让用户确认
+  echo "────────────────────────"
+  echo "本次提交信息将为："
+  echo "    $commit_message"
+  echo "────────────────────────"
+
+  read -r -p "确认无误？(y/n): " confirm
+  if [[ "$confirm" =~ ^[Yy]$ ]]; then
+    break
+  else
+    echo "已取消，请重新输入提交信息。"
+  fi
+done
 
 git commit -m "$commit_message"
+
 git push "$gitlab_remote" "$branch"
 git push "$github_remote" "$branch"
 
