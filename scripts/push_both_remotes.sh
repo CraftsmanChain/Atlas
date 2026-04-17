@@ -44,7 +44,9 @@ fi
 
 # ====================== 输入提交信息 + 确认 ======================
 while true; do
-  read -r -p "请输入本次提交信息: " commit_message
+  # 【关键修复】把 -p 改成 printf + read，避免中文提示符导致的输入截断
+  printf "请输入本次提交信息: "
+  read -r commit_message
 
   # 去掉前后空格后检查是否为空
   if [[ -z "${commit_message// }" ]]; then
@@ -52,10 +54,10 @@ while true; do
     continue
   fi
 
-  # 打印出来让用户确认
+  # 打印出来让用户确认（加了调试信息，后面可以删掉）
   echo "────────────────────────"
   echo "本次提交信息将为："
-  echo "    $commit_message"
+  echo "    [$commit_message]"
   echo "────────────────────────"
 
   read -r -p "确认无误？(y/n): " confirm
