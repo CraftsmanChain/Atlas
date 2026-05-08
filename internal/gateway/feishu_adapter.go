@@ -3,6 +3,7 @@ package gateway
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -10,6 +11,13 @@ import (
 )
 
 const feishuHookPathPrefix = "/open-apis/bot/v2/hook/"
+
+var (
+	feishuHTMLTagPattern    = regexp.MustCompile(`<[^>]+>`)
+	feishuEmojiTagPattern   = regexp.MustCompile(`:[^:\s]+:`)
+	feishuDividerPattern    = regexp.MustCompile(`(?m)^\s*-{3,}\s*$`)
+	feishuWhitespacePattern = regexp.MustCompile(`[ \t]+`)
+)
 
 type feishuWebhookPayload struct {
 	MsgType string `json:"msg_type"`
@@ -98,32 +106,34 @@ func extractFeishuCardText(cardRaw json.RawMessage) (string, error) {
 		return "", fmt.Errorf("empty feishu interactive card")
 	}
 
-	var card map[string]interface{}
+	var card map[string]any
 	if err := json.Unmarshal(cardRaw, &card); err != nil {
 		return "", err
 	}
 
 	var lines []string
-	if header, ok := card["header"].(map[string]interface{}); ok {
-		if title, ok := header["title"].(map[string]interface{}); ok {
+	if header, ok := card["header"].(map[string]any); ok {
+		if title, ok := header["title"].(map[string]any); ok {
 			if content, ok := title["content"].(string); ok && strings.TrimSpace(content) != "" {
 				lines = append(lines, content)
 			}
 		}
 	}
 
-	if elements, ok := card["elements"].([]interface{}); ok {
+	if elements, ok := card["elements"].([]any); ok {
 		for _, element := range elements {
-			elementMap, ok := element.(map[string]interface{})
+			elementMap, ok := element.(map[string]any)
 			if !ok {
 				continue
 			}
-			textMap, ok := elementMap["text"].(map[string]interface{})
-			if !ok {
-				continue
+			if content, ok := elementMap["content"].(string); ok && strings.TrimSpace(content) != "" {
+				lines = append(lines, sanitizeFeishuCardMarkdown(content))
 			}
-			if content, ok := textMap["content"].(string); ok && strings.TrimSpace(content) != "" {
-				lines = append(lines, content)
+			textMap, hasText := elementMap["text"].(map[string]any)
+			if hasText {
+				if content, ok := textMap["content"].(string); ok && strings.TrimSpace(content) != "" {
+					lines = append(lines, sanitizeFeishuCardMarkdown(content))
+				}
 			}
 		}
 	}
@@ -132,6 +142,25 @@ func extractFeishuCardText(cardRaw json.RawMessage) (string, error) {
 		return "", fmt.Errorf("empty feishu interactive card content")
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+func sanitizeFeishuCardMarkdown(content string) string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "**", "")
+	content = strings.ReplaceAll(content, "`", "")
+	content = feishuHTMLTagPattern.ReplaceAllString(content, "")
+	content = feishuDividerPattern.ReplaceAllString(content, "")
+
+	var cleanedLines []string
+	for _, line := range strings.Split(content, "\n") {
+		line = feishuWhitespacePattern.ReplaceAllString(line, " ")
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		cleanedLines = append(cleanedLines, line)
+	}
+	return strings.Join(cleanedLines, "\n")
 }
 
 func normalizeFeishuAlertText(text string) api.AlertEvent {
@@ -355,6 +384,7 @@ func cleanChineseSeverityText(value string) string {
 	for _, marker := range []string{"Triggered", "Resolved"} {
 		value = strings.ReplaceAll(value, marker, "")
 	}
+	value = feishuEmojiTagPattern.ReplaceAllString(value, "")
 	if idx := strings.Index(value, "["); idx >= 0 {
 		value = strings.TrimSpace(value[:idx])
 	}

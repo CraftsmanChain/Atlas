@@ -156,6 +156,61 @@ func TestParseFeishuWebhookAlertLegacyChineseXIDSample(t *testing.T) {
 	}
 }
 
+func TestParseFeishuWebhookAlertInteractiveCardMarkdown(t *testing.T) {
+	body := []byte(`{
+		"msg_type":"interactive",
+		"card":{
+			"header":{
+				"title":{"content":"XID故障-高优先级","tag":"plain_text"}
+			},
+			"elements":[
+				{
+					"tag":"markdown",
+					"content":" \n**级别状态:** <font color='red'> 紧急 :BEAR:Triggered </font> \n**告警名称:** XID故障-高优先级\n**告警标签**:\n\t- DCGM_FI_DRIVER_VERSION: 565.77\n\t- Hostname: 4090gpu-14\n\t- UUID: GPU-c0aa5e60-11c3-cad9-b5d0-19883b65db30\n\t- device: nvidia4\n\t- device_type: RTX4090\n\t- err_code: 79\n\t- err_msg: GPU has fallen off the bus\n\t- gpu: 4\n\t- instance: 10.114.4.34\n\t- modelName: NVIDIA GeForce RTX 4090\n\t- pci_bus_id: 00000000:81:00.0\n\t- suggestion: 联系平台处理\n**触发时间:** 2026-05-08 16:11:09   \n**发送时间:** 2026-05-08 16:11:54   \n**触发时值:** <font color='red'> **79** </font>"
+				},
+				{
+					"tag":"action",
+					"actions":[
+						{
+							"tag":"button",
+							"text":{"content":"查看详情","tag":"plain_text"},
+							"type":"primary",
+							"url":"https://example.com/detail"
+						}
+					]
+				}
+			]
+		}
+	}`)
+
+	event, err := parseFeishuWebhookAlert(body)
+	if err != nil {
+		t.Fatalf("parseFeishuWebhookAlert returned error: %v", err)
+	}
+
+	if event.Source != "alertmanager" {
+		t.Fatalf("expected source alertmanager, got %q", event.Source)
+	}
+	if event.Level != "critical" {
+		t.Fatalf("expected level critical, got %q", event.Level)
+	}
+	if event.Message != "XID故障-高优先级" {
+		t.Fatalf("expected XID message, got %q", event.Message)
+	}
+	if event.Host != "4090gpu-14" {
+		t.Fatalf("expected host 4090gpu-14, got %q", event.Host)
+	}
+	if event.Labels["err_code"] != "79" || event.Labels["err_msg"] != "GPU has fallen off the bus" {
+		t.Fatalf("expected xid labels to be parsed, got %#v", event.Labels)
+	}
+	if event.Labels["severity_text"] != "紧急" {
+		t.Fatalf("expected cleaned severity_text 紧急, got %q", event.Labels["severity_text"])
+	}
+	if event.Labels["trigger_value"] != "79" {
+		t.Fatalf("expected trigger_value 79, got %q", event.Labels["trigger_value"])
+	}
+}
+
 func TestExtractFeishuHookToken(t *testing.T) {
 	token := extractFeishuHookToken("/open-apis/bot/v2/hook/test-token")
 	if token != "test-token" {

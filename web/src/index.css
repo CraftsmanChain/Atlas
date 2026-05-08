@@ -4,23 +4,28 @@
 
 @layer base {
   :root {
-    --background: #f6f8fa;
+    --background: #f4f7fb;
     --surface: #ffffff;
-    --surface-hover: #eef2f6;
-    --primary: #0969da;
-    --secondary: #8250df;
-    --accent: #cf222e;
-    --success: #1a7f37;
-    --warning: #9a6700;
-    --danger: #cf222e;
-    --text-main: #1f2328;
-    --text-muted: #59636e;
-    --border: #d0d7de;
-    --grid-color: rgba(31, 35, 40, 0.06);
-    --glow-color: rgba(9, 105, 218, 0.18);
-    --glass-bg: rgba(255, 255, 255, 0.82);
-    --glass-border: rgba(208, 215, 222, 0.72);
-    --glass-shadow: 0 10px 30px -12px rgba(31, 35, 40, 0.18);
+    --surface-hover: #f6faff;
+    --primary: #4f6bff;
+    --secondary: #8b5cf6;
+    --accent: #ef5d6e;
+    --success: #119a73;
+    --warning: #b7791f;
+    --danger: #ef5d6e;
+    --text-main: #172033;
+    --text-muted: #5d6980;
+    --border: #d7e0ec;
+    --grid-color: rgba(79, 107, 255, 0.07);
+    --glow-color: rgba(79, 107, 255, 0.2);
+    --glass-bg: rgba(255, 255, 255, 0.78);
+    --glass-border: rgba(255, 255, 255, 0.7);
+    --glass-shadow: 0 24px 60px -32px rgba(34, 51, 84, 0.34);
+    --elevated-shadow: 0 26px 70px -34px rgba(58, 82, 130, 0.4);
+    --interactive-border: rgba(79, 107, 255, 0.18);
+    --chip-bg: rgba(255, 255, 255, 0.72);
+    --chip-border: rgba(125, 144, 180, 0.22);
+    --chip-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
   }
 
   .dark {
@@ -41,14 +46,21 @@
     --glass-bg: rgba(19, 19, 26, 0.6);
     --glass-border: rgba(255, 255, 255, 0.05);
     --glass-shadow: rgba(0, 0, 0, 0.5) 0 10px 25px -5px;
+    --chip-bg: rgba(19, 19, 26, 0.78);
+    --chip-border: rgba(255, 255, 255, 0.08);
+    --chip-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
   }
 
   body {
     @apply bg-background text-textMain font-sans antialiased overflow-x-hidden transition-colors duration-300;
+    background-image:
+      radial-gradient(circle at top left, rgba(79, 107, 255, 0.12), transparent 28%),
+      radial-gradient(circle at top right, rgba(139, 92, 246, 0.11), transparent 24%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(244, 247, 251, 0.96));
   }
   
   ::selection {
-    background-color: color-mix(in srgb, var(--primary) 30%, transparent);
+    background-color: rgba(79, 107, 255, 0.2);
     color: var(--primary);
   }
 }
@@ -60,10 +72,35 @@
   
   .glass-panel {
     background-color: var(--glass-bg);
-    backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
     border: 1px solid var(--glass-border);
     box-shadow: var(--glass-shadow);
+  }
+
+  .interactive-elevate {
+    transition:
+      transform 180ms ease,
+      box-shadow 220ms ease,
+      border-color 220ms ease,
+      background-color 220ms ease;
+  }
+
+  .interactive-elevate:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--elevated-shadow);
+    border-color: var(--interactive-border);
+  }
+
+  .soft-chip {
+    background: var(--chip-bg);
+    border: 1px solid var(--chip-border);
+    box-shadow: var(--chip-shadow);
+  }
+
+  .focus-ring:focus-visible {
+    outline: 2px solid rgba(79, 107, 255, 0.55);
+    outline-offset: 2px;
   }
   
   .neon-border {
@@ -87,6 +124,33 @@
   
   .text-glow {
     text-shadow: 0 0 10px currentColor;
+  }
+
+  .app-shell::before,
+  .app-shell::after {
+    content: '';
+    position: absolute;
+    inset: auto;
+    border-radius: 9999px;
+    pointer-events: none;
+    filter: blur(90px);
+    opacity: 0.5;
+  }
+
+  .app-shell::before {
+    top: 4rem;
+    left: 2rem;
+    width: 22rem;
+    height: 22rem;
+    background: radial-gradient(circle, rgba(79, 107, 255, 0.18), transparent 70%);
+  }
+
+  .app-shell::after {
+    right: 3rem;
+    bottom: 4rem;
+    width: 20rem;
+    height: 20rem;
+    background: radial-gradient(circle, rgba(139, 92, 246, 0.16), transparent 70%);
   }
 }
 

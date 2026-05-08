@@ -30,6 +30,7 @@ func main() {
 			Storage: config.StorageConfig{DSN: "atlas.db"},
 			Feishu:  config.FeishuConfig{Bots: []config.FeishuBotConfig{}},
 			Logging: config.LoggingConfig{Dir: "logs"},
+			Web:     config.WebConfig{StaticDir: "web/dist"},
 		}
 	}
 	applyRuntimeOverrides(cfg)
@@ -65,6 +66,8 @@ func main() {
 	mux := http.NewServeMux()
 
 	// 6.1 基础健康检查
+	mux.HandleFunc("/", newWebHandler(cfg.Web.StaticDir))
+
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Atlas Server is healthy\n"))
@@ -113,6 +116,9 @@ func applyRuntimeOverrides(cfg *config.Config) {
 	}
 	if port := strings.TrimSpace(os.Getenv("ATLAS_PORT")); port != "" {
 		cfg.Gateway.Port = normalizeListenPort(port)
+	}
+	if webDir := strings.TrimSpace(os.Getenv("ATLAS_WEB_DIR")); webDir != "" {
+		cfg.Web.StaticDir = webDir
 	}
 }
 

@@ -327,12 +327,12 @@ function App() {
       </div>
 
       <div className="flex items-center space-x-4">
-        <div className="flex space-x-1 glass-panel p-1 rounded-lg">
+        <div className="flex space-x-1 glass-panel p-1 rounded-xl border border-white/50">
           <button
             type="button"
             onClick={() => setTheme('light')}
             title={t('theme.light')}
-            className={`p-2 rounded-md transition-all duration-200 ${theme === 'light' ? 'bg-surfaceHover text-primary shadow-sm border border-black/5 dark:border-white/10' : 'text-textMuted hover:text-textMain hover:bg-surface/50'}`}
+            className={`focus-ring interactive-elevate p-2 rounded-lg transition-all duration-200 ${theme === 'light' ? 'bg-surfaceHover text-primary shadow-sm border border-primary/10' : 'text-textMuted hover:text-textMain hover:bg-surface/50'}`}
           >
             <Sun className="w-4 h-4" />
           </button>
@@ -340,7 +340,7 @@ function App() {
             type="button"
             onClick={() => setTheme('dark')}
             title={t('theme.dark')}
-            className={`p-2 rounded-md transition-all duration-200 ${theme === 'dark' ? 'bg-surfaceHover text-primary shadow-sm border border-black/5 dark:border-white/10' : 'text-textMuted hover:text-textMain hover:bg-surface/50'}`}
+            className={`focus-ring interactive-elevate p-2 rounded-lg transition-all duration-200 ${theme === 'dark' ? 'bg-surfaceHover text-primary shadow-sm border border-primary/10' : 'text-textMuted hover:text-textMain hover:bg-surface/50'}`}
           >
             <Moon className="w-4 h-4" />
           </button>
@@ -348,7 +348,7 @@ function App() {
             type="button"
             onClick={() => setTheme('system')}
             title={t('theme.system')}
-            className={`p-2 rounded-md transition-all duration-200 ${theme === 'system' ? 'bg-surfaceHover text-primary shadow-sm border border-black/5 dark:border-white/10' : 'text-textMuted hover:text-textMain hover:bg-surface/50'}`}
+            className={`focus-ring interactive-elevate p-2 rounded-lg transition-all duration-200 ${theme === 'system' ? 'bg-surfaceHover text-primary shadow-sm border border-primary/10' : 'text-textMuted hover:text-textMain hover:bg-surface/50'}`}
           >
             <Monitor className="w-4 h-4" />
           </button>
@@ -357,13 +357,13 @@ function App() {
         <button
           type="button"
           onClick={toggleLanguage}
-          className="flex items-center gap-2 px-3 py-2 glass-panel rounded-lg text-sm font-medium text-textMuted hover:text-textMain transition-all"
+          className="focus-ring interactive-elevate flex items-center gap-2 px-3 py-2 glass-panel rounded-xl text-sm font-medium text-textMuted hover:text-textMain"
         >
           <Globe className="w-4 h-4" />
           <span>{i18n.language === 'zh' ? 'EN' : '中文'}</span>
         </button>
 
-        <nav className="flex space-x-2 glass-panel p-1 rounded-lg ml-4">
+        <nav className="flex space-x-2 glass-panel p-1 rounded-xl ml-4 border border-white/50">
           {['alerts', 'metrics', 'config'].map((tab) => (
             <button
               key={tab}
@@ -371,8 +371,8 @@ function App() {
               onClick={() => setActiveTab(tab)}
               className={`px-4 py-2 rounded-md text-sm font-medium transition-all duration-200 ${
                 activeTab === tab
-                  ? 'bg-surfaceHover text-textMain shadow-sm border border-black/5 dark:border-white/10'
-                  : 'text-textMuted hover:text-textMain hover:bg-surface/50'
+                  ? 'bg-surfaceHover text-textMain shadow-sm border border-primary/10'
+                  : 'text-textMuted hover:text-textMain hover:bg-surface/60'
               }`}
             >
               {t(`nav.${tab}`)}
@@ -391,15 +391,15 @@ function App() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: i * 0.1 }}
-          className="glass-panel p-6 rounded-2xl relative overflow-hidden group"
+          className="glass-panel interactive-elevate p-6 rounded-3xl relative overflow-hidden group border border-white/45"
         >
-          <div className={`absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-transparent to-current opacity-5 -mr-10 -mt-10 rounded-full transition-transform group-hover:scale-150 duration-500 ${stat.color}`}></div>
+          <div className={`absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-transparent to-current opacity-10 -mr-10 -mt-10 rounded-full transition-transform group-hover:scale-150 duration-500 ${stat.color}`}></div>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-textMuted mb-1">{t(`stats.${stat.id}`)}</p>
-              <h3 className="text-3xl font-bold text-textMain font-mono">{stat.value}</h3>
+              <h3 className="text-3xl font-bold text-textMain font-mono tracking-tight">{stat.value}</h3>
             </div>
-            <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${stat.bg} ${stat.color} border border-current/20`}>
+            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${stat.bg} ${stat.color} border border-current/20 shadow-sm`}>
               <stat.icon className="w-6 h-6" />
             </div>
           </div>
@@ -410,7 +410,7 @@ function App() {
 
   const renderSidebar = () => (
     <div className="space-y-8">
-      <div className="glass-panel p-6 rounded-2xl border-t-4 border-t-primary/50">
+      <div className="glass-panel p-6 rounded-3xl border-t-4 border-t-primary/50 border border-white/45">
         <h3 className="text-sm font-medium text-textMuted mb-4 uppercase tracking-wider">{t('status.title')}</h3>
         <div className="space-y-4 font-mono text-sm">
           <div className="flex justify-between items-center">
@@ -431,7 +431,7 @@ function App() {
         </div>
       </div>
 
-      <div className="glass-panel p-6 rounded-2xl border-t-4 border-t-accent/50">
+      <div className="glass-panel p-6 rounded-3xl border-t-4 border-t-accent/50 border border-white/45">
         <h3 className="text-sm font-medium text-textMuted mb-4 uppercase tracking-wider">
           {t('ingestionFailures.title')}
         </h3>
@@ -443,7 +443,7 @@ function App() {
             <div className="text-xs text-success">{t('ingestionFailures.none')}</div>
           ) : (
             failedIngestions.map((item) => (
-              <div key={item.id} className="rounded-lg border border-border/60 bg-surface/40 p-3">
+              <div key={item.id} className="rounded-xl border border-border/60 bg-surface/55 p-3 shadow-sm">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs text-textMain truncate">{item.message}</span>
                   <span className={`text-[10px] uppercase px-2 py-0.5 rounded ${getLevelColor(item.level)}`}>{item.level || 'unknown'}</span>
@@ -465,7 +465,7 @@ function App() {
   const renderListPage = () => (
     <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
       <div className="lg:col-span-3 space-y-6">
-        <div className="glass-panel rounded-2xl p-5 border border-border/60">
+        <div className="glass-panel rounded-3xl p-5 border border-white/45">
           <div className="flex items-center justify-between gap-4 mb-4">
             <div>
               <h2 className="text-lg font-semibold text-textMain flex items-center gap-2">
@@ -486,13 +486,13 @@ function App() {
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-            <label className="rounded-xl border border-border/60 bg-surface/30 px-3 py-2 flex items-center gap-2">
+            <label className="soft-chip rounded-2xl px-3 py-2 flex items-center gap-2">
               <Search className="w-4 h-4 text-textMuted" />
               <input
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
                 placeholder={t('ingestions.searchPlaceholder')}
-                className="w-full bg-transparent outline-none text-sm text-textMain placeholder:text-textMuted"
+                className="focus-ring w-full bg-transparent outline-none text-sm text-textMain placeholder:text-textMuted"
               />
             </label>
 
@@ -502,7 +502,7 @@ function App() {
                 title={t('ingestions.filters.allHosts')}
                 value={hostFilter}
                 onChange={(e) => setHostFilter(e.target.value)}
-                className="rounded-xl border border-border/60 bg-surface/30 px-3 py-2 text-sm text-textMain outline-none"
+                className="focus-ring soft-chip rounded-2xl px-3 py-2 text-sm text-textMain outline-none"
               >
                 <option value="">{t('ingestions.filters.allHosts')}</option>
                 {hostOptions.map((host) => (
@@ -515,7 +515,7 @@ function App() {
                 title={t('ingestions.filters.allSources')}
                 value={sourceFilter}
                 onChange={(e) => setSourceFilter(e.target.value)}
-                className="rounded-xl border border-border/60 bg-surface/30 px-3 py-2 text-sm text-textMain outline-none"
+                className="focus-ring soft-chip rounded-2xl px-3 py-2 text-sm text-textMain outline-none"
               >
                 <option value="">{t('ingestions.filters.allSources')}</option>
                 {sourceOptions.map((source) => (
@@ -530,7 +530,7 @@ function App() {
                 title={t('ingestions.filters.allLevels')}
                 value={levelFilter}
                 onChange={(e) => setLevelFilter(e.target.value)}
-                className="rounded-xl border border-border/60 bg-surface/30 px-3 py-2 text-sm text-textMain outline-none"
+                className="focus-ring soft-chip rounded-2xl px-3 py-2 text-sm text-textMain outline-none"
               >
                 <option value="">{t('ingestions.filters.allLevels')}</option>
                 <option value="critical">critical</option>
@@ -539,23 +539,23 @@ function App() {
                 <option value="info">info</option>
               </select>
 
-              <label className="rounded-xl border border-border/60 bg-surface/30 px-3 py-2 flex items-center gap-2">
+              <label className="soft-chip rounded-2xl px-3 py-2 flex items-center gap-2">
                 <Tags className="w-4 h-4 text-textMuted" />
                 <input
                   value={labelKeyFilter}
                   onChange={(e) => setLabelKeyFilter(e.target.value)}
                   placeholder={t('ingestions.filters.labelKey')}
-                  className="w-full bg-transparent outline-none text-sm text-textMain placeholder:text-textMuted"
+                  className="focus-ring w-full bg-transparent outline-none text-sm text-textMain placeholder:text-textMuted"
                 />
               </label>
 
-              <label className="rounded-xl border border-border/60 bg-surface/30 px-3 py-2 flex items-center gap-2">
+              <label className="soft-chip rounded-2xl px-3 py-2 flex items-center gap-2">
                 <Filter className="w-4 h-4 text-textMuted" />
                 <input
                   value={labelValueFilter}
                   onChange={(e) => setLabelValueFilter(e.target.value)}
                   placeholder={t('ingestions.filters.labelValue')}
-                  className="w-full bg-transparent outline-none text-sm text-textMain placeholder:text-textMuted"
+                  className="focus-ring w-full bg-transparent outline-none text-sm text-textMain placeholder:text-textMuted"
                 />
               </label>
             </div>
@@ -572,14 +572,14 @@ function App() {
             <button
               type="button"
               onClick={clearFilters}
-              className="text-xs px-3 py-1.5 rounded-lg border border-border/60 bg-surface/40 text-textMain hover:text-primary hover:border-primary/40 transition-colors"
+              className="focus-ring interactive-elevate text-xs px-3 py-1.5 rounded-xl border border-border/60 bg-surface/55 text-textMain hover:text-primary hover:border-primary/40"
             >
               {t('ingestions.filters.clear')}
             </button>
           </div>
         </div>
 
-        <div className="glass-panel rounded-2xl overflow-hidden flex flex-col min-h-[560px]">
+        <div className="glass-panel rounded-3xl overflow-hidden flex flex-col min-h-[560px] border border-white/45">
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
             <AnimatePresence>
               {filteredIngestions.length === 0 ? (
@@ -597,7 +597,7 @@ function App() {
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: 0.04 * i }}
                     onClick={() => openDetail(alert.id)}
-                    className="w-full text-left group flex items-start gap-4 p-4 rounded-xl border border-border/50 bg-surface/40 hover:bg-surfaceHover/80 hover:border-primary/40 transition-colors"
+                    className="focus-ring interactive-elevate w-full text-left group flex items-start gap-4 p-4 rounded-2xl border border-border/50 bg-surface/55 hover:bg-surfaceHover/95 hover:border-primary/40"
                   >
                     <div className={`mt-1 p-2 rounded-lg border ${getLevelColor(alert.level)}`}>
                       {getLevelIcon(alert.level)}
@@ -618,7 +618,7 @@ function App() {
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2">
                         {previewLabels.map(([key, value]) => (
-                          <span key={key} className="rounded-full border border-border/60 bg-surface/40 px-2.5 py-1 text-[11px] text-textMain font-mono">
+                          <span key={key} className="soft-chip rounded-full px-2.5 py-1 text-[11px] text-textMain font-mono">
                             {key}={value}
                           </span>
                         ))}
@@ -656,7 +656,7 @@ function App() {
           <button
             type="button"
             onClick={() => setDetailIngestionId(null)}
-            className="inline-flex items-center gap-2 rounded-xl border border-border/60 bg-surface/40 px-4 py-2 text-sm text-textMain hover:text-primary hover:border-primary/40 transition-colors"
+          className="focus-ring interactive-elevate inline-flex items-center gap-2 rounded-2xl border border-border/60 bg-surface/55 px-4 py-2 text-sm text-textMain hover:text-primary hover:border-primary/40"
           >
             <ArrowLeft className="w-4 h-4" />
             {t('detail.back')}
@@ -666,7 +666,7 @@ function App() {
           </div>
         </div>
 
-        <div className="glass-panel rounded-2xl p-6 border border-border/60">
+        <div className="glass-panel rounded-3xl p-6 border border-white/45">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="space-y-3">
               <div className="flex items-center gap-3">
@@ -694,11 +694,11 @@ function App() {
             </div>
 
             <div className="grid grid-cols-2 gap-3 min-w-[260px]">
-              <div className="rounded-xl border border-border/60 bg-surface/30 p-3">
+              <div className="soft-chip rounded-2xl p-3">
                 <div className="text-[11px] uppercase tracking-wider text-textMuted">{t('detail.receivedAt')}</div>
                 <div className="mt-1 text-sm font-mono text-textMain">{formatTime(selectedIngestion?.created_at)}</div>
               </div>
-              <div className="rounded-xl border border-border/60 bg-surface/30 p-3">
+              <div className="soft-chip rounded-2xl p-3">
                 <div className="text-[11px] uppercase tracking-wider text-textMuted">{t('detail.analysisId')}</div>
                 <div className="mt-1 text-sm font-mono text-textMain">{selectedIngestion?.ai_report_id || '-'}</div>
               </div>
@@ -706,7 +706,7 @@ function App() {
           </div>
         </div>
 
-        <div className="glass-panel p-6 rounded-2xl border-t-4 border-t-warning/50">
+        <div className="glass-panel p-6 rounded-3xl border-t-4 border-t-warning/50 border border-white/45">
           <h3 className="text-sm font-medium text-textMuted mb-4 uppercase tracking-wider">
             {t('analysis.title')}
           </h3>
@@ -729,15 +729,15 @@ function App() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                <div className="rounded-xl border border-border/60 bg-surface/40 p-3">
+                <div className="soft-chip rounded-2xl p-3">
                   <div className="text-textMuted">{t('analysis.confidence')}</div>
                   <div className="mt-1 text-lg font-mono text-textMain">{Math.round((analysisReport.confidence ?? 0) * 100)}%</div>
                 </div>
-                <div className="rounded-xl border border-border/60 bg-surface/40 p-3">
+                <div className="soft-chip rounded-2xl p-3">
                   <div className="text-textMuted">{t('analysis.updated')}</div>
                   <div className="mt-1 text-sm font-mono text-textMain">{formatTime(analysisReport.updated_at)}</div>
                 </div>
-                <div className="rounded-xl border border-border/60 bg-surface/40 p-3">
+                <div className="soft-chip rounded-2xl p-3">
                   <div className="text-textMuted">{t('detail.analysisType')}</div>
                   <div className="mt-1 text-sm font-mono text-textMain">{analysisReport.analysis_type}</div>
                 </div>
@@ -747,7 +747,7 @@ function App() {
                 <div className="text-[11px] uppercase tracking-wider text-textMuted mb-2">{t('analysis.causes')}</div>
                 <div className="space-y-2">
                   {(analysisReport.probable_causes ?? []).map((item, index) => (
-                    <div key={index} className="text-sm text-textMain rounded-lg border border-border/50 bg-surface/30 px-3 py-2">{item}</div>
+                    <div key={index} className="text-sm text-textMain rounded-xl border border-border/50 bg-surface/45 px-3 py-2 shadow-sm">{item}</div>
                   ))}
                 </div>
               </div>
@@ -756,7 +756,7 @@ function App() {
                 <div className="text-[11px] uppercase tracking-wider text-textMuted mb-2">{t('analysis.actions')}</div>
                 <div className="space-y-2">
                   {(analysisReport.recommended_actions ?? []).map((item, index) => (
-                    <div key={index} className="text-sm text-textMain rounded-lg border border-border/50 bg-surface/30 px-3 py-2">{item}</div>
+                    <div key={index} className="text-sm text-textMain rounded-xl border border-border/50 bg-surface/45 px-3 py-2 shadow-sm">{item}</div>
                   ))}
                 </div>
               </div>
@@ -765,7 +765,7 @@ function App() {
                 <div className="text-[11px] uppercase tracking-wider text-textMuted mb-2">{t('analysis.evidence')}</div>
                 <div className="space-y-2">
                   {(analysisReport.evidence ?? []).map((item, index) => (
-                    <div key={index} className="text-xs text-textMuted rounded-lg border border-border/50 bg-surface/20 px-3 py-2 font-mono break-all">{item}</div>
+                    <div key={index} className="text-xs text-textMuted rounded-xl border border-border/50 bg-surface/35 px-3 py-2 font-mono break-all shadow-sm">{item}</div>
                   ))}
                 </div>
               </div>
@@ -779,7 +779,7 @@ function App() {
           )}
         </div>
 
-        <div className="glass-panel p-6 rounded-2xl border-t-4 border-t-secondary/50">
+        <div className="glass-panel p-6 rounded-3xl border-t-4 border-t-secondary/50 border border-white/45">
           <div className="flex items-center justify-between gap-3 mb-4">
             <h3 className="text-sm font-medium text-textMuted uppercase tracking-wider">
               {t('ingestions.detail')}
@@ -787,7 +787,7 @@ function App() {
             <button
               type="button"
               onClick={() => setShowAllLabels((current) => !current)}
-              className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-border/60 bg-surface/40 text-textMain hover:text-primary hover:border-primary/40 transition-colors"
+              className="focus-ring interactive-elevate inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-xl border border-border/60 bg-surface/55 text-textMain hover:text-primary hover:border-primary/40"
             >
               {showAllLabels ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
               {showAllLabels ? t('ingestions.collapseLabels') : t('ingestions.expandLabels')}
@@ -798,7 +798,7 @@ function App() {
               <span className="text-[11px] text-textMuted">{t('ingestions.noLabels')}</span>
             ) : (
               detailLabelEntries.map(([key, value]) => (
-                <span key={key} className="rounded-full border border-border/60 bg-surface/40 px-2.5 py-1 text-[11px] text-textMain font-mono break-all">
+                <span key={key} className="soft-chip rounded-full px-2.5 py-1 text-[11px] text-textMain font-mono break-all">
                   {key}={value}
                 </span>
               ))
@@ -811,7 +811,7 @@ function App() {
           )}
         </div>
 
-        <div className="glass-panel p-6 rounded-2xl border-t-4 border-t-primary/50">
+        <div className="glass-panel p-6 rounded-3xl border-t-4 border-t-primary/50 border border-white/45">
           <div className="flex items-center justify-between gap-3 mb-4">
             <h3 className="text-sm font-medium text-textMuted uppercase tracking-wider flex items-center gap-2">
               <FileJson className="w-4 h-4" />
@@ -820,14 +820,14 @@ function App() {
             <button
               type="button"
               onClick={() => setShowRawPayload((current) => !current)}
-              className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-border/60 bg-surface/40 text-textMain hover:text-primary hover:border-primary/40 transition-colors"
+              className="focus-ring interactive-elevate inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-xl border border-border/60 bg-surface/55 text-textMain hover:text-primary hover:border-primary/40"
             >
               {showRawPayload ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
               {showRawPayload ? t('detail.hidePayload') : t('detail.viewPayload')}
             </button>
           </div>
           {showRawPayload ? (
-            <pre className="rounded-xl border border-border/60 bg-surface/30 p-4 text-xs text-textMain overflow-x-auto whitespace-pre-wrap break-all font-mono">
+            <pre className="rounded-2xl border border-border/60 bg-surface/45 p-4 text-xs text-textMain overflow-x-auto whitespace-pre-wrap break-all font-mono shadow-sm">
               {selectedIngestion?.raw_payload || t('detail.noPayload')}
             </pre>
           ) : (
@@ -848,7 +848,7 @@ function App() {
   );
 
   return (
-    <div className="min-h-screen bg-background bg-grid relative overflow-hidden transition-colors duration-300">
+    <div className="app-shell min-h-screen bg-background bg-grid relative overflow-hidden transition-colors duration-300">
       <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] bg-glow-primary rounded-full blur-[120px] pointer-events-none opacity-50 transition-opacity duration-300"></div>
       <div className="absolute bottom-[-20%] right-[-10%] w-[40%] h-[40%] bg-secondary/10 rounded-full blur-[100px] pointer-events-none opacity-30 transition-opacity duration-300"></div>
 

@@ -27,6 +27,8 @@ feishu:
       secret: ""
 logging:
   dir: "logs"
+web:
+  static_dir: "web/dist"
 ```
 
 ## 2. 配置项说明
@@ -65,6 +67,13 @@ X-Webhook-Token: <token>
 - 服务日志目录
 - 默认：`logs`
 
+### `web.static_dir`
+
+- 前端静态产物目录
+- 当目录下存在 `index.html` 时，`atlas-server` 会直接托管 Web 页面
+- 默认：`web/dist`
+- 适合生产环境将前端打包后与后端一起部署
+
 ## 3. 自定义配置文件路径
 
 Atlas 服务端支持通过以下方式指定配置文件：
@@ -94,6 +103,17 @@ ATLAS_PORT=18080 go run ./cmd/server --config configs/config.yaml
 - `ATLAS_PORT=18080` 会自动规范成监听地址 `:18080`
 - 该覆盖优先级高于配置文件中的 `gateway.port`
 
+前端静态目录也支持环境变量覆盖：
+
+```bash
+ATLAS_WEB_DIR=/ops/atlas/web/dist ./atlas-server --config /ops/atlas/configs/config.yaml
+```
+
+说明：
+
+- `ATLAS_WEB_DIR` 优先级高于配置文件中的 `web.static_dir`
+- 当目录不存在或缺少 `index.html` 时，根路径 `/` 会退回简单文本页
+
 ## 5. macOS 本地启动脚本
 
 ### 启动后端
@@ -113,6 +133,53 @@ bash scripts/start_backend_mac.sh /path/to/custom-config.yaml
 ```bash
 ATLAS_PORT=18080 bash scripts/start_backend_mac.sh
 ```
+
+## 6. 生产环境部署静态页面
+
+推荐方式是让 `atlas-server` 直接托管前端打包后的静态产物，无需额外 `nginx` 代理。
+
+### 1. 本地构建前端
+
+```bash
+cd web
+npm install
+npm run build
+```
+
+构建完成后会生成：
+
+```text
+web/dist
+```
+
+### 2. 上传服务器
+
+建议至少上传这些内容：
+
+```text
+atlas-server
+configs/config.yaml
+web/dist
+```
+
+### 3. 配置静态目录
+
+```yaml
+web:
+  static_dir: "/ops/atlas/web/dist"
+```
+
+或启动时覆盖：
+
+```bash
+ATLAS_WEB_DIR=/ops/atlas/web/dist ./atlas-server --config /ops/atlas/configs/config.yaml
+```
+
+### 4. 访问方式
+
+- Web 页面：`http://<server>:7077/`
+- 健康检查：`http://<server>:7077/health`
+- API 状态：`http://<server>:7077/api/v1/status`
 
 ### 启动前端
 

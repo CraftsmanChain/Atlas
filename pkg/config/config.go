@@ -11,6 +11,7 @@ type Config struct {
 	Storage StorageConfig `yaml:"storage"`
 	Feishu  FeishuConfig  `yaml:"feishu"`
 	Logging LoggingConfig `yaml:"logging"`
+	Web     WebConfig     `yaml:"web"`
 }
 
 type GatewayConfig struct {
@@ -29,6 +30,10 @@ type FeishuConfig struct {
 
 type LoggingConfig struct {
 	Dir string `yaml:"dir"`
+}
+
+type WebConfig struct {
+	StaticDir string `yaml:"static_dir"`
 }
 
 type FeishuBotConfig struct {
@@ -59,6 +64,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Logging.Dir == "" {
 		cfg.Logging.Dir = "logs"
+	}
+	if cfg.Web.StaticDir == "" {
+		cfg.Web.StaticDir = "web/dist"
 	}
 
 	return &cfg, nil
