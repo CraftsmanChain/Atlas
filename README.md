@@ -125,6 +125,8 @@ feishu:
       secret: ""
 logging:
   dir: "logs"
+web:
+  static_dir: "web/dist"
 ```
 
 ### 3. macOS 本地启动后端
@@ -183,6 +185,43 @@ bin/linux-amd64
 说明：
 
 - 项目使用 SQLite CGO 驱动，macOS 交叉编译 Linux 时需要 `zig` 或 `x86_64-linux-gnu-gcc`
+
+### 6. 生产环境部署 Web 界面
+
+Atlas 支持由 `atlas-server` 直接托管前端打包后的静态产物，无需额外反向代理。
+
+先在本地构建前端：
+
+```bash
+cd web
+npm install
+npm run build
+```
+
+然后将这些内容上传到服务器：
+
+- `atlas-server`
+- `configs/config.yaml`
+- `web/dist`
+
+在配置中指定静态目录：
+
+```yaml
+web:
+  static_dir: "/ops/atlas/web/dist"
+```
+
+或使用环境变量覆盖：
+
+```bash
+ATLAS_WEB_DIR=/ops/atlas/web/dist ./atlas-server --config /ops/atlas/configs/config.yaml
+```
+
+部署完成后：
+
+- Web 页面：`http://<server>:7077/`
+- API 状态：`http://<server>:7077/api/v1/status`
+- 健康检查：`http://<server>:7077/health`
 
 ## 配置与启动文档
 

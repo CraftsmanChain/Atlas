@@ -13,11 +13,11 @@ import (
 	"atlas/pkg/storage"
 )
 
-// AlertAnalyzer 负责处理告警降噪、去重和分析
+// AlertAnalyzer 负责处理告警分析与通知
 type AlertAnalyzer struct {
 	db          *storage.DB
 	notifier    *notifier.FeishuNotifier
-	recentCache map[string]*api.AlertEvent // 记录指纹到最新事件的映射
+	recentCache map[string]*api.AlertEvent // 预留缓存，当前不做重复告警折叠
 	mu          sync.RWMutex
 }
 
@@ -35,9 +35,6 @@ func NewAlertAnalyzer(db *storage.DB, notifier *notifier.FeishuNotifier) *AlertA
 
 // Process 接收一条告警并进行处理
 func (a *AlertAnalyzer) Process(event *api.AlertEvent) error {
-	// 1. 生成告警指纹 (用于去重)
-	fingerprint := a.generateFingerprint(event)
-
 	now := time.Now()
 	if event.Timestamp.IsZero() {
 		event.Timestamp = now
@@ -45,46 +42,9 @@ func (a *AlertAnalyzer) Process(event *api.AlertEvent) error {
 	event.LastSeenAt = now
 	event.IsProcessed = true
 
-	a.mu.Lock()
-	cachedEvent, exists := a.recentCache[fingerprint]
-
-	// 尝试从数据库中查找，防止重启后缓存丢失导致的 UNIQUE constraint 错误
-	if !exists {
-		var dbEvent api.AlertEvent
-		if err := a.db.Where("id = ?", fingerprint).First(&dbEvent).Error; err == nil {
-			cachedEvent = &dbEvent
-			exists = true
-			a.recentCache[fingerprint] = cachedEvent
-		}
-	}
-
-	if exists {
-		// 发现重复告警，不丢弃而是累加次数更新
-		cachedEvent.RepeatCount++
-		cachedEvent.LastSeenAt = now
-		event.ID = cachedEvent.ID
-		// 注意：实际更新数据库时我们要基于原有的ID进行更新
-		a.mu.Unlock()
-
-		if err := a.db.Save(cachedEvent).Error; err != nil {
-			log.Printf("[Analyzer] Failed to update repeated alert in DB: %v", err)
-			return err
-		} else {
-			log.Printf("[Analyzer] Updated repeated alert: %s (Count: %d)", event.Message, cachedEvent.RepeatCount)
-		}
-
-		// 发送重复告警通知到飞书
-		if a.notifier != nil {
-			a.notifier.SendAlert(cachedEvent, true)
-		}
-		return nil
-	}
-
-	// 首次出现的告警
-	event.ID = fingerprint
+	// 当前暂不识别重复告警，所有入站事件都按独立告警处理。
+	event.ID = a.generateEventID(event, now)
 	event.RepeatCount = 1
-	a.recentCache[fingerprint] = event
-	a.mu.Unlock()
 
 	// 存入数据库
 	if err := a.db.Create(event).Error; err != nil {
@@ -101,11 +61,20 @@ func (a *AlertAnalyzer) Process(event *api.AlertEvent) error {
 	return nil
 }
 
-// generateFingerprint 简单生成告警的唯一哈希指纹
-func (a *AlertAnalyzer) generateFingerprint(event *api.AlertEvent) string {
-	data := fmt.Sprintf("%s|%s|%s|%s", event.Source, event.Host, event.Level, event.Message)
+// generateEventID 为每条入站告警生成唯一 ID，避免当前阶段错误折叠同机不同卡告警。
+func (a *AlertAnalyzer) generateEventID(event *api.AlertEvent, now time.Time) string {
+	data := fmt.Sprintf(
+		"%s|%s|%s|%s|%s|%v|%d",
+		event.Source,
+		event.Host,
+		event.Level,
+		event.Message,
+		event.Timestamp.Format(time.RFC3339Nano),
+		event.Labels,
+		now.UnixNano(),
+	)
 	hash := sha256.Sum256([]byte(data))
-	return hex.EncodeToString(hash[:])[:16]
+	return hex.EncodeToString(hash[:])[:24]
 }
 
 // cleanupCache 每隔1小时清理一次过期的缓存

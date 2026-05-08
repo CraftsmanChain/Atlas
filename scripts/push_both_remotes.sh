@@ -4,6 +4,7 @@ set -euo pipefail
 gitlab_remote="${1:-origin}"
 github_remote="${2:-github}"
 branch="${3:-$(git rev-parse --abbrev-ref HEAD)}"
+commit_message_arg="${4:-${COMMIT_MESSAGE:-}}"
 github_url="https://github.com/CraftsmanChain/Atlas.git"
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -43,28 +44,46 @@ if git diff --cached --quiet; then
 fi
 
 # ====================== 输入提交信息 + 确认 ======================
-while true; do
-  # 【关键修复】把 -p 改成 printf + read，避免中文提示符导致的输入截断
-  printf "请输入本次提交信息: "
-  read -r commit_message
+trim_outer_whitespace() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
 
-  # 去掉前后空格后检查是否为空
-  if [[ -z "${commit_message// }" ]]; then
+read_commit_message_from_tty() {
+  local input=""
+  printf "请输入本次提交信息: " > /dev/tty
+  IFS= read -r input < /dev/tty || true
+  input="${input%$'\r'}"
+  printf '%s' "$input"
+}
+
+commit_message="$(trim_outer_whitespace "$commit_message_arg")"
+
+while true; do
+  if [[ -z "$commit_message" ]]; then
+    commit_message="$(read_commit_message_from_tty)"
+    commit_message="$(trim_outer_whitespace "$commit_message")"
+  fi
+
+  if [[ -z "$commit_message" ]]; then
     echo "提交信息不能为空，请重新输入。"
     continue
   fi
 
-  # 打印出来让用户确认（加了调试信息，后面可以删掉）
   echo "────────────────────────"
   echo "本次提交信息将为："
   echo "    [$commit_message]"
   echo "────────────────────────"
 
-  read -r -p "确认无误？(y/n): " confirm
+  printf "确认无误？(y/n): " > /dev/tty
+  IFS= read -r confirm < /dev/tty || true
   if [[ "$confirm" =~ ^[Yy]$ ]]; then
     break
   else
     echo "已取消，请重新输入提交信息。"
+    commit_message=""
   fi
 done
 
