@@ -58,7 +58,7 @@ Atlas 后续核心能力聚焦 3 条主线：
    - 统一归一化为 `AlertEvent`
    - 原始 payload 存档到 `AlertIngestionRecord.RawPayload`
 4. 后续处理链路
-   - 去重
+   - 去重（当前阶段默认关闭，先保证不误判同机不同卡等场景）
    - 增强
    - AI 分析
    - 日志联动
