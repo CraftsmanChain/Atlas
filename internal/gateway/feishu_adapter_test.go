@@ -211,6 +211,34 @@ func TestParseFeishuWebhookAlertInteractiveCardMarkdown(t *testing.T) {
 	}
 }
 
+func TestParseFeishuWebhookAlertInteractiveCardSplitIntoMultipleEvents(t *testing.T) {
+	body := []byte(`{
+		"msg_type":"interactive",
+		"card":{
+			"header":{
+				"title":{"content":"XID故障-高优先级","tag":"plain_text"}
+			},
+			"elements":[
+				{
+					"tag":"markdown",
+					"content":"**级别状态:** <font color='red'> 紧急 :BEAR:Triggered </font>\n**告警名称:** XID故障-高优先级\n**告警标签**:\n\t- Hostname: 4090gpu-14\n\t- err_code: 79\n\t- gpu: 4\n---\n**级别状态:** <font color='red'> 紧急 :BEAR:Triggered </font>\n**告警名称:** XID故障-高优先级\n**告警标签**:\n\t- Hostname: 4090gpu-14\n\t- err_code: 79\n\t- gpu: 6"
+				}
+			]
+		}
+	}`)
+
+	events, err := parseFeishuWebhookAlerts(body)
+	if err != nil {
+		t.Fatalf("parseFeishuWebhookAlerts returned error: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	if events[0].Labels["gpu"] != "4" || events[1].Labels["gpu"] != "6" {
+		t.Fatalf("expected gpu labels 4 and 6, got %#v %#v", events[0].Labels, events[1].Labels)
+	}
+}
+
 func TestExtractFeishuHookToken(t *testing.T) {
 	token := extractFeishuHookToken("/open-apis/bot/v2/hook/test-token")
 	if token != "test-token" {

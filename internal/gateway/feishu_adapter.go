@@ -17,6 +17,7 @@ var (
 	feishuEmojiTagPattern   = regexp.MustCompile(`:[^:\s]+:`)
 	feishuDividerPattern    = regexp.MustCompile(`(?m)^\s*-{3,}\s*$`)
 	feishuWhitespacePattern = regexp.MustCompile(`[ \t]+`)
+	feishuSplitDivider      = regexp.MustCompile(`(?m)^\s*---\s*$`)
 )
 
 type feishuWebhookPayload struct {
@@ -48,17 +49,33 @@ func extractFeishuHookToken(path string) string {
 }
 
 func parseFeishuWebhookAlert(body []byte) (api.AlertEvent, error) {
+	events, err := parseFeishuWebhookAlerts(body)
+	if err != nil {
+		return api.AlertEvent{}, err
+	}
+	if len(events) == 0 {
+		return api.AlertEvent{}, fmt.Errorf("empty feishu webhook payload")
+	}
+	return events[0], nil
+}
+
+func parseFeishuWebhookAlerts(body []byte) ([]api.AlertEvent, error) {
 	var payload feishuWebhookPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return api.AlertEvent{}, err
+		return nil, err
 	}
 
 	text, err := extractFeishuMessageText(payload)
 	if err != nil {
-		return api.AlertEvent{}, err
+		return nil, err
 	}
 
-	return normalizeFeishuAlertText(text), nil
+	sections := splitFeishuAlertSections(text)
+	events := make([]api.AlertEvent, 0, len(sections))
+	for _, section := range sections {
+		events = append(events, normalizeFeishuAlertText(section))
+	}
+	return events, nil
 }
 
 func extractFeishuMessageText(payload feishuWebhookPayload) (string, error) {
@@ -149,7 +166,7 @@ func sanitizeFeishuCardMarkdown(content string) string {
 	content = strings.ReplaceAll(content, "**", "")
 	content = strings.ReplaceAll(content, "`", "")
 	content = feishuHTMLTagPattern.ReplaceAllString(content, "")
-	content = feishuDividerPattern.ReplaceAllString(content, "")
+	content = feishuDividerPattern.ReplaceAllString(content, "\n---\n")
 
 	var cleanedLines []string
 	for _, line := range strings.Split(content, "\n") {
@@ -161,6 +178,32 @@ func sanitizeFeishuCardMarkdown(content string) string {
 		cleanedLines = append(cleanedLines, line)
 	}
 	return strings.Join(cleanedLines, "\n")
+}
+
+func splitFeishuAlertSections(text string) []string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return []string{}
+	}
+
+	parts := feishuSplitDivider.Split(text, -1)
+	if len(parts) <= 1 {
+		return []string{text}
+	}
+
+	sections := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		sections = append(sections, part)
+	}
+	if len(sections) == 0 {
+		return []string{text}
+	}
+	return sections
 }
 
 func normalizeFeishuAlertText(text string) api.AlertEvent {
