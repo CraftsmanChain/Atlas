@@ -99,8 +99,8 @@ http://<atlas-host>:8080/open-apis/bot/v2/hook/<your-token>
 
 - 打印告警核心字段日志（source、level、message、host、labels、timestamp）
 - 打印原始完整 payload 日志
-- 异步进入 Analyzer 做去重与增强
-- 告警数据写入 SQLite（重复告警会更新重复次数与最后出现时间）
+- 异步进入 Analyzer 做增强与通知（当前默认不做重复告警折叠）
+- 告警数据写入 SQLite（每次入站都会落为独立告警记录）
 - 异步处理失败自动重试（最多 3 次，指数退避）
 - 如配置 `callback_url`，回调确认结果（最多 3 次重试）
 - 处理链路状态会记录到 `alert_ingestion_records`，便于页面展示与 AI 分析

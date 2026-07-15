@@ -5,6 +5,7 @@ gitlab_remote="${1:-origin}"
 github_remote="${2:-github}"
 branch="${3:-$(git rev-parse --abbrev-ref HEAD)}"
 commit_message_arg="${4:-${COMMIT_MESSAGE:-}}"
+auto_confirm="${AUTO_CONFIRM:-}"
 github_url="https://github.com/CraftsmanChain/Atlas.git"
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -60,6 +61,9 @@ read_commit_message_from_tty() {
 }
 
 commit_message="$(trim_outer_whitespace "$commit_message_arg")"
+if [[ -n "$commit_message" && -z "$auto_confirm" ]]; then
+  auto_confirm="1"
+fi
 
 while true; do
   if [[ -z "$commit_message" ]]; then
@@ -77,8 +81,11 @@ while true; do
   echo "    [$commit_message]"
   echo "────────────────────────"
 
-  printf "确认无误？(y/n): " > /dev/tty
-  IFS= read -r confirm < /dev/tty || true
+  confirm="y"
+  if [[ -z "$auto_confirm" ]]; then
+    printf "确认无误？(y/n): " > /dev/tty
+    IFS= read -r confirm < /dev/tty || true
+  fi
   if [[ "$confirm" =~ ^[Yy]$ ]]; then
     break
   else
