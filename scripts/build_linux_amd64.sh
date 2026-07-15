@@ -5,6 +5,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 output_dir="${OUTPUT_DIR:-$repo_root/bin/linux-amd64}"
+version="${VERSION:-dev}"
+commit="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+build_time="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 mkdir -p "$output_dir"
 
 if command -v zig >/dev/null 2>&1; then
@@ -23,8 +26,10 @@ export GOARCH=amd64
 
 echo "使用 CC=$CC"
 echo "输出目录: $output_dir"
+echo "版本信息: version=$version commit=$commit build_time=$build_time"
 
-go build -o "$output_dir/atlas-server" ./cmd/server
+server_ldflags="-X main.Version=$version -X main.Commit=$commit -X main.BuildTime=$build_time"
+go build -ldflags "$server_ldflags" -o "$output_dir/atlas-server" ./cmd/server
 go build -o "$output_dir/atlas-agent" ./cmd/agent
 
 echo "构建完成:"
