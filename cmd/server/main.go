@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
+	"time"
 
 	"atlas/internal/analyzer"
 	ig "atlas/internal/gateway"
@@ -14,6 +17,12 @@ import (
 	"atlas/pkg/logging"
 	"atlas/pkg/notifier"
 	"atlas/pkg/storage"
+)
+
+var (
+	Version   = "dev"
+	Commit    = "unknown"
+	BuildTime = ""
 )
 
 func main() {
@@ -77,7 +86,16 @@ func main() {
 	mux.HandleFunc("/api/v1/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status": "ok", "message": "Atlas API is running"}`))
+		payload := map[string]interface{}{
+			"status":      "ok",
+			"message":     "Atlas API is running",
+			"version":     Version,
+			"commit":      Commit,
+			"build_time":  BuildTime,
+			"go_version":  runtime.Version(),
+			"server_time": time.Now().Format(time.RFC3339),
+		}
+		_ = json.NewEncoder(w).Encode(payload)
 	})
 
 	// 6.3 Gateway 路由 (原 Gateway 服务的功能，用于接收外部推送)

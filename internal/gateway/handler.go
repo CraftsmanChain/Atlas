@@ -108,18 +108,30 @@ func (h *Handler) HandleFeishuBotWebhook(w http.ResponseWriter, r *http.Request)
 	}
 	defer r.Body.Close()
 
-	event, err := parseFeishuWebhookAlert(body)
+	events, err := parseFeishuWebhookAlerts(body)
 	if err != nil {
 		log.Printf("Error parsing feishu webhook: %v. Body: %s", err, string(body))
 		http.Error(w, "Invalid Feishu webhook payload", http.StatusBadRequest)
 		return
 	}
-	if err := validateAlertEvent(&event); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+
+	if len(events) == 0 {
+		http.Error(w, "Invalid Feishu webhook payload", http.StatusBadRequest)
 		return
 	}
 
-	h.acceptAlert(w, event, string(body))
+	for i := range events {
+		if err := validateAlertEvent(&events[i]); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if len(events) == 1 {
+		h.acceptAlert(w, events[0], string(body))
+		return
+	}
+	h.acceptAlerts(w, events, string(body))
 }
 
 // HandleMetricsPush 接收 Agent 主动推送上来的系统指标数据
@@ -294,6 +306,43 @@ func (h *Handler) acceptAlert(w http.ResponseWriter, event api.AlertEvent, rawPa
 		"status":     "accepted",
 		"message":    "Alert event received successfully",
 		"request_id": requestID,
+	})
+}
+
+func (h *Handler) acceptAlerts(w http.ResponseWriter, events []api.AlertEvent, rawPayload string) {
+	requestIDs := make([]uint, 0, len(events))
+	for _, event := range events {
+		record := &api.AlertIngestionRecord{
+			Source:         event.Source,
+			Host:           event.Host,
+			Level:          event.Level,
+			Message:        event.Message,
+			RawPayload:     rawPayload,
+			ProcessStatus:  "processing",
+			CallbackURL:    event.CallbackURL,
+			CallbackStatus: "disabled",
+		}
+		if event.CallbackURL != "" {
+			record.CallbackStatus = "pending"
+		}
+		if err := h.db.Create(record).Error; err != nil {
+			log.Printf("[Gateway] Failed to create ingestion record: %v", err)
+			record = nil
+		}
+		h.createPendingAIReport(record, event)
+		go h.processAlertAsync(record, event)
+		if record != nil {
+			requestIDs = append(requestIDs, record.ID)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":      "accepted",
+		"message":     "Alert events received successfully",
+		"count":       len(events),
+		"request_ids": requestIDs,
 	})
 }
 
