@@ -1,13 +1,13 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { ThemeProvider } from 'next-themes'
 import './index.css'
-import './i18n'
 import App from './App.tsx'
+import './i18n'
+import { ThemeProvider } from 'next-themes'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
+    <ThemeProvider attribute="data-theme" defaultTheme="system" enableSystem themes={['light', 'dark', 'color']}>
       <App />
     </ThemeProvider>
   </StrictMode>,

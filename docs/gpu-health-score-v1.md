@@ -1,6 +1,10 @@
 # GPU 健康评分 v1 设计草案
 
+> 实现进度（2026-07-20）：`gpu-health-v1.0.0` 已实现特征快照、六维确定性规则、A～D 数据置信度、规则命中明细和只读 API。最终风险等级同时受分数区间与规则严重度约束，以两者中更严重者为准，避免硬故障证据被平均分稀释。现场指标覆盖与实际阈值依据见 [DCGM 指标能力盘点](dcgm-metric-capability-2026-07-20.md)。
+
 本文档定义 Atlas 在第一阶段的 GPU 健康评分设计思路。目标不是直接依赖大模型完成预测，而是先建立“规则评分 + AI 解释增强”的可解释闭环，并为后续故障预测训练做数据准备。
+
+> 本文档保留为健康评分专题草案。整体架构、现场基线、故障检测/预测路线、组件选型和分阶段开发计划，以 [GPU 健康评分与故障预测开发蓝图 v1](gpu-health-and-failure-prediction-blueprint-v1.md) 为主。
 
 ## 1. 设计目标
 
@@ -253,18 +257,42 @@ AI 第一阶段不负责直接决定分数，主要负责：
 
 ## 11. 数据表建议
 
-建议后续增加以下模型：
+当前已落地：
 
-- `gpu_metric_snapshots`
-  - 原始或聚合指标快照
+- `gpu_feature_snapshots`
+  - 每轮评分使用的窗口特征快照
 - `gpu_health_scores`
   - 每张卡评分结果
 - `gpu_health_rule_hits`
   - 命中的规则明细
+- `gpu_fault_events`
+  - 规则命中的事件 episode；保存首次/最近命中、累计次数和恢复时间
+
+后续增加：
+
 - `gpu_prediction_signals`
   - 预测输入特征与趋势信号
 - `gpu_fault_labels`
   - 人工或规则确认的故障标签
+
+### 11.1 规则事件生命周期
+
+`gpu-health-v1.0.0` 将周期性评分结果转成可治理的硬件事件：
+
+```text
+首次命中 -> open
+持续命中 -> 更新 last_observed_at 与 occurrence_count
+可观测且规则不再命中 -> recovered
+恢复后再次命中 -> 创建新的 episode
+数据置信度 D -> 保持原状态，不推断恢复
+```
+
+事件以 `GPU UUID + rule_code` 识别当前打开的 episode。评分明细保留每轮规则命中，事件表负责消除重复并表达生命周期。
+
+只读 API：
+
+- `GET /api/v1/fault-events`
+- `GET /api/v1/fault-events/summary`
 
 ## 12. 待确认项
 

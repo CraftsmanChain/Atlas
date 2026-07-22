@@ -1,0 +1,261 @@
+GPU故障的终极工具：Dcgmi
+nvidia-smi能解决80%的GPU日常问题。
+剩下20%那些nvidia-smi看不出来、但训练任务就是跑不稳的疑难杂症，需要用到dcgmi。
+
+先说dcgmi是什么
+DCGM（Data Center GPU Manager）是NVIDIA专门为数据中心设计的GPU管理框架。
+
+dcgmi是它的命令行工具。
+
+和nvidia-smi的区别，用一句话说清楚：
+
+nvidia-smi是快照，dcgmi是持续监控+深度诊断。
+
+nvidia-smi每次执行只给你当前这一刻的状态。
+
+dcgmi可以持续采集数据、设置告警阈值、运行压力测试、生成健康报告。
+
+安装和启动
+ # Ubuntu安装
+apt install datacenter-gpu-manager
+
+# 启动服务（必须先启动，dcgmi才能工作）
+systemctl enable --now nvidia-dcgm
+
+# 验证
+ dcgmi discovery -l
+输出应该能看到所有GPU的列表：
+
+ +--------+----------------------------------------------------------------------+
+ | GPU ID | Device Information                                                   |
+ +--------+----------------------------------------------------------------------+
+ | 0      | Name: NVIDIA H100 SXM5 80GB                                          |
+ |        | PCI Bus ID: 00000000:3B:00.0                                         |
+ |        | Device UUID: GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx                |
+ +--------+----------------------------------------------------------------------+
+看到这个，说明dcgm服务正常运行。
+
+健康检查（最常用）
+这是dcgmi最重要的功能，也是新服务器上线验收的必做项。
+
+ # 快速检查（约30秒）
+dcgmi diag -r1
+
+# 标准检查（约2分钟，日常巡检用）
+dcgmi diag -r2
+
+# 深度检查（约10分钟，上线验收用）
+ dcgmi diag -r3
+三个级别的区别：
+
+ Level 1（快速）：
+├── 驱动版本检查
+├── PCIe带宽基础测试
+├── 显存基础测试
+└── 耗时：约30秒
+
+Level 2（标准）：
+├── Level 1的全部内容
+├── 计算性能测试
+├── 显存压力测试
+├── ECC错误检查
+└── 耗时：约2分钟
+
+Level 3（深度）：
+├── Level 2的全部内容
+├── 长时间显存压力测试
+├── PCIe带宽完整测试
+├── NVLink带宽测试（如果有）
+├── 热测试（模拟满负载温度）
+ └── 耗时：约10分钟
+正常输出长这样：
+
+ Successfully ran diagnostic for group.
++---------------------------+------------------------------------------------+
+| Diagnostic                | Result                                         |
++===========================+================================================+
+| Deployment                | Pass                                           |
+| PCIe                      | Pass                                           |
+| SM Stress                 | Pass                                           |
+| Targeted Stress           | Pass                                           |
+| Diagnostic                | Pass                                           |
+| Memory Bandwidth          | Pass                                           |
+ +---------------------------+------------------------------------------------+
+全部Pass，这台GPU才算真正健康。
+
+如果有Fail：
+
+ +---------------------------+------------------------------------------------+
+ | Memory Bandwidth          | Fail                                           |
+ |                           | GPU 2 failed with error: bandwidth below       |
+ |                           | threshold (expected 3200 GB/s, got 1850 GB/s)  |
+ +---------------------------+------------------------------------------------+
+显存带宽只有预期的57%，这张卡有问题。nvidia-smi是看不出来这个的。
+
+实时指标监控（dmon）
+dmon是dcgmi的实时监控命令，类似nvidia-smi -l，但能监控的指标更多。
+
+ # 基础监控（温度+利用率+显存）
+ dcgmi dmon -e203,204,252,1004
+ 
+ # 常用指标组合
+ dcgmi dmon -e203,204,252,1004,1005,1009 -d1000
+指标编号速查表（最常用的）：
+
+ 编号    指标名称                                      说明
+─────────────────────────────────────────────────────
+203     DCGM_FI_DEV_GPU_TEMP        GPU温度（°C）
+204     DCGM_FI_DEV_POWER_USAGE     当前功耗（W）
+252     DCGM_FI_DEV_GPU_UTIL        GPU利用率（%）
+1004    DCGM_FI_DEV_FB_USED         显存使用量（MB）
+1005    DCGM_FI_DEV_FB_FREE         显存剩余量（MB）
+1009    DCGM_FI_DEV_FB_TOTAL        显存总量（MB）
+310     DCGM_FI_DEV_ECC_SBE_VOL_TOTAL  可纠正ECC错误（累计）
+311     DCGM_FI_DEV_ECC_DBE_VOL_TOTAL  不可纠正ECC错误（累计）
+1001    DCGM_FI_DEV_SM_CLOCK        SM时钟频率（MHz）
+1002    DCGM_FI_DEV_MEM_CLOCK       显存时钟频率（MHz）
+ 1003    DCGM_FI_DEV_PCIE_TX_THROUGHPUT  PCIe发送吞吐（KB/s）
+实际输出：
+
+#Entity  203      204      252      1004     1005
+ GPU 0   52       312      98       65432    16000
+ GPU 1   54       308      97       64891    16541
+ GPU 2   51       315      99       65100    16332
+ GPU 3   89       298      12       8192     73340   ← 温度异常，利用率低
+GPU 3温度89°C但利用率只有12%，明显异常。
+
+这种情况nvidia-smi也能看到，但dcgmi dmon可以持续记录，方便事后分析。
+
+ECC错误监控（最关键）
+这是dcgmi最能体现价值的场景。
+
+ECC错误是GPU硬件健康的核心指标，但nvidia-smi查ECC错误很不方便，dcgmi专门为此设计了接口。
+
+# 查看所有GPU的ECC错误
+dcgmi dmon -e 310,311,312,313 -c 1
+
+# 持续监控ECC错误（每5秒一次）
+dcgmi dmon -e 310,311,312,313 -d 5000
+四个ECC指标的含义：
+
+310  SBE Volatile（单比特，易失）：
+     本次启动后的可纠正错误累计
+     → 少量正常，持续增长需关注
+
+311  DBE Volatile（双比特，易失）：
+     本次启动后的不可纠正错误累计
+     → 出现任何值立即告警，计算结果不可信
+
+312  SBE Aggregate（单比特，累计）：
+     历史总计可纠正错误
+     → 用于判断硬件退化趋势
+
+313  DBE Aggregate（双比特，累计）：
+     历史总计不可纠正错误
+     → 持续增长 = 硬件故障，需要换卡
+处理逻辑：
+
+发现DBE Volatile > 0
+        ↓
+立即停止该GPU上的任务
+（计算结果已经不可信，继续跑没有意义）
+        ↓
+重启服务器，观察是否清零
+        ↓
+重启后DBE再次出现 → 硬件故障
+        ↓
+收集诊断报告，联系厂商申请换卡
+nvidia-bug-report.sh
+dcgmi diag -r 3 > diag_report.txt
+XID错误追踪
+XID是NVIDIA驱动报告的错误代码，dmesg里能看到，但dcgmi可以更结构化地追踪。
+
+# 查看XID错误
+dcgmi dmon -e 230 -d 1000
+
+# 查看详细的XID错误历史
+dcgmi stats -g 0 -j    # GPU 0的完整统计
+常见XID速查：
+
+XID     含义                        处理方式
+─────────────────────────────────────────────────────
+31/32   GPU内存页错误               重启驱动，观察是否复现
+43      GPU停止响应                 重启服务器
+74      NVLink错误                  检查NVLink状态，观察频率
+79      GPU掉卡（PCIe错误）         重启服务器，检查PCIe插槽
+94      ECC不可纠正错误             停止任务，申请换卡
+95      ECC不可纠正错误（显存）     同上
+119     GSP RPC超时                 更新驱动版本
+性能统计（stats）
+训练任务跑完之后，想知道这段时间GPU的运行状况，用stats。
+
+# 开始记录
+dcgmi stats -g 0 --enable
+
+# 运行你的训练任务...
+
+# 停止记录并查看报告
+dcgmi stats -g 0 --disable
+dcgmi stats -g 0 -j    # 输出JSON格式
+dcgmi stats -g 0 -v    # 详细输出
+输出包含：
+
+ GPU 0统计报告：
+├── 运行时长：3小时42分钟
+├── 平均GPU利用率：94.2%
+├── 平均显存利用率：87.6%
+├── 平均温度：72°C，峰值温度：81°C
+├── 平均功耗：698W，峰值功耗：712W
+├── ECC可纠正错误：0
+├── ECC不可纠正错误：0
+ └── XID错误：无
+这份报告在两个场景下非常有用：
+
+场景1：训练任务跑完，向业务方汇报GPU使用情况，有数据支撑。
+
+场景2：训练任务中途崩溃，用stats报告找到崩溃前的异常指标。
+
+组管理（group）
+管理多台GPU服务器时，可以把GPU分组，批量操作。
+
+ # 创建组，包含所有GPU
+dcgmi group -c"all_gpus"--default
+
+# 创建组，只包含特定GPU
+dcgmi group -c"training_gpus"
+dcgmi group -g1-a0,1,2,3    # 把GPU 0-3加入组1
+
+# 查看所有组
+dcgmi group -l
+
+# 对整个组运行诊断
+ dcgmi diag -g1-r2
+在有多台服务器的集群里，配合Ansible批量运行dcgmi诊断，是最高效的巡检方式：
+
+ # Ansible任务示例
+ - name: 运行GPU健康检查
+   command: dcgmi diag -r2
+   register: dcgm_result
+   failed_when: "'Fail' in dcgm_result.stdout"
+dcgmi vs nvidia-smi 使用场景对比
+ 用nvidia-smi的场景：
+├── 快速查看当前GPU状态
+├── 查看哪个进程占用了显存
+├── 临时修改功耗/持久化模式
+└── 日常巡检（温度/利用率/显存）
+
+用dcgmi的场景：
+├── 新服务器上线验收（diag -r 3）
+├── 训练任务莫名崩溃，排查硬件原因（dmon ECC）
+├── 持续监控ECC错误趋势（dmon 310,311）
+├── 训练完成后生成性能报告（stats）
+├── GPU性能下降，排查是否有硬件退化（diag）
+ └── 集群批量健康检查（group + diag）
+最后
+nvidia-smi是日常工具，dcgmi是诊断工具。
+
+日常巡检用nvidia-smi，遇到疑难问题、上线验收、硬件健康评估，用dcgmi。
+
+两个工具都熟练，才算真正掌握了GPU运维的基本功。
+
+温馨提示 ⚠️ 本文命令仅供参考，生产环境执行前请在测试环境验证，并确认已备份重要数据。因直接复制命令导致的损失，与他人无关。

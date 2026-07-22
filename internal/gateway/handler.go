@@ -23,10 +23,14 @@ const (
 
 // Handler 处理网关级别的 HTTP 请求
 type Handler struct {
-	db                 *storage.DB
-	analyzer           *analyzer.AlertAnalyzer
-	webhookToken       string
-	feishuWebhookToken string
+	db                  *storage.DB
+	ingestionDB         *storage.DB
+	analyzer            *analyzer.AlertAnalyzer
+	webhookToken        string
+	feishuWebhookToken  string
+	ingestionSourceMode string
+	ingestionStaleAfter time.Duration
+	now                 func() time.Time
 }
 
 type alertIngestionView struct {
@@ -40,12 +44,25 @@ type alertIngestionView struct {
 }
 
 // NewHandler 创建一个新的 Handler 实例
-func NewHandler(db *storage.DB, analyzer *analyzer.AlertAnalyzer, webhookToken, feishuWebhookToken string) *Handler {
+func NewHandler(db, ingestionDB *storage.DB, analyzer *analyzer.AlertAnalyzer, webhookToken, feishuWebhookToken, ingestionSourceMode string, ingestionStaleAfter time.Duration) *Handler {
+	if ingestionDB == nil {
+		ingestionDB = db
+	}
+	if strings.TrimSpace(ingestionSourceMode) == "" {
+		ingestionSourceMode = "local-live"
+	}
+	if ingestionStaleAfter <= 0 {
+		ingestionStaleAfter = 15 * time.Minute
+	}
 	return &Handler{
-		db:                 db,
-		analyzer:           analyzer,
-		webhookToken:       webhookToken,
-		feishuWebhookToken: feishuWebhookToken,
+		db:                  db,
+		ingestionDB:         ingestionDB,
+		analyzer:            analyzer,
+		webhookToken:        webhookToken,
+		feishuWebhookToken:  feishuWebhookToken,
+		ingestionSourceMode: ingestionSourceMode,
+		ingestionStaleAfter: ingestionStaleAfter,
+		now:                 time.Now,
 	}
 }
 
@@ -171,7 +188,7 @@ func (h *Handler) HandleFailedIngestions(w http.ResponseWriter, r *http.Request)
 			limit = parsed
 		}
 	}
-	records, err := h.db.ListFailedIngestions(limit)
+	records, err := h.ingestionDB.ListFailedIngestions(limit)
 	if err != nil {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
@@ -191,25 +208,43 @@ func (h *Handler) HandleRecentIngestions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	limit := 20
+	limit := 100
 	if v := r.URL.Query().Get("limit"); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil {
-			limit = parsed
+		parsed, err := strconv.Atoi(v)
+		if err != nil || parsed <= 0 {
+			http.Error(w, "invalid limit", http.StatusBadRequest)
+			return
 		}
+		limit = parsed
 	}
-	records, err := h.db.ListRecentIngestions(limit)
+	var beforeID uint
+	if v := r.URL.Query().Get("before_id"); v != "" {
+		parsed, err := strconv.ParseUint(v, 10, 64)
+		if err != nil || parsed == 0 || uint64(uint(parsed)) != parsed {
+			http.Error(w, "invalid before_id", http.StatusBadRequest)
+			return
+		}
+		beforeID = uint(parsed)
+	}
+	now := h.now()
+	page, err := h.ingestionDB.ListIngestions(storage.IngestionListOptions{
+		Limit:    limit,
+		BeforeID: beforeID,
+		Level:    r.URL.Query().Get("level"),
+		Query:    r.URL.Query().Get("query"),
+	}, now)
 	if err != nil {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	items := make([]alertIngestionView, 0, len(records))
-	for _, record := range records {
+	items := make([]alertIngestionView, 0, len(page.Records))
+	for _, record := range page.Records {
 		view := alertIngestionView{AlertIngestionRecord: record}
-		if event, err := h.db.GetAlertEventByID(record.EventID); err == nil && event != nil {
+		if event, err := h.ingestionDB.GetAlertEventByID(record.EventID); err == nil && event != nil {
 			view.Labels = event.Labels
 		}
-		if report, err := h.db.GetLatestAIAnalysisReportForIngestion(record.ID); err == nil && report != nil {
+		if report, err := h.ingestionDB.GetLatestAIAnalysisReportForIngestion(record.ID); err == nil && report != nil {
 			view.AIReportID = report.ID
 			view.AIReportStatus = report.Status
 			view.AIReportSummary = report.Summary
@@ -218,11 +253,35 @@ func (h *Handler) HandleRecentIngestions(w http.ResponseWriter, r *http.Request)
 		}
 		items = append(items, view)
 	}
+	streamStatus := "empty"
+	if page.LatestAt != nil {
+		switch strings.ToLower(strings.TrimSpace(h.ingestionSourceMode)) {
+		case "snapshot":
+			streamStatus = "snapshot"
+		case "upstream-readonly":
+			streamStatus = "live"
+		default:
+			streamStatus = "live"
+			if now.Sub(*page.LatestAt) > h.ingestionStaleAfter {
+				streamStatus = "stale"
+			}
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"items": items,
-		"total": len(items),
+		"items":              items,
+		"total":              page.Total,
+		"all_total":          page.AllTotal,
+		"limit":              page.Limit,
+		"has_more":           page.HasMore,
+		"next_before_id":     page.NextBeforeID,
+		"latest_received_at": page.LatestAt,
+		"received_5m":        page.Count5m,
+		"received_1h":        page.Count1h,
+		"source_mode":        h.ingestionSourceMode,
+		"stream_status":      streamStatus,
+		"server_time":        now,
 	})
 }
 
@@ -247,7 +306,7 @@ func (h *Handler) HandleIngestionSubresources(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	report, err := h.db.GetLatestAIAnalysisReportForIngestion(uint(ingestionID))
+	report, err := h.ingestionDB.GetLatestAIAnalysisReportForIngestion(uint(ingestionID))
 	if err != nil {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return

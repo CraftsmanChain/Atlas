@@ -1,5 +1,7 @@
 gateway:
   port: ":8080"
+  ingestion_source_mode: "local-live"
+  ingestion_stale_after: "15m"
 storage:
   dsn: "atlas.db"
 feishu:

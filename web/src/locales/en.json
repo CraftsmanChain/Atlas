@@ -52,7 +52,7 @@
     "updated": "Updated",
     "causes": "Probable Causes",
     "actions": "Recommended Actions",
-    "evidence": "Evidence"
+    "evidence": "Details"
   },
   "detail": {
     "back": "Back to ingestion list",
