@@ -167,7 +167,58 @@ curl -X POST "http://127.0.0.1:8080/api/v1/webhook/alert" \
 }
 ```
 
-## 8. 飞书兼容接入示例
+## 8. 接收记录查询接口
+
+- 方法：`GET`
+- 路径：`/api/v1/alerts/ingestions`
+- `limit`：页大小，默认 100，最大 200
+- `before_id`：读取该 ID 之前的记录，用于稳定游标分页
+- `level`：按告警级别筛选
+- `query`：在消息、主机、来源、Event ID 和原始 payload 中搜索
+
+响应字段：
+
+- `items`：当前页记录
+- `total`：当前筛选条件命中总数，不受游标影响
+- `all_total`：数据库全部接收记录数
+- `has_more`、`next_before_id`：下一页状态和游标
+- `latest_received_at`：当前数据库最新接收时间
+- `received_5m`、`received_1h`：最近 5 分钟和 1 小时接收数
+- `source_mode`：`local-live` 或 `snapshot`
+- `stream_status`：`live`、`stale`、`snapshot`、`empty`
+
+非法或非正数的 `limit`、非法 `before_id` 返回 `400`。排序固定为主键 ID 倒序，因此批量记录时间戳相同、翻页过程中有新记录进入时仍不会重复或漏掉游标之前的记录。
+
+测试环境需要查看生产最新接收记录时，使用独立只读数据源：
+
+```yaml
+gateway:
+  ingestion_source_mode: upstream-readonly
+  ingestion_stale_after: 15m
+storage:
+  dsn: /ops/atlas-test/atlas-test.db
+  ingestion_read_dsn: file:/ops/atlas/atlas.db?mode=ro&_query_only=1
+```
+
+Webhook、测试分析和其他写入仍进入 `dsn`；只有接收记录列表、失败记录和对应分析详情从 `ingestion_read_dsn` 读取。该连接以 SQLite `mode=ro` 和 `query_only` 打开，不执行迁移、不允许写入生产库。
+
+## 9. 数据时效接口
+
+`GET /api/v1/data-freshness` 返回 `server_time`、`overall_status`，以及 `ingestion`、`inventory`、`health` 三个 source。每个 source 稳定输出：
+
+- `status`：`fresh`、`stale`、`snapshot`、`empty` 或 `error`
+- `observed_at`：源数据时间；无数据时省略
+- `age_seconds`：相对服务端时间的数据年龄；未来时钟偏差钳制为 0
+- `stale_after_seconds`：该 source 的 SLA 边界
+- `source_mode`：接收数据源模式（接收 source）
+
+数据年龄恰好等于 SLA 时仍为 `fresh`，只有严格超过边界才标为 `stale`。8077 页面顶部使用 `observed_at`，不使用浏览器请求完成时间。
+
+## 10. 硬件事件分页
+
+`GET /api/v1/fault-events` 支持 `limit`、`before_id`、`node_ip`、`state`、`severity`、`domain`、`rule_code`、`gpu_uuid` 和 `q`。响应 `meta` 包含真实筛选总数、`has_more` 和 `next_before_id`。事件按不可变 ID 倒序遍历，状态、严重度和最近观测时间更新不会改变当前分页边界。
+
+## 11. 飞书兼容接入示例
 
 推荐发送结构化文本：
 

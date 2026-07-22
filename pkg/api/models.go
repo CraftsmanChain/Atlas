@@ -102,7 +102,7 @@ type HealthScore struct {
 
 // AlertIngestionRecord 记录 webhook 告警异步处理与回调确认全链路状态。
 type AlertIngestionRecord struct {
-	ID                 uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	ID                 uint      `json:"id" gorm:"primaryKey;autoIncrement;index:idx_ingestions_created_id,priority:2"`
 	EventID            string    `json:"event_id" gorm:"index"`
 	Source             string    `json:"source" gorm:"index"`
 	Host               string    `json:"host" gorm:"index"`
@@ -118,7 +118,7 @@ type AlertIngestionRecord struct {
 	CallbackLastError  string    `json:"callback_last_error" gorm:"type:text"`
 	CallbackHTTPStatus int       `json:"callback_http_status"`
 	CallbackLastAt     time.Time `json:"callback_last_at"`
-	CreatedAt          time.Time `json:"created_at"`
+	CreatedAt          time.Time `json:"created_at" gorm:"index:idx_ingestions_created_id,priority:1"`
 	UpdatedAt          time.Time `json:"updated_at"`
 }
 

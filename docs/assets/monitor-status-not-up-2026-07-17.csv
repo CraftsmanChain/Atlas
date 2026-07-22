@@ -1,0 +1,14 @@
+﻿node_ip,bmc_ip,name,gpu_candidate,platform_power_status,platform_agent_status,platform_verify_status,node_exporter,dcgm_exporter,gpu_exporter,ipmi_exporter
+10.111.101.3,,lexun-harbor01,NO,关机,安装失败,已验证,DOWN,N/A,N/A,N/A
+10.114.4.25,10.114.1.25,4090GPU-05,YES,开机,已安装,已验证,MISSING,MISSING,MISSING,UP
+10.114.4.130,10.114.1.130,h100gpu-30,YES,开机,已安装,已验证,UP,DOWN,DOWN,UP
+10.114.4.132,10.114.1.132,h100gpu-32,YES,开机,已安装,已验证,UP,UP,DOWN,UP
+10.114.4.135,10.114.1.135,h100gpu-35,YES,开机,已安装,已验证,UP,UP,DOWN,UP
+10.114.4.139,10.114.1.139,h100gpu-39,YES,开机,已安装,已验证,UP,UP,DOWN,UP
+10.114.4.201,10.114.1.201,H200gpu-01,YES,开机,已安装,已验证,UP,UP,DOWN,UP
+10.114.4.202,10.114.1.202,H200gpu-02,YES,开机,已安装,已验证,UP,UP,DOWN,UP
+10.114.4.203,10.114.1.203,H200gpu-03,YES,开机,已安装,已验证,UP,UP,DOWN,UP
+10.114.4.204,10.114.1.204,H200gpu-04,YES,开机,已安装,已验证,UP,UP,DOWN,UP
+10.114.4.205,10.114.1.205,H200gpu-05,YES,开机,已安装,已验证,UP,UP,DOWN,UP
+10.114.4.206,10.114.1.206,H200gpu-06,YES,开机,已安装,已验证,UP,UP,DOWN,UP
+10.114.4.207,10.114.1.207,H200gpu-07,YES,开机,已安装,已验证,UP,UP,DOWN,UP

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,7 +13,12 @@ import (
 	"time"
 
 	"atlas/internal/analyzer"
+	"atlas/internal/features"
+	"atlas/internal/freshness"
 	ig "atlas/internal/gateway"
+	"atlas/internal/health"
+	"atlas/internal/inventory"
+	promclient "atlas/internal/prometheus"
 	"atlas/pkg/config"
 	"atlas/pkg/logging"
 	"atlas/pkg/notifier"
@@ -56,6 +62,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
+	if err := features.SeedBuiltins(db); err != nil {
+		log.Fatalf("Failed to seed feature catalog: %v", err)
+	}
+	ingestionDB := db
+	if readDSN := strings.TrimSpace(cfg.Storage.IngestionReadDSN); readDSN != "" {
+		ingestionDB, err = storage.OpenReadOnlyDB(readDSN)
+		if err != nil {
+			log.Fatalf("Failed to initialize read-only ingestion database: %v", err)
+		}
+	}
 
 	// 3. 初始化飞书通知模块
 	feishuNotifier := notifier.NewFeishuNotifier(&cfg.Feishu)
@@ -64,12 +80,51 @@ func main() {
 	alertAnalyzer := analyzer.NewAlertAnalyzer(db, feishuNotifier)
 
 	// 5. 初始化网关 Handler
+	ingestionStaleAfter := parseDurationOrDefault("ingestion stale", cfg.Gateway.IngestionStaleAfter, 15*time.Minute)
 	handler := ig.NewHandler(
 		db,
+		ingestionDB,
 		alertAnalyzer,
 		cfg.Gateway.WebhookToken,
 		cfg.Gateway.FeishuWebhookToken,
+		cfg.Gateway.IngestionSourceMode,
+		ingestionStaleAfter,
 	)
+	inventoryHandler := inventory.NewHandler(db)
+	healthHandler := health.NewHandler(db)
+	inventoryFreshAfter := 2 * parseDurationOrDefault("target status", cfg.Inventory.TargetSyncInterval, 10*time.Minute)
+	healthFreshAfter := 2 * parseDurationOrDefault("GPU health score", cfg.Health.ScoreInterval, 30*time.Minute)
+	freshnessHandler := freshness.NewHandler(db, ingestionDB, cfg.Gateway.IngestionSourceMode, ingestionStaleAfter, inventoryFreshAfter, healthFreshAfter)
+	featureHandler := features.NewHandler(db)
+
+	// Inventory discovery is read-only and best-effort. Prometheus outages are
+	// recorded as failed sync runs and never prevent Atlas from serving APIs.
+	if cfg.Inventory.Enabled && strings.TrimSpace(cfg.Prometheus.BaseURL) != "" {
+		requestTimeout, parseErr := time.ParseDuration(cfg.Prometheus.RequestTimeout)
+		if parseErr != nil {
+			log.Printf("Invalid Prometheus request timeout %q; using 15s", cfg.Prometheus.RequestTimeout)
+			requestTimeout = 15 * time.Second
+		}
+		prometheusClient, clientErr := promclient.NewClient(cfg.Prometheus.BaseURL, requestTimeout)
+		if clientErr != nil {
+			log.Printf("Inventory sync disabled: %v", clientErr)
+		} else {
+			targetInterval := parseDurationOrDefault("target status", cfg.Inventory.TargetSyncInterval, 10*time.Minute)
+			identityInterval := parseDurationOrDefault("identity incremental", cfg.Inventory.IdentitySyncInterval, 30*time.Minute)
+			fullInterval := parseDurationOrDefault("full reconciliation", cfg.Inventory.FullSyncInterval, 24*time.Hour)
+			go inventory.NewService(db, prometheusClient, cfg.Inventory).Run(context.Background(), targetInterval, identityInterval, fullInterval)
+			if cfg.Health.Enabled {
+				healthInterval := parseDurationOrDefault("GPU health score", cfg.Health.ScoreInterval, 30*time.Minute)
+				healthService := health.NewService(db, prometheusClient, cfg.Health)
+				go func() {
+					// Let the startup full reconciliation finish before the first
+					// health transaction writes snapshots and scores to SQLite.
+					time.Sleep(10 * time.Second)
+					healthService.Run(context.Background(), healthInterval)
+				}()
+			}
+		}
+	}
 
 	// 6. 注册路由
 	mux := http.NewServeMux()
@@ -105,6 +160,23 @@ func main() {
 	mux.HandleFunc("/api/v1/alerts/ingestions/", handler.HandleIngestionSubresources)
 	mux.HandleFunc("/api/v1/alerts/failures", handler.HandleFailedIngestions)
 	mux.HandleFunc("/api/v1/push/metrics", handler.HandleMetricsPush)
+	mux.HandleFunc("/api/v1/data-freshness", freshnessHandler.Handle)
+	mux.HandleFunc("/api/v1/features", featureHandler.HandleCollection)
+	mux.HandleFunc("/api/v1/features/", featureHandler.HandleItem)
+
+	// 6.4 GPU hardware inventory and collection coverage (read-only).
+	mux.HandleFunc("/api/v1/fleet/summary", inventoryHandler.HandleFleetSummary)
+	mux.HandleFunc("/api/v1/nodes", inventoryHandler.HandleNodes)
+	mux.HandleFunc("/api/v1/nodes/", inventoryHandler.HandleNodeDetail)
+	mux.HandleFunc("/api/v1/gpus", inventoryHandler.HandleGPUs)
+	mux.HandleFunc("/api/v1/targets", inventoryHandler.HandleTargets)
+	mux.HandleFunc("/api/v1/sync-runs", inventoryHandler.HandleSyncRuns)
+	mux.HandleFunc("/api/v1/inventory/changes", inventoryHandler.HandleChanges)
+	mux.HandleFunc("/api/v1/health/summary", healthHandler.HandleSummary)
+	mux.HandleFunc("/api/v1/health/gpus", healthHandler.HandleScores)
+	mux.HandleFunc("/api/v1/health/runs", healthHandler.HandleRuns)
+	mux.HandleFunc("/api/v1/fault-events", healthHandler.HandleEvents)
+	mux.HandleFunc("/api/v1/fault-events/summary", healthHandler.HandleEventSummary)
 
 	// 7. 启动服务
 	port := cfg.Gateway.Port
@@ -112,6 +184,15 @@ func main() {
 	if err := http.ListenAndServe(port, mux); err != nil {
 		log.Fatalf("Atlas Server failed to start: %v", err)
 	}
+}
+
+func parseDurationOrDefault(name, value string, fallback time.Duration) time.Duration {
+	interval, err := time.ParseDuration(value)
+	if err != nil || interval <= 0 {
+		log.Printf("Invalid %s interval %q; using %s", name, value, fallback)
+		return fallback
+	}
+	return interval
 }
 
 func resolveConfigPath() string {
@@ -137,6 +218,10 @@ func applyRuntimeOverrides(cfg *config.Config) {
 	}
 	if webDir := strings.TrimSpace(os.Getenv("ATLAS_WEB_DIR")); webDir != "" {
 		cfg.Web.StaticDir = webDir
+	}
+	if prometheusURL := strings.TrimSpace(os.Getenv("ATLAS_PROMETHEUS_URL")); prometheusURL != "" {
+		cfg.Prometheus.BaseURL = prometheusURL
+		cfg.Inventory.Enabled = true
 	}
 }
 

@@ -7,21 +7,27 @@ import (
 )
 
 type Config struct {
-	Gateway GatewayConfig `yaml:"gateway"`
-	Storage StorageConfig `yaml:"storage"`
-	Feishu  FeishuConfig  `yaml:"feishu"`
-	Logging LoggingConfig `yaml:"logging"`
-	Web     WebConfig     `yaml:"web"`
+	Gateway    GatewayConfig    `yaml:"gateway"`
+	Storage    StorageConfig    `yaml:"storage"`
+	Feishu     FeishuConfig     `yaml:"feishu"`
+	Logging    LoggingConfig    `yaml:"logging"`
+	Web        WebConfig        `yaml:"web"`
+	Prometheus PrometheusConfig `yaml:"prometheus"`
+	Inventory  InventoryConfig  `yaml:"inventory"`
+	Health     HealthConfig     `yaml:"health"`
 }
 
 type GatewayConfig struct {
-	Port               string `yaml:"port"`
-	WebhookToken       string `yaml:"webhook_token"`
-	FeishuWebhookToken string `yaml:"feishu_webhook_token"`
+	Port                string `yaml:"port"`
+	WebhookToken        string `yaml:"webhook_token"`
+	FeishuWebhookToken  string `yaml:"feishu_webhook_token"`
+	IngestionSourceMode string `yaml:"ingestion_source_mode"`
+	IngestionStaleAfter string `yaml:"ingestion_stale_after"`
 }
 
 type StorageConfig struct {
-	DSN string `yaml:"dsn"`
+	DSN              string `yaml:"dsn"`
+	IngestionReadDSN string `yaml:"ingestion_read_dsn"`
 }
 
 type FeishuConfig struct {
@@ -34,6 +40,34 @@ type LoggingConfig struct {
 
 type WebConfig struct {
 	StaticDir string `yaml:"static_dir"`
+}
+
+type PrometheusConfig struct {
+	BaseURL        string `yaml:"base_url"`
+	RequestTimeout string `yaml:"request_timeout"`
+}
+
+// InventoryConfig controls the read-only discovery loop. It never changes a
+// node or exporter; it only reconciles what Prometheus currently exposes.
+type InventoryConfig struct {
+	Enabled              bool     `yaml:"enabled"`
+	AssetFile            string   `yaml:"asset_file"`
+	SyncInterval         string   `yaml:"sync_interval"` // legacy fallback for target status
+	TargetSyncInterval   string   `yaml:"target_sync_interval"`
+	IdentitySyncInterval string   `yaml:"identity_sync_interval"`
+	FullSyncInterval     string   `yaml:"full_sync_interval"`
+	HistoryWindow        string   `yaml:"history_window"`
+	ExpectedGPUCount     int      `yaml:"expected_gpu_count"`
+	NodePrefix           string   `yaml:"node_prefix"`
+	BMCPrefix            string   `yaml:"bmc_prefix"`
+	BMCLastOctetMin      int      `yaml:"bmc_last_octet_min"`
+	TargetJobs           []string `yaml:"target_jobs"`
+}
+
+type HealthConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	ScoreInterval string `yaml:"score_interval"`
+	RuleVersion   string `yaml:"rule_version"`
 }
 
 type FeishuBotConfig struct {
@@ -62,11 +96,57 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Storage.DSN == "" {
 		cfg.Storage.DSN = "atlas.db"
 	}
+	if cfg.Gateway.IngestionSourceMode == "" {
+		cfg.Gateway.IngestionSourceMode = "local-live"
+	}
+	if cfg.Gateway.IngestionStaleAfter == "" {
+		cfg.Gateway.IngestionStaleAfter = "15m"
+	}
 	if cfg.Logging.Dir == "" {
 		cfg.Logging.Dir = "logs"
 	}
 	if cfg.Web.StaticDir == "" {
 		cfg.Web.StaticDir = "web/dist"
+	}
+	if cfg.Prometheus.RequestTimeout == "" {
+		cfg.Prometheus.RequestTimeout = "15s"
+	}
+	if cfg.Inventory.TargetSyncInterval == "" {
+		if cfg.Inventory.SyncInterval != "" {
+			cfg.Inventory.TargetSyncInterval = cfg.Inventory.SyncInterval
+		} else {
+			cfg.Inventory.TargetSyncInterval = "10m"
+		}
+	}
+	if cfg.Inventory.IdentitySyncInterval == "" {
+		cfg.Inventory.IdentitySyncInterval = "30m"
+	}
+	if cfg.Inventory.FullSyncInterval == "" {
+		cfg.Inventory.FullSyncInterval = "24h"
+	}
+	if cfg.Inventory.HistoryWindow == "" {
+		cfg.Inventory.HistoryWindow = "365d"
+	}
+	if cfg.Inventory.ExpectedGPUCount <= 0 {
+		cfg.Inventory.ExpectedGPUCount = 8
+	}
+	if cfg.Inventory.NodePrefix == "" {
+		cfg.Inventory.NodePrefix = "10.114.4."
+	}
+	if cfg.Inventory.BMCPrefix == "" {
+		cfg.Inventory.BMCPrefix = "10.114.1."
+	}
+	if cfg.Inventory.BMCLastOctetMin <= 0 {
+		cfg.Inventory.BMCLastOctetMin = 20
+	}
+	if len(cfg.Inventory.TargetJobs) == 0 {
+		cfg.Inventory.TargetJobs = []string{"dcgm_exporter", "gpu_exporter", "node_exporter", "ipmi_exporter"}
+	}
+	if cfg.Health.ScoreInterval == "" {
+		cfg.Health.ScoreInterval = "30m"
+	}
+	if cfg.Health.RuleVersion == "" {
+		cfg.Health.RuleVersion = "gpu-health-v1.0.0"
 	}
 
 	return &cfg, nil
