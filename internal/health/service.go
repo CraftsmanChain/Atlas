@@ -308,18 +308,14 @@ func inconsistentMetric(key string, dcgm, gpu float64) bool {
 
 func consistencyTolerance(key string) (absolute, relative float64, comparable bool) {
 	switch key {
-	case "gpu_temp", "gpu_temp_max_15m":
+	case "gpu_temp_max_15m":
 		return 3, 0, true
-	case "memory_temp", "memory_temp_max_15m":
+	case "memory_temp_max_15m":
 		return 5, 0, true
-	case "power_usage":
-		return 25, .15, true
-	case "gpu_util", "gpu_util_avg_15m", "mem_copy_util":
+	case "gpu_util_avg_15m":
 		return 10, 0, true
-	case "sm_clock", "sm_clock_avg_15m", "mem_clock":
+	case "sm_clock_avg_15m":
 		return 150, .10, true
-	case "fb_used", "fb_free":
-		return 256, .05, true
 	case "uncorrectable_remapped_rows", "correctable_remapped_rows", "row_remap_failure":
 		return 0, 0, true
 	default:
