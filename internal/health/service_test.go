@@ -125,12 +125,12 @@ func TestEvaluateUsesGPUExporterFallbackAndDegradesConfidence(t *testing.T) {
 func TestMergeFeatureCandidatesPrefersDCGMAndDetectsMismatch(t *testing.T) {
 	now := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
 	value := mergeFeatureCandidates(map[string]map[string]metricObservation{
-		"gpu_temp": {
+		"gpu_temp_max_15m": {
 			"dcgm_exporter": {value: 60, observedAt: now},
 			"gpu_exporter":  {value: 70, observedAt: now},
 		},
 	})
-	if value.metrics["gpu_temp"] != 60 || value.sources["gpu_temp"] != "dcgm_exporter" || value.fallbackCount != 0 || len(value.consistencyIssues) != 1 {
+	if value.metrics["gpu_temp_max_15m"] != 60 || value.sources["gpu_temp_max_15m"] != "dcgm_exporter" || value.fallbackCount != 0 || len(value.consistencyIssues) != 1 {
 		t.Fatalf("unexpected merged value: %+v", value)
 	}
 	if confidence := degradeConfidence("A", value.fallbackCount, len(value.consistencyIssues)); confidence != "B" {
