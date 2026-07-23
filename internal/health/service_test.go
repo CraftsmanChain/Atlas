@@ -130,24 +130,16 @@ func TestMergeFeatureCandidatesPrefersDCGMAndDetectsMismatch(t *testing.T) {
 			"gpu_exporter":  {value: 70, observedAt: now},
 		},
 	})
-	if value.metrics["gpu_temp_max_15m"] != 60 || value.sources["gpu_temp_max_15m"] != "dcgm_exporter" || value.fallbackCount != 0 || len(value.consistencyIssues) != 1 {
+	if value.metrics["gpu_temp_max_15m"] != 60 || value.sources["gpu_temp_max_15m"] != "dcgm_exporter" || value.fallbackCount != 0 || len(value.sourceDifferences) != 1 {
 		t.Fatalf("unexpected merged value: %+v", value)
 	}
-	if confidence := degradeConfidence("A", value.fallbackCount, len(value.consistencyIssues)); confidence != "B" {
-		t.Fatalf("source mismatch should degrade confidence to B, got %s", confidence)
+	if confidence := degradeConfidence("A", value.fallbackCount); confidence != "A" {
+		t.Fatalf("source difference must not degrade confidence, got %s", confidence)
 	}
 }
 
-func TestConsistencyRequiresSameFeatureAcrossConsecutiveRuns(t *testing.T) {
-	previous := api.GPUFeatureSnapshot{ConsistencyCandidates: api.StringList{"gpu_temp_max_15m: dcgm=60 gpu_exporter=70"}}
-	persistent := persistentConsistencyIssues(api.StringList{
-		"gpu_temp_max_15m: dcgm=61 gpu_exporter=69",
-		"gpu_util_avg_15m: dcgm=80 gpu_exporter=60",
-	}, previous)
-	if len(persistent) != 1 || !strings.HasPrefix(persistent[0], "gpu_temp_max_15m:") {
-		t.Fatalf("unexpected persistent issues: %v", persistent)
-	}
-	if got := persistentConsistencyIssues(api.StringList{"gpu_util_avg_15m: dcgm=80 gpu_exporter=60"}, previous); len(got) != 0 {
-		t.Fatalf("single-run candidate must not become persistent: %v", got)
+func TestSourceDifferenceIsAuditOnly(t *testing.T) {
+	if confidence := degradeConfidence("A", 0); confidence != "A" {
+		t.Fatalf("audit-only source difference changed confidence: %s", confidence)
 	}
 }

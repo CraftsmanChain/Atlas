@@ -45,7 +45,7 @@ inventory:
 health:
   enabled: true
   score_interval: "30m"
-  rule_version: "gpu-health-v1.1.0"
+  rule_version: "gpu-health-v1.1.2"
 
 feishu:
   bots:

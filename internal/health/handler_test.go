@@ -12,12 +12,12 @@ import (
 	"atlas/pkg/storage"
 )
 
-func TestHealthAPIExposesFallbackAndConsistencyProvenance(t *testing.T) {
+func TestHealthAPIExposesFallbackAndSourceDifferenceProvenance(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot := api.GPUFeatureSnapshot{MetricSources: api.StringMap{"gpu_temp": "gpu_exporter"}, SourcesAvailable: api.StringList{"dcgm_exporter", "gpu_exporter"}, FallbackMetricCount: 1, ConsistencyCandidates: api.StringList{"gpu_temp_max_15m: dcgm=60 gpu_exporter=70"}, ConsistencyCandidateCount: 1, ConsistencyIssues: api.StringList{"gpu_temp_max_15m: dcgm=60 gpu_exporter=70"}, ConsistencyIssueCount: 1, ObservedAt: time.Now()}
+	snapshot := api.GPUFeatureSnapshot{MetricSources: api.StringMap{"gpu_temp": "gpu_exporter"}, SourcesAvailable: api.StringList{"dcgm_exporter", "gpu_exporter"}, FallbackMetricCount: 1, ConsistencyCandidates: api.StringList{"gpu_temp_max_15m: dcgm=60 gpu_exporter=70"}, ConsistencyCandidateCount: 1, ObservedAt: time.Now()}
 	if err := db.Create(&snapshot).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestHealthAPIExposesFallbackAndConsistencyProvenance(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	handler.HandleSummary(response, httptest.NewRequest("GET", "/api/v1/health/summary", nil))
-	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"fallback_gpus":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"consistency_candidate_gpus":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"inconsistent_gpus":1`)) {
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"fallback_gpus":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"source_difference_gpus":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"inconsistent_gpus":0`)) {
 		t.Fatalf("unexpected summary response: %d %s", response.Code, response.Body.String())
 	}
 }
