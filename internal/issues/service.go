@@ -60,7 +60,7 @@ func (s *Service) SyncDetectedIssues() error {
 	now := s.now()
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		activeBySource := map[string]map[string]bool{
-			"inventory_node": {}, "inventory_gpu": {}, "collector_target": {}, "health_score": {},
+			"inventory_node": {}, "inventory_gpu": {}, "collector_target": {}, "health_score": {}, "source_consistency": {},
 		}
 
 		var nodes []api.GPUNode
@@ -123,6 +123,32 @@ func (s *Service) SyncDetectedIssues() error {
 		for _, score := range unknownScores {
 			key := fmt.Sprintf("health_unknown:%d", score.GPUAssetID)
 			item := detectedIssue{key: key, category: "data_quality", issueType: "health_score_unknown", title: fmt.Sprintf("GPU health is unknown on %s GPU %d", score.NodeIP, score.GPUIndex), description: fmt.Sprintf("Health score cannot be calculated; data confidence=%s", score.DataConfidence), entityType: "gpu", entityKey: fmt.Sprintf("%d", score.GPUAssetID), nodeIP: score.NodeIP, gpuUUID: score.GPUUUID, severity: "attention", source: "health_score", detectionState: "active", sourceRecordID: score.ID, lastDetectedAt: fallbackTime(score.EvaluatedAt, now)}
+			activeBySource[item.source][item.key] = true
+			if err := upsertDetected(tx, item, now); err != nil {
+				return err
+			}
+		}
+
+		var currentScores []api.GPUHealthScore
+		if err := tx.Where("current = ? AND feature_snapshot_id > 0", true).Find(&currentScores).Error; err != nil {
+			return err
+		}
+		scoreBySnapshot := make(map[uint]api.GPUHealthScore, len(currentScores))
+		snapshotIDs := make([]uint, 0, len(currentScores))
+		for _, score := range currentScores {
+			scoreBySnapshot[score.FeatureSnapshotID] = score
+			snapshotIDs = append(snapshotIDs, score.FeatureSnapshotID)
+		}
+		var inconsistentSnapshots []api.GPUFeatureSnapshot
+		if len(snapshotIDs) > 0 {
+			if err := tx.Where("id IN ? AND consistency_issue_count > 0", snapshotIDs).Find(&inconsistentSnapshots).Error; err != nil {
+				return err
+			}
+		}
+		for _, snapshot := range inconsistentSnapshots {
+			score := scoreBySnapshot[snapshot.ID]
+			key := fmt.Sprintf("source_consistency:%d", snapshot.GPUAssetID)
+			item := detectedIssue{key: key, category: "data_quality", issueType: "gpu_source_inconsistency", title: fmt.Sprintf("GPU telemetry sources disagree on %s GPU %d", snapshot.NodeIP, snapshot.GPUIndex), description: strings.Join(snapshot.ConsistencyIssues, "; "), entityType: "gpu", entityKey: fmt.Sprintf("%d", snapshot.GPUAssetID), nodeIP: snapshot.NodeIP, gpuUUID: snapshot.GPUUUID, severity: "attention", source: "source_consistency", detectionState: "active", sourceRecordID: snapshot.ID, lastDetectedAt: fallbackTime(score.EvaluatedAt, snapshot.ObservedAt)}
 			activeBySource[item.source][item.key] = true
 			if err := upsertDetected(tx, item, now); err != nil {
 				return err

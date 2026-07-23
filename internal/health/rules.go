@@ -45,6 +45,12 @@ func evaluateRules(metrics api.FloatMap, model, confidence string) scoreResult {
 	if v := value(metrics, "correctable_remapped_rows"); v > 0 {
 		add(ruleHit{"correctable_remapped_rows", "memory", "attention", 8, v, "> 0", fmt.Sprintf("correctable remapped rows=%.0f", v)})
 	}
+	if v := value(metrics, "gpu_reset_required"); v > 0 {
+		add(ruleHit{"gpu_reset_required", "stability", "critical", 40, v, "> 0", "gpu_exporter reports that a GPU reset is required"})
+	}
+	if v := value(metrics, "uncorrected_ecc_delta_24h"); v > 0 {
+		add(ruleHit{"recent_uncorrected_ecc", "memory", "critical", 30, v, "> 0 in 24h", fmt.Sprintf("uncorrected aggregate ECC increased by %.0f in 24h", v)})
+	}
 	if v := value(metrics, "xid_changes_24h"); v > 0 {
 		xid := value(metrics, "xid_current")
 		deduction, severity := 20, "warning"
@@ -69,6 +75,9 @@ func evaluateRules(metrics api.FloatMap, model, confidence string) scoreResult {
 		add(ruleHit{"pcie_replay_spike", "interconnect", "warning", 20, v, ">= 100/hour", fmt.Sprintf("PCIe replay increase 1h=%.1f", v)})
 	} else if v >= 10 {
 		add(ruleHit{"pcie_replay_growth", "interconnect", "attention", 8, v, ">= 10/hour", fmt.Sprintf("PCIe replay increase 1h=%.1f", v)})
+	}
+	if current, maximum, util := value(metrics, "pcie_link_width_current"), value(metrics, "pcie_link_width_max"), value(metrics, "gpu_util_avg_15m"); current > 0 && maximum > 0 && current < maximum && util >= 80 {
+		add(ruleHit{"pcie_link_width_degraded", "interconnect", "warning", 15, current, fmt.Sprintf("< %.0f lanes at util >= 80%%", maximum), fmt.Sprintf("PCIe link width %.0f/%.0f at GPU util %.1f%%", current, maximum, util)})
 	}
 	if util, clock := value(metrics, "gpu_util_avg_15m"), value(metrics, "sm_clock_avg_15m"); util >= 80 && clock > 0 && clock < modelClockFloor(model) {
 		add(ruleHit{"high_load_low_sm_clock", "performance", "warning", 15, clock, fmt.Sprintf("< %.0fMHz at util >= 80%%", modelClockFloor(model)), fmt.Sprintf("GPU util avg 15m=%.1f%%, SM clock avg=%.1fMHz", util, clock)})

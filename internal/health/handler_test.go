@@ -1,6 +1,7 @@
 package health
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -10,6 +11,33 @@ import (
 	"atlas/pkg/api"
 	"atlas/pkg/storage"
 )
+
+func TestHealthAPIExposesFallbackAndConsistencyProvenance(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := api.GPUFeatureSnapshot{MetricSources: api.StringMap{"gpu_temp": "gpu_exporter"}, SourcesAvailable: api.StringList{"dcgm_exporter", "gpu_exporter"}, FallbackMetricCount: 1, ConsistencyIssues: api.StringList{"power_usage: dcgm=100 gpu_exporter=160"}, ConsistencyIssueCount: 1, ObservedAt: time.Now()}
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	scoreValue := 100
+	score := api.GPUHealthScore{FeatureSnapshotID: snapshot.ID, GPUAssetID: 1, GPUUUID: "GPU-A", Score: &scoreValue, Level: "healthy", DataConfidence: "C", Current: true, EvaluatedAt: time.Now()}
+	if err := db.Create(&score).Error; err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(db)
+	response := httptest.NewRecorder()
+	handler.HandleScores(response, httptest.NewRequest("GET", "/api/v1/health/gpus", nil))
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"fallback_metric_count":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"gpu_temp":"gpu_exporter"`)) {
+		t.Fatalf("unexpected scores response: %d %s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler.HandleSummary(response, httptest.NewRequest("GET", "/api/v1/health/summary", nil))
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"fallback_gpus":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"inconsistent_gpus":1`)) {
+		t.Fatalf("unexpected summary response: %d %s", response.Code, response.Body.String())
+	}
+}
 
 func TestFaultEventCursorPaginationIsStableAcrossUpdatesAndInserts(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")

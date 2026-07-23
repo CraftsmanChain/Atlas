@@ -13,8 +13,8 @@ import (
 func TestBuiltinsCoverHealthConsumerAndModelCapabilities(t *testing.T) {
 	definitions := Builtins()
 	specs := HealthMetricSpecs()
-	if len(definitions) != 20 || len(specs) != 20 {
-		t.Fatalf("expected 20 initial catalog features, got definitions=%d specs=%d", len(definitions), len(specs))
+	if len(definitions) != 25 || len(specs) != 41 {
+		t.Fatalf("expected 25 catalog features and 41 source specs, got definitions=%d specs=%d", len(definitions), len(specs))
 	}
 	for _, definition := range definitions {
 		if err := Validate(&definition); err != nil {
@@ -28,6 +28,12 @@ func TestBuiltinsCoverHealthConsumerAndModelCapabilities(t *testing.T) {
 	}
 	if contains(api.StringList(rtx4090), "row_remap_failure") || contains(api.StringList(rtx4090), "memory_temp") {
 		t.Fatal("4090 must not count unsupported row-remap or memory-temperature features as missing")
+	}
+	if !contains(api.StringList(h100), "gpu_reset_required") || !contains(api.StringList(h100), "uncorrected_ecc_delta_24h") {
+		t.Fatal("H100 must consume gpu_exporter reset and detailed ECC supplements")
+	}
+	if !contains(api.StringList(rtx4090), "fan_speed_pct") || contains(api.StringList(h100), "fan_speed_pct") {
+		t.Fatal("fan speed support must follow the observed 4090 capability")
 	}
 }
 
@@ -43,7 +49,7 @@ func TestSeedRegisterListAndRead(t *testing.T) {
 		t.Fatalf("seeding must be idempotent: %v", err)
 	}
 	definitions, err := List(db, ListOptions{Purpose: "health", Status: "active"})
-	if err != nil || len(definitions) != 20 {
+	if err != nil || len(definitions) != 25 {
 		t.Fatalf("unexpected list result count=%d err=%v", len(definitions), err)
 	}
 	definition, err := Get(db, "gpu_temp", CatalogVersion)
@@ -76,7 +82,7 @@ func TestFeatureHTTPRegistrationAndRead(t *testing.T) {
 		t.Fatalf("create status=%d body=%s", response.Code, response.Body.String())
 	}
 	response = httptest.NewRecorder()
-	handler.HandleItem(response, httptest.NewRequest("GET", "/api/v1/features/metric_gap_max_seconds_1h?version=1.0.0", nil))
+	handler.HandleItem(response, httptest.NewRequest("GET", "/api/v1/features/metric_gap_max_seconds_1h?version="+CatalogVersion, nil))
 	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"missing_strategy":"unknown_not_zero"`)) {
 		t.Fatalf("read status=%d body=%s", response.Code, response.Body.String())
 	}
