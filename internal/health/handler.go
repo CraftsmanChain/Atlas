@@ -27,7 +27,7 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var total, scored, unknown int64
-	var fallbackGPUs, inconsistentGPUs int64
+	var fallbackGPUs, consistencyCandidateGPUs, inconsistentGPUs int64
 	var average float64
 	var levels, confidence []countRow
 	query := h.db.Model(&api.GPUHealthScore{}).Where("current = ?", true)
@@ -38,13 +38,14 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 	h.db.Model(&api.GPUHealthScore{}).Where("current = ?", true).Select("level AS name, count(*) AS count").Group("level").Scan(&levels)
 	h.db.Model(&api.GPUHealthScore{}).Where("current = ?", true).Select("data_confidence AS name, count(*) AS count").Group("data_confidence").Scan(&confidence)
 	h.db.Model(&api.GPUHealthScore{}).Joins("JOIN gpu_feature_snapshots ON gpu_feature_snapshots.id = gpu_health_scores.feature_snapshot_id").Where("gpu_health_scores.current = ? AND gpu_feature_snapshots.fallback_metric_count > 0", true).Count(&fallbackGPUs)
+	h.db.Model(&api.GPUHealthScore{}).Joins("JOIN gpu_feature_snapshots ON gpu_feature_snapshots.id = gpu_health_scores.feature_snapshot_id").Where("gpu_health_scores.current = ? AND gpu_feature_snapshots.consistency_candidate_count > 0", true).Count(&consistencyCandidateGPUs)
 	h.db.Model(&api.GPUHealthScore{}).Joins("JOIN gpu_feature_snapshots ON gpu_feature_snapshots.id = gpu_health_scores.feature_snapshot_id").Where("gpu_health_scores.current = ? AND gpu_feature_snapshots.consistency_issue_count > 0", true).Count(&inconsistentGPUs)
 	var latest api.HealthEvaluationRun
 	var latestValue any
 	if h.db.Where("status = ?", "success").Order("finished_at DESC").First(&latest).Error == nil {
 		latestValue = latest
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"total": total, "scored": scored, "unknown": unknown, "fallback_gpus": fallbackGPUs, "inconsistent_gpus": inconsistentGPUs, "average_score": average, "by_level": rowsToMap(levels), "by_confidence": rowsToMap(confidence), "latest_run": latestValue}})
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"total": total, "scored": scored, "unknown": unknown, "fallback_gpus": fallbackGPUs, "consistency_candidate_gpus": consistencyCandidateGPUs, "inconsistent_gpus": inconsistentGPUs, "average_score": average, "by_level": rowsToMap(levels), "by_confidence": rowsToMap(confidence), "latest_run": latestValue}})
 }
 
 func (h *Handler) HandleScores(w http.ResponseWriter, r *http.Request) {
@@ -72,11 +73,13 @@ func (h *Handler) HandleScores(w http.ResponseWriter, r *http.Request) {
 	}
 	type scoreResponse struct {
 		api.GPUHealthScore
-		MetricSources         api.StringMap  `json:"metric_sources"`
-		SourcesAvailable      api.StringList `json:"sources_available"`
-		FallbackMetricCount   int            `json:"fallback_metric_count"`
-		ConsistencyIssues     api.StringList `json:"consistency_issues"`
-		ConsistencyIssueCount int            `json:"consistency_issue_count"`
+		MetricSources             api.StringMap  `json:"metric_sources"`
+		SourcesAvailable          api.StringList `json:"sources_available"`
+		FallbackMetricCount       int            `json:"fallback_metric_count"`
+		ConsistencyCandidates     api.StringList `json:"consistency_candidates"`
+		ConsistencyCandidateCount int            `json:"consistency_candidate_count"`
+		ConsistencyIssues         api.StringList `json:"consistency_issues"`
+		ConsistencyIssueCount     int            `json:"consistency_issue_count"`
 	}
 	snapshotIDs := make([]uint, 0, len(rows))
 	for _, row := range rows {
@@ -98,7 +101,7 @@ func (h *Handler) HandleScores(w http.ResponseWriter, r *http.Request) {
 	responseRows := make([]scoreResponse, 0, len(rows))
 	for _, row := range rows {
 		snapshot := snapshotByID[row.FeatureSnapshotID]
-		responseRows = append(responseRows, scoreResponse{GPUHealthScore: row, MetricSources: snapshot.MetricSources, SourcesAvailable: snapshot.SourcesAvailable, FallbackMetricCount: snapshot.FallbackMetricCount, ConsistencyIssues: snapshot.ConsistencyIssues, ConsistencyIssueCount: snapshot.ConsistencyIssueCount})
+		responseRows = append(responseRows, scoreResponse{GPUHealthScore: row, MetricSources: snapshot.MetricSources, SourcesAvailable: snapshot.SourcesAvailable, FallbackMetricCount: snapshot.FallbackMetricCount, ConsistencyCandidates: snapshot.ConsistencyCandidates, ConsistencyCandidateCount: snapshot.ConsistencyCandidateCount, ConsistencyIssues: snapshot.ConsistencyIssues, ConsistencyIssueCount: snapshot.ConsistencyIssueCount})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": responseRows, "meta": map[string]any{"total": total, "limit": limit, "offset": offset, "generated_at": time.Now().Format(time.RFC3339)}})
 }

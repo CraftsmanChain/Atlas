@@ -34,7 +34,8 @@ UUID 同时兼容 DCGM 的 `UUID="GPU-..."` 和 gpu_exporter 的 `uuid="..."`，
 - `metric_sources`：每个规范特征最终采用的数据源。
 - `sources_available`：本次 GPU 可用数据源。
 - `fallback_metric_count`：DCGM 缺失而采用 gpu_exporter 的等价特征数。
-- `consistency_issues` / `consistency_issue_count`：双源偏差及数量。
+- `consistency_candidates` / `consistency_candidate_count`：本轮双源偏差候选。
+- `consistency_issues` / `consistency_issue_count`：连续两轮存在的稳定双源偏差及数量。
 
 只要发生回退，数据置信度至少下降一级；存在双源不一致时再下降一级。回退不会导致同一特征重复扣分。
 
@@ -65,13 +66,13 @@ Feature Catalog v1.1 包含 25 个规范健康特征和 41 个源查询。新增
 - 15 分钟 SM 平均时钟：150MHz 或 10%。
 - Row Remap 状态与计数：要求一致。
 
-超过容差时，问题中心生成 `gpu_source_inconsistency` 数据质量问题；恢复到容差内后自动关闭检测状态。人工处置记录和训练数据资格沿用问题中心现有流程。
+超过容差时先记录候选；同一规范特征连续两个评分周期超过容差，才降低置信度并由问题中心生成 `gpu_source_inconsistency` 数据质量问题。恢复到容差内后自动关闭检测状态。人工处置记录和训练数据资格沿用问题中心现有流程。
 
 ## 5. 验收要求
 
 - DCGM 有值时始终选 DCGM。
 - DCGM 缺失且 gpu_exporter 有等价值时完成回退，并降低置信度。
 - 等价特征只产生一个规范值和一次规则判断。
-- 双源偏差不直接扣硬件分，但必须可见、可统计、可处置。
+- 单轮双源偏差只作为候选；连续两轮偏差不直接扣硬件分，但必须可见、可统计、可处置。
 - gpu_exporter 独有规则必须有明确时间语义和负载保护。
 - 页面显示回退 GPU 数、双源偏差 GPU 数及每卡来源详情。
