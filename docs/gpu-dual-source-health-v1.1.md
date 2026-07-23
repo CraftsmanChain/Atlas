@@ -1,6 +1,6 @@
 # GPU 双源健康评分契约 v1.1
 
-> 生效版本：`gpu-health-v1.1.0` / `feature-catalog v1.1.0`  
+> 生效版本：`gpu-health-v1.1.2` / `feature-catalog v1.1.0`
 > 基线日期：2026-07-23
 
 ## 1. 目标与边界
@@ -9,7 +9,7 @@
 
 1. DCGM 是规范健康特征的主源。
 2. gpu_exporter 为等价特征提供降级备用，并提供 DCGM 当前没有的补充特征。
-3. 两个源同时存在时执行一致性校验；偏差属于数据质量问题，不直接当作硬件故障扣分。
+3. 两个源同时存在时记录规范化后的数值差异；差异仅用于审计，不属于数据质量问题或硬件故障。
 4. 只有 gpu_exporter 独有且具备明确硬件语义的特征进入新增健康规则。
 
 现场基线为 DCGM 712 张实时 GPU、gpu_exporter 632 张实时 GPU。gpu_exporter 覆盖集合当前完全包含于 DCGM，暂无仅由 gpu_exporter 恢复的 GPU；回退能力主要覆盖单指标缺失及未来采集故障。
@@ -34,10 +34,10 @@ UUID 同时兼容 DCGM 的 `UUID="GPU-..."` 和 gpu_exporter 的 `uuid="..."`，
 - `metric_sources`：每个规范特征最终采用的数据源。
 - `sources_available`：本次 GPU 可用数据源。
 - `fallback_metric_count`：DCGM 缺失而采用 gpu_exporter 的等价特征数。
-- `consistency_candidates` / `consistency_candidate_count`：本轮双源偏差候选。
-- `consistency_issues` / `consistency_issue_count`：连续两轮存在的稳定双源偏差及数量。
+- `consistency_candidates` / `consistency_candidate_count`：本轮双源数值差异，仅用于来源审计。
+- `consistency_issues` / `consistency_issue_count`：兼容保留字段，自 v1.1.2 起稳定输出空值/0，不再表示异常。
 
-只要发生回退，数据置信度至少下降一级；存在双源不一致时再下降一级。回退不会导致同一特征重复扣分。
+只要发生回退，数据置信度至少下降一级。双源数值差异不影响置信度，回退也不会导致同一特征重复扣分。
 
 ## 3. gpu_exporter 补充特征
 
@@ -66,13 +66,13 @@ Feature Catalog v1.1 包含 25 个规范健康特征和 41 个源查询。新增
 - 15 分钟 SM 平均时钟：150MHz 或 10%。
 - Row Remap 状态与计数：要求一致。
 
-超过容差时先记录候选；同一规范特征连续两个评分周期超过容差，才降低置信度并由问题中心生成 `gpu_source_inconsistency` 数据质量问题。恢复到容差内后自动关闭检测状态。人工处置记录和训练数据资格沿用问题中心现有流程。
+超过观察容差时仅记录双源数值差异，便于后续核对采样时间、窗口、单位和 exporter 实现。当前没有统一采样时间戳对齐和同窗口聚合证据，因此该差异不降低健康置信度、不生成 `gpu_source_inconsistency`、不进入问题统计或风险队列。历史试运行产生的活跃问题由问题同步自动清除。
 
 ## 5. 验收要求
 
 - DCGM 有值时始终选 DCGM。
 - DCGM 缺失且 gpu_exporter 有等价值时完成回退，并降低置信度。
 - 等价特征只产生一个规范值和一次规则判断。
-- 单轮双源偏差只作为候选；连续两轮偏差不直接扣硬件分，但必须可见、可统计、可处置。
+- 双源数值差异仅作为快照审计信息；无论持续轮次均不扣硬件分、不降低置信度、不计入问题。
 - gpu_exporter 独有规则必须有明确时间语义和负载保护。
-- 页面显示回退 GPU 数、双源偏差 GPU 数及每卡来源详情。
+- 健康页顶部仅展示核心健康指标；每卡取值来源与回退信息保留在明细/API 中供审计。

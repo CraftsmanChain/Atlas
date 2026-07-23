@@ -3,7 +3,6 @@ package issues
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -76,7 +75,7 @@ func TestSyncDetectedIssuesAndAutomaticRecovery(t *testing.T) {
 	}
 }
 
-func TestSyncDetectedIssuesTracksSourceConsistency(t *testing.T) {
+func TestSyncDetectedIssuesClearsLegacySourceConsistency(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
 		t.Fatal(err)
@@ -90,13 +89,17 @@ func TestSyncDetectedIssuesTracksSourceConsistency(t *testing.T) {
 	if err := db.Create(&asset).Error; err != nil {
 		t.Fatal(err)
 	}
-	snapshot := api.GPUFeatureSnapshot{GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, GPUIndex: 0, ConsistencyIssues: api.StringList{"gpu_temp: dcgm=60 gpu_exporter=70"}, ConsistencyIssueCount: 1, ObservedAt: now}
+	snapshot := api.GPUFeatureSnapshot{GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, GPUIndex: 0, ConsistencyCandidates: api.StringList{"gpu_temp: dcgm=60 gpu_exporter=70"}, ConsistencyCandidateCount: 1, ObservedAt: now}
 	if err := db.Create(&snapshot).Error; err != nil {
 		t.Fatal(err)
 	}
 	scoreValue := 100
-	score := api.GPUHealthScore{FeatureSnapshotID: snapshot.ID, GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, GPUIndex: 0, Score: &scoreValue, Level: "healthy", DataConfidence: "B", Current: true, EvaluatedAt: now}
+	score := api.GPUHealthScore{FeatureSnapshotID: snapshot.ID, GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, GPUIndex: 0, Score: &scoreValue, Level: "healthy", DataConfidence: "A", Current: true, EvaluatedAt: now}
 	if err := db.Create(&score).Error; err != nil {
+		t.Fatal(err)
+	}
+	issue := api.PlatformIssue{IssueKey: "source_consistency:legacy", Category: "data_quality", IssueType: "gpu_source_inconsistency", Title: "legacy source mismatch", EntityType: "gpu", EntityKey: "legacy", Severity: "attention", Status: "open", DetectionState: "active", DetectionSource: "source_consistency", FirstDetectedAt: now.Add(-time.Hour), LastDetectedAt: now.Add(-time.Hour)}
+	if err := db.Create(&issue).Error; err != nil {
 		t.Fatal(err)
 	}
 	service := NewService(db)
@@ -104,24 +107,16 @@ func TestSyncDetectedIssuesTracksSourceConsistency(t *testing.T) {
 	if err := service.SyncDetectedIssues(); err != nil {
 		t.Fatal(err)
 	}
-	var issue api.PlatformIssue
-	if err := db.Where("issue_key = ?", fmt.Sprintf("source_consistency:%d", asset.ID)).First(&issue).Error; err != nil {
-		t.Fatal(err)
-	}
-	if issue.Status != "open" || issue.IssueType != "gpu_source_inconsistency" {
-		t.Fatalf("unexpected consistency issue: %+v", issue)
-	}
-	if err := db.Model(&snapshot).Updates(map[string]any{"consistency_issue_count": 0, "consistency_issues": api.StringList{}}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := service.SyncDetectedIssues(); err != nil {
-		t.Fatal(err)
-	}
 	if err := db.First(&issue, issue.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if issue.Status != "resolved" || issue.DetectionState != "cleared" {
-		t.Fatalf("consistency issue was not cleared: %+v", issue)
+		t.Fatalf("legacy consistency issue was not cleared: %+v", issue)
+	}
+	var count int64
+	db.Model(&api.PlatformIssue{}).Where("issue_type = ?", "gpu_source_inconsistency").Count(&count)
+	if count != 1 {
+		t.Fatalf("source difference created a new issue, count=%d", count)
 	}
 }
 

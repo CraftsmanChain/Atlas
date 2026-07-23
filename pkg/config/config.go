@@ -169,7 +169,7 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Health.ScoreInterval = "30m"
 	}
 	if cfg.Health.RuleVersion == "" {
-		cfg.Health.RuleVersion = "gpu-health-v1.1.0"
+		cfg.Health.RuleVersion = "gpu-health-v1.1.2"
 	}
 
 	return &cfg, nil

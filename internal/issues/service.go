@@ -129,32 +129,6 @@ func (s *Service) SyncDetectedIssues() error {
 			}
 		}
 
-		var currentScores []api.GPUHealthScore
-		if err := tx.Where("current = ? AND feature_snapshot_id > 0", true).Find(&currentScores).Error; err != nil {
-			return err
-		}
-		scoreBySnapshot := make(map[uint]api.GPUHealthScore, len(currentScores))
-		snapshotIDs := make([]uint, 0, len(currentScores))
-		for _, score := range currentScores {
-			scoreBySnapshot[score.FeatureSnapshotID] = score
-			snapshotIDs = append(snapshotIDs, score.FeatureSnapshotID)
-		}
-		var inconsistentSnapshots []api.GPUFeatureSnapshot
-		if len(snapshotIDs) > 0 {
-			if err := tx.Where("id IN ? AND consistency_issue_count > 0", snapshotIDs).Find(&inconsistentSnapshots).Error; err != nil {
-				return err
-			}
-		}
-		for _, snapshot := range inconsistentSnapshots {
-			score := scoreBySnapshot[snapshot.ID]
-			key := fmt.Sprintf("source_consistency:%d", snapshot.GPUAssetID)
-			item := detectedIssue{key: key, category: "data_quality", issueType: "gpu_source_inconsistency", title: fmt.Sprintf("GPU telemetry sources disagree on %s GPU %d", snapshot.NodeIP, snapshot.GPUIndex), description: strings.Join(snapshot.ConsistencyIssues, "; "), entityType: "gpu", entityKey: fmt.Sprintf("%d", snapshot.GPUAssetID), nodeIP: snapshot.NodeIP, gpuUUID: snapshot.GPUUUID, severity: "attention", source: "source_consistency", detectionState: "active", sourceRecordID: snapshot.ID, lastDetectedAt: fallbackTime(score.EvaluatedAt, snapshot.ObservedAt)}
-			activeBySource[item.source][item.key] = true
-			if err := upsertDetected(tx, item, now); err != nil {
-				return err
-			}
-		}
-
 		var faultEvents []api.GPUFaultEvent
 		if err := tx.Find(&faultEvents).Error; err != nil {
 			return err
