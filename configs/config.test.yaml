@@ -29,7 +29,7 @@ inventory:
   enabled: true
   asset_file: "/ops/atlas-test/asset-monitor-compare.csv"
   target_sync_interval: "10m"
-  identity_sync_interval: "30m"
+  identity_sync_interval: "10m"
   full_sync_interval: "24h"
   history_window: "365d"
   expected_gpu_count: 8
@@ -44,7 +44,7 @@ inventory:
 
 health:
   enabled: true
-  score_interval: "30m"
+  score_interval: "10m"
   rule_version: "gpu-health-v1.1.2"
 
 feishu:

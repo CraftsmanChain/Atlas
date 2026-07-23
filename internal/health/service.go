@@ -78,17 +78,18 @@ func NewService(db *storage.DB, prom prometheusReader, cfg config.HealthConfig) 
 
 func (s *Service) Run(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
-		interval = 30 * time.Minute
+		interval = 10 * time.Minute
 	}
 	s.evaluateAndLog(ctx)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			s.evaluateAndLog(ctx)
+			timer.Reset(interval)
 		}
 	}
 }
