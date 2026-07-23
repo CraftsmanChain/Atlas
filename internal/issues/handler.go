@@ -18,6 +18,8 @@ type Handler struct {
 	service *Service
 }
 
+const deprecatedSourceDifferenceIssue = "gpu_source_inconsistency"
+
 func NewHandler(db *storage.DB) *Handler { return &Handler{db: db, service: NewService(db)} }
 func NewHandlerWithService(db *storage.DB, service *Service) *Handler {
 	return &Handler{db: db, service: service}
@@ -33,22 +35,22 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var total, resolved, ignored, remaining, activeDetection int64
-	h.db.Model(&api.PlatformIssue{}).Count(&total)
-	h.db.Model(&api.PlatformIssue{}).Where("status = ?", "resolved").Count(&resolved)
-	h.db.Model(&api.PlatformIssue{}).Where("status = ?", "ignored").Count(&ignored)
-	h.db.Model(&api.PlatformIssue{}).Where("status IN ?", []string{"open", "in_progress"}).Count(&remaining)
-	h.db.Model(&api.PlatformIssue{}).Where("detection_state = ?", "active").Count(&activeDetection)
-	byCategory, err := groupedCounts(h.db.Model(&api.PlatformIssue{}), "category")
+	visibleIssues(h.db).Count(&total)
+	visibleIssues(h.db).Where("status = ?", "resolved").Count(&resolved)
+	visibleIssues(h.db).Where("status = ?", "ignored").Count(&ignored)
+	visibleIssues(h.db).Where("status IN ?", []string{"open", "in_progress"}).Count(&remaining)
+	visibleIssues(h.db).Where("detection_state = ?", "active").Count(&activeDetection)
+	byCategory, err := groupedCounts(visibleIssues(h.db), "category")
 	if err != nil {
 		issueError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	byStatus, err := groupedCounts(h.db.Model(&api.PlatformIssue{}), "status")
+	byStatus, err := groupedCounts(visibleIssues(h.db), "status")
 	if err != nil {
 		issueError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	bySeverity, err := groupedCounts(h.db.Model(&api.PlatformIssue{}), "severity")
+	bySeverity, err := groupedCounts(visibleIssues(h.db), "severity")
 	if err != nil {
 		issueError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -96,7 +98,7 @@ func (h *Handler) HandleCollection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) filteredQuery(r *http.Request) *gorm.DB {
-	query := h.db.Model(&api.PlatformIssue{})
+	query := visibleIssues(h.db)
 	for field, column := range map[string]string{"category": "category", "severity": "severity", "detection_state": "detection_state", "issue_type": "issue_type"} {
 		if value := strings.TrimSpace(r.URL.Query().Get(field)); value != "" {
 			query = query.Where(column+" = ?", value)
@@ -236,9 +238,16 @@ func (h *Handler) HandleTrainingData(w http.ResponseWriter, r *http.Request) {
 		if err := h.db.First(&issue, resolution.IssueID).Error; err != nil {
 			continue
 		}
+		if issue.IssueType == deprecatedSourceDifferenceIssue {
+			continue
+		}
 		rows = append(rows, trainingRow{IssueResolution: resolution, Issue: issue})
 	}
 	issueJSON(w, http.StatusOK, map[string]any{"schema_version": "atlas-issue-training-v1", "generated_at": time.Now().Format(time.RFC3339), "data": rows})
+}
+
+func visibleIssues(db *storage.DB) *gorm.DB {
+	return db.Model(&api.PlatformIssue{}).Where("issue_type <> ?", deprecatedSourceDifferenceIssue)
 }
 
 type groupedCount struct {

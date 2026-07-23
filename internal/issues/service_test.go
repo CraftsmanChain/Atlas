@@ -118,6 +118,12 @@ func TestSyncDetectedIssuesClearsLegacySourceConsistency(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("source difference created a new issue, count=%d", count)
 	}
+	handler := NewHandlerWithService(db, service)
+	response := httptest.NewRecorder()
+	handler.HandleCollection(response, httptest.NewRequest("GET", "/api/v1/issues?limit=10", nil))
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"total":0`)) {
+		t.Fatalf("legacy consistency issue remained visible: %d %s", response.Code, response.Body.String())
+	}
 }
 
 func TestIssueSummaryResolutionAndTrainingDataAPI(t *testing.T) {
