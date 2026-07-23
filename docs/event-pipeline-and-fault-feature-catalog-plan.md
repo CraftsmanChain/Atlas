@@ -272,7 +272,7 @@ metric_gap_max_seconds_1h
 | --- | --- | --- | --- |
 | `incident v0.2.1` | 真实总数、游标分页、新鲜度、速率、环境/数据源标识 | 已定位“固定 100 条”是展示/API 统计问题，并完成事件链路可观测改造 | 可浏览全量；新告警可见；快照与实时不混淆 |
 | `feature-catalog v1.0.0` | 注册/读取 API、能力矩阵、20 个健康核心特征和 snapshot 版本 manifest | 健康评分已消费统一、可版本化的特征底座；PyOD、风险排序和监督预测可复用同一契约 | 特征支持、时间/缺失语义和血缘可查询、可回放 |
-| `feature-catalog v1.1.0` / `gpu-health v1.1.2` | 25 个规范特征、41 个 DCGM/gpu_exporter 源查询、单位规范化、DCGM 优先回退、双源取值审计与补充硬件规则 | gpu_exporter 成为必需补充源和降级备用，但等价指标不重复计分；数值差异不定性为异常 | 逐特征来源可审计，回退降低置信度，双源差异不生成问题或进入风险 |
+| `feature-catalog v1.2.0` / `gpu-health v1.2.0` | 27 个规范特征、45 个 DCGM/gpu_exporter 源查询、Correctable Row Remap 1h/24h 增量、单位规范化、DCGM 优先回退与来源审计 | 稳定 Correctable 累计值不扣分，只有快速增长进入风险；Uncorrectable/Remap Failure 只告警，不自动操作任务或节点 | 逐特征来源可审计，回退降低置信度，稳定累计值不产生风险事件 |
 | `degradation v0.1.0` | 被动衰减候选、同机/同型号对比、证据输出 | 无侵入识别可用但变慢的 GPU 候选 | 不把空闲误报为衰减，输出基线与置信度 |
 | `degradation v0.2.0` | 维护窗口主动验证与维修复测 | 建立算力/显存/PCIe/NVLink 分类验证 | 测试可重复且不影响生产任务 |
 | `prediction v0.1.0` | PyOD shadow、风险排序、历史回放 | 输出异常与高风险队列，不冒充故障概率 | 有误报率、Top-K 命中和提前量报告 |

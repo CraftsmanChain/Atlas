@@ -1,6 +1,6 @@
 # Atlas Feature Catalog v1
 
-> 当前契约版本：`v1.1.0`（2026-07-23）
+> 当前契约版本：`v1.2.0`（2026-07-23）
 
 Feature Catalog 是健康评分、PyOD 异常检测、风险排序、监督预测和性能衰减检测共享的数据契约。目录版本为 `1.0.0`；特征定义按 `(name, version)` 不可重复注册。
 
@@ -27,7 +27,9 @@ Feature Catalog 是健康评分、PyOD 异常检测、风险排序、监督预�
 
 ## 已接入消费方
 
-健康评分服务不再维护独立的 Prometheus 特征清单。Catalog v1.1 生成 25 个规范健康特征和 41 个 DCGM/gpu_exporter 源查询，包括温度、功耗、利用率、时钟、显存、XID、Row Remap、PCIe Replay、reset-required、详细 ECC、风扇和 PCIe 链路宽度。
+健康评分服务不再维护独立的 Prometheus 特征清单。Catalog v1.2 生成 27 个规范健康特征和 45 个 DCGM/gpu_exporter 源查询，包括温度、功耗、利用率、时钟、显存、XID、Row Remap、PCIe Replay、reset-required、详细 ECC、风扇和 PCIe 链路宽度。
+
+`correctable_remapped_rows_delta_1h` 与 `correctable_remapped_rows_delta_24h` 将 Correctable Row Remap 的累计值转为近期增量。稳定累计值和单次低速新增只作为观察证据，不降低健康分；只有达到规则版本声明的增长门槛才进入风险评分。
 
 语义等价指标按 DCGM 主源、gpu_exporter 降级备用合并，在查询层完成比例、Hz 和 bytes 的单位规范化；snapshot 记录逐特征来源、回退数量和双源偏差。4090 不会把不支持的显存温度或 Row Remap 当成缺失风险；H100/H200 会纳入 Row Remap 与详细 ECC 能力。完整契约见 [GPU 双源健康评分契约 v1.1](gpu-dual-source-health-v1.1.md)。
 

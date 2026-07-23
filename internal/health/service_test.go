@@ -84,7 +84,7 @@ func TestEvaluatePersistsScoredAndUnknownAssets(t *testing.T) {
 	if err := db.Where("gpu_uuid = ?", "GPU-A").First(&snapshot).Error; err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.FeatureCatalogVersion != "1.1.0" || snapshot.FeatureVersions["gpu_temp"] != "1.1.0" || snapshot.MetricSources["gpu_temp"] != "dcgm_exporter" {
+	if snapshot.FeatureCatalogVersion != "1.2.0" || snapshot.FeatureVersions["gpu_temp"] != "1.2.0" || snapshot.MetricSources["gpu_temp"] != "dcgm_exporter" {
 		t.Fatalf("snapshot is missing feature lineage: %+v", snapshot)
 	}
 }

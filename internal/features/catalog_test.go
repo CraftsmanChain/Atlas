@@ -13,8 +13,8 @@ import (
 func TestBuiltinsCoverHealthConsumerAndModelCapabilities(t *testing.T) {
 	definitions := Builtins()
 	specs := HealthMetricSpecs()
-	if len(definitions) != 25 || len(specs) != 41 {
-		t.Fatalf("expected 25 catalog features and 41 source specs, got definitions=%d specs=%d", len(definitions), len(specs))
+	if len(definitions) != 27 || len(specs) != 45 {
+		t.Fatalf("expected 27 catalog features and 45 source specs, got definitions=%d specs=%d", len(definitions), len(specs))
 	}
 	for _, definition := range definitions {
 		if err := Validate(&definition); err != nil {
@@ -25,6 +25,9 @@ func TestBuiltinsCoverHealthConsumerAndModelCapabilities(t *testing.T) {
 	rtx4090 := ExpectedHealthKeys("NVIDIA GeForce RTX 4090")
 	if !contains(api.StringList(h100), "row_remap_failure") {
 		t.Fatal("H100 must consume row remap features")
+	}
+	if !contains(api.StringList(h100), "correctable_remapped_rows_delta_1h") || !contains(api.StringList(h100), "correctable_remapped_rows_delta_24h") {
+		t.Fatal("H100 must consume correctable row-remap trend features")
 	}
 	if contains(api.StringList(rtx4090), "row_remap_failure") || contains(api.StringList(rtx4090), "memory_temp") {
 		t.Fatal("4090 must not count unsupported row-remap or memory-temperature features as missing")
@@ -49,7 +52,7 @@ func TestSeedRegisterListAndRead(t *testing.T) {
 		t.Fatalf("seeding must be idempotent: %v", err)
 	}
 	definitions, err := List(db, ListOptions{Purpose: "health", Status: "active"})
-	if err != nil || len(definitions) != 25 {
+	if err != nil || len(definitions) != 27 {
 		t.Fatalf("unexpected list result count=%d err=%v", len(definitions), err)
 	}
 	definition, err := Get(db, "gpu_temp", CatalogVersion)
@@ -57,7 +60,7 @@ func TestSeedRegisterListAndRead(t *testing.T) {
 		t.Fatalf("unexpected get result definition=%+v err=%v", definition, err)
 	}
 	custom := metric("gpu_temp_slope_1h", "thermal", "deriv(DCGM_FI_DEV_GPU_TEMP[1h])", "1h", "GPU temperature slope", "GPU 温度斜率")
-	custom.Version = "1.1.0"
+	custom.Version = CatalogVersion
 	custom.Status = "shadow"
 	if err := Register(db, &custom); err != nil {
 		t.Fatal(err)

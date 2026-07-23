@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const CatalogVersion = "1.1.0"
+const CatalogVersion = "1.2.0"
 
 type MetricSpec struct {
 	Key      string
@@ -45,6 +45,8 @@ func Builtins() []api.FeatureDefinition {
 		metric("xid_changes_24h", "stability", "changes(DCGM_FI_DEV_XID_ERRORS[24h])", "24h", "XID changes", "XID 变化次数"),
 		metricForDatacenter("uncorrectable_remapped_rows", "memory", "DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS", "instant", "Uncorrectable remapped rows", "不可纠正重映射行"),
 		metricForDatacenter("correctable_remapped_rows", "memory", "DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS", "instant", "Correctable remapped rows", "可纠正重映射行"),
+		metricForDatacenter("correctable_remapped_rows_delta_1h", "memory", "clamp_min(delta(DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS[1h]), 0)", "1h", "Correctable remapped rows increase", "可纠正重映射行一小时增量"),
+		metricForDatacenter("correctable_remapped_rows_delta_24h", "memory", "clamp_min(delta(DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS[24h]), 0)", "24h", "Correctable remapped rows increase", "可纠正重映射行二十四小时增量"),
 		metricForDatacenter("row_remap_failure", "memory", "DCGM_FI_DEV_ROW_REMAP_FAILURE", "instant", "Row remap failure", "行重映射失败"),
 		metric("pcie_replay_counter", "interconnect", "DCGM_FI_DEV_PCIE_REPLAY_COUNTER", "instant", "PCIe replay counter", "PCIe 重放计数"),
 		metric("pcie_replay_increase_1h", "interconnect", "increase(DCGM_FI_DEV_PCIE_REPLAY_COUNTER[1h])", "1h", "PCIe replay increase", "PCIe 重放增量"),
@@ -132,6 +134,8 @@ func gpuFallbackSpecs() []MetricSpec {
 		{Key: "fb_free", Query: "nvidia_smi_memory_free_bytes / 1048576", Source: "gpu_exporter", Priority: 1},
 		{Key: "uncorrectable_remapped_rows", Query: "nvidia_smi_remapped_rows_uncorrectable", Source: "gpu_exporter", Priority: 1},
 		{Key: "correctable_remapped_rows", Query: "nvidia_smi_remapped_rows_correctable", Source: "gpu_exporter", Priority: 1},
+		{Key: "correctable_remapped_rows_delta_1h", Query: "clamp_min(delta(nvidia_smi_remapped_rows_correctable[1h]), 0)", Source: "gpu_exporter", Priority: 1},
+		{Key: "correctable_remapped_rows_delta_24h", Query: "clamp_min(delta(nvidia_smi_remapped_rows_correctable[24h]), 0)", Source: "gpu_exporter", Priority: 1},
 		{Key: "row_remap_failure", Query: "nvidia_smi_remapped_rows_failure", Source: "gpu_exporter", Priority: 1},
 	}
 }
