@@ -137,3 +137,17 @@ func TestMergeFeatureCandidatesPrefersDCGMAndDetectsMismatch(t *testing.T) {
 		t.Fatalf("source mismatch should degrade confidence to B, got %s", confidence)
 	}
 }
+
+func TestConsistencyRequiresSameFeatureAcrossConsecutiveRuns(t *testing.T) {
+	previous := api.GPUFeatureSnapshot{ConsistencyCandidates: api.StringList{"gpu_temp_max_15m: dcgm=60 gpu_exporter=70"}}
+	persistent := persistentConsistencyIssues(api.StringList{
+		"gpu_temp_max_15m: dcgm=61 gpu_exporter=69",
+		"gpu_util_avg_15m: dcgm=80 gpu_exporter=60",
+	}, previous)
+	if len(persistent) != 1 || !strings.HasPrefix(persistent[0], "gpu_temp_max_15m:") {
+		t.Fatalf("unexpected persistent issues: %v", persistent)
+	}
+	if got := persistentConsistencyIssues(api.StringList{"gpu_util_avg_15m: dcgm=80 gpu_exporter=60"}, previous); len(got) != 0 {
+		t.Fatalf("single-run candidate must not become persistent: %v", got)
+	}
+}

@@ -45,26 +45,28 @@ type HealthEvaluationRun struct {
 }
 
 type GPUFeatureSnapshot struct {
-	ID                    uint       `json:"id" gorm:"primaryKey;autoIncrement"`
-	EvaluationRunID       uint       `json:"evaluation_run_id" gorm:"index"`
-	GPUAssetID            uint       `json:"gpu_asset_id" gorm:"index"`
-	GPUUUID               string     `json:"gpu_uuid" gorm:"column:gpu_uuid;index"`
-	NodeIP                string     `json:"node_ip" gorm:"index"`
-	GPUIndex              int        `json:"gpu_index" gorm:"column:gpu_index;index"`
-	ModelName             string     `json:"model_name" gorm:"index"`
-	Metrics               FloatMap   `json:"metrics" gorm:"type:text"`
-	MetricSources         StringMap  `json:"metric_sources" gorm:"type:text"`
-	SourcesAvailable      StringList `json:"sources_available" gorm:"type:text"`
-	FallbackMetricCount   int        `json:"fallback_metric_count"`
-	ConsistencyIssues     StringList `json:"consistency_issues" gorm:"type:text"`
-	ConsistencyIssueCount int        `json:"consistency_issue_count" gorm:"index"`
-	FeatureCatalogVersion string     `json:"feature_catalog_version" gorm:"index"`
-	FeatureVersions       StringMap  `json:"feature_versions" gorm:"type:text"`
-	AvailableMetricCount  int        `json:"available_metric_count"`
-	ExpectedMetricCount   int        `json:"expected_metric_count"`
-	DataConfidence        string     `json:"data_confidence" gorm:"index"`
-	ObservedAt            time.Time  `json:"observed_at" gorm:"index"`
-	CreatedAt             time.Time  `json:"created_at"`
+	ID                        uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	EvaluationRunID           uint       `json:"evaluation_run_id" gorm:"index"`
+	GPUAssetID                uint       `json:"gpu_asset_id" gorm:"index"`
+	GPUUUID                   string     `json:"gpu_uuid" gorm:"column:gpu_uuid;index"`
+	NodeIP                    string     `json:"node_ip" gorm:"index"`
+	GPUIndex                  int        `json:"gpu_index" gorm:"column:gpu_index;index"`
+	ModelName                 string     `json:"model_name" gorm:"index"`
+	Metrics                   FloatMap   `json:"metrics" gorm:"type:text"`
+	MetricSources             StringMap  `json:"metric_sources" gorm:"type:text"`
+	SourcesAvailable          StringList `json:"sources_available" gorm:"type:text"`
+	FallbackMetricCount       int        `json:"fallback_metric_count"`
+	ConsistencyCandidates     StringList `json:"consistency_candidates" gorm:"type:text"`
+	ConsistencyCandidateCount int        `json:"consistency_candidate_count"`
+	ConsistencyIssues         StringList `json:"consistency_issues" gorm:"type:text"`
+	ConsistencyIssueCount     int        `json:"consistency_issue_count" gorm:"index"`
+	FeatureCatalogVersion     string     `json:"feature_catalog_version" gorm:"index"`
+	FeatureVersions           StringMap  `json:"feature_versions" gorm:"type:text"`
+	AvailableMetricCount      int        `json:"available_metric_count"`
+	ExpectedMetricCount       int        `json:"expected_metric_count"`
+	DataConfidence            string     `json:"data_confidence" gorm:"index"`
+	ObservedAt                time.Time  `json:"observed_at" gorm:"index"`
+	CreatedAt                 time.Time  `json:"created_at"`
 }
 
 type GPUHealthScore struct {

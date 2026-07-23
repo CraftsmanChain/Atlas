@@ -148,8 +148,12 @@ func (s *Service) Evaluate(ctx context.Context) (*api.HealthEvaluationRun, error
 	if err := s.db.Where("node_id IN (?) AND current_uuid <> ''", activeNodeIDs).Order("node_ip ASC, gpu_index ASC").Find(&assets).Error; err != nil {
 		return fail(err)
 	}
+	previousSnapshots, err := s.currentSnapshotsByAsset()
+	if err != nil {
+		return fail(err)
+	}
 	run.AssetCount = len(assets)
-	err := s.db.Transaction(func(tx *gorm.DB) error {
+	err = s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&api.GPUHealthScore{}).Where("current = ?", true).Update("current", false).Error; err != nil {
 			return err
 		}
@@ -159,17 +163,18 @@ func (s *Service) Evaluate(ctx context.Context) (*api.HealthEvaluationRun, error
 			sources := api.StringMap{}
 			sourcesAvailable := api.StringList{}
 			fallbackCount := 0
-			consistencyIssues := api.StringList{}
+			consistencyCandidates := api.StringList{}
 			observedAt := now
 			if value != nil {
 				metrics, sources, sourcesAvailable = value.metrics, value.sources, value.sourcesAvailable
-				fallbackCount, consistencyIssues, observedAt = value.fallbackCount, value.consistencyIssues, value.observedAt
+				fallbackCount, consistencyCandidates, observedAt = value.fallbackCount, value.consistencyIssues, value.observedAt
 			}
+			consistencyIssues := persistentConsistencyIssues(consistencyCandidates, previousSnapshots[asset.ID])
 			expected := expectedMetricKeys(asset.ModelName)
 			available := availableCount(metrics, expected)
 			confidence := dataConfidence(asset.State, available, len(expected))
 			confidence = degradeConfidence(confidence, fallbackCount, len(consistencyIssues))
-			snapshot := api.GPUFeatureSnapshot{EvaluationRunID: run.ID, GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, GPUIndex: asset.GPUIndex, ModelName: asset.ModelName, Metrics: metrics, MetricSources: sources, SourcesAvailable: sourcesAvailable, FallbackMetricCount: fallbackCount, ConsistencyIssues: consistencyIssues, ConsistencyIssueCount: len(consistencyIssues), FeatureCatalogVersion: features.CatalogVersion, FeatureVersions: features.HealthFeatureVersions(), AvailableMetricCount: available, ExpectedMetricCount: len(expected), DataConfidence: confidence, ObservedAt: observedAt}
+			snapshot := api.GPUFeatureSnapshot{EvaluationRunID: run.ID, GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, GPUIndex: asset.GPUIndex, ModelName: asset.ModelName, Metrics: metrics, MetricSources: sources, SourcesAvailable: sourcesAvailable, FallbackMetricCount: fallbackCount, ConsistencyCandidates: consistencyCandidates, ConsistencyCandidateCount: len(consistencyCandidates), ConsistencyIssues: consistencyIssues, ConsistencyIssueCount: len(consistencyIssues), FeatureCatalogVersion: features.CatalogVersion, FeatureVersions: features.HealthFeatureVersions(), AvailableMetricCount: available, ExpectedMetricCount: len(expected), DataConfidence: confidence, ObservedAt: observedAt}
 			if err := tx.Create(&snapshot).Error; err != nil {
 				return err
 			}
@@ -246,6 +251,50 @@ func dataConfidence(assetState string, available, expected int) string {
 	default:
 		return "D"
 	}
+}
+
+func (s *Service) currentSnapshotsByAsset() (map[uint]api.GPUFeatureSnapshot, error) {
+	var scores []api.GPUHealthScore
+	if err := s.db.Where("current = ? AND feature_snapshot_id > 0", true).Find(&scores).Error; err != nil {
+		return nil, err
+	}
+	snapshotIDs := make([]uint, 0, len(scores))
+	for _, score := range scores {
+		snapshotIDs = append(snapshotIDs, score.FeatureSnapshotID)
+	}
+	result := make(map[uint]api.GPUFeatureSnapshot, len(snapshotIDs))
+	if len(snapshotIDs) == 0 {
+		return result, nil
+	}
+	var snapshots []api.GPUFeatureSnapshot
+	if err := s.db.Where("id IN ?", snapshotIDs).Find(&snapshots).Error; err != nil {
+		return nil, err
+	}
+	for _, snapshot := range snapshots {
+		result[snapshot.GPUAssetID] = snapshot
+	}
+	return result, nil
+}
+
+func persistentConsistencyIssues(current api.StringList, previous api.GPUFeatureSnapshot) api.StringList {
+	previousKeys := map[string]bool{}
+	for _, issue := range append(append(api.StringList{}, previous.ConsistencyCandidates...), previous.ConsistencyIssues...) {
+		previousKeys[consistencyIssueKey(issue)] = true
+	}
+	result := api.StringList{}
+	for _, issue := range current {
+		if previousKeys[consistencyIssueKey(issue)] {
+			result = append(result, issue)
+		}
+	}
+	return result
+}
+
+func consistencyIssueKey(issue string) string {
+	if index := strings.Index(issue, ":"); index >= 0 {
+		return strings.TrimSpace(issue[:index])
+	}
+	return strings.TrimSpace(issue)
 }
 
 func mergeFeatureCandidates(candidates map[string]map[string]metricObservation) *featureValue {
