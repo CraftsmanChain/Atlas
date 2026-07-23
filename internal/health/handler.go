@@ -167,7 +167,38 @@ func (h *Handler) HandleEvents(w http.ResponseWriter, r *http.Request) {
 	if len(rows) > 0 {
 		nextBeforeID = rows[len(rows)-1].ID
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": rows, "meta": map[string]any{"total": total, "limit": limit, "has_more": hasMore, "next_before_id": nextBeforeID, "generated_at": time.Now().Format(time.RFC3339)}})
+	type eventWithWorkflow struct {
+		api.GPUFaultEvent
+		IssueID            uint   `json:"issue_id,omitempty"`
+		WorkflowStatus     string `json:"workflow_status,omitempty"`
+		LatestResolutionID uint   `json:"latest_resolution_id,omitempty"`
+	}
+	eventIDs := make([]uint, 0, len(rows))
+	for _, row := range rows {
+		eventIDs = append(eventIDs, row.ID)
+	}
+	issuesByEventID := make(map[uint]api.PlatformIssue, len(rows))
+	if len(eventIDs) > 0 {
+		var issues []api.PlatformIssue
+		if err := h.db.Where("detection_source = ? AND source_record_id IN ?", "health_rule", eventIDs).Find(&issues).Error; err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		for _, issue := range issues {
+			issuesByEventID[issue.SourceRecordID] = issue
+		}
+	}
+	result := make([]eventWithWorkflow, 0, len(rows))
+	for _, row := range rows {
+		item := eventWithWorkflow{GPUFaultEvent: row}
+		if issue, ok := issuesByEventID[row.ID]; ok {
+			item.IssueID = issue.ID
+			item.WorkflowStatus = issue.Status
+			item.LatestResolutionID = issue.LatestResolutionID
+		}
+		result = append(result, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": result, "meta": map[string]any{"total": total, "limit": limit, "has_more": hasMore, "next_before_id": nextBeforeID, "generated_at": time.Now().Format(time.RFC3339)}})
 }
 
 func (h *Handler) HandleEventSummary(w http.ResponseWriter, r *http.Request) {

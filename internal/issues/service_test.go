@@ -192,8 +192,18 @@ func TestIssueSummaryResolutionAndTrainingDataAPI(t *testing.T) {
 
 	response := httptest.NewRecorder()
 	handler.HandleSummary(response, httptest.NewRequest("GET", "/api/v1/issues/summary", nil))
-	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"discovered":6`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"remaining":5`)) {
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"discovered":4`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"remaining":4`)) || bytes.Contains(response.Body.Bytes(), []byte(`"hardware_fault"`)) {
 		t.Fatalf("unexpected summary: %d %s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler.HandleCollection(response, httptest.NewRequest("GET", "/api/v1/issues", nil))
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"total":4`)) || bytes.Contains(response.Body.Bytes(), []byte(`"hardware_fault"`)) {
+		t.Fatalf("unexpected data statistics collection: %d %s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler.HandleCollection(response, httptest.NewRequest("GET", "/api/v1/issues?category=hardware_fault", nil))
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"total":2`)) {
+		t.Fatalf("hardware event workflow records unavailable: %d %s", response.Code, response.Body.String())
 	}
 
 	var issue api.PlatformIssue
