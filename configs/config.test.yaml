@@ -15,6 +15,12 @@ logging:
 web:
   static_dir: "/ops/atlas-test/web-current"
 
+branding:
+  instance_name: "智元集群"
+  product_name: "ATLAS"
+  product_tagline: "GPU RELIABILITY"
+  environment: "TEST / 8077"
+
 prometheus:
   base_url: "http://10.111.201.1:9090"
   request_timeout: "20s"

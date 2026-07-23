@@ -86,6 +86,7 @@ func InitDB(dsn string) (*DB, error) {
 		&api.FeatureDefinition{},
 		&api.PlatformIssue{},
 		&api.IssueResolution{},
+		&api.PlatformDisplayConfig{},
 	)
 	if err != nil {
 		return nil, err

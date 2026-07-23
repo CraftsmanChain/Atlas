@@ -4,6 +4,11 @@ gateway:
   ingestion_stale_after: "15m"
 storage:
   dsn: "atlas.db"
+branding:
+  instance_name: "Atlas Cluster"
+  product_name: "ATLAS"
+  product_tagline: "GPU RELIABILITY"
+  environment: "LOCAL"
 feishu:
   bots:
     - enabled: false
