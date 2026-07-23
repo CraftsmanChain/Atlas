@@ -112,6 +112,7 @@ Atlas 的数据治理能力定位为“发现、定位、记录和验证”，�
 - [GPU 健康评分 v1 专题草案](docs/gpu-health-score-v1.md)
 - [平台能力模块与版本基线](docs/platform-capability-modules.md)
 - [事件链路与故障特征库实施方案](docs/event-pipeline-and-fault-feature-catalog-plan.md)：接收记录分页/新鲜度、事件分层、故障特征目录、性能衰减和参考项目适配
+- [问题中心 v0.1](docs/issue-center-v1.md)：平台问题统计、分类钻取、状态、人工根因/解决过程和 AI/Skill 训练数据
 
 ### 当前事件数据说明
 

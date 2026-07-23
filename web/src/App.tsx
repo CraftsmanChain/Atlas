@@ -4,14 +4,14 @@ import { useTranslation } from 'react-i18next';
 import { useTheme } from 'next-themes';
 import {
   Activity, AlertTriangle, BarChart3, Bell, BookOpen, BrainCircuit, CheckCircle2,
-  ChevronLeft, ChevronRight, CircleGauge, Command, Cpu, Database, Eye, Filter, Gauge,
+  ChevronLeft, ChevronRight, CircleGauge, ClipboardList, Command, Cpu, Database, Eye, Filter, Gauge,
   Languages, Layers3, MemoryStick, Menu, Moon, Network,
   Palette, RefreshCw, Search, Server, ShieldAlert, ShieldCheck, Sun,
   Thermometer, X, Zap,
 } from 'lucide-react';
 import './App.css';
 
-type PageId = 'overview' | 'gpus' | 'incidents' | 'validations' | 'quality' | 'models' | 'about';
+type PageId = 'overview' | 'gpus' | 'issues' | 'incidents' | 'validations' | 'quality' | 'models' | 'about';
 type SubPage = { id: string; label: string };
 type Tx = (zh: string, en: string) => string;
 
@@ -40,6 +40,10 @@ type HealthSummary = { total: number; scored: number; unknown: number; average_s
 type FaultEvent = { id: number; source: string; state: string; gpu_asset_id: number; gpu_uuid: string; node_ip: string; gpu_index: number; model_name: string; rule_code: string; domain: string; severity: string; evidence: string; observed_value: number; threshold: string; occurrence_count: number; rule_version: string; first_observed_at: string; last_observed_at: string; recovered_at?: string };
 type CursorMeta = { total: number; limit: number; has_more: boolean; next_before_id: number };
 type FaultEventSummary = { total: number; open: number; by_state: Record<string, number>; open_by_severity: Record<string, number> };
+type PlatformIssue = { id: number; issue_key: string; category: string; issue_type: string; title: string; description: string; entity_type: string; entity_key: string; node_ip: string; gpu_uuid: string; severity: string; status: string; detection_state: string; detection_source: string; source_record_id: number; first_detected_at: string; last_detected_at: string; source_recovered_at?: string; resolved_at?: string; latest_resolution_id: number };
+type IssueResolution = { id: number; issue_id: number; status: string; root_cause: string; solution: string; resolution_process: string; result: string; evidence: string[]; operator: string; training_eligible: boolean; created_at: string };
+type IssueDetail = { issue: PlatformIssue; resolutions: IssueResolution[] };
+type IssueSummary = { discovered: number; resolved: number; remaining: number; ignored: number; active_detection: number; by_category: Record<string, number>; by_status: Record<string, number>; by_severity: Record<string, number>; generated_at: string };
 type FleetSummary = {
   nodes: { total: number; by_state: Record<string, number> };
   gpus: { total: number; known_uuid: number; unknown_uuid: number; by_state: Record<string, number> };
@@ -47,11 +51,12 @@ type FleetSummary = {
   latest_sync: SyncRun | null;
 };
 
-const pageIcons = { overview: BarChart3, gpus: Cpu, incidents: Bell, validations: Gauge, quality: Database, models: BrainCircuit, about: BookOpen };
-const pages: PageId[] = ['overview', 'gpus', 'incidents', 'validations', 'quality', 'models', 'about'];
+const pageIcons = { overview: BarChart3, gpus: Cpu, issues: ClipboardList, incidents: Bell, validations: Gauge, quality: Database, models: BrainCircuit, about: BookOpen };
+const pages: PageId[] = ['overview', 'gpus', 'issues', 'incidents', 'validations', 'quality', 'models', 'about'];
 const pageCopy = (tx: Tx): Record<PageId, { label: string; group: string; title: string; desc: string }> => ({
   overview: { label: tx('集群总览', 'Overview'), group: tx('运行', 'OPERATIONS'), title: tx('GPU 集群', 'GPU Fleet'), desc: tx('资产、状态、事件与交付进度', 'Assets, status, incidents and delivery') },
   gpus: { label: tx('GPU 资产', 'GPU Assets'), group: tx('运行', 'OPERATIONS'), title: tx('GPU 资产', 'GPU Assets'), desc: tx('健康、异常、性能与数据置信度', 'Health, anomaly, performance and data confidence') },
+  issues: { label: tx('问题中心', 'Issue Center'), group: tx('运行', 'OPERATIONS'), title: tx('问题统计与处置', 'Issue Analytics & Resolution'), desc: tx('发现、分类、状态、原因、解决过程与训练数据', 'Discovery, categories, status, root cause, resolution process and training data') },
   incidents: { label: tx('事件', 'Incidents'), group: tx('运行', 'OPERATIONS'), title: tx('事件', 'Incidents'), desc: tx('XID、ECC、掉卡、不可用与处理状态', 'XID, ECC, dropout, unavailable and workflow state') },
   validations: { label: tx('性能验证', 'Validation'), group: tx('运行', 'OPERATIONS'), title: tx('性能验证', 'Performance Validation'), desc: tx('算力衰减检测与维护窗口复测', 'Degradation detection and maintenance validation') },
   quality: { label: tx('数据质量', 'Data Quality'), group: tx('系统', 'SYSTEM'), title: tx('数据质量', 'Data Quality'), desc: tx('采集覆盖、身份映射与能力矩阵', 'Coverage, identity mapping and capability matrix') },
@@ -61,6 +66,7 @@ const pageCopy = (tx: Tx): Record<PageId, { label: string; group: string; title:
 const subPages = (page: PageId, tx: Tx): SubPage[] => ({
   overview: [],
   gpus: [{ id: 'health', label: tx('GPU 健康', 'GPU Health') }, { id: 'inventory', label: tx('资产清单', 'Inventory') }],
+  issues: [],
   incidents: [{ id: 'hardware', label: tx('硬件事件', 'Hardware Events') }, { id: 'ingestion', label: tx('接收记录', 'Ingestion Records') }, { id: 'workflow', label: tx('处理流程', 'Workflow') }],
   validations: [{ id: 'degradation', label: tx('衰减检测', 'Degradation') }, { id: 'records', label: tx('验证记录', 'Records') }],
   quality: [{ id: 'targets', label: tx('采集覆盖', 'Target Coverage') }, { id: 'identity', label: tx('身份与带外', 'Identity & BMC') }, { id: 'audit', label: tx('同步审计', 'Sync Audit') }],
@@ -75,6 +81,7 @@ function time(value?: string, lang = 'zh-CN') {
 }
 function compareIP(left: string, right: string) { const a = left.split('.').map(Number); const b = right.split('.').map(Number); for (let i = 0; i < Math.max(a.length, b.length); i += 1) { const delta = (a[i] || 0) - (b[i] || 0); if (delta) return delta; } return left.localeCompare(right); }
 function tone(level?: string) { const v = (level || '').toLowerCase(); return v === 'critical' || v === 'error' ? 'danger' : v === 'warning' || v === 'attention' ? 'warning' : v === 'info' ? 'info' : v === 'healthy' || v === 'recovered' ? 'healthy' : 'neutral'; }
+function issueTone(status?: string) { const value = (status || '').toLowerCase(); return value === 'resolved' ? 'healthy' : value === 'in_progress' ? 'info' : value === 'open' ? 'warning' : 'neutral'; }
 function Badge({ value, kind = 'neutral' }: { value: string; kind?: string }) { return <span className={`badge ${kind}`}><i />{value}</span>; }
 function Card({ children, className = '' }: { children: ReactNode; className?: string }) { return <section className={`card ${className}`}>{children}</section>; }
 function CardHead({ code, title, action }: { code?: string; title: string; action?: ReactNode }) { return <div className="card-head"><div>{code && <span>{code}</span>}<h2>{title}</h2></div>{action}</div>; }
@@ -118,17 +125,29 @@ export default function App() {
   const [selected, setSelected] = useState<number | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [level, setLevel] = useState('');
-  const [subPage, setSubPage] = useState<Record<PageId, string>>({ overview: '', gpus: 'health', incidents: 'hardware', validations: 'degradation', quality: 'targets', models: 'stack', about: 'definition' });
+  const [issueSummary, setIssueSummary] = useState<IssueSummary | null>(null);
+  const [issues, setIssues] = useState<PlatformIssue[]>([]);
+  const [issueMeta, setIssueMeta] = useState<CursorMeta>({ total: 0, limit: 50, has_more: false, next_before_id: 0 });
+  const [issueBeforeID, setIssueBeforeID] = useState(0);
+  const [issueCursorHistory, setIssueCursorHistory] = useState<number[]>([]);
+  const [issueCategory, setIssueCategory] = useState('');
+  const [issueStatus, setIssueStatus] = useState('');
+  const [issueQuery, setIssueQuery] = useState('');
+  const [issueLoading, setIssueLoading] = useState(false);
+  const [selectedIssueID, setSelectedIssueID] = useState<number | null>(null);
+  const [issueDetail, setIssueDetail] = useState<IssueDetail | null>(null);
+  const [issueRefresh, setIssueRefresh] = useState(0);
+  const [subPage, setSubPage] = useState<Record<PageId, string>>({ overview: '', gpus: 'health', issues: '', incidents: 'hardware', validations: 'degradation', quality: 'targets', models: 'stack', about: 'definition' });
 
   const navigate = (id: PageId) => { setPage(id); setSidebar(false); window.location.hash = `/${id}`; window.scrollTo(0, 0); };
   const load = async () => {
     setLoading(true);
     try {
-      const [s, df, f, fs, ga, ct, sr, ac, hs, hg, fes] = await Promise.all([
+      const [s, df, f, fs, ga, ct, sr, ac, hs, hg, fes, is] = await Promise.all([
         fetch('/api/v1/status'), fetch('/api/v1/data-freshness'), fetch('/api/v1/alerts/failures?limit=8'),
         fetch('/api/v1/fleet/summary'), fetch('/api/v1/gpus?limit=2000'), fetch('/api/v1/targets?limit=2000'),
         fetch('/api/v1/sync-runs?limit=20'), fetch('/api/v1/inventory/changes?limit=50'),
-        fetch('/api/v1/health/summary'), fetch('/api/v1/health/gpus?limit=1000'), fetch('/api/v1/fault-events/summary'),
+        fetch('/api/v1/health/summary'), fetch('/api/v1/health/gpus?limit=1000'), fetch('/api/v1/fault-events/summary'), fetch('/api/v1/issues/summary'),
       ]);
       if (s.ok) setStatus(await s.json());
       if (df.ok) setFreshness(await df.json()); else setFreshness({ overall_status: 'error', server_time: new Date().toISOString(), sources: {} });
@@ -145,6 +164,7 @@ export default function App() {
       if (hs.ok) { const data = await hs.json(); setHealthSummary(data.data || null); }
       if (hg.ok) { const data = await hg.json(); setHealthScores(Array.isArray(data.data) ? data.data : []); }
       if (fes.ok) { const data = await fes.json(); setFaultSummary(data.data || null); }
+      if (is.ok) { const data = await is.json(); setIssueSummary(data.data || null); }
     } catch { setInventoryError(true); } finally { setLoading(false); }
   };
   useEffect(() => { load(); const id = window.setInterval(load, 30000); return () => window.clearInterval(id); }, []);
@@ -202,6 +222,35 @@ export default function App() {
   }, [faultBeforeID, query, level, ingestionRefresh]);
   useEffect(() => { setFaultBeforeID(0); setFaultCursorHistory([]); }, [query, level]);
   useEffect(() => {
+    let cancelled = false;
+    const loadIssues = async () => {
+      setIssueLoading(true);
+      try {
+        const params = new URLSearchParams({ limit: '50' });
+        if (issueBeforeID > 0) params.set('before_id', String(issueBeforeID));
+        if (issueCategory) params.set('category', issueCategory);
+        if (issueStatus) params.set('status', issueStatus);
+        if (issueQuery.trim()) params.set('q', issueQuery.trim());
+        const response = await fetch(`/api/v1/issues?${params.toString()}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        if (cancelled) return;
+        setIssues(Array.isArray(payload.data) ? payload.data : []);
+        setIssueMeta({ total: Number(payload.meta?.total || 0), limit: Number(payload.meta?.limit || 50), has_more: Boolean(payload.meta?.has_more), next_before_id: Number(payload.meta?.next_before_id || 0) });
+      } catch { if (!cancelled) setIssueMeta(current => ({ ...current, has_more: false })); }
+      finally { if (!cancelled) setIssueLoading(false); }
+    };
+    const debounce = window.setTimeout(loadIssues, issueQuery ? 250 : 0);
+    return () => { cancelled = true; window.clearTimeout(debounce); };
+  }, [issueBeforeID, issueCategory, issueStatus, issueQuery, issueRefresh]);
+  useEffect(() => { setIssueBeforeID(0); setIssueCursorHistory([]); }, [issueCategory, issueStatus, issueQuery]);
+  useEffect(() => {
+    if (!selectedIssueID) { setIssueDetail(null); return; }
+    let cancelled = false;
+    fetch(`/api/v1/issues/${selectedIssueID}`).then(response => response.ok ? response.json() : null).then(payload => { if (!cancelled) setIssueDetail(payload?.data || null); }).catch(() => { if (!cancelled) setIssueDetail(null); });
+    return () => { cancelled = true; };
+  }, [selectedIssueID, issueRefresh]);
+  useEffect(() => {
     const key = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setSearchOpen(true); } if (e.key === '/' && !['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) { e.preventDefault(); setSearchOpen(true); } };
     window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key);
   }, []);
@@ -240,13 +289,15 @@ export default function App() {
   };
   const nextFaultPage = () => { if (faultMeta.has_more && faultMeta.next_before_id) { setFaultCursorHistory(current => [...current, faultBeforeID]); setFaultBeforeID(faultMeta.next_before_id); } };
   const previousFaultPage = () => { if (faultCursorHistory.length) { const previous = faultCursorHistory[faultCursorHistory.length - 1]; setFaultCursorHistory(current => current.slice(0, -1)); setFaultBeforeID(previous); } };
-  const refresh = () => { void load(); setIngestionRefresh(value => value + 1); };
+  const nextIssuePage = () => { if (issueMeta.has_more && issueMeta.next_before_id) { setIssueCursorHistory(current => [...current, issueBeforeID]); setIssueBeforeID(issueMeta.next_before_id); } };
+  const previousIssuePage = () => { if (issueCursorHistory.length) { const previous = issueCursorHistory[issueCursorHistory.length - 1]; setIssueCursorHistory(current => current.slice(0, -1)); setIssueBeforeID(previous); } };
+  const refresh = () => { void load(); setIngestionRefresh(value => value + 1); setIssueRefresh(value => value + 1); };
 
   return <div className="app">
     <aside className={`sidebar ${sidebar ? 'open' : ''}`}>
       <div className="brand"><span className="brand-icon"><Layers3 size={19} /></span><div><b>ATLAS</b><small>GPU RELIABILITY</small></div><button className="mobile-only icon-btn" onClick={() => setSidebar(false)}><X size={17} /></button></div>
       <button className="cluster-switch"><span><i /> atlas-test</span><small>10.111.201.1:8077</small><ChevronRight size={14} /></button>
-      <nav>{['运行', '系统'].map(group => <div className="nav-group" key={group}><label>{tx(group, group === '运行' ? 'OPERATIONS' : 'SYSTEM')}</label>{pages.filter(id => copy[id].group === tx(group, group === '运行' ? 'OPERATIONS' : 'SYSTEM')).map(id => { const Icon = pageIcons[id]; return <button key={id} className={page === id ? 'active' : ''} onClick={() => navigate(id)}><Icon size={16} /><span>{copy[id].label}</span>{id === 'incidents' && (faultSummary?.open || 0) > 0 && <em>{faultSummary?.open}</em>}</button>; })}</div>)}</nav>
+      <nav>{['运行', '系统'].map(group => <div className="nav-group" key={group}><label>{tx(group, group === '运行' ? 'OPERATIONS' : 'SYSTEM')}</label>{pages.filter(id => copy[id].group === tx(group, group === '运行' ? 'OPERATIONS' : 'SYSTEM')).map(id => { const Icon = pageIcons[id]; const count = id === 'issues' ? issueSummary?.remaining : id === 'incidents' ? faultSummary?.open : 0; return <button key={id} className={page === id ? 'active' : ''} onClick={() => navigate(id)}><Icon size={16} /><span>{copy[id].label}</span>{(count || 0) > 0 && <em>{count}</em>}</button>; })}</div>)}</nav>
       <div className="sidebar-footer"><span><i className={status?.status === 'ok' ? 'online' : ''} />API {status?.status === 'ok' ? 'ONLINE' : 'WAITING'}</span><small>{status?.version || 'dev'} · {status?.commit || 'local'}</small></div>
     </aside>
     {sidebar && <button className="scrim" onClick={() => setSidebar(false)} />}
@@ -263,6 +314,7 @@ export default function App() {
         <AnimatePresence mode="wait"><motion.div key={page} className={page === 'overview' ? 'overview-page' : 'secondary-page'} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: .12 }}>
           {page === 'overview' && <Overview tx={tx} faults={openFaults} faultSummary={faultSummary} hosts={hosts} loading={loading} summary={summary} models={fleetModels} inventoryError={inventoryError} navigate={navigate} />}
           {page === 'gpus' && <Gpus tx={tx} view={subPage.gpus} assets={gpuAssets} models={fleetModels} loading={loading} inventoryError={inventoryError} healthScores={healthScores} healthSummary={healthSummary} lang={lang} />}
+          {page === 'issues' && <Issues tx={tx} summary={issueSummary} rows={issues} meta={issueMeta} page={issueCursorHistory.length + 1} loading={issueLoading} category={issueCategory} setCategory={setIssueCategory} status={issueStatus} setStatus={setIssueStatus} query={issueQuery} setQuery={setIssueQuery} previousPage={previousIssuePage} nextPage={nextIssuePage} select={setSelectedIssueID} lang={lang} />}
           {page === 'incidents' && <Incidents tx={tx} view={subPage.incidents} rows={filtered} ingestionMeta={ingestionMeta} ingestionPage={ingestionCursorHistory.length + 1} ingestionLoading={ingestionLoading} previousIngestionPage={previousIngestionPage} nextIngestionPage={nextIngestionPage} faultRows={faultEvents} faultMeta={faultMeta} faultPage={faultCursorHistory.length + 1} faultLoading={faultLoading} previousFaultPage={previousFaultPage} nextFaultPage={nextFaultPage} query={subPage.incidents === 'ingestion' ? ingestionQuery : query} setQuery={subPage.incidents === 'ingestion' ? setIngestionQuery : setQuery} level={subPage.incidents === 'ingestion' ? ingestionLevel : level} setLevel={subPage.incidents === 'ingestion' ? setIngestionLevel : setLevel} failures={failures} select={setSelected} lang={lang} />}
           {page === 'validations' && <Validations tx={tx} view={subPage.validations} />}
           {page === 'quality' && <Quality tx={tx} view={subPage.quality} targets={targets} summary={summary} inventoryError={inventoryError} syncRuns={syncRuns} assetChanges={assetChanges} lang={lang} />}
@@ -273,6 +325,7 @@ export default function App() {
     </main>
     <AnimatePresence>{searchOpen && <GlobalSearch tx={tx} query={query} setQuery={setQuery} pagesCopy={copy} items={ingestions} assets={gpuAssets} close={() => setSearchOpen(false)} navigate={navigate} select={id => { setSelected(id); navigate('incidents'); setSearchOpen(false); }} />}</AnimatePresence>
     <AnimatePresence>{selectedItem && <Drawer tx={tx} item={selectedItem} report={report} lang={lang} close={() => setSelected(null)} />}</AnimatePresence>
+    <AnimatePresence>{selectedIssueID && issueDetail && <IssueDrawer tx={tx} detail={issueDetail} lang={lang} close={() => setSelectedIssueID(null)} saved={() => { setIssueRefresh(value => value + 1); void load(); }} />}</AnimatePresence>
   </div>;
 }
 
@@ -295,6 +348,28 @@ function Overview({ tx, faults, faultSummary, hosts, loading, summary, models, i
     <Card className="span-4"><CardHead code="STATUS" title={tx('交付状态', 'Delivery')} /><div className="delivery">{[[tx('数据治理', 'Data governance'), 'P0', tx('基线完成', 'BASELINE')], [tx('健康评分', 'Health scoring'), 'P1', tx('基线完成', 'BASELINE')], [tx('故障闭环', 'Incident workflow'), 'P2', tx('进行中', 'ACTIVE')], [tx('性能验证', 'Performance validation'), 'P2.5', tx('规划', 'PLANNED')]].map(x => <div key={x[1]}><code>{x[1]}</code><b>{x[0]}</b><Badge value={x[2]} kind={x[1] === 'P2' ? 'healthy' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-8"><CardHead code="LIVE" title={tx('未恢复硬件事件', 'Open Hardware Events')} action={<button className="link" onClick={() => navigate('incidents')}>{tx('全部', 'View all')}<ChevronRight size={13} /></button>} /><FaultEventList tx={tx} items={faults.slice(0, 6)} /></Card>
     <Card className="span-4"><CardHead code="SCOPE" title={tx('检测范围', 'Detection Scope')} /><div className="scope-list">{[[ShieldAlert, tx('硬故障', 'Hard failure'), 'XID · DBE · DROP'], [Gauge, tx('性能衰减', 'Degradation'), 'COMPUTE · MEMORY · LINK'], [Activity, tx('异常', 'Anomaly'), 'PEER · HISTORY · DRIFT'], [BrainCircuit, tx('预测', 'Prediction'), '1H · 6H · 24H']].map(([Icon, title, code]) => { const I = Icon as typeof Cpu; return <div key={String(code)}><I size={16} /><span><b>{String(title)}</b><small>{String(code)}</small></span></div>; })}</div></Card>
+  </div>;
+}
+
+function Issues({ tx, summary, rows, meta, page, loading, category, setCategory, status, setStatus, query, setQuery, previousPage, nextPage, select, lang }: { tx: Tx; summary: IssueSummary | null; rows: PlatformIssue[]; meta: CursorMeta; page: number; loading: boolean; category: string; setCategory: (value: string) => void; status: string; setStatus: (value: string) => void; query: string; setQuery: (value: string) => void; previousPage: () => void; nextPage: () => void; select: (id: number) => void; lang: string }) {
+  const categories = [
+    ['availability', tx('节点可用性', 'Node Availability')],
+    ['inventory', tx('资产与身份', 'Inventory & Identity')],
+    ['data_quality', tx('数据质量', 'Data Quality')],
+    ['hardware_fault', tx('硬件故障', 'Hardware Fault')],
+  ];
+  const categoryName = (value: string) => categories.find(item => item[0] === value)?.[1] || value;
+  const start = meta.total > 0 ? (page - 1) * meta.limit + 1 : 0;
+  const end = start > 0 ? start + rows.length - 1 : 0;
+  return <div className="grid issue-center">
+    {[
+      [tx('发现问题', 'Discovered'), summary?.discovered ?? '—', tx('历史累计', 'ALL TIME'), ClipboardList, ''],
+      [tx('已解决', 'Resolved'), summary?.resolved ?? '—', tx('自动恢复或人工解决', 'AUTO OR MANUAL'), CheckCircle2, 'resolved'],
+      [tx('遗留问题', 'Remaining'), summary?.remaining ?? '—', tx('待处理与处理中', 'OPEN + IN PROGRESS'), AlertTriangle, 'remaining'],
+      [tx('当前仍被检测', 'Actively Detected'), summary?.active_detection ?? '—', tx('自动检测源仍异常', 'SOURCE STILL ACTIVE'), ShieldAlert, ''],
+    ].map(([label, value, note, Icon, statusFilter]) => { const I = Icon as typeof ClipboardList; return <button className="issue-stat" key={String(label)} onClick={() => { setStatus(String(statusFilter)); setCategory(''); }}><I size={18} /><span>{String(label)}</span><strong>{String(value)}</strong><small>{String(note)}</small></button>; })}
+    <Card className="span-12"><CardHead code="CATEGORIES" title={tx('问题分类', 'Issue Categories')} action={<Badge value={`${summary?.discovered || 0} TOTAL`} kind="info" />} /><div className="issue-categories"><button className={!category ? 'active' : ''} onClick={() => setCategory('')}><b>{tx('全部问题', 'All Issues')}</b><strong>{summary?.discovered || 0}</strong></button>{categories.map(([key, label]) => <button key={key} className={category === key ? 'active' : ''} onClick={() => setCategory(key)}><b>{label}</b><strong>{summary?.by_category[key] || 0}</strong><small>{key}</small></button>)}</div></Card>
+    <Card className="span-12"><div className="toolbar issue-toolbar"><label><Search size={15} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder={tx('节点 / GPU / 类型 / 描述', 'Node / GPU / type / description')} /></label><label className="select"><Filter size={15} /><select value={status} onChange={event => setStatus(event.target.value)}><option value="">{tx('全部状态', 'All status')}</option><option value="remaining">{tx('遗留问题', 'REMAINING')}</option><option value="open">OPEN</option><option value="in_progress">IN PROGRESS</option><option value="resolved">RESOLVED</option><option value="ignored">IGNORED</option></select></label><span>{loading ? tx('同步中', 'Syncing') : `${start}–${end} / ${meta.total}`}</span></div><div className="table-wrap"><table className="issue-table"><thead><tr><th>{tx('分类 / 类型', 'Category / Type')}</th><th>{tx('问题', 'Issue')}</th><th>{tx('对象', 'Entity')}</th><th>{tx('级别', 'Severity')}</th><th>{tx('处理状态', 'Workflow')}</th><th>{tx('检测状态', 'Detection')}</th><th>{tx('最近发现', 'Last Seen')}</th><th /></tr></thead><tbody>{rows.map(issue => <tr key={issue.id}><td><b>{categoryName(issue.category)}</b><small><code>{issue.issue_type}</code></small></td><td><b>{issue.title}</b><small>{issue.description || '—'}</small></td><td><b>{issue.node_ip || issue.entity_key}</b><small><code>{issue.gpu_uuid || issue.entity_type}</code></small></td><td><Badge value={issue.severity.toUpperCase()} kind={tone(issue.severity)} /></td><td><Badge value={issue.status.toUpperCase()} kind={issueTone(issue.status)} /></td><td><Badge value={issue.detection_state.toUpperCase()} kind={issue.detection_state === 'active' ? 'warning' : 'healthy'} /></td><td>{time(issue.last_detected_at, lang)}</td><td><button className="link" onClick={() => select(issue.id)}>{tx('详情与处置', 'Resolve')}<ChevronRight size={13} /></button></td></tr>)}</tbody></table>{rows.length === 0 && <Empty tx={tx} title={tx('没有匹配的问题', 'No matching issues')} />}</div><div className="ingestion-pagination"><span>{tx(`第 ${page} 页`, `Page ${page}`)}</span><div><button onClick={previousPage} disabled={page <= 1}><ChevronLeft size={15} /></button><button onClick={nextPage} disabled={!meta.has_more}><ChevronRight size={15} /></button></div></div></Card>
   </div>;
 }
 
@@ -393,6 +468,7 @@ function About({ tx, view }: { tx: Tx; view: string }) {
     { id: 'prediction', name: tx('硬件故障预警与预测', 'Hardware Early Warning & Failure Prediction'), version: 'v0.0.1', status: tx('特征底座就绪，模型未交付', 'FEATURE FOUNDATION READY'), desc: tx('承载故障发生前的风险预警与概率预测，覆盖 GPU，并按统一资产、特征和标签模型扩展至服务器、存储和网络硬件；当前仅完成统一特征底座，尚未交付 PyOD 或监督概率模型。', 'Provide pre-failure risk warnings and probability prediction for GPUs, extending through a common asset, feature and label model to server, storage and network hardware. The common feature foundation is ready; PyOD and supervised probability models are not yet delivered.'), history: [tx('v0.0.1 · Feature Catalog v1 可供异常检测、风险排序和监督训练消费', 'v0.0.1 · Feature Catalog v1 is consumable by anomaly detection, risk ranking and supervised training'), tx('v0.0.0 · 特征、标签、PyOD、监督模型与概率校准路线完成', 'v0.0.0 · feature, label, PyOD, supervised-model and probability-calibration roadmap')] },
     { id: 'degradation', name: tx('性能衰减识别', 'Performance Degradation Detection'), version: 'v0.0.0', status: tx('方案阶段', 'DESIGNED'), desc: tx('通过被动同类对比和维护窗口主动验证识别计算、显存、PCIe 与 NVLink 性能退化。', 'Detect compute, memory, PCIe and NVLink degradation through passive peer comparison and maintenance-window validation.'), history: [tx('v0.0.0 · 被动检测与主动验证安全门设计', 'v0.0.0 · passive detection and active-validation safety gates')] },
     { id: 'incident', name: tx('故障事件管理', 'Fault Incident Management'), version: 'v0.2.2', status: tx('稳定分页基线', 'STABLE PAGINATION BASELINE'), desc: tx('分层管理原始接收记录、Atlas 硬件事件与后续故障案例；接收记录和硬件事件均支持真实总数、服务端筛选和稳定 ID 游标分页。', 'Separate raw ingestion records, Atlas hardware events and future fault cases. Both ingestion records and hardware events provide real totals, server-side filtering and stable ID cursor pagination.'), history: [tx('v0.2.2 · 硬件事件稳定 ID 游标、服务端筛选与前端分页', 'v0.2.2 · stable hardware-event ID cursor, server-side filtering and UI pagination'), tx('v0.2.1 · 只读生产接收库、真实总数、游标分页与新鲜度', 'v0.2.1 · read-only production ingestion store, real totals, cursor pagination and freshness'), tx('v0.2.0 · 接收记录、硬件事件与故障案例分层', 'v0.2.0 · ingestion, hardware event and fault case layers'), tx('v0.1.0 · open / recovered 事件生命周期', 'v0.1.0 · open/recovered event lifecycle')] },
+    { id: 'issue', name: tx('问题统计与处置', 'Issue Analytics & Resolution'), version: 'v0.1.0', status: tx('问题台账基线', 'ISSUE LEDGER BASELINE'), desc: tx('统一统计平台发现的问题、分类、自动检测状态和人工处置状态，记录根因、方案、处理过程与结果，并输出可审计的 AI/Skill 训练数据。', 'Normalize discovered problems, categories, automated detection state and human workflow status; capture root cause, solution, process and result; and export audited AI/Skill training data.'), history: [tx('v0.1.0 · 五类检测源归一化、统计钻取、处置历史与训练数据导出', 'v0.1.0 · five-source normalization, analytics drill-down, resolution history and training export')] },
     { id: 'validation', name: tx('维修验证闭环', 'Repair Validation Workflow'), version: 'v0.0.0', status: tx('方案阶段', 'DESIGNED'), desc: tx('记录人工维修反馈、根因、修复或更换结果，并通过识别、遥测、错误计数和性能复测验证重新上线。', 'Capture repair feedback, root cause and replacement results, then validate return to service through identity, telemetry, counters and performance checks.'), history: [tx('v0.0.0 · 状态机、维护窗口和验证门设计', 'v0.0.0 · state machine, maintenance window and validation gates')] },
   ];
   const milestones = [
@@ -406,7 +482,7 @@ function About({ tx, view }: { tx: Tx; view: string }) {
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>ATLAS</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供资产对账、监控数据质量发现、硬件健康评分、故障检测、硬件故障预警与预测、性能衰减识别、故障事件管理以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, hardware early warning and failure prediction, performance degradation analysis, incident management and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.3.0" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>ATLAS</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供资产对账、监控数据质量发现、硬件健康评分、故障检测、问题统计与处置、硬件故障预警与预测、性能衰减识别、故障事件管理以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, issue analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, incident management and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.4.0" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>
@@ -423,6 +499,29 @@ function GlobalSearch({ tx, query, setQuery, pagesCopy, items, assets, close, na
   const eventRows = q ? items.filter(x => [x.message, x.host, x.source, ...Object.entries(x.labels || {}).flat()].join(' ').toLowerCase().includes(q)).slice(0, 8) : items.slice(0, 4);
   const assetRows = q ? assets.filter(x => [x.node_ip, x.gpu_uuid, x.model_name, x.model, x.pci_bus_id, x.asset_key].join(' ').toLowerCase().includes(q)).slice(0, 8) : [];
   return <motion.div className="modal-layer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><button className="modal-bg" onClick={close} aria-label={tx('关闭搜索', 'Close search')} /><motion.div className="search-modal" initial={{ y: -18, scale: .98 }} animate={{ y: 0, scale: 1 }}><div className="search-input"><Search size={18} /><input ref={input} value={query} onChange={e => setQuery(e.target.value)} placeholder={tx('搜索页面、主机、GPU、UUID、XID、事件', 'Search pages, hosts, GPUs, UUIDs, XIDs, incidents')} /><kbd>ESC</kbd><button onClick={close} aria-label={tx('关闭搜索', 'Close search')}><X size={16} /></button></div><div className="search-results"><label>{tx('页面', 'PAGES')}</label>{pageRows.map(id => { const Icon = pageIcons[id]; return <button key={id} onClick={() => { navigate(id); close(); }}><Icon size={16} /><span><b>{pagesCopy[id].label}</b><small>{pagesCopy[id].desc}</small></span><ChevronRight size={14} /></button>; })}{assetRows.length > 0 && <label>{tx('GPU 资产', 'GPU ASSETS')}</label>}{assetRows.map(x => <button key={x.asset_key} onClick={() => { navigate('gpus'); close(); }}><Cpu size={16} /><span><b>{x.gpu_uuid || 'UUID UNKNOWN'}</b><small>{x.node_ip} · GPU {x.gpu_index} · {x.model_name || x.model || 'UNKNOWN'}</small></span><Badge value={x.state.toUpperCase()} kind={x.state === 'active' ? 'healthy' : 'warning'} /></button>)}<label>{tx('事件', 'INCIDENTS')}</label>{eventRows.map(x => <button key={x.id} onClick={() => select(x.id)}><ShieldAlert size={16} /><span><b>{x.message}</b><small>{x.host} · {x.labels?.UUID || x.source}</small></span><Badge value={x.level} kind={tone(x.level)} /></button>)}{pageRows.length + assetRows.length + eventRows.length === 0 && <Empty tx={tx} title={tx('无结果', 'No results')} />}</div></motion.div></motion.div>;
+}
+
+function IssueDrawer({ tx, detail, lang, close, saved }: { tx: Tx; detail: IssueDetail; lang: string; close: () => void; saved: () => void }) {
+  const issue = detail.issue;
+  const [status, setStatus] = useState(issue.status === 'open' ? 'in_progress' : issue.status);
+  const [rootCause, setRootCause] = useState('');
+  const [solution, setSolution] = useState('');
+  const [process, setProcess] = useState('');
+  const [result, setResult] = useState('');
+  const [operator, setOperator] = useState('');
+  const [trainingEligible, setTrainingEligible] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const submit = async () => {
+    setSaving(true); setError('');
+    try {
+      const response = await fetch(`/api/v1/issues/${issue.id}/resolution`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status, root_cause: rootCause, solution, resolution_process: process, result, operator, training_eligible: trainingEligible, evidence: [] }) });
+      if (!response.ok) { const payload = await response.json().catch(() => null); throw new Error(payload?.error?.message || `HTTP ${response.status}`); }
+      setRootCause(''); setSolution(''); setProcess(''); setResult(''); setTrainingEligible(false); saved();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setSaving(false); }
+  };
+  return <motion.div className="drawer-layer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><button className="drawer-bg" onClick={close} /><motion.aside className="drawer issue-drawer" initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}><header><div><span>ISSUE / #{issue.id} · {issue.category.toUpperCase()}</span><h2>{issue.title}</h2></div><button className="icon-btn" onClick={close}><X size={17} /></button></header><div className="drawer-body"><div className="drawer-meta"><Badge value={issue.severity.toUpperCase()} kind={tone(issue.severity)} /><Badge value={issue.status.toUpperCase()} kind={issueTone(issue.status)} /><Badge value={issue.detection_state.toUpperCase()} kind={issue.detection_state === 'active' ? 'warning' : 'healthy'} /><time>{time(issue.last_detected_at, lang)}</time></div><div className="detail-grid">{[[tx('节点', 'Node'), issue.node_ip], ['GPU UUID', issue.gpu_uuid], [tx('对象', 'Entity'), `${issue.entity_type} / ${issue.entity_key}`], [tx('检测来源', 'Detection Source'), issue.detection_source]].map(item => <div key={item[0]}><small>{item[0]}</small><b>{item[1] || '—'}</b></div>)}</div><section><CardHead code="EVIDENCE" title={tx('问题描述', 'Problem Evidence')} /><p className="muted">{issue.description || '—'}</p></section><section><CardHead code="HUMAN FEEDBACK" title={tx('补充原因与解决过程', 'Root Cause & Resolution')} /><div className="resolution-form"><label>{tx('处理状态', 'Status')}<select value={status} onChange={event => setStatus(event.target.value)}><option value="open">OPEN</option><option value="in_progress">IN PROGRESS</option><option value="resolved">RESOLVED</option><option value="ignored">IGNORED</option></select></label><label>{tx('根本原因', 'Root cause')}<textarea value={rootCause} onChange={event => setRootCause(event.target.value)} placeholder={tx('问题为什么发生？需写证据，不只写现象', 'Why did it happen? Record evidence, not only symptoms.')} /></label><label>{tx('解决方案', 'Solution')}<textarea value={solution} onChange={event => setSolution(event.target.value)} placeholder={tx('采用了什么修复方案？', 'What remediation was chosen?')} /></label><label>{tx('解决过程', 'Resolution process')}<textarea value={process} onChange={event => setProcess(event.target.value)} placeholder={tx('按顺序记录操作、验证与回滚点', 'Record actions, validation and rollback points in order.')} /></label><label>{tx('处理结果', 'Result')}<textarea value={result} onChange={event => setResult(event.target.value)} placeholder={tx('是否恢复、如何验证、是否遗留风险', 'Recovery state, validation evidence and remaining risk.')} /></label><label>{tx('处理人', 'Operator')}<input value={operator} onChange={event => setOperator(event.target.value)} placeholder={tx('姓名或工号', 'Name or operator ID')} /></label><label className="training-check"><input type="checkbox" checked={trainingEligible} onChange={event => { setTrainingEligible(event.target.checked); if (event.target.checked) setStatus('resolved'); }} /><span>{tx('内容完整且已脱敏，可进入 AI/Skill 训练数据集', 'Complete and sanitized; eligible for AI/Skill training dataset')}</span></label>{error && <p className="form-error">{error}</p>}<button className="primary-action" onClick={submit} disabled={saving}>{saving ? tx('保存中…', 'Saving…') : tx('保存处置记录', 'Save resolution')}</button></div></section><section><CardHead code="HISTORY" title={tx('处置历史', 'Resolution History')} action={<Badge value={`${detail.resolutions.length} RECORDS`} kind="info" />} /><div className="resolution-history">{detail.resolutions.map(item => <article key={item.id}><header><Badge value={item.status.toUpperCase()} kind={issueTone(item.status)} /><b>{item.operator}</b><time>{time(item.created_at, lang)}</time>{item.training_eligible && <Badge value="TRAINING" kind="info" />}</header><p><strong>{tx('原因', 'Cause')}:</strong> {item.root_cause || '—'}</p><p><strong>{tx('方案', 'Solution')}:</strong> {item.solution || '—'}</p><p><strong>{tx('过程', 'Process')}:</strong> {item.resolution_process || '—'}</p><p><strong>{tx('结果', 'Result')}:</strong> {item.result || '—'}</p></article>)}{detail.resolutions.length === 0 && <p className="muted">{tx('尚无人工处置记录', 'No human resolution records yet')}</p>}</div></section></div></motion.aside></motion.div>;
 }
 
 function Drawer({ tx, item, report, lang, close }: { tx: Tx; item: Ingestion; report: Report | null; lang: string; close: () => void }) {
