@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"atlas/internal/analyzer"
+	"atlas/internal/degradation"
 	"atlas/internal/features"
 	"atlas/internal/freshness"
 	ig "atlas/internal/gateway"
@@ -98,6 +99,7 @@ func main() {
 	healthFreshAfter := 2 * parseDurationOrDefault("GPU health score", cfg.Health.ScoreInterval, 30*time.Minute)
 	freshnessHandler := freshness.NewHandler(db, ingestionDB, cfg.Gateway.IngestionSourceMode, ingestionStaleAfter, inventoryFreshAfter, healthFreshAfter)
 	featureHandler := features.NewHandler(db)
+	degradationHandler := degradation.NewHandler(db)
 	issueService := issues.NewService(db)
 	issueHandler := issues.NewHandlerWithService(db, issueService)
 	platformConfigHandler := platformconfig.NewHandler(db, cfg.Branding)
@@ -188,6 +190,8 @@ func main() {
 	mux.HandleFunc("/api/v1/health/runs", healthHandler.HandleRuns)
 	mux.HandleFunc("/api/v1/fault-events", healthHandler.HandleEvents)
 	mux.HandleFunc("/api/v1/fault-events/summary", healthHandler.HandleEventSummary)
+	mux.HandleFunc("/api/v1/degradation/summary", degradationHandler.HandleSummary)
+	mux.HandleFunc("/api/v1/degradation/candidates", degradationHandler.HandleCandidates)
 
 	// 7. 启动服务
 	port := cfg.Gateway.Port
