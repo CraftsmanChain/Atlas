@@ -84,6 +84,8 @@ func InitDB(dsn string) (*DB, error) {
 		&api.GPUHealthRuleHit{},
 		&api.GPUFaultEvent{},
 		&api.FeatureDefinition{},
+		&api.PlatformIssue{},
+		&api.IssueResolution{},
 	)
 	if err != nil {
 		return nil, err

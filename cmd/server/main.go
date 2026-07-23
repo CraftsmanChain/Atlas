@@ -18,6 +18,7 @@ import (
 	ig "atlas/internal/gateway"
 	"atlas/internal/health"
 	"atlas/internal/inventory"
+	"atlas/internal/issues"
 	promclient "atlas/internal/prometheus"
 	"atlas/pkg/config"
 	"atlas/pkg/logging"
@@ -96,6 +97,9 @@ func main() {
 	healthFreshAfter := 2 * parseDurationOrDefault("GPU health score", cfg.Health.ScoreInterval, 30*time.Minute)
 	freshnessHandler := freshness.NewHandler(db, ingestionDB, cfg.Gateway.IngestionSourceMode, ingestionStaleAfter, inventoryFreshAfter, healthFreshAfter)
 	featureHandler := features.NewHandler(db)
+	issueService := issues.NewService(db)
+	issueHandler := issues.NewHandlerWithService(db, issueService)
+	go issueService.Run(context.Background(), time.Minute)
 
 	// Inventory discovery is read-only and best-effort. Prometheus outages are
 	// recorded as failed sync runs and never prevent Atlas from serving APIs.
@@ -163,6 +167,10 @@ func main() {
 	mux.HandleFunc("/api/v1/data-freshness", freshnessHandler.Handle)
 	mux.HandleFunc("/api/v1/features", featureHandler.HandleCollection)
 	mux.HandleFunc("/api/v1/features/", featureHandler.HandleItem)
+	mux.HandleFunc("/api/v1/issues/summary", issueHandler.HandleSummary)
+	mux.HandleFunc("/api/v1/issues/training-data", issueHandler.HandleTrainingData)
+	mux.HandleFunc("/api/v1/issues", issueHandler.HandleCollection)
+	mux.HandleFunc("/api/v1/issues/", issueHandler.HandleSubresource)
 
 	// 6.4 GPU hardware inventory and collection coverage (read-only).
 	mux.HandleFunc("/api/v1/fleet/summary", inventoryHandler.HandleFleetSummary)
