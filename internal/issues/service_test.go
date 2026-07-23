@@ -3,6 +3,7 @@ package issues
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -72,6 +73,55 @@ func TestSyncDetectedIssuesAndAutomaticRecovery(t *testing.T) {
 	}
 	if nodeIssue.Status != "resolved" || nodeIssue.DetectionState != "cleared" || nodeIssue.SourceRecoveredAt == nil {
 		t.Fatalf("node issue was not auto-cleared: %+v", nodeIssue)
+	}
+}
+
+func TestSyncDetectedIssuesTracksSourceConsistency(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 23, 9, 0, 0, 0, time.UTC)
+	node := api.GPUNode{NodeIP: "10.114.4.21", State: "up", Lifecycle: "active", ExpectedGPUCount: 8, ObservedGPUCount: 8, LastSyncedAt: now}
+	if err := db.Create(&node).Error; err != nil {
+		t.Fatal(err)
+	}
+	asset := api.GPUAsset{AssetKey: "10.114.4.21:0", NodeID: node.ID, NodeIP: node.NodeIP, GPUIndex: 0, CurrentUUID: "GPU-A", State: "active", SampleState: "current", LastSyncedAt: now}
+	if err := db.Create(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	snapshot := api.GPUFeatureSnapshot{GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, GPUIndex: 0, ConsistencyIssues: api.StringList{"gpu_temp: dcgm=60 gpu_exporter=70"}, ConsistencyIssueCount: 1, ObservedAt: now}
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	scoreValue := 100
+	score := api.GPUHealthScore{FeatureSnapshotID: snapshot.ID, GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, GPUIndex: 0, Score: &scoreValue, Level: "healthy", DataConfidence: "B", Current: true, EvaluatedAt: now}
+	if err := db.Create(&score).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	if err := service.SyncDetectedIssues(); err != nil {
+		t.Fatal(err)
+	}
+	var issue api.PlatformIssue
+	if err := db.Where("issue_key = ?", fmt.Sprintf("source_consistency:%d", asset.ID)).First(&issue).Error; err != nil {
+		t.Fatal(err)
+	}
+	if issue.Status != "open" || issue.IssueType != "gpu_source_inconsistency" {
+		t.Fatalf("unexpected consistency issue: %+v", issue)
+	}
+	if err := db.Model(&snapshot).Updates(map[string]any{"consistency_issue_count": 0, "consistency_issues": api.StringList{}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SyncDetectedIssues(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&issue, issue.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if issue.Status != "resolved" || issue.DetectionState != "cleared" {
+		t.Fatalf("consistency issue was not cleared: %+v", issue)
 	}
 }
 

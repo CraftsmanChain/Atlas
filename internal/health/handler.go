@@ -27,6 +27,7 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var total, scored, unknown int64
+	var fallbackGPUs, inconsistentGPUs int64
 	var average float64
 	var levels, confidence []countRow
 	query := h.db.Model(&api.GPUHealthScore{}).Where("current = ?", true)
@@ -36,12 +37,14 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 	h.db.Model(&api.GPUHealthScore{}).Where("current = ? AND score IS NOT NULL", true).Select("coalesce(avg(score), 0)").Scan(&average)
 	h.db.Model(&api.GPUHealthScore{}).Where("current = ?", true).Select("level AS name, count(*) AS count").Group("level").Scan(&levels)
 	h.db.Model(&api.GPUHealthScore{}).Where("current = ?", true).Select("data_confidence AS name, count(*) AS count").Group("data_confidence").Scan(&confidence)
+	h.db.Model(&api.GPUHealthScore{}).Joins("JOIN gpu_feature_snapshots ON gpu_feature_snapshots.id = gpu_health_scores.feature_snapshot_id").Where("gpu_health_scores.current = ? AND gpu_feature_snapshots.fallback_metric_count > 0", true).Count(&fallbackGPUs)
+	h.db.Model(&api.GPUHealthScore{}).Joins("JOIN gpu_feature_snapshots ON gpu_feature_snapshots.id = gpu_health_scores.feature_snapshot_id").Where("gpu_health_scores.current = ? AND gpu_feature_snapshots.consistency_issue_count > 0", true).Count(&inconsistentGPUs)
 	var latest api.HealthEvaluationRun
 	var latestValue any
 	if h.db.Where("status = ?", "success").Order("finished_at DESC").First(&latest).Error == nil {
 		latestValue = latest
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"total": total, "scored": scored, "unknown": unknown, "average_score": average, "by_level": rowsToMap(levels), "by_confidence": rowsToMap(confidence), "latest_run": latestValue}})
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"total": total, "scored": scored, "unknown": unknown, "fallback_gpus": fallbackGPUs, "inconsistent_gpus": inconsistentGPUs, "average_score": average, "by_level": rowsToMap(levels), "by_confidence": rowsToMap(confidence), "latest_run": latestValue}})
 }
 
 func (h *Handler) HandleScores(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +70,37 @@ func (h *Handler) HandleScores(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": rows, "meta": map[string]any{"total": total, "limit": limit, "offset": offset, "generated_at": time.Now().Format(time.RFC3339)}})
+	type scoreResponse struct {
+		api.GPUHealthScore
+		MetricSources         api.StringMap  `json:"metric_sources"`
+		SourcesAvailable      api.StringList `json:"sources_available"`
+		FallbackMetricCount   int            `json:"fallback_metric_count"`
+		ConsistencyIssues     api.StringList `json:"consistency_issues"`
+		ConsistencyIssueCount int            `json:"consistency_issue_count"`
+	}
+	snapshotIDs := make([]uint, 0, len(rows))
+	for _, row := range rows {
+		if row.FeatureSnapshotID > 0 {
+			snapshotIDs = append(snapshotIDs, row.FeatureSnapshotID)
+		}
+	}
+	snapshotByID := make(map[uint]api.GPUFeatureSnapshot, len(snapshotIDs))
+	if len(snapshotIDs) > 0 {
+		var snapshots []api.GPUFeatureSnapshot
+		if err := h.db.Where("id IN ?", snapshotIDs).Find(&snapshots).Error; err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		for _, snapshot := range snapshots {
+			snapshotByID[snapshot.ID] = snapshot
+		}
+	}
+	responseRows := make([]scoreResponse, 0, len(rows))
+	for _, row := range rows {
+		snapshot := snapshotByID[row.FeatureSnapshotID]
+		responseRows = append(responseRows, scoreResponse{GPUHealthScore: row, MetricSources: snapshot.MetricSources, SourcesAvailable: snapshot.SourcesAvailable, FallbackMetricCount: snapshot.FallbackMetricCount, ConsistencyIssues: snapshot.ConsistencyIssues, ConsistencyIssueCount: snapshot.ConsistencyIssueCount})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": responseRows, "meta": map[string]any{"total": total, "limit": limit, "offset": offset, "generated_at": time.Now().Format(time.RFC3339)}})
 }
 
 func (h *Handler) HandleRuns(w http.ResponseWriter, r *http.Request) {

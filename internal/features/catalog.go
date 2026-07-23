@@ -11,11 +11,13 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const CatalogVersion = "1.0.0"
+const CatalogVersion = "1.1.0"
 
 type MetricSpec struct {
-	Key   string
-	Query string
+	Key      string
+	Query    string
+	Source   string
+	Priority int
 }
 
 type ListOptions struct {
@@ -46,6 +48,21 @@ func Builtins() []api.FeatureDefinition {
 		metricForDatacenter("row_remap_failure", "memory", "DCGM_FI_DEV_ROW_REMAP_FAILURE", "instant", "Row remap failure", "行重映射失败"),
 		metric("pcie_replay_counter", "interconnect", "DCGM_FI_DEV_PCIE_REPLAY_COUNTER", "instant", "PCIe replay counter", "PCIe 重放计数"),
 		metric("pcie_replay_increase_1h", "interconnect", "increase(DCGM_FI_DEV_PCIE_REPLAY_COUNTER[1h])", "1h", "PCIe replay increase", "PCIe 重放增量"),
+		gpuMetric("gpu_reset_required", "stability", "nvidia_smi_reset_status_reset_required", "instant", "GPU reset required", "GPU 需要重置", api.StringList{"*"}),
+		gpuMetric("uncorrected_ecc_delta_24h", "memory", "clamp_min(delta(nvidia_smi_ecc_errors_uncorrected_aggregate_total[24h]), 0)", "24h", "Uncorrected aggregate ECC increase", "不可纠正 ECC 累计增量", api.StringList{"H100", "H200"}),
+		gpuMetric("fan_speed_pct", "thermal", "nvidia_smi_fan_speed_ratio * 100", "instant", "Fan speed ratio", "风扇转速比例", api.StringList{"4090"}),
+		gpuMetric("pcie_link_width_current", "interconnect", "nvidia_smi_pcie_link_width_current", "instant", "Current PCIe link width", "当前 PCIe 链路宽度", api.StringList{"*"}),
+		gpuMetric("pcie_link_width_max", "interconnect", "nvidia_smi_pcie_link_width_max", "instant", "Maximum PCIe link width", "最大 PCIe 链路宽度", api.StringList{"*"}),
+	}
+	for index := range definitions {
+		for _, fallback := range gpuFallbackSpecs() {
+			if definitions[index].Name != fallback.Key {
+				continue
+			}
+			definitions[index].Lineage = api.StringList{"prometheus", "dcgm_exporter", "gpu_exporter"}
+			definitions[index].Computation = fmt.Sprintf("priority_coalesce(dcgm_exporter:%s,gpu_exporter:%s)", definitions[index].SourceReference, fallback.Query)
+			break
+		}
 	}
 	return definitions
 }
@@ -69,15 +86,54 @@ func metricForDatacenter(name, domain, query, window, en, zh string) api.Feature
 	return definition
 }
 
+func gpuMetric(name, domain, query, window, en, zh string, models api.StringList) api.FeatureDefinition {
+	definition := metric(name, domain, query, window, en, zh)
+	definition.SourceReference = query
+	definition.Computation = "promql:" + query
+	definition.Lineage = api.StringList{"prometheus", "gpu_exporter"}
+	definition.SupportedModels = models
+	definition.MissingStrategy = "source_required_unknown_not_zero"
+	return definition
+}
+
 func HealthMetricSpecs() []MetricSpec {
 	definitions := Builtins()
-	result := make([]MetricSpec, 0, len(definitions))
+	result := make([]MetricSpec, 0, len(definitions)+14)
 	for _, definition := range definitions {
 		if definition.SourceType == "prometheus" && contains(definition.Purposes, "health") {
-			result = append(result, MetricSpec{Key: definition.Name, Query: definition.SourceReference})
+			source := "dcgm_exporter"
+			if strings.Contains(definition.SourceReference, "nvidia_smi_") {
+				source = "gpu_exporter"
+			}
+			result = append(result, MetricSpec{Key: definition.Name, Query: definition.SourceReference, Source: source, Priority: 0})
 		}
 	}
+	result = append(result, gpuFallbackSpecs()...)
 	return result
+}
+
+// gpuFallbackSpecs maps semantically equivalent gpu_exporter values into the
+// canonical health features. PromQL performs unit normalization before Atlas
+// compares or selects values: ratio→percent, Hz→MHz and bytes→MiB.
+func gpuFallbackSpecs() []MetricSpec {
+	return []MetricSpec{
+		{Key: "gpu_temp", Query: "nvidia_smi_temperature_gpu", Source: "gpu_exporter", Priority: 1},
+		{Key: "gpu_temp_max_15m", Query: "max_over_time(nvidia_smi_temperature_gpu[15m])", Source: "gpu_exporter", Priority: 1},
+		{Key: "memory_temp", Query: "nvidia_smi_temperature_memory", Source: "gpu_exporter", Priority: 1},
+		{Key: "memory_temp_max_15m", Query: "max_over_time(nvidia_smi_temperature_memory[15m])", Source: "gpu_exporter", Priority: 1},
+		{Key: "power_usage", Query: "nvidia_smi_power_draw_watts", Source: "gpu_exporter", Priority: 1},
+		{Key: "gpu_util", Query: "nvidia_smi_utilization_gpu_ratio * 100", Source: "gpu_exporter", Priority: 1},
+		{Key: "gpu_util_avg_15m", Query: "avg_over_time(nvidia_smi_utilization_gpu_ratio[15m]) * 100", Source: "gpu_exporter", Priority: 1},
+		{Key: "mem_copy_util", Query: "nvidia_smi_utilization_memory_ratio * 100", Source: "gpu_exporter", Priority: 1},
+		{Key: "sm_clock", Query: "nvidia_smi_clocks_current_sm_clock_hz / 1000000", Source: "gpu_exporter", Priority: 1},
+		{Key: "sm_clock_avg_15m", Query: "avg_over_time(nvidia_smi_clocks_current_sm_clock_hz[15m]) / 1000000", Source: "gpu_exporter", Priority: 1},
+		{Key: "mem_clock", Query: "nvidia_smi_clocks_current_memory_clock_hz / 1000000", Source: "gpu_exporter", Priority: 1},
+		{Key: "fb_used", Query: "nvidia_smi_memory_used_bytes / 1048576", Source: "gpu_exporter", Priority: 1},
+		{Key: "fb_free", Query: "nvidia_smi_memory_free_bytes / 1048576", Source: "gpu_exporter", Priority: 1},
+		{Key: "uncorrectable_remapped_rows", Query: "nvidia_smi_remapped_rows_uncorrectable", Source: "gpu_exporter", Priority: 1},
+		{Key: "correctable_remapped_rows", Query: "nvidia_smi_remapped_rows_correctable", Source: "gpu_exporter", Priority: 1},
+		{Key: "row_remap_failure", Query: "nvidia_smi_remapped_rows_failure", Source: "gpu_exporter", Priority: 1},
+	}
 }
 
 func HealthFeatureVersions() api.StringMap {

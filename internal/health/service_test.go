@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,17 +12,28 @@ import (
 	"atlas/pkg/storage"
 )
 
-type fakePrometheus struct{ values map[string]float64 }
+type fakePrometheus struct {
+	values       map[string]float64
+	sourceValues map[string]map[string]float64
+}
 
 func (f *fakePrometheus) BaseURL() string { return "http://prometheus.test" }
 func (f *fakePrometheus) Query(_ context.Context, query string) ([]prometheus.Sample, error) {
 	for _, spec := range metricSpecs {
 		if spec.query == query {
-			value, ok := f.values[spec.key]
+			values := f.values
+			if f.sourceValues != nil {
+				values = f.sourceValues[spec.source]
+			}
+			value, ok := values[spec.key]
 			if !ok {
 				return nil, nil
 			}
-			return []prometheus.Sample{{Metric: map[string]string{"UUID": "GPU-A"}, Value: value, Timestamp: time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)}}, nil
+			labels := map[string]string{"UUID": "GPU-A"}
+			if spec.source == "gpu_exporter" {
+				labels = map[string]string{"uuid": strings.TrimPrefix("GPU-A", "GPU-")}
+			}
+			return []prometheus.Sample{{Metric: labels, Value: value, Timestamp: time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)}}, nil
 		}
 	}
 	return nil, nil
@@ -72,7 +84,56 @@ func TestEvaluatePersistsScoredAndUnknownAssets(t *testing.T) {
 	if err := db.Where("gpu_uuid = ?", "GPU-A").First(&snapshot).Error; err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.FeatureCatalogVersion != "1.0.0" || snapshot.FeatureVersions["gpu_temp"] != "1.0.0" {
+	if snapshot.FeatureCatalogVersion != "1.1.0" || snapshot.FeatureVersions["gpu_temp"] != "1.1.0" || snapshot.MetricSources["gpu_temp"] != "dcgm_exporter" {
 		t.Fatalf("snapshot is missing feature lineage: %+v", snapshot)
+	}
+}
+
+func TestEvaluateUsesGPUExporterFallbackAndDegradesConfidence(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := api.GPUNode{NodeIP: "10.114.4.21", Lifecycle: "active"}
+	if err := db.Create(&node).Error; err != nil {
+		t.Fatal(err)
+	}
+	asset := api.GPUAsset{AssetKey: "10.114.4.21:0", NodeID: node.ID, NodeIP: node.NodeIP, GPUIndex: 0, CurrentUUID: "GPU-A", ModelName: "NVIDIA H100 80GB HBM3", State: "active"}
+	if err := db.Create(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	sourceValues := map[string]map[string]float64{"dcgm_exporter": {}, "gpu_exporter": {}}
+	for _, spec := range metricSpecs {
+		sourceValues[spec.source][spec.key] = 0
+	}
+	delete(sourceValues["dcgm_exporter"], "gpu_temp")
+	sourceValues["gpu_exporter"]["gpu_temp"] = 61
+	service := NewService(db, &fakePrometheus{sourceValues: sourceValues}, config.HealthConfig{RuleVersion: "test-v1"})
+	service.now = func() time.Time { return time.Date(2026, 7, 20, 8, 1, 0, 0, time.UTC) }
+	if _, err := service.Evaluate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot api.GPUFeatureSnapshot
+	if err := db.Where("gpu_asset_id = ?", asset.ID).First(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Metrics["gpu_temp"] != 61 || snapshot.MetricSources["gpu_temp"] != "gpu_exporter" || snapshot.FallbackMetricCount != 1 || snapshot.DataConfidence != "B" {
+		t.Fatalf("unexpected fallback snapshot: %+v", snapshot)
+	}
+}
+
+func TestMergeFeatureCandidatesPrefersDCGMAndDetectsMismatch(t *testing.T) {
+	now := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
+	value := mergeFeatureCandidates(map[string]map[string]metricObservation{
+		"gpu_temp": {
+			"dcgm_exporter": {value: 60, observedAt: now},
+			"gpu_exporter":  {value: 70, observedAt: now},
+		},
+	})
+	if value.metrics["gpu_temp"] != 60 || value.sources["gpu_temp"] != "dcgm_exporter" || value.fallbackCount != 0 || len(value.consistencyIssues) != 1 {
+		t.Fatalf("unexpected merged value: %+v", value)
+	}
+	if confidence := degradeConfidence("A", value.fallbackCount, len(value.consistencyIssues)); confidence != "B" {
+		t.Fatalf("source mismatch should degrade confidence to B, got %s", confidence)
 	}
 }

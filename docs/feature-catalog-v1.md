@@ -1,5 +1,7 @@
 # Atlas Feature Catalog v1
 
+> 当前契约版本：`v1.1.0`（2026-07-23）
+
 Feature Catalog 是健康评分、PyOD 异常检测、风险排序、监督预测和性能衰减检测共享的数据契约。目录版本为 `1.0.0`；特征定义按 `(name, version)` 不可重复注册。
 
 ## 数据契约
@@ -25,7 +27,9 @@ Feature Catalog 是健康评分、PyOD 异常检测、风险排序、监督预�
 
 ## 已接入消费方
 
-健康评分服务不再维护独立的 Prometheus 特征清单。它从 Catalog v1 的内置定义生成 20 个查询和预期特征集合，包括温度、功耗、利用率、时钟、显存、XID、Row Remap 和 PCIe Replay。4090 不会把不支持的显存温度或 Row Remap 当成缺失风险；H100/H200 会纳入 Row Remap 能力。
+健康评分服务不再维护独立的 Prometheus 特征清单。Catalog v1.1 生成 25 个规范健康特征和 41 个 DCGM/gpu_exporter 源查询，包括温度、功耗、利用率、时钟、显存、XID、Row Remap、PCIe Replay、reset-required、详细 ECC、风扇和 PCIe 链路宽度。
+
+语义等价指标按 DCGM 主源、gpu_exporter 降级备用合并，在查询层完成比例、Hz 和 bytes 的单位规范化；snapshot 记录逐特征来源、回退数量和双源偏差。4090 不会把不支持的显存温度或 Row Remap 当成缺失风险；H100/H200 会纳入 Row Remap 与详细 ECC 能力。完整契约见 [GPU 双源健康评分契约 v1.1](gpu-dual-source-health-v1.1.md)。
 
 内置定义在服务启动时幂等注册，历史定义不会被覆盖。健康特征 snapshot 已写入 `feature_catalog_version` 和逐特征 `feature_versions` manifest；后续模型数据集和推理结果也必须携带同类版本集合，才能支持严格回放。
 

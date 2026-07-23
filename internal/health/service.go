@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,22 +30,31 @@ type Service struct {
 }
 
 type metricSpec struct {
-	key   string
-	query string
+	key, query, source string
+	priority           int
 }
 
 var metricSpecs = func() []metricSpec {
 	catalogSpecs := features.HealthMetricSpecs()
 	result := make([]metricSpec, 0, len(catalogSpecs))
 	for _, spec := range catalogSpecs {
-		result = append(result, metricSpec{key: spec.Key, query: spec.Query})
+		result = append(result, metricSpec{key: spec.Key, query: spec.Query, source: spec.Source, priority: spec.Priority})
 	}
 	return result
 }()
 
-type featureValue struct {
-	metrics    api.FloatMap
+type metricObservation struct {
+	value      float64
 	observedAt time.Time
+}
+
+type featureValue struct {
+	metrics           api.FloatMap
+	sources           api.StringMap
+	sourcesAvailable  api.StringList
+	fallbackCount     int
+	consistencyIssues api.StringList
+	observedAt        time.Time
 }
 
 type ruleHit struct {
@@ -93,7 +103,7 @@ func (s *Service) Evaluate(ctx context.Context) (*api.HealthEvaluationRun, error
 	now := s.now()
 	ruleVersion := strings.TrimSpace(s.config.RuleVersion)
 	if ruleVersion == "" {
-		ruleVersion = "gpu-health-v1.0.0"
+		ruleVersion = "gpu-health-v1.1.0"
 	}
 	run := &api.HealthEvaluationRun{Status: "running", RuleVersion: ruleVersion, Source: s.prom.BaseURL(), StartedAt: now}
 	if err := s.db.Create(run).Error; err != nil {
@@ -106,7 +116,7 @@ func (s *Service) Evaluate(ctx context.Context) (*api.HealthEvaluationRun, error
 		return run, err
 	}
 
-	featureValues := make(map[string]*featureValue)
+	candidates := make(map[string]map[string]map[string]metricObservation)
 	successfulQueries := 0
 	for _, spec := range metricSpecs {
 		rows, err := s.prom.Query(ctx, spec.query)
@@ -116,19 +126,17 @@ func (s *Service) Evaluate(ctx context.Context) (*api.HealthEvaluationRun, error
 		}
 		successfulQueries++
 		for _, row := range rows {
-			uuid := strings.TrimSpace(row.Metric["UUID"])
+			uuid := normalizeGPUUUID(firstNonEmpty(row.Metric["UUID"], row.Metric["uuid"]))
 			if uuid == "" || math.IsNaN(row.Value) || math.IsInf(row.Value, 0) {
 				continue
 			}
-			feature := featureValues[uuid]
-			if feature == nil {
-				feature = &featureValue{metrics: api.FloatMap{}}
-				featureValues[uuid] = feature
+			if candidates[uuid] == nil {
+				candidates[uuid] = make(map[string]map[string]metricObservation)
 			}
-			feature.metrics[spec.key] = row.Value
-			if row.Timestamp.After(feature.observedAt) {
-				feature.observedAt = row.Timestamp
+			if candidates[uuid][spec.key] == nil {
+				candidates[uuid][spec.key] = make(map[string]metricObservation)
 			}
+			candidates[uuid][spec.key][spec.source] = metricObservation{value: row.Value, observedAt: row.Timestamp}
 		}
 	}
 	if successfulQueries == 0 {
@@ -146,16 +154,22 @@ func (s *Service) Evaluate(ctx context.Context) (*api.HealthEvaluationRun, error
 			return err
 		}
 		for _, asset := range assets {
-			value := featureValues[asset.CurrentUUID]
+			value := mergeFeatureCandidates(candidates[normalizeGPUUUID(asset.CurrentUUID)])
 			metrics := api.FloatMap{}
+			sources := api.StringMap{}
+			sourcesAvailable := api.StringList{}
+			fallbackCount := 0
+			consistencyIssues := api.StringList{}
 			observedAt := now
 			if value != nil {
-				metrics, observedAt = value.metrics, value.observedAt
+				metrics, sources, sourcesAvailable = value.metrics, value.sources, value.sourcesAvailable
+				fallbackCount, consistencyIssues, observedAt = value.fallbackCount, value.consistencyIssues, value.observedAt
 			}
 			expected := expectedMetricKeys(asset.ModelName)
 			available := availableCount(metrics, expected)
 			confidence := dataConfidence(asset.State, available, len(expected))
-			snapshot := api.GPUFeatureSnapshot{EvaluationRunID: run.ID, GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, GPUIndex: asset.GPUIndex, ModelName: asset.ModelName, Metrics: metrics, FeatureCatalogVersion: features.CatalogVersion, FeatureVersions: features.HealthFeatureVersions(), AvailableMetricCount: available, ExpectedMetricCount: len(expected), DataConfidence: confidence, ObservedAt: observedAt}
+			confidence = degradeConfidence(confidence, fallbackCount, len(consistencyIssues))
+			snapshot := api.GPUFeatureSnapshot{EvaluationRunID: run.ID, GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, GPUIndex: asset.GPUIndex, ModelName: asset.ModelName, Metrics: metrics, MetricSources: sources, SourcesAvailable: sourcesAvailable, FallbackMetricCount: fallbackCount, ConsistencyIssues: consistencyIssues, ConsistencyIssueCount: len(consistencyIssues), FeatureCatalogVersion: features.CatalogVersion, FeatureVersions: features.HealthFeatureVersions(), AvailableMetricCount: available, ExpectedMetricCount: len(expected), DataConfidence: confidence, ObservedAt: observedAt}
 			if err := tx.Create(&snapshot).Error; err != nil {
 				return err
 			}
@@ -232,4 +246,123 @@ func dataConfidence(assetState string, available, expected int) string {
 	default:
 		return "D"
 	}
+}
+
+func mergeFeatureCandidates(candidates map[string]map[string]metricObservation) *featureValue {
+	if len(candidates) == 0 {
+		return nil
+	}
+	result := &featureValue{metrics: api.FloatMap{}, sources: api.StringMap{}}
+	sourceSet := map[string]bool{}
+	for key, bySource := range candidates {
+		var selected metricObservation
+		source := ""
+		if observation, ok := bySource["dcgm_exporter"]; ok {
+			selected, source = observation, "dcgm_exporter"
+		} else if observation, ok := bySource["gpu_exporter"]; ok {
+			selected, source = observation, "gpu_exporter"
+		}
+		if source == "" {
+			continue
+		}
+		result.metrics[key] = selected.value
+		result.sources[key] = source
+		sourceSet[source] = true
+		if selected.observedAt.After(result.observedAt) {
+			result.observedAt = selected.observedAt
+		}
+		if source == "gpu_exporter" && hasMetricSource(key, "dcgm_exporter") {
+			result.fallbackCount++
+		}
+		dcgm, hasDCGM := bySource["dcgm_exporter"]
+		gpu, hasGPU := bySource["gpu_exporter"]
+		if hasDCGM && hasGPU && inconsistentMetric(key, dcgm.value, gpu.value) {
+			result.consistencyIssues = append(result.consistencyIssues, fmt.Sprintf("%s: dcgm=%.3f gpu_exporter=%.3f", key, dcgm.value, gpu.value))
+		}
+	}
+	for source := range sourceSet {
+		result.sourcesAvailable = append(result.sourcesAvailable, source)
+	}
+	sort.Strings(result.sourcesAvailable)
+	sort.Strings(result.consistencyIssues)
+	return result
+}
+
+func hasMetricSource(key, source string) bool {
+	for _, spec := range metricSpecs {
+		if spec.key == key && spec.source == source {
+			return true
+		}
+	}
+	return false
+}
+
+func inconsistentMetric(key string, dcgm, gpu float64) bool {
+	absoluteTolerance, relativeTolerance, comparable := consistencyTolerance(key)
+	if !comparable {
+		return false
+	}
+	tolerance := math.Max(absoluteTolerance, relativeTolerance*math.Max(math.Abs(dcgm), math.Abs(gpu)))
+	return math.Abs(dcgm-gpu) > tolerance
+}
+
+func consistencyTolerance(key string) (absolute, relative float64, comparable bool) {
+	switch key {
+	case "gpu_temp", "gpu_temp_max_15m":
+		return 3, 0, true
+	case "memory_temp", "memory_temp_max_15m":
+		return 5, 0, true
+	case "power_usage":
+		return 25, .15, true
+	case "gpu_util", "gpu_util_avg_15m", "mem_copy_util":
+		return 10, 0, true
+	case "sm_clock", "sm_clock_avg_15m", "mem_clock":
+		return 150, .10, true
+	case "fb_used", "fb_free":
+		return 256, .05, true
+	case "uncorrectable_remapped_rows", "correctable_remapped_rows", "row_remap_failure":
+		return 0, 0, true
+	default:
+		return 0, 0, false
+	}
+}
+
+func degradeConfidence(confidence string, fallbackCount, consistencyIssueCount int) string {
+	steps := 0
+	if fallbackCount > 0 {
+		steps++
+	}
+	if consistencyIssueCount > 0 {
+		steps++
+	}
+	levels := []string{"A", "B", "C", "D"}
+	index := len(levels) - 1
+	for candidate, level := range levels {
+		if confidence == level {
+			index = candidate
+			break
+		}
+	}
+	index += steps
+	if index >= len(levels) {
+		index = len(levels) - 1
+	}
+	return levels[index]
+}
+
+func normalizeGPUUUID(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 4 && strings.EqualFold(value[:4], "GPU-") {
+		value = value[4:]
+	}
+	return strings.ToLower(value)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

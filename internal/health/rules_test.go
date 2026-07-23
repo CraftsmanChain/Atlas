@@ -51,3 +51,16 @@ func TestEvaluateRulesUsesRuleSeverityAsLevelFloor(t *testing.T) {
 		t.Fatalf("attention rule did not set the risk-level floor: %+v", attention)
 	}
 }
+
+func TestEvaluateRulesUsesGPUExporterSupplementsWithoutDuplicateEquivalentDeduction(t *testing.T) {
+	result := evaluateRules(api.FloatMap{
+		"gpu_reset_required":        1,
+		"uncorrected_ecc_delta_24h": 2,
+		"pcie_link_width_current":   8,
+		"pcie_link_width_max":       16,
+		"gpu_util_avg_15m":          90,
+	}, "NVIDIA H100 80GB HBM3", "A")
+	if result.score == nil || *result.score != 15 || result.level != "critical" || len(result.hits) != 3 {
+		t.Fatalf("unexpected supplemental rules: %+v", result)
+	}
+}
