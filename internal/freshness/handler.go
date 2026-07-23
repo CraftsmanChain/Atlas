@@ -11,12 +11,16 @@ import (
 )
 
 type SourceStatus struct {
-	Status            string     `json:"status"`
-	ObservedAt        *time.Time `json:"observed_at,omitempty"`
-	AgeSeconds        *int64     `json:"age_seconds,omitempty"`
-	StaleAfterSeconds int64      `json:"stale_after_seconds"`
-	SourceMode        string     `json:"source_mode,omitempty"`
-	Message           string     `json:"message,omitempty"`
+	Status                    string     `json:"status"`
+	ObservedAt                *time.Time `json:"observed_at,omitempty"`
+	AgeSeconds                *int64     `json:"age_seconds,omitempty"`
+	StaleAfterSeconds         int64      `json:"stale_after_seconds"`
+	SourceMode                string     `json:"source_mode,omitempty"`
+	CollectionStatus          string     `json:"collection_status,omitempty"`
+	CollectionStartedAt       *time.Time `json:"collection_started_at,omitempty"`
+	CollectionAgeSeconds      *int64     `json:"collection_age_seconds,omitempty"`
+	CollectionIntervalSeconds int64      `json:"collection_interval_seconds,omitempty"`
+	Message                   string     `json:"message,omitempty"`
 }
 
 type Response struct {
@@ -109,10 +113,20 @@ func (h *Handler) latestInventory(now time.Time) SourceStatus {
 	if result.Error != nil {
 		return errorStatus(h.inventoryStaleAfter, result.Error.Error())
 	}
-	if result.RowsAffected == 0 {
-		return Classify(now, nil, h.inventoryStaleAfter)
+	var observed *time.Time
+	if result.RowsAffected > 0 {
+		observed = run.FinishedAt
 	}
-	return Classify(now, run.FinishedAt, h.inventoryStaleAfter)
+	status := Classify(now, observed, h.inventoryStaleAfter)
+	var running api.InventorySyncRun
+	runningResult := h.db.Where("status = ?", "running").Order("started_at DESC").Order("id DESC").Limit(1).Find(&running)
+	if runningResult.Error != nil {
+		return errorStatus(h.inventoryStaleAfter, runningResult.Error.Error())
+	}
+	if runningResult.RowsAffected > 0 && (observed == nil || running.StartedAt.After(*observed)) {
+		applyCollectionStatus(&status, now, running.StartedAt, 10*time.Minute)
+	}
+	return status
 }
 
 func (h *Handler) latestHealth(now time.Time) SourceStatus {
@@ -121,10 +135,37 @@ func (h *Handler) latestHealth(now time.Time) SourceStatus {
 	if result.Error != nil {
 		return errorStatus(h.healthStaleAfter, result.Error.Error())
 	}
-	if result.RowsAffected == 0 {
-		return Classify(now, nil, h.healthStaleAfter)
+	var observed *time.Time
+	if result.RowsAffected > 0 {
+		observed = run.FinishedAt
 	}
-	return Classify(now, run.FinishedAt, h.healthStaleAfter)
+	status := Classify(now, observed, h.healthStaleAfter)
+	var running api.HealthEvaluationRun
+	runningResult := h.db.Where("status = ?", "running").Order("started_at DESC").Order("id DESC").Limit(1).Find(&running)
+	if runningResult.Error != nil {
+		return errorStatus(h.healthStaleAfter, runningResult.Error.Error())
+	}
+	if runningResult.RowsAffected > 0 && (observed == nil || running.StartedAt.After(*observed)) {
+		applyCollectionStatus(&status, now, running.StartedAt, 10*time.Minute)
+	}
+	return status
+}
+
+func applyCollectionStatus(status *SourceStatus, now, startedAt time.Time, interval time.Duration) {
+	age := now.Sub(startedAt)
+	if age < 0 {
+		age = 0
+	}
+	ageSeconds := int64(age.Seconds())
+	status.CollectionStatus = "running"
+	status.CollectionStartedAt = &startedAt
+	status.CollectionAgeSeconds = &ageSeconds
+	status.CollectionIntervalSeconds = int64(interval.Seconds())
+	if age > interval {
+		status.Status = "overdue"
+		status.CollectionStatus = "overdue"
+		status.Message = "monitoring collection has not completed within 10 minutes"
+	}
 }
 
 func errorStatus(staleAfter time.Duration, message string) SourceStatus {
@@ -132,19 +173,30 @@ func errorStatus(staleAfter time.Duration, message string) SourceStatus {
 }
 
 func overallStatus(sources map[string]SourceStatus) string {
-	nonFresh := false
-	nonEmpty := false
+	hasError, hasOverdue, hasStale := false, false, false
+	nonFresh, nonEmpty := false, false
 	for _, source := range sources {
 		switch source.Status {
 		case "error":
-			return "error"
+			hasError = true
+		case "overdue":
+			hasOverdue = true
 		case "stale":
-			return "stale"
+			hasStale = true
 		case "fresh", "snapshot":
 			nonEmpty = true
 		default:
 			nonFresh = true
 		}
+	}
+	if hasError {
+		return "error"
+	}
+	if hasOverdue {
+		return "overdue"
+	}
+	if hasStale {
+		return "stale"
 	}
 	if !nonEmpty {
 		return "empty"

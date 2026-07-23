@@ -117,12 +117,11 @@ func main() {
 		if clientErr != nil {
 			log.Printf("Inventory sync disabled: %v", clientErr)
 		} else {
-			targetInterval := parseDurationOrDefault("target status", cfg.Inventory.TargetSyncInterval, 10*time.Minute)
-			identityInterval := parseDurationOrDefault("identity incremental", cfg.Inventory.IdentitySyncInterval, 30*time.Minute)
+			monitoringInterval := parseDurationOrDefault("monitoring reconciliation", cfg.Inventory.TargetSyncInterval, 10*time.Minute)
 			fullInterval := parseDurationOrDefault("full reconciliation", cfg.Inventory.FullSyncInterval, 24*time.Hour)
-			go inventory.NewService(db, prometheusClient, cfg.Inventory).Run(context.Background(), targetInterval, identityInterval, fullInterval)
+			go inventory.NewService(db, prometheusClient, cfg.Inventory).Run(context.Background(), monitoringInterval, fullInterval)
 			if cfg.Health.Enabled {
-				healthInterval := parseDurationOrDefault("GPU health score", cfg.Health.ScoreInterval, 30*time.Minute)
+				healthInterval := parseDurationOrDefault("GPU health score", cfg.Health.ScoreInterval, 10*time.Minute)
 				healthService := health.NewService(db, prometheusClient, cfg.Health)
 				go func() {
 					// Let the startup full reconciliation finish before the first

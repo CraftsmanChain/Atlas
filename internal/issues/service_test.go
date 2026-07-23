@@ -73,6 +73,24 @@ func TestSyncDetectedIssuesAndAutomaticRecovery(t *testing.T) {
 	if nodeIssue.Status != "resolved" || nodeIssue.DetectionState != "cleared" || nodeIssue.SourceRecoveredAt == nil {
 		t.Fatalf("node issue was not auto-cleared: %+v", nodeIssue)
 	}
+	var asset api.GPUAsset
+	if err := db.Where("node_ip = ?", node.NodeIP).First(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&asset).Updates(map[string]any{"state": "active", "sample_state": "current"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return now.Add(time.Minute) }
+	if err := service.SyncDetectedIssues(); err != nil {
+		t.Fatal(err)
+	}
+	var assetIssue api.PlatformIssue
+	if err := db.Where("issue_key = ?", "gpu_state:"+asset.AssetKey).First(&assetIssue).Error; err != nil {
+		t.Fatal(err)
+	}
+	if assetIssue.Status != "resolved" || assetIssue.DetectionState != "cleared" || assetIssue.SourceRecoveredAt == nil {
+		t.Fatalf("restored GPU issue was not auto-cleared: %+v", assetIssue)
+	}
 }
 
 func TestSyncDetectedIssuesClearsLegacySourceConsistency(t *testing.T) {

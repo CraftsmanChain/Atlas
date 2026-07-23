@@ -100,9 +100,12 @@ func TestSyncBuildsSlotsRecoversHistoryAndTracksReplacement(t *testing.T) {
 		prometheus.Target{Labels: map[string]string{"job": "dcgm_exporter", "instance": "10.114.4.21:9400"}, Health: "up"},
 	)
 	reader.current = []prometheus.Sample{{Metric: map[string]string{"instance": "10.114.4.21:9400", "Hostname": "gpu-21", "gpu": "0", "UUID": "GPU-NEW", "modelName": "RTX 4090"}}}
-	run, err = service.Sync(context.Background())
+	run, err = service.SyncIdentity(context.Background())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if run.TaskType != TaskIdentityIncremental {
+		t.Fatalf("recovery used wrong task type: %+v", run)
 	}
 	if run.ChangeCount == 0 {
 		t.Fatalf("expected reconciliation changes, run=%+v", run)

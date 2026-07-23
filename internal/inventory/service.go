@@ -47,36 +47,31 @@ func NewService(db *storage.DB, prom prometheusReader, cfg config.InventoryConfi
 	return &Service{db: db, prom: prom, config: cfg, now: time.Now}
 }
 
-// Run establishes a full baseline, then runs three independent reconciliation
-// cadences. Work is intentionally serialized to protect SQLite and to prevent
-// overlapping observations from producing contradictory change events.
-func (s *Service) Run(ctx context.Context, targetInterval, identityInterval, fullInterval time.Duration) {
-	if targetInterval <= 0 {
-		targetInterval = 10 * time.Minute
-	}
-	if identityInterval <= 0 {
-		identityInterval = 30 * time.Minute
+// Run establishes a full baseline, then performs one combined monitoring
+// reconciliation every interval. Timers are reset only after a run finishes,
+// so a slow Prometheus query can never overlap or queue another observation.
+func (s *Service) Run(ctx context.Context, monitoringInterval, fullInterval time.Duration) {
+	if monitoringInterval <= 0 {
+		monitoringInterval = 10 * time.Minute
 	}
 	if fullInterval <= 0 {
 		fullInterval = 24 * time.Hour
 	}
 	s.syncAndLog(ctx, TaskFullReconcile)
-	targetTicker := time.NewTicker(targetInterval)
-	identityTicker := time.NewTicker(identityInterval)
-	fullTicker := time.NewTicker(fullInterval)
-	defer targetTicker.Stop()
-	defer identityTicker.Stop()
-	defer fullTicker.Stop()
+	monitoringTimer := time.NewTimer(monitoringInterval)
+	fullTimer := time.NewTimer(fullInterval)
+	defer monitoringTimer.Stop()
+	defer fullTimer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-targetTicker.C:
-			s.syncAndLog(ctx, TaskTargetStatus)
-		case <-identityTicker.C:
+		case <-monitoringTimer.C:
 			s.syncAndLog(ctx, TaskIdentityIncremental)
-		case <-fullTicker.C:
+			monitoringTimer.Reset(monitoringInterval)
+		case <-fullTimer.C:
 			s.syncAndLog(ctx, TaskFullReconcile)
+			fullTimer.Reset(fullInterval)
 		}
 	}
 }
@@ -195,13 +190,11 @@ func (s *Service) syncInventory(ctx context.Context, taskType string, recoverHis
 	if err != nil {
 		return s.failRun(run, err)
 	}
-	if taskType == TaskFullReconcile {
-		targetChanges, targetErr := s.persistTargets(now, run.ID, nodeIPs, targetIndex)
-		if targetErr != nil {
-			return s.failRun(run, targetErr)
-		}
-		changes += targetChanges
+	targetChanges, targetErr := s.persistTargets(now, run.ID, nodeIPs, targetIndex)
+	if targetErr != nil {
+		return s.failRun(run, targetErr)
 	}
+	changes += targetChanges
 	run.NodeCount = len(nodeIPs)
 	run.GPUCount = len(nodeIPs) * s.config.ExpectedGPUCount
 	run.KnownUUIDCount = knownUUIDs

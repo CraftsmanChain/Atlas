@@ -206,11 +206,13 @@ Webhook、测试分析和其他写入仍进入 `dsn`；只有接收记录列表�
 
 `GET /api/v1/data-freshness` 返回 `server_time`、`overall_status`，以及 `ingestion`、`inventory`、`health` 三个 source。每个 source 稳定输出：
 
-- `status`：`fresh`、`stale`、`snapshot`、`empty` 或 `error`
+- `status`：`fresh`、`stale`、`snapshot`、`empty`、`overdue` 或 `error`
 - `observed_at`：源数据时间；无数据时省略
 - `age_seconds`：相对服务端时间的数据年龄；未来时钟偏差钳制为 0
 - `stale_after_seconds`：该 source 的 SLA 边界
 - `source_mode`：接收数据源模式（接收 source）
+
+`inventory` 和 `health` 在采集执行期间还会输出 `collection_status`、`collection_started_at`、`collection_age_seconds` 和 `collection_interval_seconds`。当前采集周期为 600 秒；超过 10 分钟仍未完成时，source 与整体状态均为 `overdue`，页面展示明确警告。调度采用非重入模式，上一轮完成前不会启动下一轮。
 
 数据年龄恰好等于 SLA 时仍为 `fresh`，只有严格超过边界才标为 `stale`。8077 页面顶部使用 `observed_at`，不使用浏览器请求完成时间。
 

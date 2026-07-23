@@ -142,7 +142,7 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 	if cfg.Inventory.IdentitySyncInterval == "" {
-		cfg.Inventory.IdentitySyncInterval = "30m"
+		cfg.Inventory.IdentitySyncInterval = "10m"
 	}
 	if cfg.Inventory.FullSyncInterval == "" {
 		cfg.Inventory.FullSyncInterval = "24h"
@@ -166,7 +166,7 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Inventory.TargetJobs = []string{"dcgm_exporter", "gpu_exporter", "node_exporter", "ipmi_exporter"}
 	}
 	if cfg.Health.ScoreInterval == "" {
-		cfg.Health.ScoreInterval = "30m"
+		cfg.Health.ScoreInterval = "10m"
 	}
 	if cfg.Health.RuleVersion == "" {
 		cfg.Health.RuleVersion = "gpu-health-v1.1.2"

@@ -67,3 +67,31 @@ func TestHandlerReturnsStableSourceMetadata(t *testing.T) {
 		t.Fatalf("unexpected payload: %+v", payload)
 	}
 }
+
+func TestHandlerReportsCollectionOverdueAfterTenMinutes(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	finished := now.Add(-15 * time.Minute)
+	if err := db.Create(&api.InventorySyncRun{Status: "success", StartedAt: finished.Add(-time.Second), FinishedAt: &finished}).Error; err != nil {
+		t.Fatal(err)
+	}
+	started := now.Add(-10*time.Minute - time.Second)
+	if err := db.Create(&api.InventorySyncRun{Status: "running", StartedAt: started}).Error; err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(db, db, "local-live", 15*time.Minute, 20*time.Minute, 20*time.Minute)
+	handler.now = func() time.Time { return now }
+	response := httptest.NewRecorder()
+	handler.Handle(response, httptest.NewRequest("GET", "/api/v1/data-freshness", nil))
+	var payload Response
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	inventory := payload.Sources["inventory"]
+	if payload.OverallStatus != "overdue" || inventory.Status != "overdue" || inventory.CollectionStatus != "overdue" || inventory.CollectionAgeSeconds == nil || *inventory.CollectionAgeSeconds != 601 || inventory.CollectionIntervalSeconds != 600 {
+		t.Fatalf("unexpected overdue payload: %+v", payload)
+	}
+}
