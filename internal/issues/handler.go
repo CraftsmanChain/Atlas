@@ -35,22 +35,22 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var total, resolved, ignored, remaining, activeDetection int64
-	visibleIssues(h.db).Count(&total)
-	visibleIssues(h.db).Where("status = ?", "resolved").Count(&resolved)
-	visibleIssues(h.db).Where("status = ?", "ignored").Count(&ignored)
-	visibleIssues(h.db).Where("status IN ?", []string{"open", "in_progress"}).Count(&remaining)
-	visibleIssues(h.db).Where("detection_state = ?", "active").Count(&activeDetection)
-	byCategory, err := groupedCounts(visibleIssues(h.db), "category")
+	statisticsIssues(h.db).Count(&total)
+	statisticsIssues(h.db).Where("status = ?", "resolved").Count(&resolved)
+	statisticsIssues(h.db).Where("status = ?", "ignored").Count(&ignored)
+	statisticsIssues(h.db).Where("status IN ?", []string{"open", "in_progress"}).Count(&remaining)
+	statisticsIssues(h.db).Where("detection_state = ?", "active").Count(&activeDetection)
+	byCategory, err := groupedCounts(statisticsIssues(h.db), "category")
 	if err != nil {
 		issueError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	byStatus, err := groupedCounts(visibleIssues(h.db), "status")
+	byStatus, err := groupedCounts(statisticsIssues(h.db), "status")
 	if err != nil {
 		issueError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	bySeverity, err := groupedCounts(visibleIssues(h.db), "severity")
+	bySeverity, err := groupedCounts(statisticsIssues(h.db), "severity")
 	if err != nil {
 		issueError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -99,6 +99,9 @@ func (h *Handler) HandleCollection(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) filteredQuery(r *http.Request) *gorm.DB {
 	query := visibleIssues(h.db)
+	if strings.TrimSpace(r.URL.Query().Get("category")) == "" {
+		query = query.Where("category <> ?", "hardware_fault")
+	}
 	for field, column := range map[string]string{"category": "category", "severity": "severity", "detection_state": "detection_state", "issue_type": "issue_type"} {
 		if value := strings.TrimSpace(r.URL.Query().Get(field)); value != "" {
 			query = query.Where(column+" = ?", value)
@@ -248,6 +251,10 @@ func (h *Handler) HandleTrainingData(w http.ResponseWriter, r *http.Request) {
 
 func visibleIssues(db *storage.DB) *gorm.DB {
 	return db.Model(&api.PlatformIssue{}).Where("issue_type <> ?", deprecatedSourceDifferenceIssue)
+}
+
+func statisticsIssues(db *storage.DB) *gorm.DB {
+	return visibleIssues(db).Where("category <> ?", "hardware_fault")
 }
 
 type groupedCount struct {

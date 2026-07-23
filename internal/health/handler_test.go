@@ -110,3 +110,24 @@ func TestFaultEventPaginationRejectsInvalidCursor(t *testing.T) {
 		}
 	}
 }
+
+func TestFaultEventsExposeIssueWorkflowAssociation(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	event := api.GPUFaultEvent{EpisodeKey: "GPU-A:xid", State: "open", Severity: "critical", RuleCode: "xid_critical", FirstObservedAt: now, LastObservedAt: now}
+	if err := db.Create(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	issue := api.PlatformIssue{IssueKey: fmt.Sprintf("fault_event:%d", event.ID), Category: "hardware_fault", IssueType: event.RuleCode, Title: "XID on GPU-A", Status: "in_progress", DetectionState: "active", DetectionSource: "health_rule", SourceRecordID: event.ID, FirstDetectedAt: now, LastDetectedAt: now}
+	if err := db.Create(&issue).Error; err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	NewHandler(db).HandleEvents(response, httptest.NewRequest("GET", "/api/v1/fault-events", nil))
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(fmt.Sprintf(`"issue_id":%d`, issue.ID))) || !bytes.Contains(response.Body.Bytes(), []byte(`"workflow_status":"in_progress"`)) {
+		t.Fatalf("unexpected event workflow response: %d %s", response.Code, response.Body.String())
+	}
+}
