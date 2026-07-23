@@ -44,11 +44,40 @@ func TestEvaluateRulesUsesRuleSeverityAsLevelFloor(t *testing.T) {
 		t.Fatalf("critical rule did not set the risk-level floor: %+v", critical)
 	}
 
-	attention := evaluateRules(api.FloatMap{
-		"correctable_remapped_rows": 1,
+	stableCorrectable := evaluateRules(api.FloatMap{
+		"correctable_remapped_rows":           1,
+		"correctable_remapped_rows_delta_1h":  0,
+		"correctable_remapped_rows_delta_24h": 0,
 	}, "NVIDIA H100 80GB HBM3", "A")
-	if attention.score == nil || *attention.score != 92 || attention.level != "attention" {
-		t.Fatalf("attention rule did not set the risk-level floor: %+v", attention)
+	if stableCorrectable.score == nil || *stableCorrectable.score != 100 || stableCorrectable.level != "healthy" || len(stableCorrectable.hits) != 0 {
+		t.Fatalf("stable correctable rows must remain observation-only: %+v", stableCorrectable)
+	}
+}
+
+func TestEvaluateRulesScoresOnlyCorrectableRowGrowth(t *testing.T) {
+	tests := []struct {
+		name         string
+		delta1h      float64
+		delta24h     float64
+		wantScore    int
+		wantLevel    string
+		wantHitCount int
+	}{
+		{name: "single recent row is observation only", delta1h: 1, delta24h: 1, wantScore: 100, wantLevel: "healthy", wantHitCount: 0},
+		{name: "sustained growth needs attention", delta1h: 0, delta24h: 4, wantScore: 92, wantLevel: "attention", wantHitCount: 1},
+		{name: "rapid hourly growth is warning", delta1h: 4, delta24h: 4, wantScore: 88, wantLevel: "warning", wantHitCount: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := evaluateRules(api.FloatMap{
+				"correctable_remapped_rows":           10,
+				"correctable_remapped_rows_delta_1h":  tt.delta1h,
+				"correctable_remapped_rows_delta_24h": tt.delta24h,
+			}, "NVIDIA H100 80GB HBM3", "A")
+			if result.score == nil || *result.score != tt.wantScore || result.level != tt.wantLevel || len(result.hits) != tt.wantHitCount {
+				t.Fatalf("unexpected result: %+v", result)
+			}
+		})
 	}
 }
 

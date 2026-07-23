@@ -1,6 +1,6 @@
-# GPU 双源健康评分契约 v1.1
+# GPU 双源健康评分契约 v1.2
 
-> 生效版本：`gpu-health-v1.1.2` / `feature-catalog v1.1.0`
+> 生效版本：`gpu-health-v1.2.0` / `feature-catalog v1.2.0`
 > 基线日期：2026-07-23
 
 ## 1. 目标与边界
@@ -41,19 +41,25 @@ UUID 同时兼容 DCGM 的 `UUID="GPU-..."` 和 gpu_exporter 的 `uuid="..."`，
 
 ## 3. gpu_exporter 补充特征
 
-Feature Catalog v1.1 包含 25 个规范健康特征和 41 个源查询。新增补充特征：
+Feature Catalog v1.2 包含 27 个规范健康特征和 45 个源查询。新增补充及趋势特征：
 
 - `gpu_reset_required`
 - `uncorrected_ecc_delta_24h`
 - `fan_speed_pct`（当前仅 4090 现场支持）
 - `pcie_link_width_current`
 - `pcie_link_width_max`
+- `correctable_remapped_rows_delta_1h`
+- `correctable_remapped_rows_delta_24h`
 
 新增确定性规则：
 
 - `gpu_reset_required > 0`：稳定性 critical，扣 40。
 - 24 小时不可纠正 aggregate ECC 增量大于 0：显存 critical，扣 30。
 - GPU 15 分钟平均利用率不低于 80% 且当前 PCIe 宽度小于最大宽度：互联 warning，扣 15。
+- Correctable Row Remap 稳定累计值或 1 小时/24 小时单次低速新增：仅观察，不扣分。
+- 1 小时新增不少于 2 行或 24 小时新增不少于 4 行：显存 attention，扣 8。
+- 1 小时新增不少于 4 行或 24 小时新增不少于 8 行：显存 warning，扣 12。
+- Uncorrectable ECC 新增和 Row Remap Failure 仍输出 critical；当前只记录、告警和支持人工处置，不执行任务排空、节点隔离、重启或诊断。
 
 风扇特征先进入特征底座，不因单次高转速独立扣分，避免把正常散热响应误判为故障。
 

@@ -42,8 +42,16 @@ func evaluateRules(metrics api.FloatMap, model, confidence string) scoreResult {
 	if v := value(metrics, "uncorrectable_remapped_rows"); v > 0 {
 		add(ruleHit{"uncorrectable_remapped_rows", "memory", "critical", 30, v, "> 0", fmt.Sprintf("uncorrectable remapped rows=%.0f", v)})
 	}
-	if v := value(metrics, "correctable_remapped_rows"); v > 0 {
-		add(ruleHit{"correctable_remapped_rows", "memory", "attention", 8, v, "> 0", fmt.Sprintf("correctable remapped rows=%.0f", v)})
+	correctableRows := value(metrics, "correctable_remapped_rows")
+	correctableDelta1h := value(metrics, "correctable_remapped_rows_delta_1h")
+	correctableDelta24h := value(metrics, "correctable_remapped_rows_delta_24h")
+	switch {
+	case correctableDelta1h >= 4 || correctableDelta24h >= 8:
+		add(ruleHit{"correctable_remapped_rows_rapid_growth", "memory", "warning", 12, correctableDelta24h, "delta_1h >= 4 or delta_24h >= 8", fmt.Sprintf("correctable remapped rows growing rapidly: total=%.0f delta_1h=%.0f delta_24h=%.0f", correctableRows, correctableDelta1h, correctableDelta24h)})
+	case correctableDelta1h >= 2 || correctableDelta24h >= 4:
+		add(ruleHit{"correctable_remapped_rows_growth", "memory", "attention", 8, correctableDelta24h, "delta_1h >= 2 or delta_24h >= 4", fmt.Sprintf("correctable remapped rows increased: total=%.0f delta_1h=%.0f delta_24h=%.0f", correctableRows, correctableDelta1h, correctableDelta24h)})
+	case correctableRows > 0 || correctableDelta1h > 0 || correctableDelta24h > 0:
+		result.evidence = append(result.evidence, fmt.Sprintf("correctable remapped rows observation only: total=%.0f delta_1h=%.0f delta_24h=%.0f", correctableRows, correctableDelta1h, correctableDelta24h))
 	}
 	if v := value(metrics, "gpu_reset_required"); v > 0 {
 		add(ruleHit{"gpu_reset_required", "stability", "critical", 40, v, "> 0", "gpu_exporter reports that a GPU reset is required"})

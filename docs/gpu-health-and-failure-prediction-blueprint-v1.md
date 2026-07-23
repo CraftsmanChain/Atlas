@@ -514,6 +514,8 @@ L3 高风险：pending remap / SRAM threshold / repeated ECC burst
 L4 故障：DBE / row remap failure / reset required / 严重 XID
 ```
 
+当前 `gpu-health-v1.2.0` 将 Correctable Row Remap 累计值和增量分开：累计值稳定或单次低速新增只记录观察证据；1 小时新增 2/4 行、24 小时新增 4/8 行分别作为 attention/warning 初始门槛。Uncorrectable ECC 和 Row Remap Failure 保持 critical，但本阶段只告警、记录并支持人工处置，不自动操作任务或节点。
+
 4090 不输出与 H100/H200 等价的 ECC 健康子分，缺失项应显示不适用而不是零风险。
 
 ### 8.3 掉卡预警
@@ -1166,6 +1168,7 @@ GPU
 - [x] 完成 `incident v0.2.1`：接收记录真实总数、游标分页、新鲜度、速率和环境/数据源标识（2026-07-22 已部署 `8077`）
 - [x] 完成 `incident v0.2.2`：硬件事件稳定 ID 游标、服务端筛选和前端分页（2026-07-22）
 - [x] 完成 `incident v0.3.0` / `data-statistics v0.3.0`：硬件故障迁入告警中心并关联详情与人工处置，数据统计聚焦数据、资产和可用性问题（2026-07-23）
+- [x] 完成 `gpu-health v1.2.0` / `feature-catalog v1.2.0`：Correctable Row Remap 使用 1h/24h 增长判定，稳定累计值不扣分，保持只告警不操作任务和节点（2026-07-23）
 - [x] 明确接收记录、硬件事件和故障案例三层对象及关联关系
 - [ ] 扩展 Atlas Agent 增量读取 journald/kernel
 - [ ] 建立 XID 事件解析和 PCI Bus ID -> UUID 映射

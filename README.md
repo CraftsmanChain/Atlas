@@ -133,7 +133,7 @@ Atlas 的数据治理能力定位为“发现、定位、记录和验证”，�
 
 ### 故障特征与预测路径
 
-Feature Catalog v1.1 已提供版本化注册、列表和读取接口，并将健康评分使用的 25 个规范特征和 41 个 DCGM/gpu_exporter 源查询接入统一目录。健康评分采用 DCGM 主源、gpu_exporter 补充与降级备用，同一语义不重复计分；双源数值差异保留为取值审计，不定性为数据异常。目录统一管理实体/粒度、来源、计算、时间语义、新鲜度、缺失策略、质量、血缘、owner、型号能力和消费用途。性能衰减 v0.1 已开始消费其中的利用率和 SM 时钟快照；下一步继续接入结构性可观测性、链路/显存性能和维修特征。PyOD 只输出异常分数，只有积累足够可信的独立故障与维修标签后，才输出经过校准的 1h/6h/24h 故障概率。详见 [Feature Catalog v1](docs/feature-catalog-v1.md)、[GPU 双源健康评分契约 v1.1](docs/gpu-dual-source-health-v1.1.md) 和 [性能衰减检测 v0.1](docs/performance-degradation-v0.1.md)。
+Feature Catalog v1.2 已提供版本化注册、列表和读取接口，并将健康评分使用的 27 个规范特征和 45 个 DCGM/gpu_exporter 源查询接入统一目录。健康评分采用 DCGM 主源、gpu_exporter 补充与降级备用，同一语义不重复计分；Correctable Row Remap 使用 1h/24h 增量判断，稳定累计值不扣分；Uncorrectable ECC 与 Row Remap Failure 只输出 critical 告警和人工处置记录，不自动操作任务或节点。双源数值差异仅保留为取值审计。详见 [Feature Catalog v1](docs/feature-catalog-v1.md)、[GPU 双源健康评分契约 v1.2](docs/gpu-dual-source-health-v1.1.md) 和 [性能衰减检测 v0.1](docs/performance-degradation-v0.1.md)。
 
 ## 快速开始
 
