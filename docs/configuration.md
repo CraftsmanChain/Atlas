@@ -19,6 +19,11 @@ gateway:
   feishu_webhook_token: ""
 storage:
   dsn: "atlas.db"
+branding:
+  instance_name: "Atlas Cluster"
+  product_name: "ATLAS"
+  product_tagline: "GPU RELIABILITY"
+  environment: "LOCAL"
 feishu:
   bots:
     - enabled: false
@@ -56,6 +61,15 @@ X-Webhook-Token: <token>
 
 - SQLite 数据库文件路径
 - 默认：`atlas.db`
+
+### `branding`
+
+- `instance_name`：当前部署实例或集群的展示名称，例如“智元集群”
+- `product_name`：产品名称，默认 `ATLAS`
+- `product_tagline`：侧边栏环境卡片中的产品副标题
+- `environment`：环境标识，例如 `TEST / 8077` 或 `PRODUCTION`
+- YAML 值用于数据库尚无平台配置时的首次初始化；初始化后可在“平台概览 → 平台配置”修改
+- 运行时接口只暴露以上四个展示字段，不返回数据库、Prometheus 或密钥配置
 
 ### `feishu.bots`
 

@@ -19,6 +19,7 @@ import (
 	"atlas/internal/health"
 	"atlas/internal/inventory"
 	"atlas/internal/issues"
+	"atlas/internal/platformconfig"
 	promclient "atlas/internal/prometheus"
 	"atlas/pkg/config"
 	"atlas/pkg/logging"
@@ -99,6 +100,7 @@ func main() {
 	featureHandler := features.NewHandler(db)
 	issueService := issues.NewService(db)
 	issueHandler := issues.NewHandlerWithService(db, issueService)
+	platformConfigHandler := platformconfig.NewHandler(db, cfg.Branding)
 	go issueService.Run(context.Background(), time.Minute)
 
 	// Inventory discovery is read-only and best-effort. Prometheus outages are
@@ -171,6 +173,7 @@ func main() {
 	mux.HandleFunc("/api/v1/issues/training-data", issueHandler.HandleTrainingData)
 	mux.HandleFunc("/api/v1/issues", issueHandler.HandleCollection)
 	mux.HandleFunc("/api/v1/issues/", issueHandler.HandleSubresource)
+	mux.HandleFunc("/api/v1/platform-config", platformConfigHandler.Handle)
 
 	// 6.4 GPU hardware inventory and collection coverage (read-only).
 	mux.HandleFunc("/api/v1/fleet/summary", inventoryHandler.HandleFleetSummary)

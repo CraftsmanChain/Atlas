@@ -12,6 +12,7 @@ type Config struct {
 	Feishu     FeishuConfig     `yaml:"feishu"`
 	Logging    LoggingConfig    `yaml:"logging"`
 	Web        WebConfig        `yaml:"web"`
+	Branding   BrandingConfig   `yaml:"branding"`
 	Prometheus PrometheusConfig `yaml:"prometheus"`
 	Inventory  InventoryConfig  `yaml:"inventory"`
 	Health     HealthConfig     `yaml:"health"`
@@ -40,6 +41,16 @@ type LoggingConfig struct {
 
 type WebConfig struct {
 	StaticDir string `yaml:"static_dir"`
+}
+
+// BrandingConfig provides the initial public display settings. Once Atlas has
+// persisted settings in its database, operators can update them from the
+// Platform Overview without rebuilding the frontend.
+type BrandingConfig struct {
+	InstanceName   string `yaml:"instance_name"`
+	ProductName    string `yaml:"product_name"`
+	ProductTagline string `yaml:"product_tagline"`
+	Environment    string `yaml:"environment"`
 }
 
 type PrometheusConfig struct {
@@ -107,6 +118,18 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Web.StaticDir == "" {
 		cfg.Web.StaticDir = "web/dist"
+	}
+	if cfg.Branding.InstanceName == "" {
+		cfg.Branding.InstanceName = "Atlas Cluster"
+	}
+	if cfg.Branding.ProductName == "" {
+		cfg.Branding.ProductName = "ATLAS"
+	}
+	if cfg.Branding.ProductTagline == "" {
+		cfg.Branding.ProductTagline = "GPU RELIABILITY"
+	}
+	if cfg.Branding.Environment == "" {
+		cfg.Branding.Environment = "LOCAL"
 	}
 	if cfg.Prometheus.RequestTimeout == "" {
 		cfg.Prometheus.RequestTimeout = "15s"

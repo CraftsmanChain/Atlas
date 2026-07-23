@@ -6,7 +6,7 @@ import {
   Activity, AlertTriangle, BarChart3, Bell, BookOpen, BrainCircuit, CheckCircle2,
   ChevronLeft, ChevronRight, CircleGauge, ClipboardList, Command, Cpu, Database, Eye, Filter, Gauge,
   Languages, Layers3, MemoryStick, Menu, Moon, Network,
-  Palette, RefreshCw, Search, Server, ShieldAlert, ShieldCheck, Sun,
+  Palette, RefreshCw, Save, Search, Server, ShieldAlert, ShieldCheck, Sun,
   Thermometer, X, Zap,
 } from 'lucide-react';
 import './App.css';
@@ -29,6 +29,7 @@ type IngestionMeta = {
 type Failure = { id: number; source: string; level: string; message: string; process_status: string; callback_status: string; process_last_error: string; callback_last_error: string; updated_at: string };
 type Report = { status: string; model: string; severity: string; summary: string; probable_causes?: string[]; recommended_actions?: string[]; confidence?: number };
 type ServerStatus = { status: string; version: string; commit: string; build_time: string; server_time: string };
+type PlatformConfig = { instance_name: string; product_name: string; product_tagline: string; environment: string; updated_at?: string };
 type FreshnessSource = { status: string; observed_at?: string; age_seconds?: number; stale_after_seconds: number; source_mode?: string; message?: string };
 type DataFreshness = { overall_status: string; server_time: string; sources: Record<string, FreshnessSource> };
 type GPUAsset = { id: number; asset_key: string; node_id: number; node_ip: string; gpu_index: number; gpu_uuid: string; device: string; model: string; model_name: string; pci_bus_id: string; host_serial: string; driver_version: string; state: string; sample_state: string; last_seen_at: string; last_synced_at: string };
@@ -71,7 +72,7 @@ const subPages = (page: PageId, tx: Tx): SubPage[] => ({
   validations: [{ id: 'degradation', label: tx('衰减检测', 'Degradation') }, { id: 'records', label: tx('验证记录', 'Records') }],
   quality: [{ id: 'targets', label: tx('采集覆盖', 'Target Coverage') }, { id: 'identity', label: tx('身份与带外', 'Identity & BMC') }, { id: 'audit', label: tx('同步审计', 'Sync Audit') }],
   models: [{ id: 'stack', label: tx('决策分层', 'Decision Stack') }, { id: 'algorithms', label: tx('算法与约束', 'Algorithms & Gates') }],
-  about: [{ id: 'definition', label: tx('能力与里程碑', 'Capabilities & Milestones') }, { id: 'architecture', label: tx('架构与边界', 'Architecture & Boundaries') }],
+  about: [{ id: 'definition', label: tx('能力与里程碑', 'Capabilities & Milestones') }, { id: 'architecture', label: tx('架构与边界', 'Architecture & Boundaries') }, { id: 'settings', label: tx('平台配置', 'Platform Settings') }],
 }[page]);
 
 function time(value?: string, lang = 'zh-CN') {
@@ -106,6 +107,7 @@ export default function App() {
   const [ingestionRefresh, setIngestionRefresh] = useState(0);
   const [failures, setFailures] = useState<Failure[]>([]);
   const [status, setStatus] = useState<ServerStatus | null>(null);
+  const [platformConfig, setPlatformConfig] = useState<PlatformConfig>({ instance_name: 'Atlas Cluster', product_name: 'ATLAS', product_tagline: 'GPU RELIABILITY', environment: 'LOCAL' });
   const [freshness, setFreshness] = useState<DataFreshness | null>(null);
   const [summary, setSummary] = useState<FleetSummary | null>(null);
   const [gpuAssets, setGPUAssets] = useState<GPUAsset[]>([]);
@@ -143,11 +145,12 @@ export default function App() {
   const load = async () => {
     setLoading(true);
     try {
-      const [s, df, f, fs, ga, ct, sr, ac, hs, hg, fes, is] = await Promise.all([
+      const [s, df, f, fs, ga, ct, sr, ac, hs, hg, fes, is, pc] = await Promise.all([
         fetch('/api/v1/status'), fetch('/api/v1/data-freshness'), fetch('/api/v1/alerts/failures?limit=8'),
         fetch('/api/v1/fleet/summary'), fetch('/api/v1/gpus?limit=2000'), fetch('/api/v1/targets?limit=2000'),
         fetch('/api/v1/sync-runs?limit=20'), fetch('/api/v1/inventory/changes?limit=50'),
         fetch('/api/v1/health/summary'), fetch('/api/v1/health/gpus?limit=1000'), fetch('/api/v1/fault-events/summary'), fetch('/api/v1/issues/summary'),
+        fetch('/api/v1/platform-config'),
       ]);
       if (s.ok) setStatus(await s.json());
       if (df.ok) setFreshness(await df.json()); else setFreshness({ overall_status: 'error', server_time: new Date().toISOString(), sources: {} });
@@ -165,9 +168,11 @@ export default function App() {
       if (hg.ok) { const data = await hg.json(); setHealthScores(Array.isArray(data.data) ? data.data : []); }
       if (fes.ok) { const data = await fes.json(); setFaultSummary(data.data || null); }
       if (is.ok) { const data = await is.json(); setIssueSummary(data.data || null); }
+      if (pc.ok) { const data = await pc.json(); if (data.data) setPlatformConfig(data.data); }
     } catch { setInventoryError(true); } finally { setLoading(false); }
   };
   useEffect(() => { load(); const id = window.setInterval(load, 30000); return () => window.clearInterval(id); }, []);
+  useEffect(() => { document.title = `${platformConfig.instance_name} · ${platformConfig.product_name}`; }, [platformConfig]);
   useEffect(() => {
     let cancelled = false;
     const loadPage = async () => {
@@ -295,8 +300,8 @@ export default function App() {
 
   return <div className="app">
     <aside className={`sidebar ${sidebar ? 'open' : ''}`}>
-      <div className="brand"><span className="brand-icon"><Layers3 size={19} /></span><div><b>ATLAS</b><small>GPU RELIABILITY</small></div><button className="mobile-only icon-btn" onClick={() => setSidebar(false)}><X size={17} /></button></div>
-      <button className="cluster-switch"><span><i /> atlas-test</span><small>10.111.201.1:8077</small><ChevronRight size={14} /></button>
+      <div className="brand"><span className="brand-icon"><Layers3 size={19} /></span><div><b>{platformConfig.instance_name}</b><small>{platformConfig.product_name}</small></div><button className="mobile-only icon-btn" onClick={() => setSidebar(false)}><X size={17} /></button></div>
+      <button className="cluster-switch" onClick={() => { navigate('about'); setSubPage(current => ({ ...current, about: 'settings' })); }}><span><i /> {platformConfig.environment}</span><small>{platformConfig.product_tagline}</small><ChevronRight size={14} /></button>
       <nav>{['运行', '系统'].map(group => <div className="nav-group" key={group}><label>{tx(group, group === '运行' ? 'OPERATIONS' : 'SYSTEM')}</label>{pages.filter(id => copy[id].group === tx(group, group === '运行' ? 'OPERATIONS' : 'SYSTEM')).map(id => { const Icon = pageIcons[id]; const count = id === 'issues' ? issueSummary?.remaining : id === 'incidents' ? faultSummary?.open : 0; return <button key={id} className={page === id ? 'active' : ''} onClick={() => navigate(id)}><Icon size={16} /><span>{copy[id].label}</span>{(count || 0) > 0 && <em>{count}</em>}</button>; })}</div>)}</nav>
       <div className="sidebar-footer"><span><i className={status?.status === 'ok' ? 'online' : ''} />API {status?.status === 'ok' ? 'ONLINE' : 'WAITING'}</span><small>{status?.version || 'dev'} · {status?.commit || 'local'}</small></div>
     </aside>
@@ -304,12 +309,12 @@ export default function App() {
     <main>
       <header className="topbar">
         <button className="mobile-only icon-btn" onClick={() => setSidebar(true)}><Menu size={18} /></button>
-        <div className="crumb"><span>atlas-test</span><ChevronRight size={13} /><b>{copy[page].label}</b></div>
+        <div className="crumb"><span>{platformConfig.instance_name}</span><ChevronRight size={13} /><b>{copy[page].label}</b></div>
         <button className="global-search" onClick={() => setSearchOpen(true)}><Search size={15} /><span>{tx('搜索资源', 'Search resources')}</span><kbd>⌘ K</kbd></button>
         <div className="top-actions"><LanguageButton i18n={i18n} zh={zh} /><ThemeButton tx={tx} /><button className="icon-btn" onClick={refresh} title={tx('刷新', 'Refresh')}><RefreshCw size={16} className={loading || ingestionLoading ? 'spin' : ''} /></button></div>
       </header>
       <div className="content">
-        <div className="page-head"><div><h1>{copy[page].title}</h1><p>{copy[page].desc}</p></div><div className="page-meta"><Badge value="TEST / 8077" kind="info" /><Badge value={`DATA ${freshnessStatus}`} kind={freshnessTone} /><span title={tx('源数据最新观测时间；不是页面刷新时间', 'Latest source observation; not the page refresh time')}>{freshnessLatest ? time(freshnessLatest, lang) : '—'}</span></div></div>
+        <div className="page-head"><div><h1>{copy[page].title}</h1><p>{copy[page].desc}</p></div><div className="page-meta"><Badge value={platformConfig.environment} kind="info" /><Badge value={`DATA ${freshnessStatus}`} kind={freshnessTone} /><span title={tx('源数据最新观测时间；不是页面刷新时间', 'Latest source observation; not the page refresh time')}>{freshnessLatest ? time(freshnessLatest, lang) : '—'}</span></div></div>
         {currentSubPages.length > 0 && <nav className="subnav" aria-label={tx('页面分区', 'Page sections')}>{currentSubPages.map(item => <button key={item.id} className={subPage[page] === item.id ? 'active' : ''} onClick={() => setSubPage(current => ({ ...current, [page]: item.id }))}>{item.label}</button>)}</nav>}
         <AnimatePresence mode="wait"><motion.div key={page} className={page === 'overview' ? 'overview-page' : 'secondary-page'} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: .12 }}>
           {page === 'overview' && <Overview tx={tx} faults={openFaults} faultSummary={faultSummary} hosts={hosts} loading={loading} summary={summary} models={fleetModels} inventoryError={inventoryError} navigate={navigate} />}
@@ -319,7 +324,7 @@ export default function App() {
           {page === 'validations' && <Validations tx={tx} view={subPage.validations} />}
           {page === 'quality' && <Quality tx={tx} view={subPage.quality} targets={targets} summary={summary} inventoryError={inventoryError} syncRuns={syncRuns} assetChanges={assetChanges} lang={lang} />}
           {page === 'models' && <Models tx={tx} view={subPage.models} />}
-          {page === 'about' && <About tx={tx} view={subPage.about} />}
+          {page === 'about' && <About tx={tx} view={subPage.about} platformConfig={platformConfig} onPlatformConfig={setPlatformConfig} />}
         </motion.div></AnimatePresence>
       </div>
     </main>
@@ -450,8 +455,9 @@ function Quality({ tx, view, targets, summary, inventoryError, syncRuns, assetCh
   </div>;
 }
 function Models({ tx, view }: { tx: Tx; view: string }) { const layers = [['L1', tx('确定性规则', 'Deterministic rules'), 'health_score', tx('首期', 'ACTIVE')], ['L2', 'PyOD', 'anomaly_score', 'P3'], ['L3', tx('监督预测', 'Supervised prediction'), 'failure_probability', 'P4'], ['L4', 'LLM + Skill', 'RCA / SOP', 'P5']]; if (view === 'algorithms') return <div className="grid"><Card className="span-6"><CardHead code="PYOD" title={tx('候选算法', 'Candidate Algorithms')} /><div className="chips">{['ECOD', 'Isolation Forest', 'COPOD', 'PCA', 'HBOS'].map(x => <span key={x}>{x}</span>)}</div></Card><Card className="span-6"><CardHead code="GUARDRAILS" title={tx('上线约束', 'Release Gates')} /><div className="rules">{[tx('按时间与 GPU UUID 隔离训练/测试', 'Split train/test by time and GPU UUID'), tx('模型、特征、数据集版本化', 'Version model, features and dataset'), tx('未达门槛仅 shadow mode', 'Shadow mode before threshold'), tx('LLM 不修改原始分数', 'LLM cannot alter source scores')].map(x => <span key={x}><ShieldCheck size={15} />{x}</span>)}</div></Card></div>; return <div className="grid"><Card className="span-12"><CardHead code="DECISION STACK" title={tx('决策分层', 'Decision Stack')} /><div className="model-grid">{layers.map(x => <div key={x[0]}><small>{x[0]}</small><b>{x[1]}</b><code>{x[2]}</code><Badge value={x[3]} kind={x[0] === 'L1' ? 'healthy' : 'neutral'} /></div>)}</div></Card></div>; }
-function About({ tx, view }: { tx: Tx; view: string }) {
+function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: string; platformConfig: PlatformConfig; onPlatformConfig: (config: PlatformConfig) => void }) {
   const [moduleDetailID, setModuleDetailID] = useState<string | null>(null);
+  if (view === 'settings') return <PlatformSettings tx={tx} value={platformConfig} onSaved={onPlatformConfig} />;
   if (view === 'architecture') return <div className="grid">
     <Card className="span-12 architecture-map-card"><CardHead code="SYSTEM MAP" title={tx('平台模块架构', 'Platform Module Architecture')} action={<Badge value="MODULE RELATIONSHIPS" kind="info" />} /><img src="/atlas-platform-architecture.svg?v=20260721.1" alt={tx('ATLAS 平台模块架构图', 'ATLAS platform module architecture')} /></Card>
     <Card className="span-7"><CardHead code="ARCHITECTURE" title={tx('平台架构', 'Platform Architecture')} /><div className="architecture">{[['01', tx('采集', 'INGEST'), 'DCGM · Prometheus · logs · BMC'], ['02', tx('治理', 'NORMALIZE'), 'identity · event · feature'], ['03', tx('决策', 'DECIDE'), 'rules · PyOD · supervised'], ['04', tx('闭环', 'WORKFLOW'), 'alert · repair · validation']].map(x => <div key={x[0]}><small>{x[0]}</small><b>{x[1]}</b><code>{x[2]}</code></div>)}</div></Card>
@@ -469,6 +475,7 @@ function About({ tx, view }: { tx: Tx; view: string }) {
     { id: 'degradation', name: tx('性能衰减识别', 'Performance Degradation Detection'), version: 'v0.0.0', status: tx('方案阶段', 'DESIGNED'), desc: tx('通过被动同类对比和维护窗口主动验证识别计算、显存、PCIe 与 NVLink 性能退化。', 'Detect compute, memory, PCIe and NVLink degradation through passive peer comparison and maintenance-window validation.'), history: [tx('v0.0.0 · 被动检测与主动验证安全门设计', 'v0.0.0 · passive detection and active-validation safety gates')] },
     { id: 'incident', name: tx('故障事件管理', 'Fault Incident Management'), version: 'v0.2.2', status: tx('稳定分页基线', 'STABLE PAGINATION BASELINE'), desc: tx('分层管理原始接收记录、Atlas 硬件事件与后续故障案例；接收记录和硬件事件均支持真实总数、服务端筛选和稳定 ID 游标分页。', 'Separate raw ingestion records, Atlas hardware events and future fault cases. Both ingestion records and hardware events provide real totals, server-side filtering and stable ID cursor pagination.'), history: [tx('v0.2.2 · 硬件事件稳定 ID 游标、服务端筛选与前端分页', 'v0.2.2 · stable hardware-event ID cursor, server-side filtering and UI pagination'), tx('v0.2.1 · 只读生产接收库、真实总数、游标分页与新鲜度', 'v0.2.1 · read-only production ingestion store, real totals, cursor pagination and freshness'), tx('v0.2.0 · 接收记录、硬件事件与故障案例分层', 'v0.2.0 · ingestion, hardware event and fault case layers'), tx('v0.1.0 · open / recovered 事件生命周期', 'v0.1.0 · open/recovered event lifecycle')] },
     { id: 'issue', name: tx('问题统计与处置', 'Issue Analytics & Resolution'), version: 'v0.1.0', status: tx('问题台账基线', 'ISSUE LEDGER BASELINE'), desc: tx('统一统计平台发现的问题、分类、自动检测状态和人工处置状态，记录根因、方案、处理过程与结果，并输出可审计的 AI/Skill 训练数据。', 'Normalize discovered problems, categories, automated detection state and human workflow status; capture root cause, solution, process and result; and export audited AI/Skill training data.'), history: [tx('v0.1.0 · 五类检测源归一化、统计钻取、处置历史与训练数据导出', 'v0.1.0 · five-source normalization, analytics drill-down, resolution history and training export')] },
+    { id: 'platform', name: tx('平台实例配置', 'Platform Instance Configuration'), version: 'v0.1.0', status: tx('配置基线完成', 'CONFIGURATION BASELINE'), desc: tx('通过平台概览维护实例名称、产品名称、产品副标题和环境标识，并统一驱动导航、面包屑、环境徽标与浏览器标题。', 'Manage the instance name, product name, product tagline and environment label from Platform Overview, consistently driving navigation, breadcrumbs, environment badges and the browser title.'), history: [tx('v0.1.0 · 数据库持久化、运行时读取、页面编辑与安全字段边界', 'v0.1.0 · database persistence, runtime reads, UI editing and public-field safety boundary')] },
     { id: 'validation', name: tx('维修验证闭环', 'Repair Validation Workflow'), version: 'v0.0.0', status: tx('方案阶段', 'DESIGNED'), desc: tx('记录人工维修反馈、根因、修复或更换结果，并通过识别、遥测、错误计数和性能复测验证重新上线。', 'Capture repair feedback, root cause and replacement results, then validate return to service through identity, telemetry, counters and performance checks.'), history: [tx('v0.0.0 · 状态机、维护窗口和验证门设计', 'v0.0.0 · state machine, maintenance window and validation gates')] },
   ];
   const milestones = [
@@ -482,12 +489,63 @@ function About({ tx, view }: { tx: Tx; view: string }) {
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>ATLAS</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供资产对账、监控数据质量发现、硬件健康评分、故障检测、问题统计与处置、硬件故障预警与预测、性能衰减识别、故障事件管理以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, issue analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, incident management and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.4.0" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供资产对账、监控数据质量发现、硬件健康评分、故障检测、问题统计与处置、硬件故障预警与预测、性能衰减识别、故障事件管理以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, issue analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, incident management and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.4.1" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>
   <AnimatePresence>{selectedModule && <motion.div className="module-modal-layer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><button className="module-modal-bg" onClick={() => setModuleDetailID(null)} aria-label={tx('关闭版本详情', 'Close version details')} /><motion.section className="module-modal" role="dialog" aria-modal="true" aria-label={selectedModule.name} initial={{ y: 18, scale: .98 }} animate={{ y: 0, scale: 1 }} exit={{ y: 18, scale: .98 }}><header><div><code>{selectedModule.id.toUpperCase()}</code><h2>{selectedModule.name}</h2></div><button className="icon-btn" onClick={() => setModuleDetailID(null)} aria-label={tx('关闭', 'Close')}><X size={17} /></button></header><div className="module-modal-meta"><Badge value={selectedModule.status} kind={selectedModule.status.includes(tx('完成', 'BASELINE')) || selectedModule.status.includes('BASELINE') ? 'healthy' : 'neutral'} /><span>{tx('当前版本', 'CURRENT VERSION')} <strong>{selectedModule.version}</strong></span></div><p>{selectedModule.desc}</p><div className="module-modal-history"><span>{tx('完整迭代历史', 'FULL ITERATION HISTORY')}</span>{selectedModule.history.map((item, index) => <div key={item}><i /><small>{item}</small>{index === 0 && <Badge value={tx('最新', 'LATEST')} kind="info" />}</div>)}</div></motion.section></motion.div>}</AnimatePresence>
   </>;
+}
+
+function PlatformSettings({ tx, value, onSaved }: { tx: Tx; value: PlatformConfig; onSaved: (config: PlatformConfig) => void }) {
+  const [draft, setDraft] = useState<PlatformConfig>(value);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const update = (field: keyof PlatformConfig, next: string) => setDraft(current => ({ ...current, [field]: next }));
+  const save = async () => {
+    setSaving(true); setMessage(''); setError('');
+    try {
+      const response = await fetch('/api/v1/platform-config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          instance_name: draft.instance_name, product_name: draft.product_name,
+          product_tagline: draft.product_tagline, environment: draft.environment,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error?.message || `HTTP ${response.status}`);
+      setDraft(payload.data);
+      onSaved(payload.data);
+      setMessage(tx('配置已保存并即时生效', 'Configuration saved and applied'));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : tx('保存失败', 'Save failed'));
+    } finally { setSaving(false); }
+  };
+  const valid = [draft.instance_name, draft.product_name, draft.product_tagline, draft.environment].every(item => item.trim());
+  return <div className="grid platform-settings">
+    <Card className="span-7">
+      <CardHead code="INSTANCE BRANDING" title={tx('平台展示配置', 'Platform Display Settings')} action={<Badge value="PUBLIC FIELDS ONLY" kind="info" />} />
+      <p className="settings-intro">{tx('这些字段只控制当前 Atlas 实例的展示身份，不会修改产品能力、采集地址、数据库或其他敏感运行参数。', 'These fields only control the display identity of this Atlas instance. They do not change product capabilities, collectors, databases or sensitive runtime settings.')}</p>
+      <form className="settings-form" onSubmit={event => { event.preventDefault(); void save(); }}>
+        <label><span>{tx('实例名称', 'Instance name')}<small>instance_name · 80</small></span><input maxLength={80} value={draft.instance_name} onChange={event => update('instance_name', event.target.value)} placeholder={tx('例如：智元集群', 'Example: Zhiyuan Cluster')} /></label>
+        <label><span>{tx('产品名称', 'Product name')}<small>product_name · 40</small></span><input maxLength={40} value={draft.product_name} onChange={event => update('product_name', event.target.value)} placeholder="ATLAS" /></label>
+        <label><span>{tx('产品副标题', 'Product tagline')}<small>product_tagline · 80</small></span><input maxLength={80} value={draft.product_tagline} onChange={event => update('product_tagline', event.target.value)} placeholder="GPU RELIABILITY" /></label>
+        <label><span>{tx('环境标识', 'Environment label')}<small>environment · 40</small></span><input maxLength={40} value={draft.environment} onChange={event => update('environment', event.target.value)} placeholder="TEST / 8077" /></label>
+        {error && <p className="form-error">{error}</p>}
+        {message && <p className="form-success">{message}</p>}
+        <button className="primary-action" type="submit" disabled={saving || !valid}><Save size={15} />{saving ? tx('保存中', 'Saving') : tx('保存并应用', 'Save & Apply')}</button>
+      </form>
+    </Card>
+    <Card className="span-5 settings-preview">
+      <CardHead code="LIVE PREVIEW" title={tx('展示预览', 'Display Preview')} />
+      <div className="brand-preview"><span className="brand-icon"><Layers3 size={20} /></span><div><b>{draft.instance_name || '—'}</b><small>{draft.product_name || '—'}</small></div></div>
+      <div className="preview-environment"><i /><span><b>{draft.environment || '—'}</b><small>{draft.product_tagline || '—'}</small></span></div>
+      <dl><div><dt>{tx('浏览器标题', 'Browser title')}</dt><dd>{draft.instance_name || '—'} · {draft.product_name || '—'}</dd></div><div><dt>{tx('生效范围', 'Applied to')}</dt><dd>{tx('侧边栏、面包屑、环境徽标、浏览器标题', 'Sidebar, breadcrumbs, environment badge and browser title')}</dd></div></dl>
+      {value.updated_at && <small className="settings-updated">{tx('最近更新', 'Last updated')} · {time(value.updated_at)}</small>}
+    </Card>
+  </div>;
 }
 
 function FaultEventList({ tx, items }: { tx: Tx; items: FaultEvent[] }) { return <div className="event-list">{items.map(x => <div className="event-row" key={x.id}><Badge value={x.severity.toUpperCase()} kind={tone(x.severity)} /><span><b>{x.rule_code}</b><small>{x.node_ip} · GPU {x.gpu_index} · {x.evidence}</small></span><code>×{x.occurrence_count}</code></div>)}{items.length === 0 && <Empty tx={tx} title={tx('无未恢复硬件事件', 'No open hardware events')} />}</div>; }

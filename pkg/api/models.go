@@ -100,6 +100,18 @@ type HealthScore struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+// PlatformDisplayConfig is the singleton public-facing identity of an Atlas
+// deployment. It intentionally contains display-only fields and no secrets or
+// infrastructure connection details.
+type PlatformDisplayConfig struct {
+	ID             uint      `json:"-" gorm:"primaryKey"`
+	InstanceName   string    `json:"instance_name"`
+	ProductName    string    `json:"product_name"`
+	ProductTagline string    `json:"product_tagline"`
+	Environment    string    `json:"environment"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 // AlertIngestionRecord 记录 webhook 告警异步处理与回调确认全链路状态。
 type AlertIngestionRecord struct {
 	ID                 uint      `json:"id" gorm:"primaryKey;autoIncrement;index:idx_ingestions_created_id,priority:2"`
