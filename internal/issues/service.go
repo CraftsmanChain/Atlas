@@ -98,8 +98,9 @@ func (s *Service) SyncDetectedIssues() error {
 			}
 		}
 
+		activeNodeIPs := tx.Model(&api.GPUNode{}).Select("node_ip").Where("lifecycle <> ?", "retired")
 		var targets []api.CollectorTarget
-		if err := tx.Where("health <> ?", "up").Find(&targets).Error; err != nil {
+		if err := tx.Where("node_ip IN (?) AND health <> ?", activeNodeIPs, "up").Find(&targets).Error; err != nil {
 			return err
 		}
 		for _, target := range targets {

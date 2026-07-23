@@ -126,6 +126,42 @@ func TestSyncDetectedIssuesClearsLegacySourceConsistency(t *testing.T) {
 	}
 }
 
+func TestSyncDetectedIssuesExcludesTargetsOnRetiredNodes(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 23, 9, 0, 0, 0, time.UTC)
+	node := api.GPUNode{NodeIP: "10.114.4.37", State: "offline", Lifecycle: "retired", LastSyncedAt: now.Add(-24 * time.Hour)}
+	if err := db.Create(&node).Error; err != nil {
+		t.Fatal(err)
+	}
+	target := api.CollectorTarget{TargetKey: "dcgm_exporter|10.114.4.37", Job: "dcgm_exporter", NodeIP: node.NodeIP, Health: "missing", LastSyncedAt: now.Add(-24 * time.Hour)}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	legacy := api.PlatformIssue{IssueKey: "target_health:" + target.TargetKey, Category: "data_quality", IssueType: "target_health", Title: "legacy missing target", EntityType: "target", EntityKey: target.TargetKey, NodeIP: node.NodeIP, Severity: "attention", Status: "open", DetectionState: "active", DetectionSource: "collector_target", FirstDetectedAt: now.Add(-24 * time.Hour), LastDetectedAt: now.Add(-24 * time.Hour)}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	if err := service.SyncDetectedIssues(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&legacy, legacy.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Status != "resolved" || legacy.DetectionState != "cleared" || legacy.SourceRecoveredAt == nil {
+		t.Fatalf("retired-node target issue was not cleared: %+v", legacy)
+	}
+	var generated int64
+	db.Model(&api.PlatformIssue{}).Where("node_ip = ? AND detection_state = ?", node.NodeIP, "active").Count(&generated)
+	if generated != 0 {
+		t.Fatalf("retired node generated %d active issues", generated)
+	}
+}
+
 func TestIssueSummaryResolutionAndTrainingDataAPI(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
