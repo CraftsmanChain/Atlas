@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"atlas/internal/features"
 	"atlas/internal/prometheus"
 	"atlas/pkg/api"
 	"atlas/pkg/config"
@@ -84,7 +85,7 @@ func TestEvaluatePersistsScoredAndUnknownAssets(t *testing.T) {
 	if err := db.Where("gpu_uuid = ?", "GPU-A").First(&snapshot).Error; err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.FeatureCatalogVersion != "1.5.0" || snapshot.FeatureVersions["gpu_temp"] != "1.5.0" || snapshot.MetricSources["gpu_temp"] != "dcgm_exporter" {
+	if snapshot.FeatureCatalogVersion != features.CatalogVersion || snapshot.FeatureVersions["gpu_temp"] != features.CatalogVersion || snapshot.MetricSources["gpu_temp"] != "dcgm_exporter" {
 		t.Fatalf("snapshot is missing feature lineage: %+v", snapshot)
 	}
 }

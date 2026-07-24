@@ -1,0 +1,12 @@
+groups:
+  - name: atlas-feature-recording
+    interval: 1m
+    rules:
+      - record: atlas:gpu_metric_family_count
+        expr: count by(UUID) (count by(UUID,__name__) ({__name__=~"DCGM_FI_DEV_.+",UUID!=""}))
+        labels:
+          owner: atlas-health
+      - record: atlas:gpu_metric_family_count_delta_5m
+        expr: max_over_time(atlas:gpu_metric_family_count[5m]) - min_over_time(atlas:gpu_metric_family_count[5m])
+        labels:
+          owner: atlas-health
