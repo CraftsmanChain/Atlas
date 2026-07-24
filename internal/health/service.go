@@ -104,7 +104,7 @@ func (s *Service) Evaluate(ctx context.Context) (*api.HealthEvaluationRun, error
 	now := s.now()
 	ruleVersion := strings.TrimSpace(s.config.RuleVersion)
 	if ruleVersion == "" {
-		ruleVersion = "gpu-health-v1.4.0"
+		ruleVersion = "gpu-health-v1.4.1"
 	}
 	run := &api.HealthEvaluationRun{Status: "running", RuleVersion: ruleVersion, Source: s.prom.BaseURL(), StartedAt: now}
 	if err := s.db.Create(run).Error; err != nil {

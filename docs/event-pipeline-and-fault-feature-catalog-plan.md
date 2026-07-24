@@ -274,7 +274,7 @@ metric_gap_max_seconds_1h
 | `feature-catalog v1.0.0` | 注册/读取 API、能力矩阵、20 个健康核心特征和 snapshot 版本 manifest | 健康评分已消费统一、可版本化的特征底座；PyOD、风险排序和监督预测可复用同一契约 | 特征支持、时间/缺失语义和血缘可查询、可回放 |
 | `feature-catalog v1.2.0` / `gpu-health v1.2.0` | 27 个规范特征、45 个 DCGM/gpu_exporter 源查询、Correctable Row Remap 1h/24h 增量、单位规范化、DCGM 优先回退与来源审计 | 稳定 Correctable 累计值不扣分，只有快速增长进入风险；Uncorrectable/Remap Failure 只告警，不自动操作任务或节点 | 逐特征来源可审计，回退降低置信度，稳定累计值不产生风险事件 |
 | `feature-catalog v1.3.0` / `gpu-health v1.3.0` / `quality v0.5.0` | 30 个规范特征、48 个源查询；每卡 1h 样本数、存在率和当前样本年龄 | 结构异常进入数据质量问题而不误判为硬件故障；恢复后自动清除 | 15 秒现场基线下完整率和样本年龄可查，连续性页面/API/问题生命周期一致 |
-| `feature-catalog v1.4.0` / `gpu-health v1.4.0` / `quality v0.6.0` | 35 个规范特征、53 个源查询；最大 gap、UUID flap 和三项 DCGM Target 抓取质量特征 | GPU 序列与采集链路联合判定，仍与硬件健康扣分解耦 | 720 GPU 查询覆盖；连续性明细、摘要和数据问题证据一致 |
+| `feature-catalog v1.4.0` / `gpu-health v1.4.1` / `quality v0.6.1` | 35 个规范特征、53 个源查询；最大 gap、UUID flap 和三项 DCGM Target 抓取质量特征 | GPU 序列与采集链路联合判定；相对耗时仅审计，避免微小绝对值被比例放大 | 720 GPU 查询覆盖；连续性明细、摘要和数据问题证据一致，无耗时比误报 |
 | `degradation v0.1.0` | 被动衰减候选、同机/同型号对比、证据输出 | 无侵入识别可用但变慢的 GPU 候选 | 不把空闲误报为衰减，输出基线与置信度 |
 | `degradation v0.2.0` | 维护窗口主动验证与维修复测 | 建立算力/显存/PCIe/NVLink 分类验证 | 测试可重复且不影响生产任务 |
 | `prediction v0.1.0` | PyOD shadow、风险排序、历史回放 | 输出异常与高风险队列，不冒充故障概率 | 有误报率、Top-K 命中和提前量报告 |

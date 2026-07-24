@@ -42,7 +42,7 @@ Feature Catalog 是健康评分、PyOD 异常检测、风险排序、监督预�
 - `target_scrape_samples_ratio_5m`：DCGM Target 5 分钟样本量相对 1 小时基线的比例。
 - `target_scrape_duration_ratio_5m`：DCGM Target 5 分钟平均抓取耗时相对 1 小时基线的比例。
 
-存在率、年龄、gap、flap 和 Target 抓取质量按两级阈值进入数据质量问题；例如 gap 超过 45 秒进入 attention、超过 120 秒进入 warning，UUID flap 达 1 次进入 attention、达到 2 次进入 warning。它们不扣硬件健康分，也不产生硬件故障事件。
+存在率、年龄、gap、flap、Target 抓取成功率和样本量比按两级阈值进入数据质量问题；例如 gap 超过 45 秒进入 attention、超过 120 秒进入 warning，UUID flap 达 1 次进入 attention、达到 2 次进入 warning。相对抓取耗时容易受毫秒级基线放大影响，当前只作审计，待有绝对耗时门槛后再参与判定。它们不扣硬件健康分，也不产生硬件故障事件。
 
 语义等价指标按 DCGM 主源、gpu_exporter 降级备用合并，在查询层完成比例、Hz 和 bytes 的单位规范化；snapshot 记录逐特征来源、回退数量和双源偏差。4090 不会把不支持的显存温度或 Row Remap 当成缺失风险；H100/H200 会纳入 Row Remap 与详细 ECC 能力。完整契约见 [GPU 双源健康评分契约 v1.3](gpu-dual-source-health-v1.1.md)。
 

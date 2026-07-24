@@ -139,7 +139,7 @@ func TestTelemetryQualitySummaryAndClassification(t *testing.T) {
 	}
 	now := time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
 	finished := now
-	run := api.HealthEvaluationRun{Status: "success", RuleVersion: "gpu-health-v1.4.0", StartedAt: now.Add(-time.Minute), FinishedAt: &finished}
+	run := api.HealthEvaluationRun{Status: "success", RuleVersion: "gpu-health-v1.4.1", StartedAt: now.Add(-time.Minute), FinishedAt: &finished}
 	if err := db.Create(&run).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestClassifyTelemetryQualityThresholdBoundaries(t *testing.T) {
 		{name: "degraded on UUID flap", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "gpu_uuid_presence_flap_count_1h": 1}, expected: "degraded"},
 		{name: "degraded on maximum gap", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "gpu_metric_gap_max_seconds_1h": 45.01}, expected: "degraded"},
 		{name: "degraded on scrape samples", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "target_scrape_samples_ratio_5m": 79.99}, expected: "degraded"},
-		{name: "degraded on scrape duration", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "target_scrape_duration_ratio_5m": 200.01}, expected: "degraded"},
+		{name: "duration ratio is audit only", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "target_scrape_duration_ratio_5m": 500}, expected: "fresh"},
 		{name: "stale below presence boundary", metrics: number(79.99), expected: "stale"},
 		{name: "stale above age boundary", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 300.01}, expected: "stale"},
 		{name: "stale on repeated UUID flaps", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "gpu_uuid_presence_flap_count_1h": 2}, expected: "stale"},

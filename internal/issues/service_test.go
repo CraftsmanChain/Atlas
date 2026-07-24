@@ -279,6 +279,10 @@ func TestTelemetryContinuitySeverityUsesGapFlapAndScrapeBoundaries(t *testing.T)
 	if severity, active := telemetryContinuitySeverity(base); active || severity != "" {
 		t.Fatalf("healthy telemetry must not be active: severity=%s active=%v", severity, active)
 	}
+	durationAudit := api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "target_scrape_duration_ratio_5m": 600}
+	if severity, active := telemetryContinuitySeverity(durationAudit); active || severity != "" {
+		t.Fatalf("relative scrape duration without an absolute gate must remain audit-only: severity=%s active=%v", severity, active)
+	}
 	attention := api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "gpu_metric_gap_max_seconds_1h": 46}
 	if severity, active := telemetryContinuitySeverity(attention); !active || severity != "attention" {
 		t.Fatalf("maximum gap must create attention: severity=%s active=%v", severity, active)

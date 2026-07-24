@@ -258,14 +258,13 @@ func telemetryContinuitySeverity(metrics api.FloatMap) (string, bool) {
 	gap := metrics["gpu_metric_gap_max_seconds_1h"]
 	scrapeOK, hasScrapeOK := metrics["target_scrape_success_ratio_5m"]
 	scrapeSamples, hasScrapeSamples := metrics["target_scrape_samples_ratio_5m"]
-	scrapeDuration, hasScrapeDuration := metrics["target_scrape_duration_ratio_5m"]
 	warning := presence < 80 || age > 300 || flaps >= 2 || gap > 120 ||
-		(hasScrapeOK && scrapeOK < 80) || (hasScrapeSamples && scrapeSamples < 50) || (hasScrapeDuration && scrapeDuration > 400)
+		(hasScrapeOK && scrapeOK < 80) || (hasScrapeSamples && scrapeSamples < 50)
 	if warning {
 		return "warning", true
 	}
 	attention := presence < 95 || age > 60 || flaps > 0 || gap > 45 ||
-		(hasScrapeOK && scrapeOK < 95) || (hasScrapeSamples && scrapeSamples < 80) || (hasScrapeDuration && scrapeDuration > 200)
+		(hasScrapeOK && scrapeOK < 95) || (hasScrapeSamples && scrapeSamples < 80)
 	if attention {
 		return "attention", true
 	}
