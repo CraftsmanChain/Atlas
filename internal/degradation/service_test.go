@@ -153,7 +153,7 @@ func TestEvaluatePrefersMatureHistoricalBaselineWithoutLivePeers(t *testing.T) {
 		GPUAssetID: 1, GPUUUID: "GPU-A", NodeIP: "10.114.4.21", GPUIndex: 0,
 		ModelName:       "NVIDIA H100 80GB HBM3",
 		Metrics:         api.FloatMap{"gpu_util_avg_15m": 90, "sm_clock_avg_15m": 900},
-		FeatureVersions: api.StringMap{"sm_clock_avg_15m": "1.7.0"},
+		FeatureVersions: api.StringMap{"sm_clock_avg_15m": features.CatalogVersion},
 		DataConfidence:  "A", ObservedAt: now,
 	}
 	if err := db.Create(&snapshot).Error; err != nil {
@@ -169,7 +169,7 @@ func TestEvaluatePrefersMatureHistoricalBaselineWithoutLivePeers(t *testing.T) {
 	}
 	baseline := api.GPUFeatureBaseline{
 		ContractVersion: features.BaselineContractVersion,
-		FeatureName:     "sm_clock_avg_15m", FeatureVersion: "1.7.0",
+		FeatureName:     "sm_clock_avg_15m", FeatureVersion: features.CatalogVersion,
 		ModelName: snapshot.ModelName, LoadBucket: "high", WindowDays: 7,
 		SampleCount: 400, GPUCount: 8, P05: 1400, P50: 1500, P95: 1550, MAD: 20,
 		Maturity: "mature", WindowStartedAt: now.Add(-7 * 24 * time.Hour), WindowEndedAt: now,

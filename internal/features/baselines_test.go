@@ -38,6 +38,9 @@ func TestRefreshHistoricalBaselinesBuildsRobustModelLoadContract(t *testing.T) {
 	if !result.Refreshed || result.Run.Status != "success" || result.Run.SnapshotCount != 24 || result.Run.BaselineCount != 1 {
 		t.Fatalf("unexpected refresh result: %+v", result)
 	}
+	if result.Run.DurationMillis < 0 || result.Run.FinishedAt == nil || result.Run.FinishedAt.Before(result.Run.StartedAt) {
+		t.Fatalf("refresh duration provenance is invalid: %+v", result.Run)
+	}
 	baselines, err := ListBaselines(db, BaselineListOptions{FeatureName: "sm_clock_avg_15m", LoadBucket: "high"})
 	if err != nil || len(baselines) != 1 {
 		t.Fatalf("unexpected baselines count=%d err=%v", len(baselines), err)
@@ -87,6 +90,15 @@ func TestBaselineHandlerFiltersAndExposesRefreshProvenance(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Create(&api.GPUFeatureBaseline{
+		ContractVersion: BaselineContractVersion, FeatureName: "sm_clock_avg_15m", FeatureVersion: "experimental-reused-version",
+		ModelName: "H100", LoadBucket: "high", WindowDays: baselineWindowDays,
+		SampleCount: 400, GPUCount: 8, P05: 1300, P50: 1400, P95: 1500, MAD: 30,
+		Maturity: "mature", WindowStartedAt: now.Add(-7 * 24 * time.Hour), WindowEndedAt: now,
+		ComputedAt: now, Owner: "atlas-ml",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 	response := httptest.NewRecorder()
 	NewBaselineHandler(db).HandleCollection(response, httptest.NewRequest(http.MethodGet, "/api/v1/features/baselines?maturity=mature&load_bucket=high", nil))
 	if response.Code != http.StatusOK {
@@ -104,5 +116,17 @@ func TestBaselineHandlerFiltersAndExposesRefreshProvenance(t *testing.T) {
 	}
 	if len(payload.Data) != 1 || payload.Meta.ContractVersion != BaselineContractVersion || payload.Meta.LatestRefresh == nil {
 		t.Fatalf("unexpected response: %+v", payload)
+	}
+
+	response = httptest.NewRecorder()
+	NewBaselineHandler(db).HandleCollection(response, httptest.NewRequest(http.MethodGet, "/api/v1/features/baselines?version=all", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("all-version status=%d body=%s", response.Code, response.Body.String())
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Data) != 2 {
+		t.Fatalf("version=all must explicitly include historical baselines: %+v", payload.Data)
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const CatalogVersion = "1.7.0"
+const CatalogVersion = "1.8.0"
 
 type MetricSpec struct {
 	Key      string

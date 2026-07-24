@@ -35,6 +35,7 @@ type FeatureBaselineRefreshRun struct {
 	WindowDays      int        `json:"window_days"`
 	SnapshotCount   int        `json:"snapshot_count"`
 	BaselineCount   int        `json:"baseline_count"`
+	DurationMillis  int64      `json:"duration_millis"`
 	StartedAt       time.Time  `json:"started_at" gorm:"index"`
 	FinishedAt      *time.Time `json:"finished_at,omitempty"`
 	ErrorMessage    string     `json:"error_message,omitempty" gorm:"type:text"`
