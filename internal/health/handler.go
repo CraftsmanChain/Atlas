@@ -122,16 +122,21 @@ func (h *Handler) HandleRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 type telemetryQualityItem struct {
-	GPUAssetID   uint      `json:"gpu_asset_id"`
-	GPUUUID      string    `json:"gpu_uuid"`
-	NodeIP       string    `json:"node_ip"`
-	GPUIndex     int       `json:"gpu_index"`
-	ModelName    string    `json:"model_name"`
-	Status       string    `json:"status"`
-	SampleCount  *float64  `json:"sample_count_1h,omitempty"`
-	PresenceRate *float64  `json:"presence_ratio_1h,omitempty"`
-	SampleAge    *float64  `json:"sample_age_seconds,omitempty"`
-	ObservedAt   time.Time `json:"observed_at"`
+	GPUAssetID     uint      `json:"gpu_asset_id"`
+	GPUUUID        string    `json:"gpu_uuid"`
+	NodeIP         string    `json:"node_ip"`
+	GPUIndex       int       `json:"gpu_index"`
+	ModelName      string    `json:"model_name"`
+	Status         string    `json:"status"`
+	SampleCount    *float64  `json:"sample_count_1h,omitempty"`
+	PresenceRate   *float64  `json:"presence_ratio_1h,omitempty"`
+	SampleAge      *float64  `json:"sample_age_seconds,omitempty"`
+	UUIDFlaps      *float64  `json:"uuid_presence_flap_count_1h,omitempty"`
+	MaxGap         *float64  `json:"metric_gap_max_seconds_1h,omitempty"`
+	ScrapeOK       *float64  `json:"target_scrape_success_ratio_5m,omitempty"`
+	ScrapeSamples  *float64  `json:"target_scrape_samples_ratio_5m,omitempty"`
+	ScrapeDuration *float64  `json:"target_scrape_duration_ratio_5m,omitempty"`
+	ObservedAt     time.Time `json:"observed_at"`
 }
 
 func (h *Handler) HandleTelemetryQuality(w http.ResponseWriter, r *http.Request) {
@@ -151,8 +156,8 @@ func (h *Handler) HandleTelemetryQuality(w http.ResponseWriter, r *http.Request)
 	}
 	allRows := make([]telemetryQualityItem, 0, len(snapshots))
 	byStatus := map[string]int64{}
-	var presenceTotal, maxAge float64
-	var presenceCount int
+	var presenceTotal, maxAge, maxGap, maxFlaps, minScrapeOK, minScrapeSamples, maxScrapeDuration float64
+	var presenceCount, maxGapCount, maxFlapsCount, scrapeOKCount, scrapeSamplesCount, scrapeDurationCount int
 	for _, snapshot := range snapshots {
 		item := classifyTelemetryQuality(snapshot)
 		allRows = append(allRows, item)
@@ -163,6 +168,36 @@ func (h *Handler) HandleTelemetryQuality(w http.ResponseWriter, r *http.Request)
 		}
 		if item.SampleAge != nil && *item.SampleAge > maxAge {
 			maxAge = *item.SampleAge
+		}
+		if item.MaxGap != nil && *item.MaxGap > maxGap {
+			maxGap = *item.MaxGap
+		}
+		if item.MaxGap != nil {
+			maxGapCount++
+		}
+		if item.UUIDFlaps != nil && *item.UUIDFlaps > maxFlaps {
+			maxFlaps = *item.UUIDFlaps
+		}
+		if item.UUIDFlaps != nil {
+			maxFlapsCount++
+		}
+		if item.ScrapeOK != nil {
+			if scrapeOKCount == 0 || *item.ScrapeOK < minScrapeOK {
+				minScrapeOK = *item.ScrapeOK
+			}
+			scrapeOKCount++
+		}
+		if item.ScrapeSamples != nil {
+			if scrapeSamplesCount == 0 || *item.ScrapeSamples < minScrapeSamples {
+				minScrapeSamples = *item.ScrapeSamples
+			}
+			scrapeSamplesCount++
+		}
+		if item.ScrapeDuration != nil && *item.ScrapeDuration > maxScrapeDuration {
+			maxScrapeDuration = *item.ScrapeDuration
+		}
+		if item.ScrapeDuration != nil {
+			scrapeDurationCount++
 		}
 	}
 	filtered := make([]telemetryQualityItem, 0, len(allRows))
@@ -197,9 +232,18 @@ func (h *Handler) HandleTelemetryQuality(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": filtered[offset:end],
 		"summary": map[string]any{
-			"total": len(allRows), "by_status": byStatus, "average_presence_ratio_1h": averagePresence,
-			"max_sample_age_seconds": maxAge, "feature_catalog_version": catalogVersion,
-			"evaluation_run_id": latest.ID, "evaluated_at": latest.FinishedAt,
+			"total":                               len(allRows),
+			"by_status":                           byStatus,
+			"average_presence_ratio_1h":           averagePresence,
+			"max_sample_age_seconds":              maxAge,
+			"feature_catalog_version":             catalogVersion,
+			"max_metric_gap_seconds_1h":           optionalQualityValue(maxGap, maxGapCount),
+			"max_uuid_flap_count_1h":              optionalQualityValue(maxFlaps, maxFlapsCount),
+			"min_target_scrape_success_ratio_5m":  optionalQualityValue(minScrapeOK, scrapeOKCount),
+			"min_target_scrape_samples_ratio_5m":  optionalQualityValue(minScrapeSamples, scrapeSamplesCount),
+			"max_target_scrape_duration_ratio_5m": optionalQualityValue(maxScrapeDuration, scrapeDurationCount),
+			"evaluation_run_id":                   latest.ID,
+			"evaluated_at":                        latest.FinishedAt,
 		},
 		"meta": map[string]any{"total": total, "limit": limit, "offset": offset},
 	})
@@ -216,18 +260,52 @@ func classifyTelemetryQuality(snapshot api.GPUFeatureSnapshot) telemetryQualityI
 	if value, ok := snapshot.Metrics["gpu_metric_sample_age_seconds"]; ok {
 		item.SampleAge = &value
 	}
+	if value, ok := snapshot.Metrics["gpu_uuid_presence_flap_count_1h"]; ok {
+		item.UUIDFlaps = &value
+	}
+	if value, ok := snapshot.Metrics["gpu_metric_gap_max_seconds_1h"]; ok {
+		item.MaxGap = &value
+	}
+	if value, ok := snapshot.Metrics["target_scrape_success_ratio_5m"]; ok {
+		item.ScrapeOK = &value
+	}
+	if value, ok := snapshot.Metrics["target_scrape_samples_ratio_5m"]; ok {
+		item.ScrapeSamples = &value
+	}
+	if value, ok := snapshot.Metrics["target_scrape_duration_ratio_5m"]; ok {
+		item.ScrapeDuration = &value
+	}
 	if item.PresenceRate == nil || item.SampleAge == nil {
 		return item
 	}
 	switch {
-	case *item.SampleAge > 300 || *item.PresenceRate < 80:
+	case *item.SampleAge > 300 || *item.PresenceRate < 80 ||
+		exceeds(item.UUIDFlaps, 2, true) || exceeds(item.MaxGap, 120, false) ||
+		below(item.ScrapeOK, 80) || below(item.ScrapeSamples, 50) || exceeds(item.ScrapeDuration, 400, false):
 		item.Status = "stale"
-	case *item.SampleAge > 60 || *item.PresenceRate < 95:
+	case *item.SampleAge > 60 || *item.PresenceRate < 95 ||
+		exceeds(item.UUIDFlaps, 0, false) || exceeds(item.MaxGap, 45, false) ||
+		below(item.ScrapeOK, 95) || below(item.ScrapeSamples, 80) || exceeds(item.ScrapeDuration, 200, false):
 		item.Status = "degraded"
 	default:
 		item.Status = "fresh"
 	}
 	return item
+}
+
+func exceeds(value *float64, threshold float64, inclusive bool) bool {
+	return value != nil && ((*value >= threshold && inclusive) || (*value > threshold && !inclusive))
+}
+
+func below(value *float64, threshold float64) bool {
+	return value != nil && *value < threshold
+}
+
+func optionalQualityValue(value float64, count int) any {
+	if count == 0 {
+		return nil
+	}
+	return value
 }
 
 func (h *Handler) HandleEvents(w http.ResponseWriter, r *http.Request) {

@@ -139,21 +139,21 @@ func TestTelemetryQualitySummaryAndClassification(t *testing.T) {
 	}
 	now := time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
 	finished := now
-	run := api.HealthEvaluationRun{Status: "success", RuleVersion: "gpu-health-v1.3.0", StartedAt: now.Add(-time.Minute), FinishedAt: &finished}
+	run := api.HealthEvaluationRun{Status: "success", RuleVersion: "gpu-health-v1.4.0", StartedAt: now.Add(-time.Minute), FinishedAt: &finished}
 	if err := db.Create(&run).Error; err != nil {
 		t.Fatal(err)
 	}
 	snapshots := []api.GPUFeatureSnapshot{
-		{EvaluationRunID: run.ID, GPUAssetID: 1, GPUUUID: "GPU-A", NodeIP: "10.114.4.21", GPUIndex: 0, Metrics: api.FloatMap{"gpu_metric_samples_1h": 240, "gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15}, FeatureCatalogVersion: "1.3.0", ObservedAt: now},
-		{EvaluationRunID: run.ID, GPUAssetID: 2, GPUUUID: "GPU-B", NodeIP: "10.114.4.21", GPUIndex: 1, Metrics: api.FloatMap{"gpu_metric_samples_1h": 180, "gpu_metric_presence_ratio_1h": 75, "gpu_metric_sample_age_seconds": 20}, FeatureCatalogVersion: "1.3.0", ObservedAt: now},
-		{EvaluationRunID: run.ID, GPUAssetID: 3, GPUUUID: "GPU-C", NodeIP: "10.114.4.21", GPUIndex: 2, Metrics: api.FloatMap{}, FeatureCatalogVersion: "1.3.0", ObservedAt: now},
+		{EvaluationRunID: run.ID, GPUAssetID: 1, GPUUUID: "GPU-A", NodeIP: "10.114.4.21", GPUIndex: 0, Metrics: api.FloatMap{"gpu_metric_samples_1h": 240, "gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "gpu_metric_gap_max_seconds_1h": 15, "gpu_uuid_presence_flap_count_1h": 0, "target_scrape_success_ratio_5m": 100, "target_scrape_samples_ratio_5m": 100, "target_scrape_duration_ratio_5m": 110}, FeatureCatalogVersion: "1.4.0", ObservedAt: now},
+		{EvaluationRunID: run.ID, GPUAssetID: 2, GPUUUID: "GPU-B", NodeIP: "10.114.4.21", GPUIndex: 1, Metrics: api.FloatMap{"gpu_metric_samples_1h": 180, "gpu_metric_presence_ratio_1h": 75, "gpu_metric_sample_age_seconds": 20, "gpu_metric_gap_max_seconds_1h": 150, "gpu_uuid_presence_flap_count_1h": 2}, FeatureCatalogVersion: "1.4.0", ObservedAt: now},
+		{EvaluationRunID: run.ID, GPUAssetID: 3, GPUUUID: "GPU-C", NodeIP: "10.114.4.21", GPUIndex: 2, Metrics: api.FloatMap{}, FeatureCatalogVersion: "1.4.0", ObservedAt: now},
 	}
 	if err := db.Create(&snapshots).Error; err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
 	NewHandler(db).HandleTelemetryQuality(response, httptest.NewRequest("GET", "/api/v1/health/telemetry-quality?status=stale", nil))
-	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"fresh":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"stale":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"unknown":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"total":1`)) {
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"fresh":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"stale":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"unknown":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"total":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"max_metric_gap_seconds_1h":150`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"min_target_scrape_success_ratio_5m":100`)) {
 		t.Fatalf("unexpected telemetry quality response: %d %s", response.Code, response.Body.String())
 	}
 }
@@ -167,11 +167,17 @@ func TestClassifyTelemetryQualityThresholdBoundaries(t *testing.T) {
 		metrics  api.FloatMap
 		expected string
 	}{
-		{name: "fresh at inclusive boundaries", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 95, "gpu_metric_sample_age_seconds": 60}, expected: "fresh"},
+		{name: "fresh at inclusive boundaries", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 95, "gpu_metric_sample_age_seconds": 60, "gpu_metric_gap_max_seconds_1h": 45, "gpu_uuid_presence_flap_count_1h": 0, "target_scrape_success_ratio_5m": 95, "target_scrape_samples_ratio_5m": 80, "target_scrape_duration_ratio_5m": 200}, expected: "fresh"},
 		{name: "degraded below presence target", metrics: number(94.99), expected: "degraded"},
 		{name: "degraded at stale presence boundary", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 80, "gpu_metric_sample_age_seconds": 300}, expected: "degraded"},
+		{name: "degraded on UUID flap", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "gpu_uuid_presence_flap_count_1h": 1}, expected: "degraded"},
+		{name: "degraded on maximum gap", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "gpu_metric_gap_max_seconds_1h": 45.01}, expected: "degraded"},
+		{name: "degraded on scrape samples", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "target_scrape_samples_ratio_5m": 79.99}, expected: "degraded"},
+		{name: "degraded on scrape duration", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "target_scrape_duration_ratio_5m": 200.01}, expected: "degraded"},
 		{name: "stale below presence boundary", metrics: number(79.99), expected: "stale"},
 		{name: "stale above age boundary", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 300.01}, expected: "stale"},
+		{name: "stale on repeated UUID flaps", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "gpu_uuid_presence_flap_count_1h": 2}, expected: "stale"},
+		{name: "stale on scrape failure ratio", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "target_scrape_success_ratio_5m": 79.99}, expected: "stale"},
 		{name: "unknown when structural metric missing", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100}, expected: "unknown"},
 	}
 	for _, test := range tests {

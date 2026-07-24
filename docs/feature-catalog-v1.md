@@ -1,6 +1,6 @@
 # Atlas Feature Catalog v1
 
-> 当前契约版本：`v1.3.0`（2026-07-24）
+> 当前契约版本：`v1.4.0`（2026-07-24）
 
 Feature Catalog 是健康评分、PyOD 异常检测、风险排序、监督预测和性能衰减检测共享的数据契约。目录版本为 `1.0.0`；特征定义按 `(name, version)` 不可重复注册。
 
@@ -27,7 +27,7 @@ Feature Catalog 是健康评分、PyOD 异常检测、风险排序、监督预�
 
 ## 已接入消费方
 
-健康评分服务不再维护独立的 Prometheus 特征清单。Catalog v1.3 生成 30 个规范健康特征和 48 个 DCGM/gpu_exporter 源查询，包括温度、功耗、利用率、时钟、显存、XID、Row Remap、PCIe Replay、reset-required、详细 ECC、风扇、PCIe 链路宽度和结构性可观测性。
+健康评分服务不再维护独立的 Prometheus 特征清单。Catalog v1.4 生成 35 个规范健康特征和 53 个 DCGM/gpu_exporter/Prometheus 源查询，包括温度、功耗、利用率、时钟、显存、XID、Row Remap、PCIe Replay、reset-required、详细 ECC、风扇、PCIe 链路宽度和结构性可观测性。
 
 `correctable_remapped_rows_delta_1h` 与 `correctable_remapped_rows_delta_24h` 将 Correctable Row Remap 的累计值转为近期增量。稳定累计值和单次低速新增只作为观察证据，不降低健康分；只有达到规则版本声明的增长门槛才进入风险评分。
 
@@ -36,8 +36,13 @@ Feature Catalog 是健康评分、PyOD 异常检测、风险排序、监督预�
 - `gpu_metric_samples_1h`：每卡最近 1 小时样本数，完整窗口期望 240。
 - `gpu_metric_presence_ratio_1h`：每卡最近 1 小时存在率，上限 100%。
 - `gpu_metric_sample_age_seconds`：每卡当前最新样本年龄。
+- `gpu_metric_gap_max_seconds_1h`：最近 1 小时相邻样本最大间隔。
+- `gpu_uuid_presence_flap_count_1h`：最近 1 小时 UUID 序列存在性变化次数。
+- `target_scrape_success_ratio_5m`：DCGM Target 最近 5 分钟抓取成功率。
+- `target_scrape_samples_ratio_5m`：DCGM Target 5 分钟样本量相对 1 小时基线的比例。
+- `target_scrape_duration_ratio_5m`：DCGM Target 5 分钟平均抓取耗时相对 1 小时基线的比例。
 
-存在率低于 95% 或样本年龄超过 60 秒进入数据质量问题；低于 80% 或超过 300 秒提升为 warning。它们不扣硬件健康分，也不产生硬件故障事件。
+存在率、年龄、gap、flap 和 Target 抓取质量按两级阈值进入数据质量问题；例如 gap 超过 45 秒进入 attention、超过 120 秒进入 warning，UUID flap 达 1 次进入 attention、达到 2 次进入 warning。它们不扣硬件健康分，也不产生硬件故障事件。
 
 语义等价指标按 DCGM 主源、gpu_exporter 降级备用合并，在查询层完成比例、Hz 和 bytes 的单位规范化；snapshot 记录逐特征来源、回退数量和双源偏差。4090 不会把不支持的显存温度或 Row Remap 当成缺失风险；H100/H200 会纳入 Row Remap 与详细 ECC 能力。完整契约见 [GPU 双源健康评分契约 v1.3](gpu-dual-source-health-v1.1.md)。
 
@@ -45,7 +50,7 @@ Feature Catalog 是健康评分、PyOD 异常检测、风险排序、监督预�
 
 ## 下一批接入
 
-1. 结构特征下一批：metric family 变化、scrape samples/duration、UUID flap 和 recording rule 最大 gap。
+1. 结构特征下一批：以 canary recording rule 接入 metric family 变化并验证查询开销。
 2. 性能衰减：有效时钟比、同机/同型号稳健分位数、链路带宽比和 throttle duty。
 3. 历史与标签：复发间隔、维修/更换、服役时间、驱动版本和标签置信度。
 4. 将 snapshot 的特征版本 manifest 延伸到 PyOD shadow 结果和监督训练数据导出。

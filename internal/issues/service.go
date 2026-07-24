@@ -138,17 +138,12 @@ func (s *Service) SyncDetectedIssues() error {
 			return err
 		}
 		for _, snapshot := range currentSnapshots {
-			presence, hasPresence := snapshot.Metrics["gpu_metric_presence_ratio_1h"]
-			age, hasAge := snapshot.Metrics["gpu_metric_sample_age_seconds"]
-			if !hasPresence || !hasAge || (presence >= 95 && age <= 60) {
+			severity, active := telemetryContinuitySeverity(snapshot.Metrics)
+			if !active {
 				continue
 			}
-			severity := "attention"
-			if presence < 80 || age > 300 {
-				severity = "warning"
-			}
 			key := fmt.Sprintf("telemetry_continuity:%d", snapshot.GPUAssetID)
-			item := detectedIssue{key: key, category: "data_quality", issueType: "metric_continuity", title: fmt.Sprintf("GPU telemetry continuity degraded on %s GPU %d", snapshot.NodeIP, snapshot.GPUIndex), description: fmt.Sprintf("DCGM GPU metric presence_1h=%.1f%%, sample_age=%.1fs", presence, age), entityType: "gpu", entityKey: fmt.Sprintf("%d", snapshot.GPUAssetID), nodeIP: snapshot.NodeIP, gpuUUID: snapshot.GPUUUID, severity: severity, source: "telemetry_continuity", detectionState: "active", sourceRecordID: snapshot.ID, lastDetectedAt: fallbackTime(snapshot.ObservedAt, now)}
+			item := detectedIssue{key: key, category: "data_quality", issueType: "metric_continuity", title: fmt.Sprintf("GPU telemetry continuity degraded on %s GPU %d", snapshot.NodeIP, snapshot.GPUIndex), description: telemetryContinuityEvidence(snapshot.Metrics), entityType: "gpu", entityKey: fmt.Sprintf("%d", snapshot.GPUAssetID), nodeIP: snapshot.NodeIP, gpuUUID: snapshot.GPUUUID, severity: severity, source: "telemetry_continuity", detectionState: "active", sourceRecordID: snapshot.ID, lastDetectedAt: fallbackTime(snapshot.ObservedAt, now)}
 			activeBySource[item.source][item.key] = true
 			if err := upsertDetected(tx, item, now); err != nil {
 				return err
@@ -251,4 +246,49 @@ func fallbackTime(value, fallbackValue time.Time) time.Time {
 		return fallbackValue
 	}
 	return value
+}
+
+func telemetryContinuitySeverity(metrics api.FloatMap) (string, bool) {
+	presence, hasPresence := metrics["gpu_metric_presence_ratio_1h"]
+	age, hasAge := metrics["gpu_metric_sample_age_seconds"]
+	if !hasPresence || !hasAge {
+		return "", false
+	}
+	flaps := metrics["gpu_uuid_presence_flap_count_1h"]
+	gap := metrics["gpu_metric_gap_max_seconds_1h"]
+	scrapeOK, hasScrapeOK := metrics["target_scrape_success_ratio_5m"]
+	scrapeSamples, hasScrapeSamples := metrics["target_scrape_samples_ratio_5m"]
+	scrapeDuration, hasScrapeDuration := metrics["target_scrape_duration_ratio_5m"]
+	warning := presence < 80 || age > 300 || flaps >= 2 || gap > 120 ||
+		(hasScrapeOK && scrapeOK < 80) || (hasScrapeSamples && scrapeSamples < 50) || (hasScrapeDuration && scrapeDuration > 400)
+	if warning {
+		return "warning", true
+	}
+	attention := presence < 95 || age > 60 || flaps > 0 || gap > 45 ||
+		(hasScrapeOK && scrapeOK < 95) || (hasScrapeSamples && scrapeSamples < 80) || (hasScrapeDuration && scrapeDuration > 200)
+	if attention {
+		return "attention", true
+	}
+	return "", false
+}
+
+func telemetryContinuityEvidence(metrics api.FloatMap) string {
+	keys := []struct {
+		name, format string
+	}{
+		{"gpu_metric_presence_ratio_1h", "presence_1h=%.1f%%"},
+		{"gpu_metric_sample_age_seconds", "sample_age=%.1fs"},
+		{"gpu_metric_gap_max_seconds_1h", "max_gap_1h=%.1fs"},
+		{"gpu_uuid_presence_flap_count_1h", "uuid_flaps_1h=%.0f"},
+		{"target_scrape_success_ratio_5m", "scrape_success_5m=%.1f%%"},
+		{"target_scrape_samples_ratio_5m", "scrape_samples_ratio_5m=%.1f%%"},
+		{"target_scrape_duration_ratio_5m", "scrape_duration_ratio_5m=%.1f%%"},
+	}
+	values := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if value, ok := metrics[key.name]; ok {
+			values = append(values, fmt.Sprintf(key.format, value))
+		}
+	}
+	return "DCGM telemetry: " + strings.Join(values, ", ")
 }
