@@ -28,10 +28,11 @@ const (
 var baselineFeatureNames = []string{"sm_clock_avg_15m"}
 
 type BaselineListOptions struct {
-	FeatureName string
-	ModelName   string
-	LoadBucket  string
-	Maturity    string
+	FeatureName    string
+	FeatureVersion string
+	ModelName      string
+	LoadBucket     string
+	Maturity       string
 }
 
 type BaselineRefreshResult struct {
@@ -76,6 +77,7 @@ type baselineGroup struct {
 }
 
 func RefreshHistoricalBaselines(db *storage.DB, now time.Time, force bool) (BaselineRefreshResult, error) {
+	wallStartedAt := time.Now()
 	var latest api.FeatureBaselineRefreshRun
 	result := db.Where("status = ?", "success").Order("finished_at DESC").Order("id DESC").Limit(1).Find(&latest)
 	if result.Error != nil {
@@ -93,8 +95,10 @@ func RefreshHistoricalBaselines(db *storage.DB, now time.Time, force bool) (Base
 		return BaselineRefreshResult{}, err
 	}
 	fail := func(err error) (BaselineRefreshResult, error) {
-		finished := now
+		elapsed := time.Since(wallStartedAt)
+		finished := now.Add(elapsed)
 		run.Status, run.FinishedAt, run.ErrorMessage = "failed", &finished, err.Error()
+		run.DurationMillis = elapsed.Milliseconds()
 		_ = db.Save(&run).Error
 		return BaselineRefreshResult{Run: run, Refreshed: true}, err
 	}
@@ -213,8 +217,10 @@ WHERE bucket_rank = 1`
 	if err != nil {
 		return fail(err)
 	}
-	finished := now
+	elapsed := time.Since(wallStartedAt)
+	finished := now.Add(elapsed)
 	run.Status, run.FinishedAt, run.BaselineCount = "success", &finished, len(baselines)
+	run.DurationMillis = elapsed.Milliseconds()
 	if err := db.Save(&run).Error; err != nil {
 		return BaselineRefreshResult{}, err
 	}
@@ -264,6 +270,9 @@ func ListBaselines(db *storage.DB, options BaselineListOptions) ([]api.GPUFeatur
 	query := db.Model(&api.GPUFeatureBaseline{}).Where("contract_version = ?", BaselineContractVersion)
 	if value := strings.TrimSpace(options.FeatureName); value != "" {
 		query = query.Where("feature_name = ?", value)
+	}
+	if value := strings.TrimSpace(options.FeatureVersion); value != "" {
+		query = query.Where("feature_version = ?", value)
 	}
 	if value := strings.TrimSpace(options.ModelName); value != "" {
 		query = query.Where("model_name = ?", value)

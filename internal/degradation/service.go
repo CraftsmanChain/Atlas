@@ -60,7 +60,8 @@ func (s *Service) Evaluate() (api.GPUDegradationSummary, []api.GPUDegradationAss
 		snapshotByID[snapshot.ID] = snapshot
 	}
 	historicalRows, err := features.ListBaselines(s.db, features.BaselineListOptions{
-		FeatureName: "sm_clock_avg_15m", LoadBucket: "high", Maturity: "mature",
+		FeatureName: "sm_clock_avg_15m", FeatureVersion: features.CatalogVersion,
+		LoadBucket: "high", Maturity: "mature",
 	})
 	if err != nil {
 		return api.GPUDegradationSummary{}, nil, err
