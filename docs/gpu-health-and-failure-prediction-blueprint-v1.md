@@ -514,7 +514,7 @@ L3 高风险：pending remap / SRAM threshold / repeated ECC burst
 L4 故障：DBE / row remap failure / reset required / 严重 XID
 ```
 
-当前 `gpu-health-v1.4.0` 延续 v1.2 的 ECC 规则：Correctable Row Remap 累计值和增量分开，累计值稳定或单次低速新增只记录观察证据；1 小时新增 2/4 行、24 小时新增 4/8 行分别作为 attention/warning 初始门槛。Uncorrectable ECC 和 Row Remap Failure 保持 critical，但本阶段只告警、记录并支持人工处置，不自动操作任务或节点。v1.4 同时携带每卡样本数、存在率、年龄、最大 gap、UUID flap 和 DCGM Target 抓取质量；结构异常只进入数据质量，不直接扣硬件分。
+当前 `gpu-health-v1.4.1` 延续 v1.2 的 ECC 规则：Correctable Row Remap 累计值和增量分开，累计值稳定或单次低速新增只记录观察证据；1 小时新增 2/4 行、24 小时新增 4/8 行分别作为 attention/warning 初始门槛。Uncorrectable ECC 和 Row Remap Failure 保持 critical，但本阶段只告警、记录并支持人工处置，不自动操作任务或节点。v1.4 同时携带每卡样本数、存在率、年龄、最大 gap、UUID flap 和 DCGM Target 抓取质量；相对抓取耗时仅审计，结构异常只进入数据质量，不直接扣硬件分。
 
 4090 不输出与 H100/H200 等价的 ECC 健康子分，缺失项应显示不适用而不是零风险。
 

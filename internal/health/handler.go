@@ -281,11 +281,11 @@ func classifyTelemetryQuality(snapshot api.GPUFeatureSnapshot) telemetryQualityI
 	switch {
 	case *item.SampleAge > 300 || *item.PresenceRate < 80 ||
 		exceeds(item.UUIDFlaps, 2, true) || exceeds(item.MaxGap, 120, false) ||
-		below(item.ScrapeOK, 80) || below(item.ScrapeSamples, 50) || exceeds(item.ScrapeDuration, 400, false):
+		below(item.ScrapeOK, 80) || below(item.ScrapeSamples, 50):
 		item.Status = "stale"
 	case *item.SampleAge > 60 || *item.PresenceRate < 95 ||
 		exceeds(item.UUIDFlaps, 0, false) || exceeds(item.MaxGap, 45, false) ||
-		below(item.ScrapeOK, 95) || below(item.ScrapeSamples, 80) || exceeds(item.ScrapeDuration, 200, false):
+		below(item.ScrapeOK, 95) || below(item.ScrapeSamples, 80):
 		item.Status = "degraded"
 	default:
 		item.Status = "fresh"
