@@ -88,6 +88,64 @@ func TestRefreshHistoricalBaselinesDoesNotReusePreviousCatalogThrottle(t *testin
 	}
 }
 
+func TestRefreshHistoricalBaselinesExcludesSnapshotsBeforeDefinitionEpoch(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)
+	definitionEpoch := now.Add(-48 * time.Hour)
+	var definition api.FeatureDefinition
+	for _, candidate := range Builtins() {
+		if candidate.Name == "sm_clock_avg_15m" {
+			definition = candidate
+			break
+		}
+	}
+	if definition.Name == "" {
+		t.Fatal("sm_clock_avg_15m definition is missing")
+	}
+	definition.CreatedAt = definitionEpoch
+	definition.UpdatedAt = definitionEpoch
+	if err := db.Create(&definition).Error; err != nil {
+		t.Fatal(err)
+	}
+	snapshots := []api.GPUFeatureSnapshot{
+		{
+			GPUAssetID: 1, GPUUUID: "GPU-OLD", ModelName: "NVIDIA H100 80GB HBM3",
+			Metrics:               api.FloatMap{"gpu_util_avg_15m": 90, "sm_clock_avg_15m": 900},
+			FeatureCatalogVersion: CatalogVersion,
+			FeatureVersions:       api.StringMap{"sm_clock_avg_15m": CatalogVersion},
+			DataConfidence:        "A", ObservedAt: now.Add(-time.Hour), CreatedAt: definitionEpoch.Add(-time.Minute),
+		},
+		{
+			GPUAssetID: 2, GPUUUID: "GPU-CURRENT", ModelName: "NVIDIA H100 80GB HBM3",
+			Metrics:               api.FloatMap{"gpu_util_avg_15m": 90, "sm_clock_avg_15m": 1500},
+			FeatureCatalogVersion: CatalogVersion,
+			FeatureVersions:       api.StringMap{"sm_clock_avg_15m": CatalogVersion},
+			DataConfidence:        "A", ObservedAt: now.Add(-time.Hour), CreatedAt: definitionEpoch.Add(time.Minute),
+		},
+	}
+	if err := db.Create(&snapshots).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := RefreshHistoricalBaselines(db, now, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Run.SnapshotCount != 1 || result.Run.BaselineCount != 1 {
+		t.Fatalf("pre-epoch snapshot must be excluded: %+v", result.Run)
+	}
+	baselines, err := ListBaselines(db, BaselineListOptions{FeatureName: "sm_clock_avg_15m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(baselines) != 1 || baselines[0].SampleCount != 1 || baselines[0].P50 != 1500 {
+		t.Fatalf("unexpected epoch-isolated baseline: %+v", baselines)
+	}
+}
+
 func TestBaselineHandlerFiltersAndExposesRefreshProvenance(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
