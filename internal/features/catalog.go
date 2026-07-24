@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const CatalogVersion = "1.5.0"
+const CatalogVersion = "1.6.0"
 
 type MetricSpec struct {
 	Key      string
@@ -58,7 +58,7 @@ func Builtins() []api.FeatureDefinition {
 		structuralMetric("target_scrape_success_ratio_5m", "max by(instance,UUID)(DCGM_FI_DEV_GPU_UTIL * 0 + 1) * on(instance) group_left max by(instance)(avg_over_time(up{job=\"dcgm_exporter\"}[5m])) * 100", "5m", "DCGM target scrape success ratio", "DCGM Target 五分钟抓取成功率"),
 		structuralMetric("target_scrape_samples_ratio_5m", "max by(instance,UUID)(DCGM_FI_DEV_GPU_UTIL * 0 + 1) * on(instance) group_left max by(instance)(avg_over_time(scrape_samples_scraped{job=\"dcgm_exporter\"}[5m]) / clamp_min(avg_over_time(scrape_samples_scraped{job=\"dcgm_exporter\"}[1h]), 1) * 100)", "5m", "DCGM target scrape samples ratio", "DCGM Target 五分钟样本量比"),
 		structuralMetric("target_scrape_duration_ratio_5m", "max by(instance,UUID)(DCGM_FI_DEV_GPU_UTIL * 0 + 1) * on(instance) group_left max by(instance)(avg_over_time(scrape_duration_seconds{job=\"dcgm_exporter\"}[5m]) / clamp_min(avg_over_time(scrape_duration_seconds{job=\"dcgm_exporter\"}[1h]), 0.000001) * 100)", "5m", "DCGM target scrape duration ratio", "DCGM Target 五分钟抓取耗时比"),
-		recordingRuleFeature("gpu_metric_family_count_delta_5m", "atlas_canary:gpu_metric_family_count_delta_5m", "5m", "GPU metric-family count change", "GPU 指标族数量五分钟变化"),
+		recordingRuleFeature("gpu_metric_family_count_delta_5m", "atlas:gpu_metric_family_count_delta_5m", "5m", "GPU metric-family count change", "GPU 指标族数量五分钟变化"),
 		gpuMetric("gpu_reset_required", "stability", "nvidia_smi_reset_status_reset_required", "instant", "GPU reset required", "GPU 需要重置", api.StringList{"*"}),
 		gpuMetric("uncorrected_ecc_delta_24h", "memory", "clamp_min(delta(nvidia_smi_ecc_errors_uncorrected_aggregate_total[24h]), 0)", "24h", "Uncorrected aggregate ECC increase", "不可纠正 ECC 累计增量", api.StringList{"H100", "H200"}),
 		gpuMetric("fan_speed_pct", "thermal", "nvidia_smi_fan_speed_ratio * 100", "instant", "Fan speed ratio", "风扇转速比例", api.StringList{"4090"}),
@@ -89,10 +89,10 @@ func recordingRuleFeature(name, rule, window, en, zh string) api.FeatureDefiniti
 	definition := structuralMetric(name, rule, window, en, zh)
 	definition.SourceType = "recording_rule"
 	definition.Computation = "promql_recording_rule:" + rule
-	definition.QualityStatus = "experimental"
-	definition.Status = "shadow"
+	definition.QualityStatus = "validated"
+	definition.Status = "active"
 	definition.Purposes = api.StringList{"anomaly", "risk_ranking", "prediction"}
-	definition.Lineage = api.StringList{"prometheus", "dcgm_exporter", "atlas_recording_rule_canary"}
+	definition.Lineage = api.StringList{"prometheus", "dcgm_exporter", "atlas_recording_rule"}
 	return definition
 }
 

@@ -35,15 +35,15 @@ func TestBuiltinsCoverHealthConsumerAndModelCapabilities(t *testing.T) {
 	if !contains(api.StringList(h100), "gpu_metric_gap_max_seconds_1h") || !contains(api.StringList(rtx4090), "target_scrape_success_ratio_5m") {
 		t.Fatal("all GPU models must consume gap, UUID and target scrape features")
 	}
-	var canary *api.FeatureDefinition
+	var recordingRule *api.FeatureDefinition
 	for index := range definitions {
 		if definitions[index].Name == "gpu_metric_family_count_delta_5m" {
-			canary = &definitions[index]
+			recordingRule = &definitions[index]
 			break
 		}
 	}
-	if canary == nil || canary.SourceType != "recording_rule" || canary.Status != "shadow" || contains(canary.Purposes, "health") {
-		t.Fatalf("metric-family canary must remain a non-health shadow recording rule: definition=%+v", canary)
+	if recordingRule == nil || recordingRule.SourceType != "recording_rule" || recordingRule.Status != "active" || recordingRule.QualityStatus != "validated" || recordingRule.SourceReference != "atlas:gpu_metric_family_count_delta_5m" || contains(recordingRule.Purposes, "health") {
+		t.Fatalf("metric-family recording rule must be active, validated and excluded from health: definition=%+v", recordingRule)
 	}
 	if contains(api.StringList(rtx4090), "row_remap_failure") || contains(api.StringList(rtx4090), "memory_temp") {
 		t.Fatal("4090 must not count unsupported row-remap or memory-temperature features as missing")
