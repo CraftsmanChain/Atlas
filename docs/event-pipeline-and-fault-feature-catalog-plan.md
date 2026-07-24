@@ -275,7 +275,7 @@ metric_gap_max_seconds_1h
 | `feature-catalog v1.2.0` / `gpu-health v1.2.0` | 27 个规范特征、45 个 DCGM/gpu_exporter 源查询、Correctable Row Remap 1h/24h 增量、单位规范化、DCGM 优先回退与来源审计 | 稳定 Correctable 累计值不扣分，只有快速增长进入风险；Uncorrectable/Remap Failure 只告警，不自动操作任务或节点 | 逐特征来源可审计，回退降低置信度，稳定累计值不产生风险事件 |
 | `feature-catalog v1.3.0` / `gpu-health v1.3.0` / `quality v0.5.0` | 30 个规范特征、48 个源查询；每卡 1h 样本数、存在率和当前样本年龄 | 结构异常进入数据质量问题而不误判为硬件故障；恢复后自动清除 | 15 秒现场基线下完整率和样本年龄可查，连续性页面/API/问题生命周期一致 |
 | `feature-catalog v1.4.0` / `gpu-health v1.4.1` / `quality v0.6.1` | 35 个规范特征、53 个源查询；最大 gap、UUID flap 和三项 DCGM Target 抓取质量特征 | GPU 序列与采集链路联合判定；相对耗时仅审计，避免微小绝对值被比例放大 | 720 GPU 查询覆盖；连续性明细、摘要和数据问题证据一致，无耗时比误报 |
-| `feature-catalog v1.5.0` / `quality v0.7.0` / `data-statistics v0.4.0` | metric-family 单节点 shadow canary；数据质量按分类输出历史、已解决、遗留和当前检测统计 | canary 不进入健康评分且不自动发布；连续性问题同时进入“系统 / 数据质量”口径 | canary 查询仅返回 8 GPU；规则文件具备范围测试；数据质量侧边栏与页面统计一致 |
+| `feature-catalog v1.5.0` / `quality v0.8.0` / `data-statistics v0.4.0` | metric-family 单节点 shadow canary；数据质量按分类输出历史、已解决、遗留和当前检测统计 | canary 不进入健康评分且不自动发布；数据质量台账由独立“问题统计”子页承载 | canary 查询仅返回 8 GPU；规则文件具备范围测试；数据质量侧边栏、独立子页与问题列表筛选一致 |
 | `degradation v0.1.0` | 被动衰减候选、同机/同型号对比、证据输出 | 无侵入识别可用但变慢的 GPU 候选 | 不把空闲误报为衰减，输出基线与置信度 |
 | `degradation v0.2.0` | 维护窗口主动验证与维修复测 | 建立算力/显存/PCIe/NVLink 分类验证 | 测试可重复且不影响生产任务 |
 | `prediction v0.1.0` | PyOD shadow、风险排序、历史回放 | 输出异常与高风险队列，不冒充故障概率 | 有误报率、Top-K 命中和提前量报告 |
