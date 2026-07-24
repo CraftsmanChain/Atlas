@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const CatalogVersion = "1.3.0"
+const CatalogVersion = "1.4.0"
 
 type MetricSpec struct {
 	Key      string
@@ -53,6 +53,11 @@ func Builtins() []api.FeatureDefinition {
 		structuralMetric("gpu_metric_samples_1h", "max by(UUID)(count_over_time(DCGM_FI_DEV_GPU_UTIL[1h]))", "1h", "GPU metric samples", "GPU 指标一小时样本数"),
 		structuralMetric("gpu_metric_presence_ratio_1h", "clamp_max(max by(UUID)(count_over_time(DCGM_FI_DEV_GPU_UTIL[1h])) / 240 * 100, 100)", "1h", "GPU metric presence ratio", "GPU 指标一小时存在率"),
 		structuralMetric("gpu_metric_sample_age_seconds", "min by(UUID)(time() - timestamp(DCGM_FI_DEV_GPU_UTIL))", "instant", "GPU metric sample age", "GPU 指标当前样本年龄"),
+		structuralMetric("gpu_uuid_presence_flap_count_1h", "changes((max by(UUID)(present_over_time(DCGM_FI_DEV_GPU_UTIL[1m])))[1h:1m])", "1h", "GPU UUID presence flaps", "GPU UUID 一小时存在性波动"),
+		structuralMetric("gpu_metric_gap_max_seconds_1h", "max by(UUID)(max_over_time((timestamp(DCGM_FI_DEV_GPU_UTIL) - timestamp(DCGM_FI_DEV_GPU_UTIL offset 15s))[1h:15s]))", "1h", "GPU metric maximum gap", "GPU 指标一小时最大间隔"),
+		structuralMetric("target_scrape_success_ratio_5m", "max by(instance,UUID)(DCGM_FI_DEV_GPU_UTIL * 0 + 1) * on(instance) group_left max by(instance)(avg_over_time(up{job=\"dcgm_exporter\"}[5m])) * 100", "5m", "DCGM target scrape success ratio", "DCGM Target 五分钟抓取成功率"),
+		structuralMetric("target_scrape_samples_ratio_5m", "max by(instance,UUID)(DCGM_FI_DEV_GPU_UTIL * 0 + 1) * on(instance) group_left max by(instance)(avg_over_time(scrape_samples_scraped{job=\"dcgm_exporter\"}[5m]) / clamp_min(avg_over_time(scrape_samples_scraped{job=\"dcgm_exporter\"}[1h]), 1) * 100)", "5m", "DCGM target scrape samples ratio", "DCGM Target 五分钟样本量比"),
+		structuralMetric("target_scrape_duration_ratio_5m", "max by(instance,UUID)(DCGM_FI_DEV_GPU_UTIL * 0 + 1) * on(instance) group_left max by(instance)(avg_over_time(scrape_duration_seconds{job=\"dcgm_exporter\"}[5m]) / clamp_min(avg_over_time(scrape_duration_seconds{job=\"dcgm_exporter\"}[1h]), 0.000001) * 100)", "5m", "DCGM target scrape duration ratio", "DCGM Target 五分钟抓取耗时比"),
 		gpuMetric("gpu_reset_required", "stability", "nvidia_smi_reset_status_reset_required", "instant", "GPU reset required", "GPU 需要重置", api.StringList{"*"}),
 		gpuMetric("uncorrected_ecc_delta_24h", "memory", "clamp_min(delta(nvidia_smi_ecc_errors_uncorrected_aggregate_total[24h]), 0)", "24h", "Uncorrected aggregate ECC increase", "不可纠正 ECC 累计增量", api.StringList{"H100", "H200"}),
 		gpuMetric("fan_speed_pct", "thermal", "nvidia_smi_fan_speed_ratio * 100", "instant", "Fan speed ratio", "风扇转速比例", api.StringList{"4090"}),

@@ -274,6 +274,21 @@ func TestSyncDetectedIssuesTracksTelemetryContinuityAndRecovery(t *testing.T) {
 	}
 }
 
+func TestTelemetryContinuitySeverityUsesGapFlapAndScrapeBoundaries(t *testing.T) {
+	base := api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15}
+	if severity, active := telemetryContinuitySeverity(base); active || severity != "" {
+		t.Fatalf("healthy telemetry must not be active: severity=%s active=%v", severity, active)
+	}
+	attention := api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "gpu_metric_gap_max_seconds_1h": 46}
+	if severity, active := telemetryContinuitySeverity(attention); !active || severity != "attention" {
+		t.Fatalf("maximum gap must create attention: severity=%s active=%v", severity, active)
+	}
+	warning := api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "gpu_uuid_presence_flap_count_1h": 2}
+	if severity, active := telemetryContinuitySeverity(warning); !active || severity != "warning" {
+		t.Fatalf("repeated UUID flaps must create warning: severity=%s active=%v", severity, active)
+	}
+}
+
 func itoa(value uint) string {
 	const digits = "0123456789"
 	if value == 0 {

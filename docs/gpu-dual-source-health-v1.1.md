@@ -1,6 +1,6 @@
-# GPU 双源健康评分契约 v1.3
+# GPU 双源健康评分契约 v1.4
 
-> 生效版本：`gpu-health-v1.3.0` / `feature-catalog v1.3.0`
+> 生效版本：`gpu-health-v1.4.0` / `feature-catalog v1.4.0`
 > 基线日期：2026-07-24
 
 ## 1. 目标与边界
@@ -41,7 +41,7 @@ UUID 同时兼容 DCGM 的 `UUID="GPU-..."` 和 gpu_exporter 的 `uuid="..."`，
 
 ## 3. gpu_exporter 补充特征
 
-Feature Catalog v1.3 包含 30 个规范健康特征和 48 个源查询。补充、趋势及结构特征包括：
+Feature Catalog v1.4 包含 35 个规范健康特征和 53 个源查询。补充、趋势及结构特征包括：
 
 - `gpu_reset_required`
 - `uncorrected_ecc_delta_24h`
@@ -53,6 +53,11 @@ Feature Catalog v1.3 包含 30 个规范健康特征和 48 个源查询。补充
 - `gpu_metric_samples_1h`
 - `gpu_metric_presence_ratio_1h`
 - `gpu_metric_sample_age_seconds`
+- `gpu_metric_gap_max_seconds_1h`
+- `gpu_uuid_presence_flap_count_1h`
+- `target_scrape_success_ratio_5m`
+- `target_scrape_samples_ratio_5m`
+- `target_scrape_duration_ratio_5m`
 
 新增确定性规则：
 
@@ -66,7 +71,7 @@ Feature Catalog v1.3 包含 30 个规范健康特征和 48 个源查询。补充
 
 风扇特征先进入特征底座，不因单次高转速独立扣分，避免把正常散热响应误判为故障。
 
-结构特征按现场 Prometheus 15 秒抓取周期，以每卡每小时 240 个样本为完整基线。存在率低于 95% 或样本年龄超过 60 秒时进入数据质量问题；存在率低于 80% 或样本年龄超过 300 秒时升级。结构异常不直接扣硬件健康分，避免把采集链路问题误判成 GPU 故障；恢复后对应问题自动清除。
+结构特征按现场 Prometheus 15 秒抓取周期，以每卡每小时 240 个样本为完整基线。除存在率和样本年龄外，v1.4 同时检查 1 小时最大间隔、UUID 存在性波动，以及 DCGM Target 5 分钟抓取成功率、样本量比和耗时比。结构异常不直接扣硬件健康分，避免把采集链路问题误判成 GPU 故障；恢复后对应问题自动清除。
 
 ## 4. 一致性容差
 
