@@ -29,16 +29,17 @@ type GPUFeatureBaseline struct {
 }
 
 type FeatureBaselineRefreshRun struct {
-	ID              uint       `json:"id" gorm:"primaryKey;autoIncrement"`
-	Status          string     `json:"status" gorm:"index"`
-	ContractVersion string     `json:"contract_version" gorm:"index"`
-	WindowDays      int        `json:"window_days"`
-	SnapshotCount   int        `json:"snapshot_count"`
-	BaselineCount   int        `json:"baseline_count"`
-	DurationMillis  int64      `json:"duration_millis"`
-	StartedAt       time.Time  `json:"started_at" gorm:"index"`
-	FinishedAt      *time.Time `json:"finished_at,omitempty"`
-	ErrorMessage    string     `json:"error_message,omitempty" gorm:"type:text"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID                    uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	Status                string     `json:"status" gorm:"index"`
+	ContractVersion       string     `json:"contract_version" gorm:"index"`
+	FeatureCatalogVersion string     `json:"feature_catalog_version" gorm:"index"`
+	WindowDays            int        `json:"window_days"`
+	SnapshotCount         int        `json:"snapshot_count"`
+	BaselineCount         int        `json:"baseline_count"`
+	DurationMillis        int64      `json:"duration_millis"`
+	StartedAt             time.Time  `json:"started_at" gorm:"index"`
+	FinishedAt            *time.Time `json:"finished_at,omitempty"`
+	ErrorMessage          string     `json:"error_message,omitempty" gorm:"type:text"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 }

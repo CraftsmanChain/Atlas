@@ -79,7 +79,10 @@ type baselineGroup struct {
 func RefreshHistoricalBaselines(db *storage.DB, now time.Time, force bool) (BaselineRefreshResult, error) {
 	wallStartedAt := time.Now()
 	var latest api.FeatureBaselineRefreshRun
-	result := db.Where("status = ?", "success").Order("finished_at DESC").Order("id DESC").Limit(1).Find(&latest)
+	result := db.Where(
+		"status = ? AND contract_version = ? AND feature_catalog_version = ?",
+		"success", BaselineContractVersion, CatalogVersion,
+	).Order("finished_at DESC").Order("id DESC").Limit(1).Find(&latest)
 	if result.Error != nil {
 		return BaselineRefreshResult{}, result.Error
 	}
@@ -89,7 +92,7 @@ func RefreshHistoricalBaselines(db *storage.DB, now time.Time, force bool) (Base
 
 	run := api.FeatureBaselineRefreshRun{
 		Status: "running", ContractVersion: BaselineContractVersion,
-		WindowDays: baselineWindowDays, StartedAt: now,
+		FeatureCatalogVersion: CatalogVersion, WindowDays: baselineWindowDays, StartedAt: now,
 	}
 	if err := db.Create(&run).Error; err != nil {
 		return BaselineRefreshResult{}, err
@@ -290,7 +293,10 @@ func ListBaselines(db *storage.DB, options BaselineListOptions) ([]api.GPUFeatur
 
 func LatestBaselineRefresh(db *storage.DB) (*api.FeatureBaselineRefreshRun, error) {
 	var run api.FeatureBaselineRefreshRun
-	if err := db.Order("id DESC").First(&run).Error; err != nil {
+	if err := db.Where(
+		"contract_version = ? AND feature_catalog_version = ?",
+		BaselineContractVersion, CatalogVersion,
+	).Order("id DESC").First(&run).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
