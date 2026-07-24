@@ -13,8 +13,8 @@ import (
 func TestBuiltinsCoverHealthConsumerAndModelCapabilities(t *testing.T) {
 	definitions := Builtins()
 	specs := HealthMetricSpecs()
-	if len(definitions) != 35 || len(specs) != 53 {
-		t.Fatalf("expected 35 catalog features and 53 source specs, got definitions=%d specs=%d", len(definitions), len(specs))
+	if len(definitions) != 36 || len(specs) != 53 {
+		t.Fatalf("expected 36 catalog features and 53 live source specs, got definitions=%d specs=%d", len(definitions), len(specs))
 	}
 	for _, definition := range definitions {
 		if err := Validate(&definition); err != nil {
@@ -34,6 +34,16 @@ func TestBuiltinsCoverHealthConsumerAndModelCapabilities(t *testing.T) {
 	}
 	if !contains(api.StringList(h100), "gpu_metric_gap_max_seconds_1h") || !contains(api.StringList(rtx4090), "target_scrape_success_ratio_5m") {
 		t.Fatal("all GPU models must consume gap, UUID and target scrape features")
+	}
+	var canary *api.FeatureDefinition
+	for index := range definitions {
+		if definitions[index].Name == "gpu_metric_family_count_delta_5m" {
+			canary = &definitions[index]
+			break
+		}
+	}
+	if canary == nil || canary.SourceType != "recording_rule" || canary.Status != "shadow" || contains(canary.Purposes, "health") {
+		t.Fatalf("metric-family canary must remain a non-health shadow recording rule: definition=%+v", canary)
 	}
 	if contains(api.StringList(rtx4090), "row_remap_failure") || contains(api.StringList(rtx4090), "memory_temp") {
 		t.Fatal("4090 must not count unsupported row-remap or memory-temperature features as missing")

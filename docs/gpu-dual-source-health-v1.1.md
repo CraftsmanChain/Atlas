@@ -1,6 +1,6 @@
 # GPU 双源健康评分契约 v1.4
 
-> 生效版本：`gpu-health-v1.4.1` / `feature-catalog v1.4.0`
+> 生效版本：`gpu-health-v1.4.1` / `feature-catalog v1.5.0`
 > 基线日期：2026-07-24
 
 ## 1. 目标与边界
@@ -41,7 +41,7 @@ UUID 同时兼容 DCGM 的 `UUID="GPU-..."` 和 gpu_exporter 的 `uuid="..."`，
 
 ## 3. gpu_exporter 补充特征
 
-Feature Catalog v1.4 包含 35 个规范健康特征和 53 个源查询。补充、趋势及结构特征包括：
+Feature Catalog v1.5 包含 35 个规范健康特征和 53 个在线源查询，另注册 1 个不参与健康评分的 metric-family shadow recording-rule 特征。补充、趋势及结构特征包括：
 
 - `gpu_reset_required`
 - `uncorrected_ecc_delta_24h`

@@ -45,6 +45,21 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 		issueError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	resolvedByCategory, err := groupedCounts(statisticsIssues(h.db).Where("status = ?", "resolved"), "category")
+	if err != nil {
+		issueError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	remainingByCategory, err := groupedCounts(statisticsIssues(h.db).Where("status IN ?", []string{"open", "in_progress"}), "category")
+	if err != nil {
+		issueError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	activeByCategory, err := groupedCounts(statisticsIssues(h.db).Where("detection_state = ?", "active"), "category")
+	if err != nil {
+		issueError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	byStatus, err := groupedCounts(statisticsIssues(h.db), "status")
 	if err != nil {
 		issueError(w, http.StatusInternalServerError, err.Error())
@@ -55,7 +70,12 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 		issueError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	issueJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"discovered": total, "resolved": resolved, "remaining": remaining, "ignored": ignored, "active_detection": activeDetection, "by_category": byCategory, "by_status": byStatus, "by_severity": bySeverity, "generated_at": time.Now().Format(time.RFC3339)}})
+	issueJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+		"discovered": total, "resolved": resolved, "remaining": remaining, "ignored": ignored, "active_detection": activeDetection,
+		"by_category": byCategory, "resolved_by_category": resolvedByCategory, "remaining_by_category": remainingByCategory,
+		"active_by_category": activeByCategory, "by_status": byStatus, "by_severity": bySeverity,
+		"generated_at": time.Now().Format(time.RFC3339),
+	}})
 }
 
 func (h *Handler) HandleCollection(w http.ResponseWriter, r *http.Request) {

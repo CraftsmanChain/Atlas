@@ -192,7 +192,7 @@ func TestIssueSummaryResolutionAndTrainingDataAPI(t *testing.T) {
 
 	response := httptest.NewRecorder()
 	handler.HandleSummary(response, httptest.NewRequest("GET", "/api/v1/issues/summary", nil))
-	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"discovered":4`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"remaining":4`)) || bytes.Contains(response.Body.Bytes(), []byte(`"hardware_fault"`)) {
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"discovered":4`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"remaining":4`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"remaining_by_category"`)) || bytes.Contains(response.Body.Bytes(), []byte(`"hardware_fault"`)) {
 		t.Fatalf("unexpected summary: %d %s", response.Code, response.Body.String())
 	}
 	response = httptest.NewRecorder()
