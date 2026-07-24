@@ -68,6 +68,26 @@ func TestRefreshHistoricalBaselinesSkipsUntilRefreshInterval(t *testing.T) {
 	}
 }
 
+func TestRefreshHistoricalBaselinesDoesNotReusePreviousCatalogThrottle(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)
+	finished := now
+	if err := db.Create(&api.FeatureBaselineRefreshRun{
+		Status: "success", ContractVersion: BaselineContractVersion,
+		FeatureCatalogVersion: "previous-catalog-version", WindowDays: baselineWindowDays,
+		StartedAt: now.Add(-time.Minute), FinishedAt: &finished,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	result, err := RefreshHistoricalBaselines(db, now.Add(time.Hour), false)
+	if err != nil || !result.Refreshed || result.Run.FeatureCatalogVersion != CatalogVersion {
+		t.Fatalf("current catalog must receive its own first refresh: result=%+v err=%v", result, err)
+	}
+}
+
 func TestBaselineHandlerFiltersAndExposesRefreshProvenance(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
@@ -76,7 +96,7 @@ func TestBaselineHandlerFiltersAndExposesRefreshProvenance(t *testing.T) {
 	now := time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)
 	finished := now
 	if err := db.Create(&api.FeatureBaselineRefreshRun{
-		Status: "success", ContractVersion: BaselineContractVersion, WindowDays: baselineWindowDays,
+		Status: "success", ContractVersion: BaselineContractVersion, FeatureCatalogVersion: CatalogVersion, WindowDays: baselineWindowDays,
 		BaselineCount: 1, StartedAt: now, FinishedAt: &finished,
 	}).Error; err != nil {
 		t.Fatal(err)
