@@ -2,51 +2,64 @@
 
 <div align="center">
   <h3>Infrastructure Hardware Reliability Workbench</h3>
-  <p>让基础设施问题更早被发现、更清楚地被理解，并沉淀为可持续复用的可靠性经验。</p>
+  <p>Discover infrastructure issues earlier, understand them clearly, and turn every resolution into reusable reliability knowledge.</p>
+  <p>
+    <img alt="Project status: actively evolving" src="https://img.shields.io/badge/status-actively%20evolving-2f81f7">
+    <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-22a06b">
+  </p>
+  <p>
+    English · <a href="README_zh.md">简体中文</a>
+  </p>
 </div>
 
 ---
 
-## 愿景
+## Overview
 
-Atlas 面向 GPU 集群，并逐步扩展到服务器、存储和网络基础设施。它将分散的资产状态、监控信号、硬件问题和人工经验汇聚到统一工作台，帮助团队建立从发现、判断、处置到验证的可靠性闭环。
+Atlas is a reliability workbench for GPU clusters, with a path toward broader server, storage, and network infrastructure coverage. It brings asset state, telemetry, hardware issues, and operational experience into one place, helping teams build a closed loop from discovery and assessment to resolution and verification.
 
-Atlas 关注的不只是“哪里告警了”，还包括：
+Atlas is under active development. Available capabilities are continuously refined, and early-stage capabilities may evolve between releases.
 
-- 当前基础设施是否健康；
-- 监控数据是否完整、及时、可信；
-- 哪些问题需要优先关注；
-- 问题为什么发生、如何解决；
-- 已有处置经验怎样转化为团队和智能助手可复用的知识。
+## Capabilities
 
-## 产品能力
+| Area | What Atlas provides | Status |
+| --- | --- | --- |
+| Fleet & assets | Unified visibility into infrastructure inventory, state, and monitoring coverage | Available, continuously evolving |
+| Hardware health | Explainable GPU health and risk signals based on complementary telemetry | Available, continuously evolving |
+| Data quality | Detection of missing collection, interrupted series, identity drift, and coverage gaps | Available, continuously evolving |
+| Alert center | Centralized hardware alerts, evidence, detail views, and resolution status | Available, continuously evolving |
+| Issue analytics | Statistics for discovered, resolved, and outstanding issues with drill-down by category | Available, continuously evolving |
+| Resolution knowledge | Human-authored causes, solutions, procedures, and outcomes for future reuse | Available, continuously evolving |
+| Performance validation | Performance change analysis and post-maintenance verification workflows | Early access, continuously evolving |
+| Rules & intelligent analysis | Rules, feature foundations, and operational knowledge working together | Early access, continuously evolving |
+| Platform configuration | Environment-specific product identity and presentation settings | Available, continuously evolving |
 
-- **集群与资产总览**：统一查看基础设施规模、状态和覆盖情况。
-- **硬件健康**：展示 GPU 等硬件对象的健康状态和风险信号。
-- **数据质量**：识别采集缺失、数据中断、身份偏差和覆盖异常。
-- **告警中心**：集中管理硬件告警、问题详情和处置状态。
-- **数据统计**：统计历史发现、已解决和遗留问题，并支持分类查看。
-- **处置沉淀**：记录问题原因、解决方案、处理过程和最终结果。
-- **性能验证**：辅助识别性能变化，并为维修后的验证提供统一入口。
-- **规则与智能分析**：让规则、模型和经验知识协同服务于可靠性判断。
-- **平台配置**：按实际环境配置实例名称、产品标识和展示信息。
+## Platform Architecture
 
-## 产品原则
+The platform organizes evidence, data foundations, reliability capabilities, and operational workflows into a single product view.
 
-- 以真实资产和可追溯数据为基础；
-- 明确区分硬件故障、数据问题和未知状态；
-- 重要操作由人工确认，平台不擅自操作任务或节点；
-- 所有判断保留证据，所有处置形成可复用记录；
-- 能力持续扩展，但始终保持清晰、可解释和可验证。
+![Atlas platform module architecture](web/public/atlas-platform-architecture.svg)
 
-## 文档边界
+## Product Principles
 
-本仓库只保留产品愿景、功能说明和资产对账资料，不维护研究结论、技术路线、实现规划、数据契约或内部操作说明。
+- Ground every assessment in real assets and traceable evidence.
+- Distinguish hardware faults, data-quality issues, and unknown states.
+- Keep consequential operations under human control; Atlas does not autonomously drain workloads or isolate nodes.
+- Preserve the evidence behind every assessment and turn every resolution into reusable knowledge.
+- Keep capabilities explainable, testable, and open to continuous improvement.
 
-- 资产对账资料：[docs/assets](docs/assets)
-- 文档归属指引：[docs/README.md](docs/README.md)
-- 指导、研究与规划文档：由独立的 [Atlas-Docs](https://github.com/CraftsmanChain/Atlas-Docs) 仓库统一管理
+## Project Status
+
+Atlas is being developed iteratively. The current focus is to strengthen the end-to-end reliability workflow while expanding the quality, prediction, validation, and knowledge capabilities behind it. Capability labels in this README describe product maturity rather than a fixed release promise.
+
+## Contributing
+
+Issues and pull requests are welcome. Before proposing a large change, please open an issue to align on its product scope, user impact, and validation approach. Do not include credentials, private infrastructure addresses, customer data, or other sensitive operational information in public submissions.
+
+## Security
+
+Please do not disclose security vulnerabilities through a public issue. Report them privately to the project maintainers with reproduction steps and the affected version.
 
 ## License
 
-MIT License
+Atlas is released under the [MIT License](LICENSE).
