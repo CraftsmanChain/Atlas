@@ -514,7 +514,7 @@ L3 高风险：pending remap / SRAM threshold / repeated ECC burst
 L4 故障：DBE / row remap failure / reset required / 严重 XID
 ```
 
-当前 `gpu-health-v1.2.0` 将 Correctable Row Remap 累计值和增量分开：累计值稳定或单次低速新增只记录观察证据；1 小时新增 2/4 行、24 小时新增 4/8 行分别作为 attention/warning 初始门槛。Uncorrectable ECC 和 Row Remap Failure 保持 critical，但本阶段只告警、记录并支持人工处置，不自动操作任务或节点。
+当前 `gpu-health-v1.3.0` 延续 v1.2 的 ECC 规则：Correctable Row Remap 累计值和增量分开，累计值稳定或单次低速新增只记录观察证据；1 小时新增 2/4 行、24 小时新增 4/8 行分别作为 attention/warning 初始门槛。Uncorrectable ECC 和 Row Remap Failure 保持 critical，但本阶段只告警、记录并支持人工处置，不自动操作任务或节点。v1.3 同时携带每卡样本数、存在率和样本年龄；结构异常只进入数据质量，不直接扣硬件分。
 
 4090 不输出与 H100/H200 等价的 ECC 健康子分，缺失项应显示不适用而不是零风险。
 
@@ -1217,7 +1217,8 @@ GPU
 任务：
 
 - [x] 交付 `feature-catalog v1.0.0` 基础能力：版本化 schema、注册/读取 API、型号能力、缺失语义、用途和 20 个健康核心特征接入（2026-07-22）
-- [ ] 纳入指标消失、scrape 样本下降、抓取失败和 gap 等结构性可观测性特征
+- [x] 纳入每卡 1h 样本数、存在率与当前样本年龄，接入连续性 API、页面和数据问题自动恢复（Feature Catalog v1.3.0，2026-07-24）
+- [ ] 纳入 metric family 变化、scrape duration、UUID flap 和 recording rule 最大 gap
 - [ ] 建 recording rules 或离线特征聚合
 - [ ] 实现同型号、同负载基线
 - [ ] 接入 ECOD、IForest、COPOD 等基线模型

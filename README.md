@@ -133,7 +133,7 @@ Atlas 的数据治理能力定位为“发现、定位、记录和验证”，�
 
 ### 故障特征与预测路径
 
-Feature Catalog v1.2 已提供版本化注册、列表和读取接口，并将健康评分使用的 27 个规范特征和 45 个 DCGM/gpu_exporter 源查询接入统一目录。健康评分采用 DCGM 主源、gpu_exporter 补充与降级备用，同一语义不重复计分；Correctable Row Remap 使用 1h/24h 增量判断，稳定累计值不扣分；Uncorrectable ECC 与 Row Remap Failure 只输出 critical 告警和人工处置记录，不自动操作任务或节点。双源数值差异仅保留为取值审计。详见 [Feature Catalog v1](docs/feature-catalog-v1.md)、[GPU 双源健康评分契约 v1.2](docs/gpu-dual-source-health-v1.1.md) 和 [性能衰减检测 v0.1](docs/performance-degradation-v0.1.md)。
+Feature Catalog v1.3 已提供版本化注册、列表和读取接口，并将健康评分使用的 30 个规范特征和 48 个 DCGM/gpu_exporter 源查询接入统一目录。数据质量页新增每卡 1h 样本存在率、样本数和当前样本年龄；连续性异常进入数据统计并自动恢复，但不扣硬件健康分。Correctable Row Remap 使用 1h/24h 增量判断，稳定累计值不扣分；Uncorrectable ECC 与 Row Remap Failure 只输出 critical 告警和人工处置记录，不自动操作任务或节点。详见 [Feature Catalog v1](docs/feature-catalog-v1.md)、[GPU 双源健康评分契约 v1.3](docs/gpu-dual-source-health-v1.1.md) 和 [性能衰减检测 v0.1](docs/performance-degradation-v0.1.md)。
 
 ## 快速开始
 

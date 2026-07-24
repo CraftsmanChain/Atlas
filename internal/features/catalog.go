@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const CatalogVersion = "1.2.0"
+const CatalogVersion = "1.3.0"
 
 type MetricSpec struct {
 	Key      string
@@ -50,6 +50,9 @@ func Builtins() []api.FeatureDefinition {
 		metricForDatacenter("row_remap_failure", "memory", "DCGM_FI_DEV_ROW_REMAP_FAILURE", "instant", "Row remap failure", "行重映射失败"),
 		metric("pcie_replay_counter", "interconnect", "DCGM_FI_DEV_PCIE_REPLAY_COUNTER", "instant", "PCIe replay counter", "PCIe 重放计数"),
 		metric("pcie_replay_increase_1h", "interconnect", "increase(DCGM_FI_DEV_PCIE_REPLAY_COUNTER[1h])", "1h", "PCIe replay increase", "PCIe 重放增量"),
+		structuralMetric("gpu_metric_samples_1h", "max by(UUID)(count_over_time(DCGM_FI_DEV_GPU_UTIL[1h]))", "1h", "GPU metric samples", "GPU 指标一小时样本数"),
+		structuralMetric("gpu_metric_presence_ratio_1h", "clamp_max(max by(UUID)(count_over_time(DCGM_FI_DEV_GPU_UTIL[1h])) / 240 * 100, 100)", "1h", "GPU metric presence ratio", "GPU 指标一小时存在率"),
+		structuralMetric("gpu_metric_sample_age_seconds", "min by(UUID)(time() - timestamp(DCGM_FI_DEV_GPU_UTIL))", "instant", "GPU metric sample age", "GPU 指标当前样本年龄"),
 		gpuMetric("gpu_reset_required", "stability", "nvidia_smi_reset_status_reset_required", "instant", "GPU reset required", "GPU 需要重置", api.StringList{"*"}),
 		gpuMetric("uncorrected_ecc_delta_24h", "memory", "clamp_min(delta(nvidia_smi_ecc_errors_uncorrected_aggregate_total[24h]), 0)", "24h", "Uncorrected aggregate ECC increase", "不可纠正 ECC 累计增量", api.StringList{"H100", "H200"}),
 		gpuMetric("fan_speed_pct", "thermal", "nvidia_smi_fan_speed_ratio * 100", "instant", "Fan speed ratio", "风扇转速比例", api.StringList{"4090"}),
@@ -67,6 +70,13 @@ func Builtins() []api.FeatureDefinition {
 		}
 	}
 	return definitions
+}
+
+func structuralMetric(name, query, window, en, zh string) api.FeatureDefinition {
+	definition := metric(name, "availability", query, window, en, zh)
+	definition.MissingStrategy = "missing_is_quality_unknown"
+	definition.Purposes = api.StringList{"health", "anomaly", "risk_ranking", "prediction"}
+	return definition
 }
 
 func metric(name, domain, query, window, en, zh string) api.FeatureDefinition {

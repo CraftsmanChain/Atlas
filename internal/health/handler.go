@@ -121,6 +121,115 @@ func (h *Handler) HandleRuns(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": rows, "meta": map[string]any{"total": total, "limit": limit, "offset": offset}})
 }
 
+type telemetryQualityItem struct {
+	GPUAssetID   uint      `json:"gpu_asset_id"`
+	GPUUUID      string    `json:"gpu_uuid"`
+	NodeIP       string    `json:"node_ip"`
+	GPUIndex     int       `json:"gpu_index"`
+	ModelName    string    `json:"model_name"`
+	Status       string    `json:"status"`
+	SampleCount  *float64  `json:"sample_count_1h,omitempty"`
+	PresenceRate *float64  `json:"presence_ratio_1h,omitempty"`
+	SampleAge    *float64  `json:"sample_age_seconds,omitempty"`
+	ObservedAt   time.Time `json:"observed_at"`
+}
+
+func (h *Handler) HandleTelemetryQuality(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var latest api.HealthEvaluationRun
+	if err := h.db.Where("status = ?", "success").Order("finished_at DESC, id DESC").First(&latest).Error; err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"data": []telemetryQualityItem{}, "summary": map[string]any{"total": 0, "by_status": map[string]int64{}, "feature_catalog_version": ""}, "meta": map[string]any{"total": 0}})
+		return
+	}
+	var snapshots []api.GPUFeatureSnapshot
+	if err := h.db.Where("evaluation_run_id = ?", latest.ID).Order("node_ip ASC, gpu_index ASC").Find(&snapshots).Error; err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	allRows := make([]telemetryQualityItem, 0, len(snapshots))
+	byStatus := map[string]int64{}
+	var presenceTotal, maxAge float64
+	var presenceCount int
+	for _, snapshot := range snapshots {
+		item := classifyTelemetryQuality(snapshot)
+		allRows = append(allRows, item)
+		byStatus[item.Status]++
+		if item.PresenceRate != nil {
+			presenceTotal += *item.PresenceRate
+			presenceCount++
+		}
+		if item.SampleAge != nil && *item.SampleAge > maxAge {
+			maxAge = *item.SampleAge
+		}
+	}
+	filtered := make([]telemetryQualityItem, 0, len(allRows))
+	statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
+	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	for _, item := range allRows {
+		if statusFilter != "" && item.Status != statusFilter {
+			continue
+		}
+		if search != "" && !strings.Contains(strings.ToLower(item.NodeIP+" "+item.GPUUUID+" "+item.ModelName), search) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	total := len(filtered)
+	limit, offset := pagination(r, 2000, 2000)
+	if offset > len(filtered) {
+		offset = len(filtered)
+	}
+	end := offset + limit
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	averagePresence := float64(0)
+	if presenceCount > 0 {
+		averagePresence = presenceTotal / float64(presenceCount)
+	}
+	catalogVersion := ""
+	if len(snapshots) > 0 {
+		catalogVersion = snapshots[0].FeatureCatalogVersion
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": filtered[offset:end],
+		"summary": map[string]any{
+			"total": len(allRows), "by_status": byStatus, "average_presence_ratio_1h": averagePresence,
+			"max_sample_age_seconds": maxAge, "feature_catalog_version": catalogVersion,
+			"evaluation_run_id": latest.ID, "evaluated_at": latest.FinishedAt,
+		},
+		"meta": map[string]any{"total": total, "limit": limit, "offset": offset},
+	})
+}
+
+func classifyTelemetryQuality(snapshot api.GPUFeatureSnapshot) telemetryQualityItem {
+	item := telemetryQualityItem{GPUAssetID: snapshot.GPUAssetID, GPUUUID: snapshot.GPUUUID, NodeIP: snapshot.NodeIP, GPUIndex: snapshot.GPUIndex, ModelName: snapshot.ModelName, Status: "unknown", ObservedAt: snapshot.ObservedAt}
+	if value, ok := snapshot.Metrics["gpu_metric_samples_1h"]; ok {
+		item.SampleCount = &value
+	}
+	if value, ok := snapshot.Metrics["gpu_metric_presence_ratio_1h"]; ok {
+		item.PresenceRate = &value
+	}
+	if value, ok := snapshot.Metrics["gpu_metric_sample_age_seconds"]; ok {
+		item.SampleAge = &value
+	}
+	if item.PresenceRate == nil || item.SampleAge == nil {
+		return item
+	}
+	switch {
+	case *item.SampleAge > 300 || *item.PresenceRate < 80:
+		item.Status = "stale"
+	case *item.SampleAge > 60 || *item.PresenceRate < 95:
+		item.Status = "degraded"
+	default:
+		item.Status = "fresh"
+	}
+	return item
+}
+
 func (h *Handler) HandleEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
