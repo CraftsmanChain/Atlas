@@ -187,6 +187,7 @@ func main() {
 	mux.HandleFunc("/api/v1/health/summary", healthHandler.HandleSummary)
 	mux.HandleFunc("/api/v1/health/gpus", healthHandler.HandleScores)
 	mux.HandleFunc("/api/v1/health/runs", healthHandler.HandleRuns)
+	mux.HandleFunc("/api/v1/health/telemetry-quality", healthHandler.HandleTelemetryQuality)
 	mux.HandleFunc("/api/v1/fault-events", healthHandler.HandleEvents)
 	mux.HandleFunc("/api/v1/fault-events/summary", healthHandler.HandleEventSummary)
 	mux.HandleFunc("/api/v1/degradation/summary", degradationHandler.HandleSummary)

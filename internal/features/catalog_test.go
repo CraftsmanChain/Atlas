@@ -13,8 +13,8 @@ import (
 func TestBuiltinsCoverHealthConsumerAndModelCapabilities(t *testing.T) {
 	definitions := Builtins()
 	specs := HealthMetricSpecs()
-	if len(definitions) != 27 || len(specs) != 45 {
-		t.Fatalf("expected 27 catalog features and 45 source specs, got definitions=%d specs=%d", len(definitions), len(specs))
+	if len(definitions) != 30 || len(specs) != 48 {
+		t.Fatalf("expected 30 catalog features and 48 source specs, got definitions=%d specs=%d", len(definitions), len(specs))
 	}
 	for _, definition := range definitions {
 		if err := Validate(&definition); err != nil {
@@ -28,6 +28,9 @@ func TestBuiltinsCoverHealthConsumerAndModelCapabilities(t *testing.T) {
 	}
 	if !contains(api.StringList(h100), "correctable_remapped_rows_delta_1h") || !contains(api.StringList(h100), "correctable_remapped_rows_delta_24h") {
 		t.Fatal("H100 must consume correctable row-remap trend features")
+	}
+	if !contains(api.StringList(h100), "gpu_metric_presence_ratio_1h") || !contains(api.StringList(rtx4090), "gpu_metric_sample_age_seconds") {
+		t.Fatal("all GPU models must consume structural telemetry features")
 	}
 	if contains(api.StringList(rtx4090), "row_remap_failure") || contains(api.StringList(rtx4090), "memory_temp") {
 		t.Fatal("4090 must not count unsupported row-remap or memory-temperature features as missing")
@@ -52,7 +55,7 @@ func TestSeedRegisterListAndRead(t *testing.T) {
 		t.Fatalf("seeding must be idempotent: %v", err)
 	}
 	definitions, err := List(db, ListOptions{Purpose: "health", Status: "active"})
-	if err != nil || len(definitions) != 27 {
+	if err != nil || len(definitions) != 30 {
 		t.Fatalf("unexpected list result count=%d err=%v", len(definitions), err)
 	}
 	definition, err := Get(db, "gpu_temp", CatalogVersion)

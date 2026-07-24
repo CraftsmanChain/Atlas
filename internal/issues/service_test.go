@@ -231,6 +231,49 @@ func TestIssueSummaryResolutionAndTrainingDataAPI(t *testing.T) {
 	}
 }
 
+func TestSyncDetectedIssuesTracksTelemetryContinuityAndRecovery(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
+	snapshot := api.GPUFeatureSnapshot{GPUAssetID: 12, GPUUUID: "GPU-A", NodeIP: "10.114.4.21", GPUIndex: 2, Metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 70, "gpu_metric_sample_age_seconds": 30}, ObservedAt: now}
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	scoreValue := 100
+	score := api.GPUHealthScore{FeatureSnapshotID: snapshot.ID, GPUAssetID: snapshot.GPUAssetID, GPUUUID: snapshot.GPUUUID, NodeIP: snapshot.NodeIP, GPUIndex: snapshot.GPUIndex, Score: &scoreValue, Level: "healthy", Current: true, EvaluatedAt: now}
+	if err := db.Create(&score).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	if err := service.SyncDetectedIssues(); err != nil {
+		t.Fatal(err)
+	}
+	var issue api.PlatformIssue
+	if err := db.Where("issue_key = ?", "telemetry_continuity:12").First(&issue).Error; err != nil {
+		t.Fatal(err)
+	}
+	if issue.Status != "open" || issue.Severity != "warning" {
+		t.Fatalf("unexpected telemetry issue: %+v", issue)
+	}
+	snapshot.Metrics = api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15}
+	if err := db.Save(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return now.Add(time.Minute) }
+	if err := service.SyncDetectedIssues(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&issue, issue.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if issue.Status != "resolved" || issue.DetectionState != "cleared" {
+		t.Fatalf("telemetry issue was not auto-cleared: %+v", issue)
+	}
+}
+
 func itoa(value uint) string {
 	const digits = "0123456789"
 	if value == 0 {

@@ -131,3 +131,54 @@ func TestFaultEventsExposeIssueWorkflowAssociation(t *testing.T) {
 		t.Fatalf("unexpected event workflow response: %d %s", response.Code, response.Body.String())
 	}
 }
+
+func TestTelemetryQualitySummaryAndClassification(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
+	finished := now
+	run := api.HealthEvaluationRun{Status: "success", RuleVersion: "gpu-health-v1.3.0", StartedAt: now.Add(-time.Minute), FinishedAt: &finished}
+	if err := db.Create(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	snapshots := []api.GPUFeatureSnapshot{
+		{EvaluationRunID: run.ID, GPUAssetID: 1, GPUUUID: "GPU-A", NodeIP: "10.114.4.21", GPUIndex: 0, Metrics: api.FloatMap{"gpu_metric_samples_1h": 240, "gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15}, FeatureCatalogVersion: "1.3.0", ObservedAt: now},
+		{EvaluationRunID: run.ID, GPUAssetID: 2, GPUUUID: "GPU-B", NodeIP: "10.114.4.21", GPUIndex: 1, Metrics: api.FloatMap{"gpu_metric_samples_1h": 180, "gpu_metric_presence_ratio_1h": 75, "gpu_metric_sample_age_seconds": 20}, FeatureCatalogVersion: "1.3.0", ObservedAt: now},
+		{EvaluationRunID: run.ID, GPUAssetID: 3, GPUUUID: "GPU-C", NodeIP: "10.114.4.21", GPUIndex: 2, Metrics: api.FloatMap{}, FeatureCatalogVersion: "1.3.0", ObservedAt: now},
+	}
+	if err := db.Create(&snapshots).Error; err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	NewHandler(db).HandleTelemetryQuality(response, httptest.NewRequest("GET", "/api/v1/health/telemetry-quality?status=stale", nil))
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"fresh":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"stale":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"unknown":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"total":1`)) {
+		t.Fatalf("unexpected telemetry quality response: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestClassifyTelemetryQualityThresholdBoundaries(t *testing.T) {
+	number := func(value float64) api.FloatMap {
+		return api.FloatMap{"gpu_metric_presence_ratio_1h": value, "gpu_metric_sample_age_seconds": 60}
+	}
+	tests := []struct {
+		name     string
+		metrics  api.FloatMap
+		expected string
+	}{
+		{name: "fresh at inclusive boundaries", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 95, "gpu_metric_sample_age_seconds": 60}, expected: "fresh"},
+		{name: "degraded below presence target", metrics: number(94.99), expected: "degraded"},
+		{name: "degraded at stale presence boundary", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 80, "gpu_metric_sample_age_seconds": 300}, expected: "degraded"},
+		{name: "stale below presence boundary", metrics: number(79.99), expected: "stale"},
+		{name: "stale above age boundary", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 300.01}, expected: "stale"},
+		{name: "unknown when structural metric missing", metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100}, expected: "unknown"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if actual := classifyTelemetryQuality(api.GPUFeatureSnapshot{Metrics: test.metrics}).Status; actual != test.expected {
+				t.Fatalf("expected %s, got %s", test.expected, actual)
+			}
+		})
+	}
+}
