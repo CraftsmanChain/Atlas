@@ -80,6 +80,8 @@ func InitDB(dsn string) (*DB, error) {
 		&api.AssetChangeEvent{},
 		&api.HealthEvaluationRun{},
 		&api.GPUFeatureSnapshot{},
+		&api.GPUFeatureBaseline{},
+		&api.FeatureBaselineRefreshRun{},
 		&api.GPUHealthScore{},
 		&api.GPUHealthRuleHit{},
 		&api.GPUFaultEvent{},

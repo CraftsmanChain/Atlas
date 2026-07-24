@@ -215,6 +215,9 @@ func (s *Service) Evaluate(ctx context.Context) (*api.HealthEvaluationRun, error
 	if err := s.db.Save(run).Error; err != nil {
 		return nil, err
 	}
+	if _, err := features.RefreshHistoricalBaselines(s.db, finished, false); err != nil {
+		log.Printf("historical feature baseline refresh failed without affecting health scores: %v", err)
+	}
 	return run, nil
 }
 
