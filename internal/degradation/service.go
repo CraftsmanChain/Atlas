@@ -5,17 +5,19 @@ import (
 	"sort"
 	"time"
 
+	"atlas/internal/features"
 	"atlas/pkg/api"
 	"atlas/pkg/storage"
 )
 
 const (
-	Version            = "degradation-v0.1.0"
-	minimumUtilization = 80.0
-	ratioThreshold     = 0.85
-	minimumNodePeers   = 3
-	minimumModelPeers  = 4
-	freshnessSLA       = time.Hour
+	Version               = "degradation-v0.2.0"
+	minimumUtilization    = 80.0
+	ratioThreshold        = 0.85
+	minimumNodePeers      = 3
+	minimumModelPeers     = 4
+	minimumHistoricalGPUs = 4
+	freshnessSLA          = time.Hour
 )
 
 type Service struct {
@@ -28,6 +30,11 @@ type observation struct {
 	snapshot api.GPUFeatureSnapshot
 	util     float64
 	clock    float64
+}
+
+type historicalBaselineKey struct {
+	modelName      string
+	featureVersion string
 }
 
 func NewService(db *storage.DB) *Service { return &Service{db: db, now: time.Now} }
@@ -51,6 +58,16 @@ func (s *Service) Evaluate() (api.GPUDegradationSummary, []api.GPUDegradationAss
 	snapshotByID := make(map[uint]api.GPUFeatureSnapshot, len(snapshots))
 	for _, snapshot := range snapshots {
 		snapshotByID[snapshot.ID] = snapshot
+	}
+	historicalRows, err := features.ListBaselines(s.db, features.BaselineListOptions{
+		FeatureName: "sm_clock_avg_15m", LoadBucket: "high", Maturity: "mature",
+	})
+	if err != nil {
+		return api.GPUDegradationSummary{}, nil, err
+	}
+	historicalByModelVersion := make(map[historicalBaselineKey]api.GPUFeatureBaseline, len(historicalRows))
+	for _, baseline := range historicalRows {
+		historicalByModelVersion[historicalBaselineKey{modelName: baseline.ModelName, featureVersion: baseline.FeatureVersion}] = baseline
 	}
 
 	summary := api.GPUDegradationSummary{
@@ -82,12 +99,21 @@ func (s *Service) Evaluate() (api.GPUDegradationSummary, []api.GPUDegradationAss
 
 	candidates := make([]api.GPUDegradationAssessment, 0)
 	for _, item := range eligible {
-		peers, scope := peerClocks(item, eligible)
-		if len(peers) == 0 {
-			continue
+		featureVersion := item.snapshot.FeatureVersions["sm_clock_avg_15m"]
+		historical, hasHistorical := historicalByModelVersion[historicalBaselineKey{modelName: item.score.ModelName, featureVersion: featureVersion}]
+		baseline, scope, peerCount, baselineID, maturity := 0.0, "", 0, uint(0), ""
+		if hasHistorical {
+			baseline, scope, peerCount = historical.P50, "same_model_high_load_7d", historical.GPUCount
+			baselineID, maturity = historical.ID, historical.Maturity
+			summary.HistoricalBaselineGPUs++
+		} else {
+			peers, peerScope := peerClocks(item, eligible)
+			if len(peers) == 0 {
+				continue
+			}
+			baseline, scope, peerCount, maturity = median(peers), peerScope, len(peers), "live_peer"
 		}
 		summary.BaselineReadyGPUs++
-		baseline := median(peers)
 		if baseline <= 0 {
 			continue
 		}
@@ -95,19 +121,19 @@ func (s *Service) Evaluate() (api.GPUDegradationSummary, []api.GPUDegradationAss
 		if ratio >= ratioThreshold {
 			continue
 		}
-		confidence := assessmentConfidence(item.score.DataConfidence, len(peers), scope)
+		confidence := assessmentConfidence(item.score.DataConfidence, peerCount, scope)
 		assessment := api.GPUDegradationAssessment{
 			GPUAssetID: item.score.GPUAssetID, GPUUUID: item.score.GPUUUID, NodeIP: item.score.NodeIP,
 			GPUIndex: item.score.GPUIndex, ModelName: item.score.ModelName, Status: "candidate",
 			Metric: "sm_clock_avg_15m", ObservedValue: item.clock, BaselineValue: baseline,
-			PerformanceRatio: ratio, GPUUtilization: item.util, PeerCount: len(peers),
-			BaselineScope: scope, DataConfidence: confidence,
+			PerformanceRatio: ratio, GPUUtilization: item.util, PeerCount: peerCount,
+			BaselineID: baselineID, BaselineScope: scope, BaselineMaturity: maturity, DataConfidence: confidence,
 			Evidence: api.StringList{
 				fmt.Sprintf("GPU util avg 15m %.1f%%", item.util),
-				fmt.Sprintf("SM clock avg 15m %.1fMHz vs %.1fMHz peer median", item.clock, baseline),
+				fmt.Sprintf("SM clock avg 15m %.1fMHz vs %.1fMHz baseline p50 (%s)", item.clock, baseline, scope),
 			},
 			RecommendedAction: "Confirm workload comparability, then schedule maintenance-window DCGM/SuperBench validation; do not isolate automatically.",
-			FeatureVersion:    item.snapshot.FeatureVersions["sm_clock_avg_15m"],
+			FeatureVersion:    featureVersion,
 			ObservedAt:        item.snapshot.ObservedAt, EvaluatedAt: evaluatedAt,
 		}
 		candidates = append(candidates, assessment)
@@ -164,6 +190,9 @@ func median(values []float64) float64 {
 func assessmentConfidence(sourceConfidence string, peerCount int, scope string) string {
 	if sourceConfidence != "A" {
 		return "C"
+	}
+	if scope == "same_model_high_load_7d" && peerCount >= minimumHistoricalGPUs {
+		return "A"
 	}
 	if scope == "same_node_model" && peerCount >= 7 {
 		return "A"

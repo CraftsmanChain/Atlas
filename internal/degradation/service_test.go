@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"atlas/internal/features"
 	"atlas/pkg/api"
 	"atlas/pkg/storage"
 )
@@ -139,5 +140,56 @@ func TestEvaluateRequiresLoadAndPeers(t *testing.T) {
 	}
 	if summary.EligibleGPUs != 0 || len(candidates) != 0 {
 		t.Fatalf("low-load GPU became candidate: summary=%+v candidates=%+v", summary, candidates)
+	}
+}
+
+func TestEvaluatePrefersMatureHistoricalBaselineWithoutLivePeers(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)
+	snapshot := api.GPUFeatureSnapshot{
+		GPUAssetID: 1, GPUUUID: "GPU-A", NodeIP: "10.114.4.21", GPUIndex: 0,
+		ModelName:       "NVIDIA H100 80GB HBM3",
+		Metrics:         api.FloatMap{"gpu_util_avg_15m": 90, "sm_clock_avg_15m": 900},
+		FeatureVersions: api.StringMap{"sm_clock_avg_15m": "1.7.0"},
+		DataConfidence:  "A", ObservedAt: now,
+	}
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	scoreValue := 100
+	if err := db.Create(&api.GPUHealthScore{
+		FeatureSnapshotID: snapshot.ID, GPUAssetID: 1, GPUUUID: "GPU-A",
+		NodeIP: snapshot.NodeIP, GPUIndex: 0, ModelName: snapshot.ModelName,
+		Score: &scoreValue, DataConfidence: "A", Current: true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	baseline := api.GPUFeatureBaseline{
+		ContractVersion: features.BaselineContractVersion,
+		FeatureName:     "sm_clock_avg_15m", FeatureVersion: "1.7.0",
+		ModelName: snapshot.ModelName, LoadBucket: "high", WindowDays: 7,
+		SampleCount: 400, GPUCount: 8, P05: 1400, P50: 1500, P95: 1550, MAD: 20,
+		Maturity: "mature", WindowStartedAt: now.Add(-7 * 24 * time.Hour), WindowEndedAt: now,
+		ComputedAt: now, Owner: "atlas-ml",
+	}
+	if err := db.Create(&baseline).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return now.Add(5 * time.Minute) }
+	summary, candidates, err := service.Evaluate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.BaselineReadyGPUs != 1 || summary.HistoricalBaselineGPUs != 1 || len(candidates) != 1 {
+		t.Fatalf("unexpected historical baseline result summary=%+v candidates=%+v", summary, candidates)
+	}
+	candidate := candidates[0]
+	if candidate.BaselineID != baseline.ID || candidate.BaselineScope != "same_model_high_load_7d" ||
+		candidate.BaselineMaturity != "mature" || candidate.BaselineValue != 1500 || candidate.DataConfidence != "A" {
+		t.Fatalf("unexpected historical candidate: %+v", candidate)
 	}
 }
