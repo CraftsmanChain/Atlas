@@ -33,9 +33,9 @@ Atlas 后续核心能力聚焦 3 条主线：
    - 建立可用性、XID/ECC、PCIe/NVLink、温度/供电/时钟、性能衰减和维修历史特征目录
    - 记录 4090/H100/H200 的支持能力、缺失语义、窗口、基线、用途和版本
    - 纳入指标消失、scrape 样本下降、抓取失败和 gap 等结构性可观测性特征
-   - 已完成版本化 schema、注册/读取 API、35 个规范健康特征、53 个 DCGM/gpu_exporter/Prometheus 源查询、回退与一致性血缘接入
+   - 已完成版本化 schema、注册/读取 API、35 个规范健康特征、53 个在线源查询、1 个 shadow recording-rule 特征、回退与一致性血缘接入
    - 已接入每卡样本数、存在率、年龄、最大 gap、UUID flap 和 DCGM Target 抓取成功率/样本量/耗时比，提供连续性 API、页面、数据问题归一化与恢复
-   - metric family 变化待通过 canary recording rule 接入，避免在线高基数扫描
+   - metric family 单节点 canary 配置、Catalog shadow 定义和自动范围保护已完成；待 Prometheus 管理员发布并观察 24 小时
 3. `data-statistics v0.3.0`
    - 统一归一化节点、GPU 资产、Target、健康未知和硬件规则事件
    - 统计数据质量、资产身份和节点可用性的累计发现、已解决、遗留与当前仍被检测问题；硬件故障由告警中心承载

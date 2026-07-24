@@ -1219,7 +1219,8 @@ GPU
 - [x] 交付 `feature-catalog v1.0.0` 基础能力：版本化 schema、注册/读取 API、型号能力、缺失语义、用途和 20 个健康核心特征接入（2026-07-22）
 - [x] 纳入每卡 1h 样本数、存在率与当前样本年龄，接入连续性 API、页面和数据问题自动恢复（Feature Catalog v1.3.0，2026-07-24）
 - [x] 纳入 scrape success/samples/duration、UUID flap 和每卡最大 gap，并接入连续性判定与问题证据（Feature Catalog v1.4.0，2026-07-24）
-- [ ] 通过 canary recording rule 纳入 metric family 变化
+- [x] 建立 metric-family 单节点 recording-rule canary 配置、Catalog shadow 定义与范围保护测试；现场等价查询返回 8 GPU 且 delta 为 0（Feature Catalog v1.5.0，2026-07-24）
+- [ ] 由 Prometheus 管理员发布 canary 并观察 24 小时评估耗时、序列数与非零 delta 测试
 - [ ] 建 recording rules 或离线特征聚合
 - [ ] 实现同型号、同负载基线
 - [ ] 接入 ECOD、IForest、COPOD 等基线模型

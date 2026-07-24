@@ -1,6 +1,6 @@
 # Atlas Feature Catalog v1
 
-> 当前契约版本：`v1.4.0`（2026-07-24）
+> 当前契约版本：`v1.5.0`（2026-07-24）
 
 Feature Catalog 是健康评分、PyOD 异常检测、风险排序、监督预测和性能衰减检测共享的数据契约。目录版本为 `1.0.0`；特征定义按 `(name, version)` 不可重复注册。
 
@@ -27,7 +27,7 @@ Feature Catalog 是健康评分、PyOD 异常检测、风险排序、监督预�
 
 ## 已接入消费方
 
-健康评分服务不再维护独立的 Prometheus 特征清单。Catalog v1.4 生成 35 个规范健康特征和 53 个 DCGM/gpu_exporter/Prometheus 源查询，包括温度、功耗、利用率、时钟、显存、XID、Row Remap、PCIe Replay、reset-required、详细 ECC、风扇、PCIe 链路宽度和结构性可观测性。
+健康评分服务不再维护独立的 Prometheus 特征清单。Catalog v1.5 注册 36 个规范定义：35 个健康特征生成 53 个 DCGM/gpu_exporter/Prometheus 在线源查询；`gpu_metric_family_count_delta_5m` 作为第 36 个 shadow recording-rule 特征，只服务异常检测、风险排序和预测准备。
 
 `correctable_remapped_rows_delta_1h` 与 `correctable_remapped_rows_delta_24h` 将 Correctable Row Remap 的累计值转为近期增量。稳定累计值和单次低速新增只作为观察证据，不降低健康分；只有达到规则版本声明的增长门槛才进入风险评分。
 
@@ -50,7 +50,7 @@ Feature Catalog 是健康评分、PyOD 异常检测、风险排序、监督预�
 
 ## 下一批接入
 
-1. 结构特征下一批：以 canary recording rule 接入 metric family 变化并验证查询开销。
+1. 由 Prometheus 管理员发布单节点 metric-family canary，观察 24 小时规则耗时、序列数和非零 delta 验证。
 2. 性能衰减：有效时钟比、同机/同型号稳健分位数、链路带宽比和 throttle duty。
 3. 历史与标签：复发间隔、维修/更换、服役时间、驱动版本和标签置信度。
 4. 将 snapshot 的特征版本 manifest 延伸到 PyOD shadow 结果和监督训练数据导出。

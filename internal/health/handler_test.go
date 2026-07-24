@@ -144,9 +144,9 @@ func TestTelemetryQualitySummaryAndClassification(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshots := []api.GPUFeatureSnapshot{
-		{EvaluationRunID: run.ID, GPUAssetID: 1, GPUUUID: "GPU-A", NodeIP: "10.114.4.21", GPUIndex: 0, Metrics: api.FloatMap{"gpu_metric_samples_1h": 240, "gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "gpu_metric_gap_max_seconds_1h": 15, "gpu_uuid_presence_flap_count_1h": 0, "target_scrape_success_ratio_5m": 100, "target_scrape_samples_ratio_5m": 100, "target_scrape_duration_ratio_5m": 110}, FeatureCatalogVersion: "1.4.0", ObservedAt: now},
-		{EvaluationRunID: run.ID, GPUAssetID: 2, GPUUUID: "GPU-B", NodeIP: "10.114.4.21", GPUIndex: 1, Metrics: api.FloatMap{"gpu_metric_samples_1h": 180, "gpu_metric_presence_ratio_1h": 75, "gpu_metric_sample_age_seconds": 20, "gpu_metric_gap_max_seconds_1h": 150, "gpu_uuid_presence_flap_count_1h": 2}, FeatureCatalogVersion: "1.4.0", ObservedAt: now},
-		{EvaluationRunID: run.ID, GPUAssetID: 3, GPUUUID: "GPU-C", NodeIP: "10.114.4.21", GPUIndex: 2, Metrics: api.FloatMap{}, FeatureCatalogVersion: "1.4.0", ObservedAt: now},
+		{EvaluationRunID: run.ID, GPUAssetID: 1, GPUUUID: "GPU-A", NodeIP: "10.114.4.21", GPUIndex: 0, Metrics: api.FloatMap{"gpu_metric_samples_1h": 240, "gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "gpu_metric_gap_max_seconds_1h": 15, "gpu_uuid_presence_flap_count_1h": 0, "target_scrape_success_ratio_5m": 100, "target_scrape_samples_ratio_5m": 100, "target_scrape_duration_ratio_5m": 110}, FeatureCatalogVersion: "1.5.0", ObservedAt: now},
+		{EvaluationRunID: run.ID, GPUAssetID: 2, GPUUUID: "GPU-B", NodeIP: "10.114.4.21", GPUIndex: 1, Metrics: api.FloatMap{"gpu_metric_samples_1h": 180, "gpu_metric_presence_ratio_1h": 75, "gpu_metric_sample_age_seconds": 20, "gpu_metric_gap_max_seconds_1h": 150, "gpu_uuid_presence_flap_count_1h": 2}, FeatureCatalogVersion: "1.5.0", ObservedAt: now},
+		{EvaluationRunID: run.ID, GPUAssetID: 3, GPUUUID: "GPU-C", NodeIP: "10.114.4.21", GPUIndex: 2, Metrics: api.FloatMap{}, FeatureCatalogVersion: "1.5.0", ObservedAt: now},
 	}
 	if err := db.Create(&snapshots).Error; err != nil {
 		t.Fatal(err)

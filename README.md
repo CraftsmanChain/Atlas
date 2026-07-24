@@ -133,7 +133,7 @@ Atlas 的数据治理能力定位为“发现、定位、记录和验证”，�
 
 ### 故障特征与预测路径
 
-Feature Catalog v1.4 已提供版本化注册、列表和读取接口，并将健康评分使用的 35 个规范特征和 53 个 DCGM/gpu_exporter/Prometheus 源查询接入统一目录。数据质量页联合检查每卡样本存在率、年龄、最大间隔、UUID 波动和 DCGM Target 抓取质量；连续性异常进入数据统计并自动恢复，但不扣硬件健康分。Correctable Row Remap 使用 1h/24h 增量判断，稳定累计值不扣分；Uncorrectable ECC 与 Row Remap Failure 只输出 critical 告警和人工处置记录，不自动操作任务或节点。详见 [Feature Catalog v1](docs/feature-catalog-v1.md)、[GPU 双源健康评分契约 v1.4](docs/gpu-dual-source-health-v1.1.md) 和 [性能衰减检测 v0.1](docs/performance-degradation-v0.1.md)。
+Feature Catalog v1.5 已提供 36 个版本化定义，其中 35 个健康特征对应 53 个 DCGM/gpu_exporter/Prometheus 在线源查询；metric-family 变化以单节点 recording-rule canary 保持 shadow，尚未发布到 Prometheus。数据质量页联合检查每卡样本连续性和采集链路，并按分类展示历史、已解决、遗留与当前检测统计；结构异常不扣硬件健康分。Correctable Row Remap 使用 1h/24h 增量判断，稳定累计值不扣分；Uncorrectable ECC 与 Row Remap Failure 只告警和记录，不自动操作任务或节点。详见 [Feature Catalog v1](docs/feature-catalog-v1.md)、[Recording Rule Canary v1](docs/recording-rule-canary-v1.md)、[GPU 双源健康评分契约 v1.4](docs/gpu-dual-source-health-v1.1.md) 和 [性能衰减检测 v0.1](docs/performance-degradation-v0.1.md)。
 
 ## 快速开始
 
