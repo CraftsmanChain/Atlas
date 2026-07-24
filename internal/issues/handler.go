@@ -34,6 +34,11 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 		issueError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	trainingEligible, err := countTrainingExamples(h.db)
+	if err != nil {
+		issueError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	var total, resolved, ignored, remaining, activeDetection int64
 	statisticsIssues(h.db).Count(&total)
 	statisticsIssues(h.db).Where("status = ?", "resolved").Count(&resolved)
@@ -74,7 +79,8 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 		"discovered": total, "resolved": resolved, "remaining": remaining, "ignored": ignored, "active_detection": activeDetection,
 		"by_category": byCategory, "resolved_by_category": resolvedByCategory, "remaining_by_category": remainingByCategory,
 		"active_by_category": activeByCategory, "by_status": byStatus, "by_severity": bySeverity,
-		"generated_at": time.Now().Format(time.RFC3339),
+		"training_eligible": trainingEligible,
+		"generated_at":      time.Now().Format(time.RFC3339),
 	}})
 }
 
@@ -246,27 +252,18 @@ func (h *Handler) HandleTrainingData(w http.ResponseWriter, r *http.Request) {
 		issueError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	type trainingRow struct {
-		api.IssueResolution
-		Issue api.PlatformIssue `json:"issue"`
-	}
-	var resolutions []api.IssueResolution
-	if err := h.db.Where("training_eligible = ?", true).Order("id ASC").Find(&resolutions).Error; err != nil {
+	dataset, err := buildTrainingDataset(h.db, time.Now())
+	if err != nil {
 		issueError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	rows := make([]trainingRow, 0, len(resolutions))
-	for _, resolution := range resolutions {
-		var issue api.PlatformIssue
-		if err := h.db.First(&issue, resolution.IssueID).Error; err != nil {
-			continue
-		}
-		if issue.IssueType == deprecatedSourceDifferenceIssue {
-			continue
-		}
-		rows = append(rows, trainingRow{IssueResolution: resolution, Issue: issue})
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("ETag", `"`+dataset.DatasetID+`"`)
+	w.Header().Set("X-Atlas-Dataset-Schema", dataset.SchemaVersion)
+	if r.URL.Query().Get("download") == "1" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.json"`, dataset.SchemaVersion, dataset.DatasetID))
 	}
-	issueJSON(w, http.StatusOK, map[string]any{"schema_version": "atlas-issue-training-v1", "generated_at": time.Now().Format(time.RFC3339), "data": rows})
+	issueJSON(w, http.StatusOK, dataset)
 }
 
 func visibleIssues(db *storage.DB) *gorm.DB {

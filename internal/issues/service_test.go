@@ -210,7 +210,7 @@ func TestIssueSummaryResolutionAndTrainingDataAPI(t *testing.T) {
 	if err := db.Where("issue_key = ?", "node_state:10.114.4.21").First(&issue).Error; err != nil {
 		t.Fatal(err)
 	}
-	payload := map[string]any{"status": "resolved", "root_cause": "loose PCIe power cable", "solution": "reseated and replaced cable", "resolution_process": "drain node, power off, reseat cable, run DCGM diagnostics", "result": "8 GPUs visible and diagnostics passed", "operator": "ops-user", "training_eligible": true, "evidence": []string{"dcgmi diag passed"}}
+	payload := map[string]any{"status": "resolved", "root_cause": "loose PCIe power cable on 10.114.4.21", "solution": "reseated and replaced cable", "resolution_process": "operator ops@example.com drained the node, powered off, reseated cable, and ran DCGM diagnostics", "result": "GPU-01234567-89ab-cdef-0123-456789abcdef visible and diagnostics passed", "operator": "ops-user", "training_eligible": true, "evidence": []string{"10.114.4.21 dcgmi diag passed"}}
 	body, _ := json.Marshal(payload)
 	response = httptest.NewRecorder()
 	handler.HandleSubresource(response, httptest.NewRequest("POST", "/api/v1/issues/"+itoa(issue.ID)+"/resolution", bytes.NewReader(body)))
@@ -225,9 +225,51 @@ func TestIssueSummaryResolutionAndTrainingDataAPI(t *testing.T) {
 	}
 
 	response = httptest.NewRecorder()
-	handler.HandleTrainingData(response, httptest.NewRequest("GET", "/api/v1/issues/training-data", nil))
-	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte("atlas-issue-training-v1")) || !bytes.Contains(response.Body.Bytes(), []byte("loose PCIe power cable")) {
+	handler.HandleSummary(response, httptest.NewRequest("GET", "/api/v1/issues/summary", nil))
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"training_eligible":1`)) {
+		t.Fatalf("unexpected training summary: %d %s", response.Code, response.Body.String())
+	}
+
+	response = httptest.NewRecorder()
+	handler.HandleTrainingData(response, httptest.NewRequest("GET", "/api/v1/issues/training-data?download=1", nil))
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"schema_version":"atlas-issue-training-v1"`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"contract_version":"1.1.0"`)) || !bytes.Contains(response.Body.Bytes(), []byte("loose PCIe power cable")) {
 		t.Fatalf("unexpected training export: %d %s", response.Code, response.Body.String())
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte(`[NODE_IP]`)) || !bytes.Contains(response.Body.Bytes(), []byte(`[GPU_UUID]`)) || !bytes.Contains(response.Body.Bytes(), []byte(`[EMAIL]`)) {
+		t.Fatalf("training export did not redact identifiers: %s", response.Body.String())
+	}
+	for _, forbidden := range []string{"10.114.4.21", "GPU-01234567-89ab-cdef-0123-456789abcdef", "ops@example.com", `"operator"`, `"issue_key"`, `"entity_key"`} {
+		if bytes.Contains(response.Body.Bytes(), []byte(forbidden)) {
+			t.Fatalf("training export leaked %q: %s", forbidden, response.Body.String())
+		}
+	}
+	if response.Header().Get("Cache-Control") != "private, no-store" || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" {
+		t.Fatalf("missing safe export headers: %+v", response.Header())
+	}
+	firstDataset, err := buildTrainingDataset(db, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDataset, err := buildTrainingDataset(db, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDataset.DatasetID != secondDataset.DatasetID || firstDataset.Summary.Total != 1 || firstDataset.Summary.Train+firstDataset.Summary.Evaluation != 1 {
+		t.Fatalf("training snapshot or split is unstable: first=%+v second=%+v", firstDataset, secondDataset)
+	}
+
+	payload["root_cause"] = "review correction pending"
+	payload["training_eligible"] = false
+	body, _ = json.Marshal(payload)
+	response = httptest.NewRecorder()
+	handler.HandleSubresource(response, httptest.NewRequest("POST", "/api/v1/issues/"+itoa(issue.ID)+"/resolution", bytes.NewReader(body)))
+	if response.Code != 201 {
+		t.Fatalf("follow-up resolution status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler.HandleTrainingData(response, httptest.NewRequest("GET", "/api/v1/issues/training-data", nil))
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"total":0`)) || bytes.Contains(response.Body.Bytes(), []byte(`"sample-`)) {
+		t.Fatalf("superseded training resolution remained exportable: %d %s", response.Code, response.Body.String())
 	}
 }
 
