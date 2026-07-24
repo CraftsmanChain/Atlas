@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	BaselineContractVersion = "feature-baseline-v1.0.0"
+	BaselineContractVersion = "feature-baseline-v1.1.0"
 	baselineWindowDays      = 7
 	baselineSamplesPerGPU   = 200
 	baselineRefreshInterval = 6 * time.Hour
@@ -108,12 +108,21 @@ func RefreshHistoricalBaselines(db *storage.DB, now time.Time, force bool) (Base
 
 	var rows []baselineSnapshotRow
 	cutoff := now.AddDate(0, 0, -baselineWindowDays)
+	dataEpoch := cutoff
+	definition, err := Get(db, baselineFeatureNames[0], CatalogVersion)
+	if err != nil {
+		return fail(err)
+	}
+	if definition != nil && definition.CreatedAt.After(dataEpoch) {
+		dataEpoch = definition.CreatedAt
+	}
 	query := `
 WITH bucketed AS (
 	SELECT id, gpu_asset_id, model_name, metrics, feature_catalog_version, feature_versions, data_confidence, observed_at,
 		NTILE(?) OVER (PARTITION BY gpu_asset_id ORDER BY observed_at ASC, id ASC) AS sample_bucket
 	FROM gpu_feature_snapshots
-	WHERE observed_at >= ? AND data_confidence IN ('A', 'B')
+	WHERE observed_at >= ? AND created_at >= ? AND feature_catalog_version = ?
+		AND data_confidence IN ('A', 'B')
 ), sampled AS (
 	SELECT id, gpu_asset_id, model_name, metrics, feature_catalog_version, feature_versions, data_confidence, observed_at,
 		ROW_NUMBER() OVER (PARTITION BY gpu_asset_id, sample_bucket ORDER BY observed_at DESC, id DESC) AS bucket_rank
@@ -122,7 +131,7 @@ WITH bucketed AS (
 SELECT id, gpu_asset_id, model_name, metrics, feature_catalog_version, feature_versions, data_confidence, observed_at
 FROM sampled
 WHERE bucket_rank = 1`
-	if err := db.Raw(query, baselineSamplesPerGPU, cutoff).Scan(&rows).Error; err != nil {
+	if err := db.Raw(query, baselineSamplesPerGPU, cutoff, dataEpoch, CatalogVersion).Scan(&rows).Error; err != nil {
 		return fail(err)
 	}
 	snapshots := make([]baselineSnapshot, 0, len(rows))
@@ -199,7 +208,7 @@ WHERE bucket_rank = 1`
 			ComputedAt: now, Owner: "atlas-ml",
 		})
 	}
-	err := db.Transaction(func(tx *gorm.DB) error {
+	err = db.Transaction(func(tx *gorm.DB) error {
 		for index := range baselines {
 			if err := tx.Clauses(clause.OnConflict{
 				Columns: []clause.Column{
