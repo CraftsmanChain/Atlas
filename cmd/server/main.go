@@ -14,6 +14,7 @@ import (
 
 	"atlas/internal/analyzer"
 	"atlas/internal/degradation"
+	"atlas/internal/evidence"
 	"atlas/internal/features"
 	"atlas/internal/freshness"
 	ig "atlas/internal/gateway"
@@ -95,6 +96,7 @@ func main() {
 	)
 	inventoryHandler := inventory.NewHandler(db)
 	healthHandler := health.NewHandler(db)
+	evidenceHandler := evidence.NewHandler(evidence.NewService(db))
 	inventoryFreshAfter := 2 * parseDurationOrDefault("target status", cfg.Inventory.TargetSyncInterval, 10*time.Minute)
 	healthFreshAfter := 2 * parseDurationOrDefault("GPU health score", cfg.Health.ScoreInterval, 30*time.Minute)
 	freshnessHandler := freshness.NewHandler(db, ingestionDB, cfg.Gateway.IngestionSourceMode, ingestionStaleAfter, inventoryFreshAfter, healthFreshAfter)
@@ -192,6 +194,7 @@ func main() {
 	mux.HandleFunc("/api/v1/health/telemetry-quality", healthHandler.HandleTelemetryQuality)
 	mux.HandleFunc("/api/v1/fault-events", healthHandler.HandleEvents)
 	mux.HandleFunc("/api/v1/fault-events/summary", healthHandler.HandleEventSummary)
+	mux.HandleFunc("/api/v1/fault-events/", evidenceHandler.HandleEventSubresource)
 	mux.HandleFunc("/api/v1/degradation/summary", degradationHandler.HandleSummary)
 	mux.HandleFunc("/api/v1/degradation/candidates", degradationHandler.HandleCandidates)
 
