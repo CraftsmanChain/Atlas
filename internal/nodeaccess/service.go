@@ -125,7 +125,7 @@ func (s *Service) Overview() Overview {
 		},
 		CredentialProfiles: statuses, Skills: skillCatalog(), Commands: commandCatalog(),
 		Boundaries: []Text{
-			{ZH: "v0.3 仅允许受信任主机的 SSH 握手与认证检查；不创建 session，不执行任何命令。", EN: "v0.3 permits only known-host SSH handshake and authentication checks; it opens no session and executes no command."},
+			{ZH: "v0.3.1 仅允许受信任主机的 SSH 认证检查及注册只读命令的不可执行计划预览；不创建 session，不执行任何命令。", EN: "v0.3.1 permits only known-host SSH authentication checks and non-executable plan previews for registered read-only commands; it opens no session and executes no command."},
 			{ZH: "密码和私钥只通过受控密钥引用解析，永不进入接口、日志或证据。", EN: "Passwords and private keys resolve only through controlled secret references and never enter APIs, logs, or evidence."},
 			{ZH: "诊断、重启、重置、任务和节点操作必须独立人工审批。", EN: "Diagnostics, restart, reset, workload, and node actions require separate human approval."},
 		},
