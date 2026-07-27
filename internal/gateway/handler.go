@@ -369,6 +369,26 @@ func (h *Handler) HandleIngestionSubresources(w http.ResponseWriter, r *http.Req
 		http.NotFound(w, r)
 		return
 	}
+	var record api.AlertIngestionRecord
+	if err := h.ingestionDB.First(&record, uint(ingestionID)).Error; err == nil {
+		view := alertIngestionView{AlertIngestionRecord: record}
+		if event, eventErr := h.ingestionDB.GetAlertEventByID(record.EventID); eventErr == nil && event != nil {
+			view.Labels = event.Labels
+			if !event.Timestamp.IsZero() {
+				timestamp := event.Timestamp
+				view.EventTimestamp = &timestamp
+			}
+		}
+		enrichIngestionViewFromRawPayload(&view)
+		event := api.AlertEvent{
+			Source: view.Source, Level: view.Level, Message: view.Message,
+			Host: view.Host, Labels: view.Labels,
+		}
+		if view.EventTimestamp != nil {
+			event.Timestamp = *view.EventTimestamp
+		}
+		refreshPlaceholderAIReport(report, event)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(report)

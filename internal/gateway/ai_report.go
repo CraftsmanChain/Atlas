@@ -75,6 +75,21 @@ func buildPlaceholderAIReport(event api.AlertEvent) map[string]interface{} {
 	}
 }
 
+func refreshPlaceholderAIReport(report *api.AIAnalysisReport, event api.AlertEvent) {
+	if report == nil || report.Model != "atlas-placeholder" {
+		return
+	}
+	values := buildPlaceholderAIReport(event)
+	report.Severity = event.Level
+	report.Summary, _ = values["summary"].(string)
+	report.ProbableCauses, _ = values["probable_causes"].(api.StringList)
+	report.RecommendedActions, _ = values["recommended_actions"].(api.StringList)
+	report.Evidence, _ = values["evidence"].(api.StringList)
+	report.Confidence, _ = values["confidence"].(float64)
+	report.PromptVersion, _ = values["prompt_version"].(string)
+	report.ErrorMessage = ""
+}
+
 func fallbackString(value, fallback string) string {
 	if strings.TrimSpace(value) == "" {
 		return fallback
