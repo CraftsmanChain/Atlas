@@ -88,6 +88,8 @@ type NodeAccessConfig struct {
 	Enabled            bool                    `yaml:"enabled"`
 	SkillID            string                  `yaml:"skill_id"`
 	SkillVersion       string                  `yaml:"skill_version"`
+	SSHPort            int                     `yaml:"ssh_port"`
+	KnownHostsFile     string                  `yaml:"known_hosts_file"`
 	ConnectTimeout     string                  `yaml:"connect_timeout"`
 	CommandTimeout     string                  `yaml:"command_timeout"`
 	MaxOutputBytes     int                     `yaml:"max_output_bytes"`
@@ -201,10 +203,13 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.NodeAccess.SkillID = "atlas-node-evidence"
 	}
 	if cfg.NodeAccess.SkillVersion == "" {
-		cfg.NodeAccess.SkillVersion = "v0.2.1"
+		cfg.NodeAccess.SkillVersion = "v0.3.0"
 	}
 	if cfg.NodeAccess.ConnectTimeout == "" {
 		cfg.NodeAccess.ConnectTimeout = "5s"
+	}
+	if cfg.NodeAccess.SSHPort <= 0 {
+		cfg.NodeAccess.SSHPort = 22
 	}
 	if cfg.NodeAccess.CommandTimeout == "" {
 		cfg.NodeAccess.CommandTimeout = "10s"

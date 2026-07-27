@@ -48,9 +48,11 @@ health:
   rule_version: "gpu-health-v1.4.1"
 
 node_access:
-  enabled: false
+  enabled: true
   skill_id: "atlas-node-evidence"
-  skill_version: "v0.2.1"
+  skill_version: "v0.3.0"
+  ssh_port: 22
+  known_hosts_file: "/root/.ssh/known_hosts"
   connect_timeout: "5s"
   command_timeout: "10s"
   max_output_bytes: 1048576

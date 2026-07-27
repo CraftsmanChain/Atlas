@@ -125,7 +125,7 @@ func (s *Service) Overview() Overview {
 		},
 		CredentialProfiles: statuses, Skills: skillCatalog(), Commands: commandCatalog(),
 		Boundaries: []Text{
-			{ZH: "v0.1 不建立远程连接，不提供任意命令或执行 API。", EN: "v0.1 opens no remote connections and exposes no arbitrary-command or execution API."},
+			{ZH: "v0.3 仅允许受信任主机的 SSH 握手与认证检查；不创建 session，不执行任何命令。", EN: "v0.3 permits only known-host SSH handshake and authentication checks; it opens no session and executes no command."},
 			{ZH: "密码和私钥只通过受控密钥引用解析，永不进入接口、日志或证据。", EN: "Passwords and private keys resolve only through controlled secret references and never enter APIs, logs, or evidence."},
 			{ZH: "诊断、重启、重置、任务和节点操作必须独立人工审批。", EN: "Diagnostics, restart, reset, workload, and node actions require separate human approval."},
 		},

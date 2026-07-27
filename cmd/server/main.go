@@ -52,7 +52,7 @@ func main() {
 			Logging: config.LoggingConfig{Dir: "logs"},
 			Web:     config.WebConfig{StaticDir: "web/dist"},
 			NodeAccess: config.NodeAccessConfig{
-				SkillID: "atlas-node-evidence", SkillVersion: "v0.2.1",
+				SkillID: "atlas-node-evidence", SkillVersion: "v0.3.0", SSHPort: 22,
 				ConnectTimeout: "5s", CommandTimeout: "10s", MaxOutputBytes: 1024 * 1024,
 				MaxConcurrentNodes: 2, MaxCommandsPerNode: 6,
 			},
@@ -125,6 +125,12 @@ func main() {
 		log.Printf("WARNING: node credential writes are allowed over plaintext HTTP")
 	}
 	nodeAccessHandler := nodeaccess.NewHandlerWithVault(nodeAccessService, credentialVault, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialLoopbackHTTP, allowCredentialInsecureHTTP)
+	connectTimeout := parseDurationOrDefault("node SSH connect", cfg.NodeAccess.ConnectTimeout, 5*time.Second)
+	sshAuthenticator, sshErr := nodeaccess.NewSSHAuthenticator(cfg.NodeAccess.SSHPort, connectTimeout, cfg.NodeAccess.KnownHostsFile)
+	if sshErr != nil {
+		log.Printf("Known-host SSH connectivity checks are unavailable: %v", sshErr)
+	}
+	nodeAccessHandler.SetConnectivity(nodeaccess.NewConnectivityService(db, nodeAccessService, sshAuthenticator, cfg.NodeAccess.Enabled))
 	go issueService.Run(context.Background(), time.Minute)
 
 	// Inventory discovery is read-only and best-effort. Prometheus outages are
@@ -201,6 +207,7 @@ func main() {
 	mux.HandleFunc("/api/v1/node-access/overview", nodeAccessHandler.HandleOverview)
 	mux.HandleFunc("/api/v1/node-access/credentials", nodeAccessHandler.HandleCredentials)
 	mux.HandleFunc("/api/v1/node-access/credentials/", nodeAccessHandler.HandleCredential)
+	mux.HandleFunc("/api/v1/node-access/checks", nodeAccessHandler.HandleChecks)
 
 	// 6.4 GPU hardware inventory and collection coverage (read-only).
 	mux.HandleFunc("/api/v1/fleet/summary", inventoryHandler.HandleFleetSummary)

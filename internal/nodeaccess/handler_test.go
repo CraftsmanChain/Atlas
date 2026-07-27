@@ -2,6 +2,7 @@ package nodeaccess
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"net/http"
@@ -136,5 +137,40 @@ func TestCredentialHandlerAllowsExplicitHTTPCompatibility(t *testing.T) {
 	handler.HandleOverview(overviewResponse, httptest.NewRequest(http.MethodGet, "/api/v1/node-access/overview", nil))
 	if !strings.Contains(overviewResponse.Body.String(), `"insecure_http_allowed":true`) || !strings.Contains(overviewResponse.Body.String(), `"secure_write_only":false`) {
 		t.Fatalf("overview did not expose HTTP compatibility warning: %s", overviewResponse.Body.String())
+	}
+}
+
+func TestConnectivityHandlerRequiresManagementTokenAndReturnsRedactedResult(t *testing.T) {
+	db := connectivityTestDB(t)
+	vault, _ := testVault(t)
+	access := NewService(config.NodeAccessConfig{CredentialProfiles: []config.NodeCredentialProfile{
+		{ID: "node-a", Priority: 10, Username: "atlas", AuthType: "password", SecretRef: "env:A", Enabled: true},
+	}}, mapResolver{"env:A": "top-secret"})
+	checks := NewConnectivityService(db, access, authFunc(func(context.Context, string, string, string, []byte) error {
+		return nil
+	}), true)
+	handler := NewHandlerWithVault(access, vault, "management-secret")
+	handler.SetConnectivity(checks)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/node-access/checks", strings.NewReader(`{"node_ip":"10.114.4.25"}`))
+	request.TLS = &tls.ConnectionState{}
+	response := httptest.NewRecorder()
+	handler.HandleChecks(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized check, got %d: %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/node-access/checks", strings.NewReader(`{"node_ip":"10.114.4.25"}`))
+	request.TLS = &tls.ConnectionState{}
+	request.Header.Set("X-Atlas-Admin-Token", "management-secret")
+	response = httptest.NewRecorder()
+	handler.HandleChecks(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"no_command_executed":true`) {
+		t.Fatalf("unexpected connectivity response %d: %s", response.Code, response.Body.String())
+	}
+	for _, forbidden := range []string{"top-secret", `"atlas"`, "management-secret"} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Fatalf("connectivity response exposed %q: %s", forbidden, response.Body.String())
+		}
 	}
 }

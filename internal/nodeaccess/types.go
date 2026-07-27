@@ -4,7 +4,7 @@ import "time"
 
 const (
 	SkillID      = "atlas-node-evidence"
-	SkillVersion = "v0.2.1"
+	SkillVersion = "v0.3.0"
 )
 
 type Text struct {
@@ -61,6 +61,8 @@ type Overview struct {
 	ManagementReady     bool                      `json:"management_ready"`
 	SecureWriteOnly     bool                      `json:"secure_write_only"`
 	InsecureHTTPAllowed bool                      `json:"insecure_http_allowed"`
+	ConnectivityEnabled bool                      `json:"connectivity_check_enabled"`
+	KnownHostsReady     bool                      `json:"known_hosts_ready"`
 	Budget              Budget                    `json:"budget"`
 	CredentialProfiles  []CredentialProfileStatus `json:"credential_profiles"`
 	Skills              []SkillDefinition         `json:"skills"`
