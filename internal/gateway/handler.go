@@ -333,7 +333,7 @@ func enrichIngestionViewFromRawPayload(view *alertIngestionView) {
 			}
 		}
 	}
-	if view.EventTimestamp == nil && !candidate.Timestamp.IsZero() {
+	if !candidate.Timestamp.IsZero() {
 		timestamp := candidate.Timestamp
 		view.EventTimestamp = &timestamp
 	}

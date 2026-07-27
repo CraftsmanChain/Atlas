@@ -270,9 +270,10 @@ func TestParseFeishuWebhookAlertInteractiveOperationalCard(t *testing.T) {
 }
 
 func TestEnrichHistoricalIngestionViewFromRawPayload(t *testing.T) {
+	legacyTimestamp := time.Date(2026, 7, 26, 17, 44, 22, 0, time.Local)
 	view := alertIngestionView{AlertIngestionRecord: api.AlertIngestionRecord{
 		Message: "节点失活", Level: "info", RawPayload: operationalRecoveredCardPayload,
-	}}
+	}, EventTimestamp: &legacyTimestamp}
 	enrichIngestionViewFromRawPayload(&view)
 	if view.Host != "10.114.4.113" || view.Level != "critical" {
 		t.Fatalf("expected repaired host and level, got host=%q level=%q", view.Host, view.Level)
