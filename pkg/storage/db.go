@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
@@ -56,17 +57,65 @@ type DB struct {
 	*gorm.DB
 }
 
-// InitDB 初始化 SQLite 数据库并自动迁移表结构
+// InitDB initializes a SQLite database. It remains available for unit tests,
+// local development, and the one-time SQLite-to-PostgreSQL migration tool.
 func InitDB(dsn string) (*DB, error) {
-	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	return InitDBWithDriver("sqlite", dsn)
+}
+
+// InitDBWithDriver initializes the configured database and ensures the Atlas
+// schema exists. Production uses PostgreSQL; SQLite is retained only for tests
+// and migration input.
+func InitDBWithDriver(driver, dsn string) (*DB, error) {
+	driver = strings.ToLower(strings.TrimSpace(driver))
+	if driver == "" {
+		driver = "postgres"
+	}
+	if strings.TrimSpace(dsn) == "" {
+		return nil, fmt.Errorf("database DSN is required for driver %q", driver)
+	}
+
+	var dialector gorm.Dialector
+	switch driver {
+	case "postgres", "postgresql":
+		dialector = postgres.Open(dsn)
+	case "sqlite", "sqlite3":
+		dialector = sqlite.Open(dsn)
+	default:
+		return nil, fmt.Errorf("unsupported database driver %q", driver)
+	}
+
+	db, err := gorm.Open(dialector, &gorm.Config{})
 	if err != nil {
 		return nil, err
 	}
 
-	log.Println("Database connection established.")
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	if err := sqlDB.Ping(); err != nil {
+		return nil, fmt.Errorf("ping %s database: %w", driver, err)
+	}
+	if driver == "postgres" || driver == "postgresql" {
+		sqlDB.SetMaxOpenConns(20)
+		sqlDB.SetMaxIdleConns(5)
+		sqlDB.SetConnMaxLifetime(30 * time.Minute)
+	}
 
-	// 自动迁移模式，确保数据库表结构和代码模型一致
-	err = db.AutoMigrate(
+	log.Printf("Database connection established. driver=%s", driver)
+
+	if err := migrateSchema(db); err != nil {
+		return nil, err
+	}
+
+	log.Println("Database migration completed.")
+
+	return &DB{db}, nil
+}
+
+func migrateSchema(db *gorm.DB) error {
+	return db.AutoMigrate(
 		&api.AlertEvent{},
 		&api.AlertIngestionRecord{},
 		&api.AIAnalysisReport{},
@@ -92,13 +141,6 @@ func InitDB(dsn string) (*DB, error) {
 		&api.NodeCredentialProfile{},
 		&api.NodeAccessCheck{},
 	)
-	if err != nil {
-		return nil, err
-	}
-
-	log.Println("Database migration completed.")
-
-	return &DB{db}, nil
 }
 
 // SaveAlertEvent 存储告警事件

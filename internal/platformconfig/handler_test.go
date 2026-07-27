@@ -20,7 +20,7 @@ func newTestHandler(t *testing.T) (*Handler, *storage.DB) {
 	}
 	return NewHandler(db, config.BrandingConfig{
 		InstanceName: "智元集群", ProductName: "ATLAS",
-		ProductTagline: "GPU RELIABILITY", Environment: "TEST / 8077",
+		ProductTagline: "GPU RELIABILITY", Environment: "PRODUCTION / 7077",
 	}), db
 }
 
@@ -37,7 +37,7 @@ func TestGetSeedsConfiguredDefaults(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Data.InstanceName != "智元集群" || payload.Data.ProductName != "ATLAS" || payload.Data.Environment != "TEST / 8077" {
+	if payload.Data.InstanceName != "智元集群" || payload.Data.ProductName != "ATLAS" || payload.Data.Environment != "PRODUCTION / 7077" {
 		t.Fatalf("unexpected defaults: %+v", payload.Data)
 	}
 	var count int64

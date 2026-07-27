@@ -1,0 +1,19 @@
+[Unit]
+Description=Atlas GPU Reliability Server
+After=network-online.target atlas-postgres.service
+Wants=network-online.target
+Requires=atlas-postgres.service
+
+[Service]
+Type=simple
+WorkingDirectory=/ops/atlas
+ExecStart=/ops/atlas/atlas-server --config /ops/atlas/configs/config.yaml
+Restart=always
+RestartSec=3
+User=root
+EnvironmentFile=/etc/atlas/atlas.env
+Environment=ATLAS_PORT=7077
+Environment=ATLAS_WEB_DIR=/ops/atlas/web/dist
+
+[Install]
+WantedBy=multi-user.target

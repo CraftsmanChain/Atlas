@@ -1,20 +1,45 @@
 gateway:
-  port: ":8080"
+  port: ":7077"
   ingestion_source_mode: "local-live"
   ingestion_stale_after: "15m"
 storage:
-  dsn: "atlas.db"
+  driver: "postgres"
+  # 生产 DSN 通过 ATLAS_DATABASE_DSN 注入，禁止在仓库保存密码。
+  dsn: ""
 branding:
-  instance_name: "Atlas Cluster"
+  instance_name: "智元集群"
   product_name: "ATLAS"
   product_tagline: "GPU RELIABILITY"
-  environment: "LOCAL"
+  environment: "PRODUCTION / 7077"
+prometheus:
+  base_url: "http://10.111.201.1:9090"
+  request_timeout: "20s"
+inventory:
+  enabled: true
+  asset_file: "/ops/atlas/asset-monitor-compare.csv"
+  target_sync_interval: "10m"
+  identity_sync_interval: "10m"
+  full_sync_interval: "24h"
+  history_window: "365d"
+  expected_gpu_count: 8
+  node_prefix: "10.114.4."
+  bmc_prefix: "10.114.1."
+  bmc_last_octet_min: 20
+  target_jobs:
+    - dcgm_exporter
+    - gpu_exporter
+    - node_exporter
+    - ipmi_exporter
+health:
+  enabled: true
+  score_interval: "10m"
+  rule_version: "gpu-health-v1.4.1"
 node_access:
-  enabled: false
+  enabled: true
   skill_id: "atlas-node-evidence"
   skill_version: "v0.3.2"
   ssh_port: 22
-  known_hosts_file: ""
+  known_hosts_file: "/root/.ssh/known_hosts"
   connect_timeout: "5s"
   command_timeout: "10s"
   max_output_bytes: 1048576

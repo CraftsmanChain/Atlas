@@ -193,16 +193,22 @@ build_artifacts() {
 deploy_remote() {
   print_section "上传并更新线上服务"
   scp "$repo_root/bin/linux-amd64/atlas-server" "$remote_ssh:$remote_root/atlas-server.new"
+  scp "$repo_root/bin/linux-amd64/atlas-db-migrate" "$remote_ssh:$remote_root/atlas-db-migrate.new"
+  scp "$repo_root/scripts/postgres_backup.sh" "$remote_ssh:$remote_root/postgres_backup.sh.new"
   scp "$dist_tarball" "$remote_ssh:$remote_root/dist.tar.gz"
 
   ssh "$remote_ssh" "set -euo pipefail
 mkdir -p '$remote_root/web'
+mkdir -p '$remote_root/scripts'
 timestamp=\$(date +%Y%m%d%H%M%S)
 if [[ -f '$remote_root/atlas-server' ]]; then
   cp '$remote_root/atlas-server' '$remote_root/atlas-server.bak.'\"\$timestamp\"
 fi
 install -m 755 '$remote_root/atlas-server.new' '$remote_root/atlas-server'
+install -m 755 '$remote_root/atlas-db-migrate.new' '$remote_root/atlas-db-migrate'
+install -m 755 '$remote_root/postgres_backup.sh.new' '$remote_root/scripts/postgres_backup.sh'
 rm -f '$remote_root/atlas-server.new'
+rm -f '$remote_root/atlas-db-migrate.new' '$remote_root/postgres_backup.sh.new'
 rm -rf '$remote_root/web/dist'
 tar -xzf '$remote_root/dist.tar.gz' -C '$remote_root/web'
 rm -f '$remote_root/dist.tar.gz'

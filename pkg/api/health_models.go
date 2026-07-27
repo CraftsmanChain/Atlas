@@ -3,7 +3,6 @@ package api
 import (
 	"database/sql/driver"
 	"encoding/json"
-	"errors"
 	"time"
 )
 
@@ -21,9 +20,9 @@ func (m *FloatMap) Scan(value any) error {
 		*m = FloatMap{}
 		return nil
 	}
-	bytes, ok := value.([]byte)
-	if !ok {
-		return errors.New("type assertion to []byte failed")
+	bytes, err := databaseJSONBytes(value)
+	if err != nil {
+		return err
 	}
 	return json.Unmarshal(bytes, m)
 }
