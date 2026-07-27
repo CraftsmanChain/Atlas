@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,6 +18,7 @@ type Config struct {
 	Prometheus PrometheusConfig `yaml:"prometheus"`
 	Inventory  InventoryConfig  `yaml:"inventory"`
 	Health     HealthConfig     `yaml:"health"`
+	NodeAccess NodeAccessConfig `yaml:"node_access"`
 }
 
 type GatewayConfig struct {
@@ -79,6 +82,29 @@ type HealthConfig struct {
 	Enabled       bool   `yaml:"enabled"`
 	ScoreInterval string `yaml:"score_interval"`
 	RuleVersion   string `yaml:"rule_version"`
+}
+
+type NodeAccessConfig struct {
+	Enabled            bool                    `yaml:"enabled"`
+	SkillID            string                  `yaml:"skill_id"`
+	SkillVersion       string                  `yaml:"skill_version"`
+	ConnectTimeout     string                  `yaml:"connect_timeout"`
+	CommandTimeout     string                  `yaml:"command_timeout"`
+	MaxOutputBytes     int                     `yaml:"max_output_bytes"`
+	MaxConcurrentNodes int                     `yaml:"max_concurrent_nodes"`
+	MaxCommandsPerNode int                     `yaml:"max_commands_per_node"`
+	CredentialProfiles []NodeCredentialProfile `yaml:"credential_profiles"`
+}
+
+type NodeCredentialProfile struct {
+	ID         string `yaml:"id"`
+	Priority   int    `yaml:"priority"`
+	Username   string `yaml:"username"`
+	AuthType   string `yaml:"auth_type"`
+	SecretRef  string `yaml:"secret_ref"`
+	Enabled    bool   `yaml:"enabled"`
+	Password   string `yaml:"password"`
+	PrivateKey string `yaml:"private_key"`
 }
 
 type FeishuBotConfig struct {
@@ -170,6 +196,48 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Health.RuleVersion == "" {
 		cfg.Health.RuleVersion = "gpu-health-v1.4.1"
+	}
+	if cfg.NodeAccess.SkillID == "" {
+		cfg.NodeAccess.SkillID = "atlas-node-evidence"
+	}
+	if cfg.NodeAccess.SkillVersion == "" {
+		cfg.NodeAccess.SkillVersion = "v0.1.0"
+	}
+	if cfg.NodeAccess.ConnectTimeout == "" {
+		cfg.NodeAccess.ConnectTimeout = "5s"
+	}
+	if cfg.NodeAccess.CommandTimeout == "" {
+		cfg.NodeAccess.CommandTimeout = "10s"
+	}
+	if cfg.NodeAccess.MaxOutputBytes <= 0 {
+		cfg.NodeAccess.MaxOutputBytes = 1024 * 1024
+	}
+	if cfg.NodeAccess.MaxConcurrentNodes <= 0 {
+		cfg.NodeAccess.MaxConcurrentNodes = 2
+	}
+	if cfg.NodeAccess.MaxCommandsPerNode <= 0 {
+		cfg.NodeAccess.MaxCommandsPerNode = 6
+	}
+	profileIDs := make(map[string]struct{}, len(cfg.NodeAccess.CredentialProfiles))
+	for _, profile := range cfg.NodeAccess.CredentialProfiles {
+		if profile.Password != "" || profile.PrivateKey != "" {
+			return nil, fmt.Errorf("node_access credential %q contains inline secret material; use secret_ref", profile.ID)
+		}
+		if _, exists := profileIDs[profile.ID]; profile.ID != "" && exists {
+			return nil, fmt.Errorf("duplicate node_access credential id %q", profile.ID)
+		}
+		profileIDs[profile.ID] = struct{}{}
+		if profile.Enabled {
+			if profile.ID == "" || profile.Username == "" || profile.AuthType == "" || profile.SecretRef == "" {
+				return nil, fmt.Errorf("enabled node_access credential profiles require id, username, auth_type, and secret_ref")
+			}
+			if profile.AuthType != "password" {
+				return nil, fmt.Errorf("node_access credential %q uses unsupported auth_type %q", profile.ID, profile.AuthType)
+			}
+			if !strings.HasPrefix(profile.SecretRef, "env:") || strings.TrimPrefix(profile.SecretRef, "env:") == "" {
+				return nil, fmt.Errorf("node_access credential %q must use a non-empty env: secret_ref", profile.ID)
+			}
+		}
 	}
 
 	return &cfg, nil

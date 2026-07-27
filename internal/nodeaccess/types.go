@@ -1,0 +1,71 @@
+package nodeaccess
+
+import "time"
+
+const (
+	SkillID      = "atlas-node-evidence"
+	SkillVersion = "v0.1.0"
+)
+
+type Text struct {
+	ZH string `json:"zh"`
+	EN string `json:"en"`
+}
+
+type Budget struct {
+	ConnectTimeoutSeconds int `json:"connect_timeout_seconds"`
+	CommandTimeoutSeconds int `json:"command_timeout_seconds"`
+	MaxOutputBytes        int `json:"max_output_bytes"`
+	MaxConcurrentNodes    int `json:"max_concurrent_nodes"`
+	MaxCommandsPerNode    int `json:"max_commands_per_node"`
+	MaxLogLines           int `json:"max_log_lines"`
+	DefaultWindowMinutes  int `json:"default_window_minutes"`
+}
+
+type CommandDefinition struct {
+	ID            string `json:"id"`
+	Category      string `json:"category"`
+	ApprovalClass string `json:"approval_class"`
+	Purpose       Text   `json:"purpose"`
+	Preview       string `json:"preview"`
+}
+
+type CredentialProfileStatus struct {
+	ID              string `json:"id"`
+	Priority        int    `json:"priority"`
+	Username        string `json:"username"`
+	AuthType        string `json:"auth_type"`
+	SecretProvider  string `json:"secret_provider"`
+	Enabled         bool   `json:"enabled"`
+	SecretAvailable bool   `json:"secret_available"`
+	Status          string `json:"status"`
+}
+
+type Overview struct {
+	SkillID            string                    `json:"skill_id"`
+	SkillVersion       string                    `json:"skill_version"`
+	Status             string                    `json:"status"`
+	Enabled            bool                      `json:"enabled"`
+	ExecutionEnabled   bool                      `json:"execution_enabled"`
+	NoArbitraryShell   bool                      `json:"no_arbitrary_shell"`
+	NoChangeExecuted   bool                      `json:"no_change_executed"`
+	Budget             Budget                    `json:"budget"`
+	CredentialProfiles []CredentialProfileStatus `json:"credential_profiles"`
+	Commands           []CommandDefinition       `json:"commands"`
+	Boundaries         []Text                    `json:"boundaries"`
+	GeneratedAt        time.Time                 `json:"generated_at"`
+}
+
+type CredentialAttempt struct {
+	ProfileID string `json:"profile_id"`
+	Outcome   string `json:"outcome"`
+}
+
+type AuthenticationResult struct {
+	Node                  string              `json:"node"`
+	Status                string              `json:"status"`
+	CredentialProfileID   string              `json:"credential_profile_id,omitempty"`
+	Attempts              []CredentialAttempt `json:"attempts"`
+	AlertRequired         bool                `json:"alert_required"`
+	NoCredentialDisclosed bool                `json:"no_credential_disclosed"`
+}
