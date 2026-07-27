@@ -4,7 +4,7 @@ import "time"
 
 const (
 	SkillID      = "atlas-node-evidence"
-	SkillVersion = "v0.1.0"
+	SkillVersion = "v0.2.0"
 )
 
 type Text struct {
@@ -33,7 +33,7 @@ type CommandDefinition struct {
 type CredentialProfileStatus struct {
 	ID              string `json:"id"`
 	Priority        int    `json:"priority"`
-	Username        string `json:"username"`
+	Username        string `json:"username_masked"`
 	AuthType        string `json:"auth_type"`
 	SecretProvider  string `json:"secret_provider"`
 	Enabled         bool   `json:"enabled"`
@@ -49,6 +49,9 @@ type Overview struct {
 	ExecutionEnabled   bool                      `json:"execution_enabled"`
 	NoArbitraryShell   bool                      `json:"no_arbitrary_shell"`
 	NoChangeExecuted   bool                      `json:"no_change_executed"`
+	EncryptionReady    bool                      `json:"encryption_ready"`
+	ManagementReady    bool                      `json:"management_ready"`
+	SecureWriteOnly    bool                      `json:"secure_write_only"`
 	Budget             Budget                    `json:"budget"`
 	CredentialProfiles []CredentialProfileStatus `json:"credential_profiles"`
 	Commands           []CommandDefinition       `json:"commands"`

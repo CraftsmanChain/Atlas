@@ -28,6 +28,14 @@ echo "[4/6] 发布独立 8077 服务"
 ssh "$remote_ssh" "set -euo pipefail
 gunzip -f /tmp/atlas-test-server.gz
 install -d -m 755 '$remote_root/releases/$release_id' '$remote_root/logs'
+if [[ ! -f '$remote_root/atlas-secrets.env' ]]; then
+  umask 077
+  master_key=\"\$(openssl rand -base64 32 | tr -d '\n')\"
+  admin_token=\"\$(openssl rand -hex 32)\"
+  printf 'ATLAS_NODE_CREDENTIAL_MASTER_KEY=%s\nATLAS_NODE_CREDENTIAL_ADMIN_TOKEN=%s\n' \"\$master_key\" \"\$admin_token\" > '$remote_root/atlas-secrets.env'
+  unset master_key admin_token
+fi
+chmod 600 '$remote_root/atlas-secrets.env'
 tar -xzf /tmp/atlas-test-web.tar.gz -C '$remote_root/releases/$release_id'
 install -m 644 /tmp/atlas-test-config.yaml '$remote_root/config.test.yaml'
 install -m 644 /tmp/atlas-test-assets.csv '$remote_root/asset-monitor-compare.csv'

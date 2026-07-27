@@ -89,6 +89,7 @@ func InitDB(dsn string) (*DB, error) {
 		&api.PlatformIssue{},
 		&api.IssueResolution{},
 		&api.PlatformDisplayConfig{},
+		&api.NodeCredentialProfile{},
 	)
 	if err != nil {
 		return nil, err

@@ -51,6 +51,7 @@ func (EnvSecretResolver) Resolve(secretRef string) ([]byte, error) {
 type Service struct {
 	cfg      config.NodeAccessConfig
 	resolver SecretResolver
+	vault    *CredentialVault
 	now      func() time.Time
 }
 
@@ -59,6 +60,12 @@ func NewService(cfg config.NodeAccessConfig, resolver SecretResolver) *Service {
 		resolver = EnvSecretResolver{}
 	}
 	return &Service{cfg: cfg, resolver: resolver, now: time.Now}
+}
+
+func NewServiceWithVault(cfg config.NodeAccessConfig, resolver SecretResolver, vault *CredentialVault) *Service {
+	service := NewService(cfg, resolver)
+	service.vault = vault
+	return service
 }
 
 func (s *Service) Overview() Overview {
@@ -78,11 +85,28 @@ func (s *Service) Overview() Overview {
 			status = "secret_unavailable"
 		}
 		statuses = append(statuses, CredentialProfileStatus{
-			ID: profile.ID, Priority: profile.Priority, Username: profile.Username,
+			ID: profile.ID, Priority: profile.Priority, Username: "••••••",
 			AuthType: profile.AuthType, SecretProvider: provider, Enabled: profile.Enabled,
 			SecretAvailable: available, Status: status,
 		})
 	}
+	if s.vault != nil {
+		stored, err := s.vault.Statuses()
+		if err == nil {
+			statuses = append(statuses, stored...)
+			for _, profile := range stored {
+				if profile.Enabled && profile.SecretAvailable {
+					ready++
+				}
+			}
+		}
+	}
+	sort.SliceStable(statuses, func(i, j int) bool {
+		if statuses[i].Priority == statuses[j].Priority {
+			return statuses[i].ID < statuses[j].ID
+		}
+		return statuses[i].Priority < statuses[j].Priority
+	})
 	status := "disabled"
 	if s.cfg.Enabled && ready == 0 {
 		status = "credentials_missing"
@@ -92,7 +116,7 @@ func (s *Service) Overview() Overview {
 	return Overview{
 		SkillID: firstNonEmpty(s.cfg.SkillID, SkillID), SkillVersion: firstNonEmpty(s.cfg.SkillVersion, SkillVersion),
 		Status: status, Enabled: s.cfg.Enabled, ExecutionEnabled: false,
-		NoArbitraryShell: true, NoChangeExecuted: true,
+		NoArbitraryShell: true, NoChangeExecuted: true, EncryptionReady: s.vault != nil,
 		Budget: Budget{
 			ConnectTimeoutSeconds: durationSeconds(s.cfg.ConnectTimeout, 5*time.Second),
 			CommandTimeoutSeconds: durationSeconds(s.cfg.CommandTimeout, 10*time.Second),
@@ -111,11 +135,28 @@ func (s *Service) Overview() Overview {
 
 func (s *Service) Authenticate(ctx context.Context, node string, authenticator Authenticator) AuthenticationResult {
 	result := AuthenticationResult{Node: node, Attempts: []CredentialAttempt{}, NoCredentialDisclosed: true}
-	for _, profile := range sortedProfiles(s.cfg.CredentialProfiles) {
+	profiles := append([]config.NodeCredentialProfile(nil), s.cfg.CredentialProfiles...)
+	if s.vault != nil {
+		stored, err := s.vault.Profiles()
+		if err != nil {
+			result.Status, result.AlertRequired = "credential_store_failed", true
+			return result
+		}
+		profiles = append(profiles, stored...)
+	}
+	for _, profile := range sortedProfiles(profiles) {
 		if !profile.Enabled {
 			continue
 		}
-		secret, err := s.resolver.Resolve(profile.SecretRef)
+		var (
+			secret []byte
+			err    error
+		)
+		if strings.HasPrefix(profile.SecretRef, vaultRefPrefix) && s.vault != nil {
+			secret, err = s.vault.Resolve(profile.SecretRef)
+		} else {
+			secret, err = s.resolver.Resolve(profile.SecretRef)
+		}
 		if err != nil {
 			result.Attempts = append(result.Attempts, CredentialAttempt{ProfileID: profile.ID, Outcome: "secret_unavailable"})
 			continue

@@ -50,7 +50,7 @@ health:
 node_access:
   enabled: false
   skill_id: "atlas-node-evidence"
-  skill_version: "v0.1.0"
+  skill_version: "v0.2.0"
   connect_timeout: "5s"
   command_timeout: "10s"
   max_output_bytes: 1048576

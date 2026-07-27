@@ -1,12 +1,16 @@
 package nodeaccess
 
 import (
+	"bytes"
+	"crypto/tls"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"atlas/pkg/config"
+	"atlas/pkg/storage"
 )
 
 func TestOverviewHandlerIsReadOnlyAndRedacted(t *testing.T) {
@@ -33,5 +37,87 @@ func TestOverviewHandlerIsReadOnlyAndRedacted(t *testing.T) {
 	handler.HandleOverview(response, httptest.NewRequest(http.MethodPost, "/api/v1/node-access/overview", nil))
 	if response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", response.Code)
+	}
+}
+
+func TestCredentialHandlerRequiresManagementTokenAndReturnsOnlyMaskedMetadata(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x44}, 32))
+	vault, err := NewCredentialVault(db, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewServiceWithVault(config.NodeAccessConfig{Enabled: true}, nil, vault)
+	handler := NewHandlerWithVault(service, vault, "management-secret")
+	body := `{"profile_id":"node-password-a","priority":10,"username":"atlas-readonly","password":"node-secret","enabled":true}`
+
+	response := httptest.NewRecorder()
+	unauthorizedRequest := httptest.NewRequest(http.MethodPost, "/api/v1/node-access/credentials", strings.NewReader(body))
+	unauthorizedRequest.TLS = &tls.ConnectionState{}
+	handler.HandleCredentials(response, unauthorizedRequest)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized write, got %d: %s", response.Code, response.Body.String())
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/node-access/credentials", strings.NewReader(body))
+	request.TLS = &tls.ConnectionState{}
+	request.Header.Set("X-Atlas-Admin-Token", "management-secret")
+	response = httptest.NewRecorder()
+	handler.HandleCredentials(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("unexpected create response %d: %s", response.Code, response.Body.String())
+	}
+	for _, forbidden := range []string{"atlas-readonly", "node-secret", "management-secret", "ciphertext"} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Fatalf("create response exposed %q: %s", forbidden, response.Body.String())
+		}
+	}
+
+	response = httptest.NewRecorder()
+	handler.HandleOverview(response, httptest.NewRequest(http.MethodGet, "/api/v1/node-access/overview", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"management_ready":true`) || !strings.Contains(response.Body.String(), `"username_masked":"••••••"`) {
+		t.Fatalf("unexpected overview: %d %s", response.Code, response.Body.String())
+	}
+	for _, forbidden := range []string{"atlas-readonly", "node-secret", "management-secret"} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Fatalf("overview exposed %q: %s", forbidden, response.Body.String())
+		}
+	}
+}
+
+func TestCredentialHandlerDeletesOnlyWithManagementToken(t *testing.T) {
+	vault, _ := testVault(t)
+	if _, err := vault.Create(CredentialInput{
+		ProfileID: "node-password-a", Priority: 10, Username: "atlas", Password: "secret", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithVault(NewServiceWithVault(config.NodeAccessConfig{}, nil, vault), vault, "management-secret")
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/node-access/credentials/node-password-a", nil)
+	request.TLS = &tls.ConnectionState{}
+	request.Header.Set("X-Atlas-Admin-Token", "management-secret")
+	response := httptest.NewRecorder()
+	handler.HandleCredential(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected delete response %d: %s", response.Code, response.Body.String())
+	}
+	rows, err := vault.List()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("credential was not deleted: %#v err=%v", rows, err)
+	}
+}
+
+func TestCredentialHandlerRejectsPlainHTTP(t *testing.T) {
+	vault, _ := testVault(t)
+	handler := NewHandlerWithVault(NewServiceWithVault(config.NodeAccessConfig{}, nil, vault), vault, "management-secret")
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/node-access/credentials", strings.NewReader(`{"profile_id":"a","priority":10,"username":"user","password":"secret","enabled":true}`))
+	request.Header.Set("X-Atlas-Admin-Token", "management-secret")
+	response := httptest.NewRecorder()
+	handler.HandleCredentials(response, request)
+	if response.Code != http.StatusUpgradeRequired {
+		t.Fatalf("expected HTTPS enforcement, got %d: %s", response.Code, response.Body.String())
 	}
 }
