@@ -3,7 +3,7 @@ package nodeaccess
 func skillCatalog() []SkillDefinition {
 	return []SkillDefinition{
 		{
-			ID: "atlas-node-evidence", Version: "v0.3.1", Class: "evidence", Status: "planning_baseline",
+			ID: "atlas-node-evidence", Version: "v0.3.2", Class: "evidence", Status: "default_readonly_policy",
 			Purpose: Text{ZH: "按注册命令、固定参数和资源预算采集节点只读证据", EN: "Collect read-only node evidence through registered commands, fixed parameters, and resource budgets"},
 		},
 		{
@@ -20,9 +20,14 @@ func skillCatalog() []SkillDefinition {
 func commandCatalog() []CommandDefinition {
 	return []CommandDefinition{
 		command("node.identity", "node", "read_only", "读取主机名、内核和操作系统版本", "Read hostname, kernel, and operating-system version", "hostname · uname · /etc/os-release"),
+		command("node.cpu", "node", "read_only", "读取 CPU 拓扑与能力", "Read CPU topology and capabilities", "lscpu · /proc/cpuinfo (registered fields)"),
 		command("node.uptime", "node", "read_only", "读取运行时间和系统负载", "Read uptime and system load", "uptime · /proc/loadavg"),
 		command("node.memory", "node", "read_only", "读取内存统计", "Read memory statistics", "/proc/meminfo"),
+		command("node.storage", "node", "read_only", "读取块设备与文件系统容量状态", "Read block-device and filesystem capacity state", "lsblk (registered fields) · df -P"),
+		command("node.network", "node", "read_only", "读取网卡、地址和链路状态", "Read network interfaces, addresses, and link state", "ip -brief link · ip -brief address"),
+		command("node.kernel_parameters", "node", "read_only", "读取注册的内核参数", "Read registered kernel parameters", "/proc/sys/<registered keys>"),
 		command("gpu.inventory", "gpu", "read_only", "读取 GPU 身份清单", "Read GPU identity inventory", "nvidia-smi -L"),
+		command("gpu.driver", "gpu", "read_only", "读取 NVIDIA 驱动和 CUDA 兼容信息", "Read NVIDIA driver and CUDA compatibility information", "nvidia-smi (registered driver fields)"),
 		command("gpu.snapshot", "gpu", "read_only", "读取固定字段 GPU 状态快照", "Read a fixed-field GPU status snapshot", "nvidia-smi --query-gpu=<registered fields>"),
 		command("gpu.topology", "gpu", "read_only", "读取 GPU/PCIe/NVLink 拓扑", "Read GPU, PCIe, and NVLink topology", "nvidia-smi topo -m"),
 		command("pcie.inventory", "pcie", "read_only", "读取 PCI 设备身份", "Read PCI device identity", "lspci -Dnn"),
@@ -32,20 +37,20 @@ func commandCatalog() []CommandDefinition {
 		command("bmc.sensor_read", "bmc", "read_only", "读取 BMC 传感器", "Read BMC sensors", "registered BMC read adapter"),
 		command("bmc.sel_read", "bmc", "read_only", "读取限定数量 SEL", "Read a bounded number of SEL entries", "registered BMC SEL read adapter"),
 		command("diagnostic.dcgm", "diagnostic", "approval_required", "执行 DCGM 诊断", "Run a DCGM diagnostic", "dcgmi diag <approved level>"),
-		command("diagnostic.benchmark", "diagnostic", "approval_required", "执行性能或压力验证", "Run performance or stress validation", "registered benchmark plan"),
+		command("diagnostic.benchmark", "diagnostic", "approval_required", "执行性能、功能或压力验证", "Run performance, functional, or stress validation", "registered benchmark plan"),
 		command("maintenance.service_restart", "maintenance", "approval_required", "重启注册服务", "Restart a registered service", "systemctl restart <approved service>"),
 		command("maintenance.gpu_reset", "maintenance", "approval_required", "重置指定 GPU", "Reset an approved GPU", "nvidia-smi --gpu-reset"),
 		command("maintenance.node_reboot", "maintenance", "approval_required", "重启节点", "Reboot a node", "reboot"),
-		command("maintenance.workload", "maintenance", "approval_required", "排空、隔离或操作任务", "Drain, isolate, or change workloads", "external approved workflow"),
+		command("maintenance.workload", "maintenance", "approval_required", "终止、排空、隔离或操作 GPU 任务", "Terminate, drain, isolate, or change GPU workloads", "external approved workflow"),
 	}
 }
 
 func command(id, category, approvalClass, zh, en, preview string) CommandDefinition {
-	planningStatus := "ready"
+	planningStatus := "automatic"
+	collectionMode := "default_read_only"
 	if approvalClass != "read_only" {
 		planningStatus = "approval_required"
-	} else if category == "logs" || category == "service" || category == "bmc" {
-		planningStatus = "parameters_required"
+		collectionMode = "human_confirmation_required"
 	}
-	return CommandDefinition{ID: id, Category: category, ApprovalClass: approvalClass, PlanningStatus: planningStatus, Purpose: Text{ZH: zh, EN: en}, Preview: preview}
+	return CommandDefinition{ID: id, Category: category, ApprovalClass: approvalClass, PlanningStatus: planningStatus, CollectionMode: collectionMode, Purpose: Text{ZH: zh, EN: en}, Preview: preview}
 }

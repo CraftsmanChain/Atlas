@@ -117,6 +117,7 @@ func (s *Service) Overview() Overview {
 		SkillID: firstNonEmpty(s.cfg.SkillID, SkillID), SkillVersion: firstNonEmpty(s.cfg.SkillVersion, SkillVersion),
 		Status: status, Enabled: s.cfg.Enabled, ExecutionEnabled: false,
 		NoArbitraryShell: true, NoChangeExecuted: true, EncryptionReady: s.vault != nil,
+		DefaultReadOnlyMode: true,
 		Budget: Budget{
 			ConnectTimeoutSeconds: durationSeconds(s.cfg.ConnectTimeout, 5*time.Second),
 			CommandTimeoutSeconds: durationSeconds(s.cfg.CommandTimeout, 10*time.Second),
@@ -125,9 +126,9 @@ func (s *Service) Overview() Overview {
 		},
 		CredentialProfiles: statuses, Skills: skillCatalog(), Commands: commandCatalog(),
 		Boundaries: []Text{
-			{ZH: "v0.3.1 仅允许受信任主机的 SSH 认证检查及注册只读命令的不可执行计划预览；不创建 session，不执行任何命令。", EN: "v0.3.1 permits only known-host SSH authentication checks and non-executable plan previews for registered read-only commands; it opens no session and executes no command."},
+			{ZH: "低负载只读证据按注册命令和固定预算默认采集，无需逐次计划或确认；受控执行器交付前仍不创建 session、不执行命令。", EN: "Low-impact read-only evidence is collected by default through registered commands and fixed budgets without per-run planning or confirmation; no session or command is executed until the controlled runner is delivered."},
 			{ZH: "密码和私钥只通过受控密钥引用解析，永不进入接口、日志或证据。", EN: "Passwords and private keys resolve only through controlled secret references and never enter APIs, logs, or evidence."},
-			{ZH: "诊断、重启、重置、任务和节点操作必须独立人工审批。", EN: "Diagnostics, restart, reset, workload, and node actions require separate human approval."},
+			{ZH: "诊断、性能或功能测试、服务或节点重启、GPU 重置及 GPU 任务终止必须指定节点和操作并由人工确认。", EN: "Diagnostics, performance or functional tests, service or node restarts, GPU resets, and GPU workload termination require an exact node and operation plus human confirmation."},
 		},
 		GeneratedAt: s.now(),
 	}

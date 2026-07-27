@@ -16,7 +16,6 @@ type Handler struct {
 	service           *Service
 	vault             *CredentialVault
 	connectivity      *ConnectivityService
-	planner           *Planner
 	adminToken        string
 	allowLoopbackHTTP bool
 	allowInsecureHTTP bool
@@ -25,7 +24,6 @@ type Handler struct {
 func NewHandler(service *Service) *Handler { return &Handler{service: service} }
 
 func (h *Handler) SetConnectivity(service *ConnectivityService) { h.connectivity = service }
-func (h *Handler) SetPlanner(planner *Planner)                  { h.planner = planner }
 
 func NewHandlerWithVault(service *Service, vault *CredentialVault, adminToken string, allowLoopbackHTTP ...bool) *Handler {
 	handler := &Handler{service: service, vault: vault, adminToken: strings.TrimSpace(adminToken)}
@@ -49,58 +47,12 @@ func (h *Handler) HandleOverview(w http.ResponseWriter, r *http.Request) {
 	overview.InsecureHTTPAllowed = h.allowInsecureHTTP
 	overview.ConnectivityEnabled = h.connectivity != nil && h.connectivity.Enabled()
 	overview.KnownHostsReady = h.connectivity != nil && h.connectivity.KnownHostsReady()
-	overview.PlanPreviewEnabled = h.planner != nil
 	if overview.Enabled && !overview.KnownHostsReady {
 		overview.Status = "known_hosts_missing"
 	} else if overview.Enabled && overview.KnownHostsReady && overview.Status == "ready_no_transport" {
 		overview.Status = "connectivity_ready"
 	}
 	writeNodeAccessJSON(w, http.StatusOK, map[string]any{"data": overview})
-}
-
-func (h *Handler) HandlePlans(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", "POST")
-		writeNodeAccessError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if h.planner == nil {
-		writeNodeAccessError(w, http.StatusServiceUnavailable, "node evidence planning is unavailable")
-		return
-	}
-	if !h.secureWriteTransport(r) {
-		writeNodeAccessError(w, http.StatusUpgradeRequired, "node evidence planning requires HTTPS or an approved HTTP compatibility mode")
-		return
-	}
-	if !h.authorized(r) {
-		writeNodeAccessError(w, http.StatusUnauthorized, "invalid management credential")
-		return
-	}
-	var request struct {
-		NodeIP     string   `json:"node_ip"`
-		CommandIDs []string `json:"command_ids"`
-	}
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
-		writeNodeAccessError(w, http.StatusBadRequest, "invalid node evidence plan")
-		return
-	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		writeNodeAccessError(w, http.StatusBadRequest, "invalid node evidence plan")
-		return
-	}
-	plan, err := h.planner.Build(request.NodeIP, request.CommandIDs)
-	if err != nil {
-		status := http.StatusBadRequest
-		if errors.Is(err, ErrNodeNotManaged) {
-			status = http.StatusNotFound
-		}
-		writeNodeAccessError(w, status, err.Error())
-		return
-	}
-	writeNodeAccessJSON(w, http.StatusOK, map[string]any{"data": plan})
 }
 
 func (h *Handler) HandleChecks(w http.ResponseWriter, r *http.Request) {
