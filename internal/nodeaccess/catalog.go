@@ -1,5 +1,22 @@
 package nodeaccess
 
+func skillCatalog() []SkillDefinition {
+	return []SkillDefinition{
+		{
+			ID: "atlas-node-evidence", Version: "v0.2.1", Class: "evidence", Status: "safety_baseline",
+			Purpose: Text{ZH: "按注册命令、固定参数和资源预算采集节点只读证据", EN: "Collect read-only node evidence through registered commands, fixed parameters, and resource budgets"},
+		},
+		{
+			ID: "atlas-fault-analysis", Version: "v0.1.0", Class: "analysis", Status: "contract_ready",
+			Purpose: Text{ZH: "基于证据引用生成结构化故障分析报告与待验证假设", EN: "Generate structured fault reports and testable hypotheses with evidence references"},
+		},
+		{
+			ID: "atlas-case-learning", Version: "v0.1.0", Class: "learning", Status: "contract_ready",
+			Purpose: Text{ZH: "将人工确认案例整理为脱敏、可审计的训练与评估数据", EN: "Curate confirmed cases into redacted, auditable training and evaluation data"},
+		},
+	}
+}
+
 func commandCatalog() []CommandDefinition {
 	return []CommandDefinition{
 		command("node.identity", "node", "read_only", "读取主机名、内核和操作系统版本", "Read hostname, kernel, and operating-system version", "hostname · uname · /etc/os-release"),

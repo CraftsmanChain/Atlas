@@ -52,7 +52,7 @@ func main() {
 			Logging: config.LoggingConfig{Dir: "logs"},
 			Web:     config.WebConfig{StaticDir: "web/dist"},
 			NodeAccess: config.NodeAccessConfig{
-				SkillID: "atlas-node-evidence", SkillVersion: "v0.2.0",
+				SkillID: "atlas-node-evidence", SkillVersion: "v0.2.1",
 				ConnectTimeout: "5s", CommandTimeout: "10s", MaxOutputBytes: 1024 * 1024,
 				MaxConcurrentNodes: 2, MaxCommandsPerNode: 6,
 			},
@@ -120,7 +120,11 @@ func main() {
 	}
 	nodeAccessService := nodeaccess.NewServiceWithVault(cfg.NodeAccess, nil, credentialVault)
 	allowCredentialLoopbackHTTP := strings.EqualFold(strings.TrimSpace(os.Getenv("ATLAS_NODE_CREDENTIAL_ALLOW_INSECURE_LOOPBACK")), "true")
-	nodeAccessHandler := nodeaccess.NewHandlerWithVault(nodeAccessService, credentialVault, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialLoopbackHTTP)
+	allowCredentialInsecureHTTP := strings.EqualFold(strings.TrimSpace(os.Getenv("ATLAS_NODE_CREDENTIAL_ALLOW_INSECURE_HTTP")), "true")
+	if allowCredentialInsecureHTTP {
+		log.Printf("WARNING: node credential writes are allowed over plaintext HTTP")
+	}
+	nodeAccessHandler := nodeaccess.NewHandlerWithVault(nodeAccessService, credentialVault, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialLoopbackHTTP, allowCredentialInsecureHTTP)
 	go issueService.Run(context.Background(), time.Minute)
 
 	// Inventory discovery is read-only and best-effort. Prometheus outages are

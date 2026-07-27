@@ -4,7 +4,7 @@ import "time"
 
 const (
 	SkillID      = "atlas-node-evidence"
-	SkillVersion = "v0.2.0"
+	SkillVersion = "v0.2.1"
 )
 
 type Text struct {
@@ -30,6 +30,14 @@ type CommandDefinition struct {
 	Preview       string `json:"preview"`
 }
 
+type SkillDefinition struct {
+	ID      string `json:"id"`
+	Version string `json:"version"`
+	Class   string `json:"class"`
+	Status  string `json:"status"`
+	Purpose Text   `json:"purpose"`
+}
+
 type CredentialProfileStatus struct {
 	ID              string `json:"id"`
 	Priority        int    `json:"priority"`
@@ -42,21 +50,23 @@ type CredentialProfileStatus struct {
 }
 
 type Overview struct {
-	SkillID            string                    `json:"skill_id"`
-	SkillVersion       string                    `json:"skill_version"`
-	Status             string                    `json:"status"`
-	Enabled            bool                      `json:"enabled"`
-	ExecutionEnabled   bool                      `json:"execution_enabled"`
-	NoArbitraryShell   bool                      `json:"no_arbitrary_shell"`
-	NoChangeExecuted   bool                      `json:"no_change_executed"`
-	EncryptionReady    bool                      `json:"encryption_ready"`
-	ManagementReady    bool                      `json:"management_ready"`
-	SecureWriteOnly    bool                      `json:"secure_write_only"`
-	Budget             Budget                    `json:"budget"`
-	CredentialProfiles []CredentialProfileStatus `json:"credential_profiles"`
-	Commands           []CommandDefinition       `json:"commands"`
-	Boundaries         []Text                    `json:"boundaries"`
-	GeneratedAt        time.Time                 `json:"generated_at"`
+	SkillID             string                    `json:"skill_id"`
+	SkillVersion        string                    `json:"skill_version"`
+	Status              string                    `json:"status"`
+	Enabled             bool                      `json:"enabled"`
+	ExecutionEnabled    bool                      `json:"execution_enabled"`
+	NoArbitraryShell    bool                      `json:"no_arbitrary_shell"`
+	NoChangeExecuted    bool                      `json:"no_change_executed"`
+	EncryptionReady     bool                      `json:"encryption_ready"`
+	ManagementReady     bool                      `json:"management_ready"`
+	SecureWriteOnly     bool                      `json:"secure_write_only"`
+	InsecureHTTPAllowed bool                      `json:"insecure_http_allowed"`
+	Budget              Budget                    `json:"budget"`
+	CredentialProfiles  []CredentialProfileStatus `json:"credential_profiles"`
+	Skills              []SkillDefinition         `json:"skills"`
+	Commands            []CommandDefinition       `json:"commands"`
+	Boundaries          []Text                    `json:"boundaries"`
+	GeneratedAt         time.Time                 `json:"generated_at"`
 }
 
 type CredentialAttempt struct {

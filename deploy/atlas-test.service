@@ -13,6 +13,7 @@ Environment=ATLAS_PORT=8077
 Environment=ATLAS_WEB_DIR=/ops/atlas-test/web-current
 EnvironmentFile=-/ops/atlas-test/atlas-secrets.env
 Environment=ATLAS_NODE_CREDENTIAL_ALLOW_INSECURE_LOOPBACK=true
+Environment=ATLAS_NODE_CREDENTIAL_ALLOW_INSECURE_HTTP=true
 
 [Install]
 WantedBy=multi-user.target

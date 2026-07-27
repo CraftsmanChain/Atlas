@@ -123,7 +123,7 @@ func (s *Service) Overview() Overview {
 			MaxOutputBytes:        s.cfg.MaxOutputBytes, MaxConcurrentNodes: s.cfg.MaxConcurrentNodes,
 			MaxCommandsPerNode: s.cfg.MaxCommandsPerNode, MaxLogLines: 2000, DefaultWindowMinutes: 30,
 		},
-		CredentialProfiles: statuses, Commands: commandCatalog(),
+		CredentialProfiles: statuses, Skills: skillCatalog(), Commands: commandCatalog(),
 		Boundaries: []Text{
 			{ZH: "v0.1 不建立远程连接，不提供任意命令或执行 API。", EN: "v0.1 opens no remote connections and exposes no arbitrary-command or execution API."},
 			{ZH: "密码和私钥只通过受控密钥引用解析，永不进入接口、日志或证据。", EN: "Passwords and private keys resolve only through controlled secret references and never enter APIs, logs, or evidence."},

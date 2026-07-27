@@ -17,6 +17,7 @@ type Handler struct {
 	vault             *CredentialVault
 	adminToken        string
 	allowLoopbackHTTP bool
+	allowInsecureHTTP bool
 }
 
 func NewHandler(service *Service) *Handler { return &Handler{service: service} }
@@ -25,6 +26,9 @@ func NewHandlerWithVault(service *Service, vault *CredentialVault, adminToken st
 	handler := &Handler{service: service, vault: vault, adminToken: strings.TrimSpace(adminToken)}
 	if len(allowLoopbackHTTP) > 0 {
 		handler.allowLoopbackHTTP = allowLoopbackHTTP[0]
+	}
+	if len(allowLoopbackHTTP) > 1 {
+		handler.allowInsecureHTTP = allowLoopbackHTTP[1]
 	}
 	return handler
 }
@@ -36,7 +40,8 @@ func (h *Handler) HandleOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	overview := h.service.Overview()
 	overview.ManagementReady = h.vault != nil && h.adminToken != ""
-	overview.SecureWriteOnly = true
+	overview.SecureWriteOnly = !h.allowInsecureHTTP
+	overview.InsecureHTTPAllowed = h.allowInsecureHTTP
 	writeNodeAccessJSON(w, http.StatusOK, map[string]any{"data": overview})
 }
 
@@ -161,6 +166,9 @@ func (h *Handler) authorized(r *http.Request) bool {
 
 func (h *Handler) secureWriteTransport(r *http.Request) bool {
 	if r.TLS != nil {
+		return true
+	}
+	if h.allowInsecureHTTP {
 		return true
 	}
 	if !h.allowLoopbackHTTP {
