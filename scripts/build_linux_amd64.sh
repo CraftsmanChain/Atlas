@@ -16,7 +16,7 @@ elif command -v x86_64-linux-gnu-gcc >/dev/null 2>&1; then
   export CC="x86_64-linux-gnu-gcc"
 else
   echo "未找到可用的 Linux amd64 C 交叉编译器。"
-  echo "由于项目使用 SQLite（CGO），请先安装 zig 或 x86_64-linux-gnu-gcc。"
+  echo "SQLite 数据迁移工具依赖 CGO，请先安装 zig 或 x86_64-linux-gnu-gcc。"
   exit 1
 fi
 
@@ -31,7 +31,9 @@ echo "版本信息: version=$version commit=$commit build_time=$build_time"
 server_ldflags="-X main.Version=$version -X main.Commit=$commit -X main.BuildTime=$build_time"
 go build -ldflags "$server_ldflags" -o "$output_dir/atlas-server" ./cmd/server
 go build -o "$output_dir/atlas-agent" ./cmd/agent
+go build -o "$output_dir/atlas-db-migrate" ./cmd/dbmigrate
 
 echo "构建完成:"
 echo "  - $output_dir/atlas-server"
 echo "  - $output_dir/atlas-agent"
+echo "  - $output_dir/atlas-db-migrate"

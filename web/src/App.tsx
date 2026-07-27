@@ -760,7 +760,7 @@ function PlatformSettings({ tx, value, onSaved }: { tx: Tx; value: PlatformConfi
         <label><span>{tx('实例名称', 'Instance name')}<small>instance_name · 80</small></span><input maxLength={80} value={draft.instance_name} onChange={event => update('instance_name', event.target.value)} placeholder={tx('例如：智元集群', 'Example: Zhiyuan Cluster')} /></label>
         <label><span>{tx('产品名称', 'Product name')}<small>product_name · 40</small></span><input maxLength={40} value={draft.product_name} onChange={event => update('product_name', event.target.value)} placeholder="ATLAS" /></label>
         <label><span>{tx('产品副标题', 'Product tagline')}<small>product_tagline · 80</small></span><input maxLength={80} value={draft.product_tagline} onChange={event => update('product_tagline', event.target.value)} placeholder="GPU RELIABILITY" /></label>
-        <label><span>{tx('环境标识', 'Environment label')}<small>environment · 40</small></span><input maxLength={40} value={draft.environment} onChange={event => update('environment', event.target.value)} placeholder="TEST / 8077" /></label>
+        <label><span>{tx('环境标识', 'Environment label')}<small>environment · 40</small></span><input maxLength={40} value={draft.environment} onChange={event => update('environment', event.target.value)} placeholder="PRODUCTION / 7077" /></label>
         {error && <p className="form-error">{error}</p>}
         {message && <p className="form-success">{message}</p>}
         <button className="primary-action" type="submit" disabled={saving || !valid}><Save size={15} />{saving ? tx('保存中', 'Saving') : tx('保存并应用', 'Save & Apply')}</button>

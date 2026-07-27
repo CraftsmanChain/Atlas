@@ -30,6 +30,7 @@ type GatewayConfig struct {
 }
 
 type StorageConfig struct {
+	Driver           string `yaml:"driver"`
 	DSN              string `yaml:"dsn"`
 	IngestionReadDSN string `yaml:"ingestion_read_dsn"`
 }
@@ -132,7 +133,10 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Gateway.Port == "" {
 		cfg.Gateway.Port = ":8080"
 	}
-	if cfg.Storage.DSN == "" {
+	if cfg.Storage.Driver == "" {
+		cfg.Storage.Driver = "sqlite"
+	}
+	if cfg.Storage.DSN == "" && cfg.Storage.Driver == "sqlite" {
 		cfg.Storage.DSN = "atlas.db"
 	}
 	if cfg.Gateway.IngestionSourceMode == "" {

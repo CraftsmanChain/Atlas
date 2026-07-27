@@ -1,0 +1,21 @@
+[Unit]
+Description=Atlas PostgreSQL
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+EnvironmentFile=/etc/atlas/postgres.env
+ExecStartPre=-/usr/bin/docker rm -f atlas-postgres
+ExecStart=/usr/bin/docker run --name atlas-postgres \
+  --env-file /etc/atlas/postgres.env \
+  --publish 127.0.0.1:5432:5432 \
+  --volume /ops/atlas/postgres-data:/var/lib/postgresql/data \
+  --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 6 \
+  postgres:17-alpine
+ExecStop=/usr/bin/docker stop -t 60 atlas-postgres
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Backup Atlas PostgreSQL
+After=atlas-postgres.service
+Requires=atlas-postgres.service
+
+[Service]
+Type=oneshot
+ExecStart=/ops/atlas/scripts/postgres_backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

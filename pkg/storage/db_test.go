@@ -84,3 +84,25 @@ func TestOpenReadOnlyDBReadsWithoutAllowingWrites(t *testing.T) {
 		t.Fatal("expected write against read-only ingestion database to fail")
 	}
 }
+
+func TestInitDBWithDriverRejectsUnknownDriverAndEmptyDSN(t *testing.T) {
+	if _, err := InitDBWithDriver("mysql", "irrelevant"); err == nil {
+		t.Fatal("expected unsupported driver to fail")
+	}
+	if _, err := InitDBWithDriver("postgres", ""); err == nil {
+		t.Fatal("expected empty PostgreSQL DSN to fail")
+	}
+}
+
+func TestNormalizeSelectedTables(t *testing.T) {
+	selected, err := normalizeSelectedTables([]string{" gpu_nodes ", "gpu_assets"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := selected["gpu_nodes"]; !ok {
+		t.Fatal("gpu_nodes was not selected")
+	}
+	if _, err := normalizeSelectedTables([]string{"not_an_atlas_table"}); err == nil {
+		t.Fatal("expected unknown migration table to fail")
+	}
+}

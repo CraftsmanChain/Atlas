@@ -67,8 +67,8 @@ func main() {
 	defer logWriter.Close()
 	log.Printf("Logger initialized. dir=%s", cfg.Logging.Dir)
 
-	// 2. 初始化 SQLite 数据库
-	db, err := storage.InitDB(cfg.Storage.DSN)
+	// 2. 初始化数据库
+	db, err := storage.InitDBWithDriver(cfg.Storage.Driver, cfg.Storage.DSN)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
@@ -271,6 +271,12 @@ func applyRuntimeOverrides(cfg *config.Config) {
 	if prometheusURL := strings.TrimSpace(os.Getenv("ATLAS_PROMETHEUS_URL")); prometheusURL != "" {
 		cfg.Prometheus.BaseURL = prometheusURL
 		cfg.Inventory.Enabled = true
+	}
+	if driver := strings.TrimSpace(os.Getenv("ATLAS_DATABASE_DRIVER")); driver != "" {
+		cfg.Storage.Driver = driver
+	}
+	if dsn := strings.TrimSpace(os.Getenv("ATLAS_DATABASE_DSN")); dsn != "" {
+		cfg.Storage.DSN = dsn
 	}
 }
 

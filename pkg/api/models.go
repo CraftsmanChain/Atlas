@@ -3,7 +3,7 @@ package api
 import (
 	"database/sql/driver"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"time"
 )
 
@@ -27,9 +27,9 @@ func (m *StringMap) Scan(value interface{}) error {
 		*m = make(StringMap)
 		return nil
 	}
-	bytes, ok := value.([]byte)
-	if !ok {
-		return errors.New("type assertion to []byte failed")
+	bytes, err := databaseJSONBytes(value)
+	if err != nil {
+		return err
 	}
 	return json.Unmarshal(bytes, m)
 }
@@ -48,11 +48,24 @@ func (l *StringList) Scan(value interface{}) error {
 		*l = StringList{}
 		return nil
 	}
-	bytes, ok := value.([]byte)
-	if !ok {
-		return errors.New("type assertion to []byte failed")
+	bytes, err := databaseJSONBytes(value)
+	if err != nil {
+		return err
 	}
 	return json.Unmarshal(bytes, l)
+}
+
+// databaseJSONBytes normalizes the values returned by SQLite and PostgreSQL
+// text columns. SQLite commonly returns []byte while pgx returns string.
+func databaseJSONBytes(value any) ([]byte, error) {
+	switch typed := value.(type) {
+	case []byte:
+		return typed, nil
+	case string:
+		return []byte(typed), nil
+	default:
+		return nil, fmt.Errorf("unsupported JSON database value %T", value)
+	}
 }
 
 // AlertEvent 表示系统接收到的原始或经过增强的告警事件
