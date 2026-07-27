@@ -45,14 +45,7 @@ func (s *ConnectivityService) Check(ctx context.Context, node string) (*api.Node
 		return nil, ErrConnectivityUnavailable
 	}
 	node = strings.TrimSpace(node)
-	if net.ParseIP(node) == nil {
-		return nil, ErrNodeNotManaged
-	}
-	var managed api.GPUNode
-	if err := s.db.Where("node_ip = ? AND lifecycle <> ?", node, "retired").First(&managed).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrNodeNotManaged
-		}
+	if err := validateManagedNode(s.db, node); err != nil {
 		return nil, err
 	}
 	startedAt := s.now()
@@ -77,6 +70,20 @@ func (s *ConnectivityService) Check(ctx context.Context, node string) (*api.Node
 		return nil, err
 	}
 	return record, nil
+}
+
+func validateManagedNode(db *storage.DB, node string) error {
+	if net.ParseIP(node) == nil {
+		return ErrNodeNotManaged
+	}
+	var managed api.GPUNode
+	if err := db.Where("node_ip = ? AND lifecycle <> ?", node, "retired").First(&managed).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNodeNotManaged
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *ConnectivityService) List(limit int) ([]api.NodeAccessCheck, error) {

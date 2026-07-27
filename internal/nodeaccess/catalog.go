@@ -3,7 +3,7 @@ package nodeaccess
 func skillCatalog() []SkillDefinition {
 	return []SkillDefinition{
 		{
-			ID: "atlas-node-evidence", Version: "v0.3.0", Class: "evidence", Status: "connectivity_baseline",
+			ID: "atlas-node-evidence", Version: "v0.3.1", Class: "evidence", Status: "planning_baseline",
 			Purpose: Text{ZH: "按注册命令、固定参数和资源预算采集节点只读证据", EN: "Collect read-only node evidence through registered commands, fixed parameters, and resource budgets"},
 		},
 		{
@@ -41,5 +41,11 @@ func commandCatalog() []CommandDefinition {
 }
 
 func command(id, category, approvalClass, zh, en, preview string) CommandDefinition {
-	return CommandDefinition{ID: id, Category: category, ApprovalClass: approvalClass, Purpose: Text{ZH: zh, EN: en}, Preview: preview}
+	planningStatus := "ready"
+	if approvalClass != "read_only" {
+		planningStatus = "approval_required"
+	} else if category == "logs" || category == "service" || category == "bmc" {
+		planningStatus = "parameters_required"
+	}
+	return CommandDefinition{ID: id, Category: category, ApprovalClass: approvalClass, PlanningStatus: planningStatus, Purpose: Text{ZH: zh, EN: en}, Preview: preview}
 }

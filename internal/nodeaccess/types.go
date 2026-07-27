@@ -4,7 +4,7 @@ import "time"
 
 const (
 	SkillID      = "atlas-node-evidence"
-	SkillVersion = "v0.3.0"
+	SkillVersion = "v0.3.1"
 )
 
 type Text struct {
@@ -23,11 +23,27 @@ type Budget struct {
 }
 
 type CommandDefinition struct {
-	ID            string `json:"id"`
-	Category      string `json:"category"`
-	ApprovalClass string `json:"approval_class"`
-	Purpose       Text   `json:"purpose"`
-	Preview       string `json:"preview"`
+	ID             string `json:"id"`
+	Category       string `json:"category"`
+	ApprovalClass  string `json:"approval_class"`
+	PlanningStatus string `json:"planning_status"`
+	Purpose        Text   `json:"purpose"`
+	Preview        string `json:"preview"`
+}
+
+type ExecutionPlan struct {
+	PlanID            string              `json:"plan_id"`
+	SkillID           string              `json:"skill_id"`
+	SkillVersion      string              `json:"skill_version"`
+	NodeIP            string              `json:"node_ip"`
+	Status            string              `json:"status"`
+	ApprovalClass     string              `json:"approval_class"`
+	Commands          []CommandDefinition `json:"commands"`
+	Budget            Budget              `json:"budget"`
+	CreatedAt         time.Time           `json:"created_at"`
+	ExpiresAt         time.Time           `json:"expires_at"`
+	ExecutionEnabled  bool                `json:"execution_enabled"`
+	NoCommandExecuted bool                `json:"no_command_executed"`
 }
 
 type SkillDefinition struct {
@@ -63,6 +79,7 @@ type Overview struct {
 	InsecureHTTPAllowed bool                      `json:"insecure_http_allowed"`
 	ConnectivityEnabled bool                      `json:"connectivity_check_enabled"`
 	KnownHostsReady     bool                      `json:"known_hosts_ready"`
+	PlanPreviewEnabled  bool                      `json:"plan_preview_enabled"`
 	Budget              Budget                    `json:"budget"`
 	CredentialProfiles  []CredentialProfileStatus `json:"credential_profiles"`
 	Skills              []SkillDefinition         `json:"skills"`
