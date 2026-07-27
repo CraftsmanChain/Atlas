@@ -15,12 +15,15 @@ import (
 type Handler struct {
 	service           *Service
 	vault             *CredentialVault
+	connectivity      *ConnectivityService
 	adminToken        string
 	allowLoopbackHTTP bool
 	allowInsecureHTTP bool
 }
 
 func NewHandler(service *Service) *Handler { return &Handler{service: service} }
+
+func (h *Handler) SetConnectivity(service *ConnectivityService) { h.connectivity = service }
 
 func NewHandlerWithVault(service *Service, vault *CredentialVault, adminToken string, allowLoopbackHTTP ...bool) *Handler {
 	handler := &Handler{service: service, vault: vault, adminToken: strings.TrimSpace(adminToken)}
@@ -42,7 +45,69 @@ func (h *Handler) HandleOverview(w http.ResponseWriter, r *http.Request) {
 	overview.ManagementReady = h.vault != nil && h.adminToken != ""
 	overview.SecureWriteOnly = !h.allowInsecureHTTP
 	overview.InsecureHTTPAllowed = h.allowInsecureHTTP
+	overview.ConnectivityEnabled = h.connectivity != nil && h.connectivity.Enabled()
+	overview.KnownHostsReady = h.connectivity != nil && h.connectivity.KnownHostsReady()
+	if overview.Enabled && !overview.KnownHostsReady {
+		overview.Status = "known_hosts_missing"
+	} else if overview.Enabled && overview.KnownHostsReady && overview.Status == "ready_no_transport" {
+		overview.Status = "connectivity_ready"
+	}
 	writeNodeAccessJSON(w, http.StatusOK, map[string]any{"data": overview})
+}
+
+func (h *Handler) HandleChecks(w http.ResponseWriter, r *http.Request) {
+	if h.connectivity == nil {
+		writeNodeAccessError(w, http.StatusServiceUnavailable, "node connectivity checks are unavailable")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		rows, err := h.connectivity.List(30)
+		if err != nil {
+			writeNodeAccessError(w, http.StatusInternalServerError, "failed to list node connectivity checks")
+			return
+		}
+		writeNodeAccessJSON(w, http.StatusOK, map[string]any{"data": rows})
+	case http.MethodPost:
+		if !h.secureWriteTransport(r) {
+			writeNodeAccessError(w, http.StatusUpgradeRequired, "node connectivity checks require HTTPS or an approved HTTP compatibility mode")
+			return
+		}
+		if !h.authorized(r) {
+			writeNodeAccessError(w, http.StatusUnauthorized, "invalid management credential")
+			return
+		}
+		var request struct {
+			NodeIP string `json:"node_ip"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<10))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			writeNodeAccessError(w, http.StatusBadRequest, "invalid node connectivity check")
+			return
+		}
+		var extra any
+		if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+			writeNodeAccessError(w, http.StatusBadRequest, "invalid node connectivity check")
+			return
+		}
+		record, err := h.connectivity.Check(r.Context(), request.NodeIP)
+		if err != nil {
+			status := http.StatusInternalServerError
+			switch {
+			case errors.Is(err, ErrNodeNotManaged):
+				status = http.StatusNotFound
+			case errors.Is(err, ErrNodeAccessDisabled), errors.Is(err, ErrConnectivityUnavailable):
+				status = http.StatusServiceUnavailable
+			}
+			writeNodeAccessError(w, status, err.Error())
+			return
+		}
+		writeNodeAccessJSON(w, http.StatusOK, map[string]any{"data": record})
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeNodeAccessError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 func (h *Handler) HandleCredentials(w http.ResponseWriter, r *http.Request) {

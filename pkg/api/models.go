@@ -128,6 +128,22 @@ type NodeCredentialProfile struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+// NodeAccessCheck records only redacted SSH handshake/authentication outcomes.
+// It never contains credentials, command output, or arbitrary remote errors.
+type NodeAccessCheck struct {
+	ID                    uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	NodeIP                string     `json:"node_ip" gorm:"index;not null"`
+	Status                string     `json:"status" gorm:"index;not null"`
+	CredentialProfileID   string     `json:"credential_profile_id,omitempty" gorm:"index"`
+	Attempts              StringList `json:"attempts" gorm:"type:text"`
+	AlertRequired         bool       `json:"alert_required" gorm:"index"`
+	NoCredentialDisclosed bool       `json:"no_credential_disclosed"`
+	NoCommandExecuted     bool       `json:"no_command_executed"`
+	StartedAt             time.Time  `json:"started_at" gorm:"index"`
+	FinishedAt            time.Time  `json:"finished_at" gorm:"index"`
+	CreatedAt             time.Time  `json:"created_at"`
+}
+
 // AlertIngestionRecord 记录 webhook 告警异步处理与回调确认全链路状态。
 type AlertIngestionRecord struct {
 	ID                 uint      `json:"id" gorm:"primaryKey;autoIncrement;index:idx_ingestions_created_id,priority:2"`

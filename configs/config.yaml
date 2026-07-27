@@ -12,7 +12,9 @@ branding:
 node_access:
   enabled: false
   skill_id: "atlas-node-evidence"
-  skill_version: "v0.2.1"
+  skill_version: "v0.3.0"
+  ssh_port: 22
+  known_hosts_file: ""
   connect_timeout: "5s"
   command_timeout: "10s"
   max_output_bytes: 1048576
