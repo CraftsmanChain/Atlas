@@ -112,6 +112,22 @@ type PlatformDisplayConfig struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+// NodeCredentialProfile stores only encrypted node-access credential material.
+// Ciphertext contains an AEAD-protected username/password payload and must
+// never be serialized by an API.
+type NodeCredentialProfile struct {
+	ID             uint      `json:"-" gorm:"primaryKey"`
+	ProfileID      string    `json:"profile_id" gorm:"uniqueIndex;size:64;not null"`
+	Priority       int       `json:"priority" gorm:"index;not null"`
+	AuthType       string    `json:"auth_type" gorm:"size:24;not null"`
+	UsernameMasked string    `json:"username_masked" gorm:"size:24;not null"`
+	Ciphertext     []byte    `json:"-" gorm:"not null"`
+	KeyVersion     string    `json:"key_version" gorm:"size:24;not null"`
+	Enabled        bool      `json:"enabled" gorm:"index;not null"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 // AlertIngestionRecord 记录 webhook 告警异步处理与回调确认全链路状态。
 type AlertIngestionRecord struct {
 	ID                 uint      `json:"id" gorm:"primaryKey;autoIncrement;index:idx_ingestions_created_id,priority:2"`

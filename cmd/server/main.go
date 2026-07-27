@@ -52,7 +52,7 @@ func main() {
 			Logging: config.LoggingConfig{Dir: "logs"},
 			Web:     config.WebConfig{StaticDir: "web/dist"},
 			NodeAccess: config.NodeAccessConfig{
-				SkillID: "atlas-node-evidence", SkillVersion: "v0.1.0",
+				SkillID: "atlas-node-evidence", SkillVersion: "v0.2.0",
 				ConnectTimeout: "5s", CommandTimeout: "10s", MaxOutputBytes: 1024 * 1024,
 				MaxConcurrentNodes: 2, MaxCommandsPerNode: 6,
 			},
@@ -112,7 +112,15 @@ func main() {
 	issueService := issues.NewService(db)
 	issueHandler := issues.NewHandlerWithService(db, issueService)
 	platformConfigHandler := platformconfig.NewHandler(db, cfg.Branding)
-	nodeAccessHandler := nodeaccess.NewHandler(nodeaccess.NewService(cfg.NodeAccess, nil))
+	var credentialVault *nodeaccess.CredentialVault
+	credentialVault, err = nodeaccess.NewCredentialVault(db, os.Getenv("ATLAS_NODE_CREDENTIAL_MASTER_KEY"))
+	if err != nil {
+		log.Printf("Node credential encryption is unavailable: %v", err)
+		credentialVault = nil
+	}
+	nodeAccessService := nodeaccess.NewServiceWithVault(cfg.NodeAccess, nil, credentialVault)
+	allowCredentialLoopbackHTTP := strings.EqualFold(strings.TrimSpace(os.Getenv("ATLAS_NODE_CREDENTIAL_ALLOW_INSECURE_LOOPBACK")), "true")
+	nodeAccessHandler := nodeaccess.NewHandlerWithVault(nodeAccessService, credentialVault, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialLoopbackHTTP)
 	go issueService.Run(context.Background(), time.Minute)
 
 	// Inventory discovery is read-only and best-effort. Prometheus outages are
@@ -187,6 +195,8 @@ func main() {
 	mux.HandleFunc("/api/v1/issues/", issueHandler.HandleSubresource)
 	mux.HandleFunc("/api/v1/platform-config", platformConfigHandler.Handle)
 	mux.HandleFunc("/api/v1/node-access/overview", nodeAccessHandler.HandleOverview)
+	mux.HandleFunc("/api/v1/node-access/credentials", nodeAccessHandler.HandleCredentials)
+	mux.HandleFunc("/api/v1/node-access/credentials/", nodeAccessHandler.HandleCredential)
 
 	// 6.4 GPU hardware inventory and collection coverage (read-only).
 	mux.HandleFunc("/api/v1/fleet/summary", inventoryHandler.HandleFleetSummary)
