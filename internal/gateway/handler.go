@@ -36,6 +36,7 @@ type Handler struct {
 type alertIngestionView struct {
 	api.AlertIngestionRecord
 	Labels             api.StringMap `json:"labels,omitempty"`
+	EventTimestamp     *time.Time    `json:"event_timestamp,omitempty"`
 	AIReportID         uint          `json:"ai_report_id,omitempty"`
 	AIReportStatus     string        `json:"ai_report_status,omitempty"`
 	AIReportSummary    string        `json:"ai_report_summary,omitempty"`
@@ -243,7 +244,12 @@ func (h *Handler) HandleRecentIngestions(w http.ResponseWriter, r *http.Request)
 		view := alertIngestionView{AlertIngestionRecord: record}
 		if event, err := h.ingestionDB.GetAlertEventByID(record.EventID); err == nil && event != nil {
 			view.Labels = event.Labels
+			if !event.Timestamp.IsZero() {
+				timestamp := event.Timestamp
+				view.EventTimestamp = &timestamp
+			}
 		}
+		enrichIngestionViewFromRawPayload(&view)
 		if report, err := h.ingestionDB.GetLatestAIAnalysisReportForIngestion(record.ID); err == nil && report != nil {
 			view.AIReportID = report.ID
 			view.AIReportStatus = report.Status
@@ -283,6 +289,54 @@ func (h *Handler) HandleRecentIngestions(w http.ResponseWriter, r *http.Request)
 		"stream_status":      streamStatus,
 		"server_time":        now,
 	})
+}
+
+// enrichIngestionViewFromRawPayload repairs presentation fields for historical
+// records that were accepted before a newer Feishu card format was understood.
+// It does not mutate the ingestion or event tables.
+func enrichIngestionViewFromRawPayload(view *alertIngestionView) {
+	if view == nil || strings.TrimSpace(view.RawPayload) == "" {
+		return
+	}
+	needsFallback := strings.TrimSpace(view.Host) == "" || len(view.Labels) == 0 || view.EventTimestamp == nil
+	if !needsFallback {
+		return
+	}
+	events, err := parseFeishuWebhookAlerts([]byte(view.RawPayload))
+	if err != nil || len(events) == 0 {
+		return
+	}
+	candidate := events[0]
+	for _, event := range events {
+		if strings.TrimSpace(view.Message) != "" && event.Message == view.Message {
+			candidate = event
+			if strings.TrimSpace(view.Host) == "" || event.Host == view.Host {
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(view.Host) == "" {
+		view.Host = candidate.Host
+	}
+	if strings.TrimSpace(view.Message) == "" {
+		view.Message = candidate.Message
+	}
+	if strings.TrimSpace(view.Level) == "" || view.Level == "info" {
+		view.Level = candidate.Level
+	}
+	if len(view.Labels) == 0 {
+		view.Labels = candidate.Labels
+	} else {
+		for key, value := range candidate.Labels {
+			if _, exists := view.Labels[key]; !exists {
+				view.Labels[key] = value
+			}
+		}
+	}
+	if view.EventTimestamp == nil && !candidate.Timestamp.IsZero() {
+		timestamp := candidate.Timestamp
+		view.EventTimestamp = &timestamp
+	}
 }
 
 // HandleIngestionSubresources 返回接收记录的下级资源，当前支持查询 AI 分析报告。

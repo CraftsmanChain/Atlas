@@ -321,35 +321,52 @@ func parseLegacyChineseFeishuAlertText(text string) (api.AlertEvent, bool) {
 
 	inLabelSection := false
 	recognized := false
+	var startsAt time.Time
+	var endsAt time.Time
 	for _, rawLine := range lines {
 		line := strings.TrimSpace(rawLine)
 		if line == "" {
 			continue
 		}
 
-		if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "-\t") {
-			if !inLabelSection {
-				continue
-			}
-			labelLine := strings.TrimSpace(strings.TrimPrefix(line, "-"))
-			key, value, ok := splitChineseKeyValue(labelLine)
-			if !ok || key == "" {
-				continue
-			}
-			event.Labels[key] = value
+		heading := normalizeChineseFieldKey(strings.TrimSuffix(strings.TrimSuffix(line, ":"), "："))
+		switch heading {
+		case "告警标签", "定位标签":
+			inLabelSection = true
 			recognized = true
 			continue
+		case "核心信息":
+			inLabelSection = false
+			recognized = true
+			continue
+		}
+
+		if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "-\t") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "-"))
+			if inLabelSection {
+				key, value, ok := splitChineseKeyValue(line)
+				if !ok || key == "" {
+					continue
+				}
+				event.Labels[key] = value
+				recognized = true
+				continue
+			}
 		}
 
 		key, value, ok := splitChineseKeyValue(line)
 		if !ok {
 			continue
 		}
+		key = normalizeChineseFieldKey(key)
 
 		switch key {
-		case "级别状态":
+		case "级别状态", "状态总览":
 			event.Level = normalizeChineseSeverity(value)
 			event.Labels["severity_text"] = strings.TrimSpace(value)
+			if state := normalizeChineseAlertState(value); state != "" {
+				event.Labels["alert_state"] = state
+			}
 			recognized = true
 			inLabelSection = false
 		case "告警名称":
@@ -362,9 +379,21 @@ func parseLegacyChineseFeishuAlertText(text string) (api.AlertEvent, bool) {
 			recognized = true
 		case "触发时间":
 			if ts, err := parseChineseAlertTime(value); err == nil {
-				event.Timestamp = ts
+				startsAt = ts
 			}
 			event.Labels["starts_at_text"] = value
+			recognized = true
+			inLabelSection = false
+		case "恢复时间":
+			if ts, err := parseChineseAlertTime(value); err == nil {
+				endsAt = ts
+			}
+			event.Labels["ends_at_text"] = value
+			event.Labels["alert_state"] = "recovered"
+			recognized = true
+			inLabelSection = false
+		case "持续时长":
+			event.Labels["duration_text"] = value
 			recognized = true
 			inLabelSection = false
 		case "发送时间":
@@ -373,6 +402,10 @@ func parseLegacyChineseFeishuAlertText(text string) (api.AlertEvent, bool) {
 			inLabelSection = false
 		case "触发时值":
 			event.Labels["trigger_value"] = value
+			recognized = true
+			inLabelSection = false
+		case "处理结论":
+			event.Labels["resolution_text"] = value
 			recognized = true
 			inLabelSection = false
 		default:
@@ -387,13 +420,50 @@ func parseLegacyChineseFeishuAlertText(text string) (api.AlertEvent, bool) {
 	if event.Message == "" {
 		event.Message = strings.TrimSpace(text)
 	}
-	if host := firstNonEmpty(event.Labels["Hostname"], event.Labels["instance"], event.Labels["ext"]); host != "" {
+	if !endsAt.IsZero() {
+		event.Timestamp = endsAt
+	} else if !startsAt.IsZero() {
+		event.Timestamp = startsAt
+	}
+	if host := firstNonEmpty(
+		mapValueFold(event.Labels, "hostname"),
+		mapValueFold(event.Labels, "host_ip"),
+		mapValueFold(event.Labels, "host"),
+		mapValueFold(event.Labels, "instance"),
+		mapValueFold(event.Labels, "ext"),
+	); host != "" {
 		event.Host = host
 	}
 	if levelText, ok := event.Labels["severity_text"]; ok {
 		event.Labels["severity_text"] = cleanChineseSeverityText(levelText)
 	}
 	return event, true
+}
+
+func normalizeChineseFieldKey(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimLeft(value, "▌|｜")
+	return strings.TrimSpace(value)
+}
+
+func normalizeChineseAlertState(value string) string {
+	switch {
+	case strings.Contains(value, "已恢复"), strings.Contains(strings.ToLower(value), "resolved"):
+		return "recovered"
+	case strings.Contains(value, "触发"), strings.Contains(strings.ToLower(value), "triggered"):
+		return "firing"
+	default:
+		return ""
+	}
+}
+
+func mapValueFold(values api.StringMap, key string) string {
+	for candidate, value := range values {
+		if strings.EqualFold(strings.TrimSpace(candidate), key) {
+			return value
+		}
+	}
+	return ""
 }
 
 func splitChineseKeyValue(line string) (string, string, bool) {
@@ -424,10 +494,13 @@ func normalizeChineseSeverity(value string) string {
 
 func cleanChineseSeverityText(value string) string {
 	value = strings.TrimSpace(value)
-	for _, marker := range []string{"Triggered", "Resolved"} {
+	for _, marker := range []string{"Triggered", "Resolved", "已触发", "已恢复"} {
 		value = strings.ReplaceAll(value, marker, "")
 	}
 	value = feishuEmojiTagPattern.ReplaceAllString(value, "")
+	if idx := strings.IndexAny(value, "·|｜"); idx >= 0 {
+		value = value[:idx]
+	}
 	if idx := strings.Index(value, "["); idx >= 0 {
 		value = strings.TrimSpace(value[:idx])
 	}

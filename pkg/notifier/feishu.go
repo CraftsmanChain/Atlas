@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"atlas/pkg/api"
@@ -60,21 +62,7 @@ func (n *FeishuNotifier) sendToBot(bot config.FeishuBotConfig, event *api.AlertE
 		title = fmt.Sprintf("🔁 Atlas 重复告警: [%s] (第 %d 次)", event.Level, event.RepeatCount)
 	}
 
-	content := fmt.Sprintf(
-		"**来源**: %s\n**主机**: %s\n**内容**: %s\n**最后发生时间**: %s\n",
-		event.Source,
-		event.Host,
-		event.Message,
-		event.LastSeenAt.Format("2006-01-02 15:04:05"),
-	)
-
-	// 如果有 Labels 则附加上去
-	if len(event.Labels) > 0 {
-		content += "**标签**:\n"
-		for k, v := range event.Labels {
-			content += fmt.Sprintf("- %s: %s\n", k, v)
-		}
-	}
+	content := formatAlertContent(event)
 
 	// 构建飞书机器人所需的 JSON 载荷 (使用 interactive 消息卡片)
 	payload := map[string]interface{}{
@@ -132,6 +120,38 @@ func (n *FeishuNotifier) sendToBot(bot config.FeishuBotConfig, event *api.AlertE
 	} else {
 		log.Printf("[FeishuNotifier] Bot[%d] Alert sent to feishu successfully", botIndex)
 	}
+}
+
+func formatAlertContent(event *api.AlertEvent) string {
+	content := fmt.Sprintf(
+		"**来源**: %s\n**主机**: %s\n**内容**: %s\n**最后发生时间**: %s\n",
+		event.Source,
+		firstNonEmpty(event.Host, event.Labels["host_ip"], event.Labels["Hostname"], event.Labels["instance"], "—"),
+		event.Message,
+		event.LastSeenAt.Format("2006-01-02 15:04:05"),
+	)
+	if len(event.Labels) == 0 {
+		return content
+	}
+	content += "**标签**:\n"
+	keys := make([]string, 0, len(event.Labels))
+	for key := range event.Labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		content += fmt.Sprintf("- %s: %s\n", key, event.Labels[key])
+	}
+	return content
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 // 根据告警级别设置卡片头部颜色
