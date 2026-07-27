@@ -182,6 +182,11 @@ main { min-height:100vh; margin-left:var(--sidebar-width); }.topbar { position:s
 .node-access-badges { flex:0 0 auto; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:7px; }
 .secondary-page .node-access-stat { min-height:132px; }
 .node-access-note { margin:-2px 0 16px; color:var(--muted); font-size:11px; line-height:1.65; }
+.node-skill-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px; }
+.node-skill-grid article { min-width:0; padding:13px; border:1px solid var(--border); border-radius:7px; background:var(--surface-2); }
+.node-skill-grid header { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+.node-skill-grid code { min-width:0; color:var(--accent-text); font:700 10px ui-monospace,monospace; overflow-wrap:anywhere; }
+.node-skill-grid b,.node-skill-grid small { display:block; }.node-skill-grid b { margin-top:12px; font-size:11px; line-height:1.5; }.node-skill-grid small { margin-top:8px; color:var(--faint); font:9px ui-monospace,monospace; }
 .node-access-table { min-width:840px; }.node-access-table td code { white-space:normal; overflow-wrap:anywhere; }
 .credential-layout { display:grid; grid-template-columns:minmax(280px,.42fr) minmax(520px,1fr); gap:14px; align-items:start; }
 .credential-form { display:grid; gap:10px; padding:14px; border:1px solid var(--border); border-radius:7px; background:var(--surface-2); }
@@ -195,4 +200,4 @@ main { min-height:100vh; margin-left:var(--sidebar-width); }.topbar { position:s
 .node-command-list b,.node-command-list small { display:block; }.node-command-list b { margin-top:9px; font-size:11px; line-height:1.4; }.node-command-list small { margin-top:5px; color:var(--faint); font:9px/1.45 ui-monospace,monospace; overflow-wrap:anywhere; }
 .node-command-card.approval .node-command-list { grid-template-columns:1fr; }
 @media(max-width:1050px){.credential-layout{grid-template-columns:1fr}.credential-table-wrap{min-height:0}}
-@media(max-width:900px){.secondary-page .node-access-guard{align-items:flex-start;flex-direction:column}.node-access-badges{justify-content:flex-start}.node-command-list{grid-template-columns:1fr}}
+@media(max-width:900px){.secondary-page .node-access-guard{align-items:flex-start;flex-direction:column}.node-access-badges{justify-content:flex-start}.node-skill-grid,.node-command-list{grid-template-columns:1fr}}

@@ -121,3 +121,20 @@ func TestCredentialHandlerRejectsPlainHTTP(t *testing.T) {
 		t.Fatalf("expected HTTPS enforcement, got %d: %s", response.Code, response.Body.String())
 	}
 }
+
+func TestCredentialHandlerAllowsExplicitHTTPCompatibility(t *testing.T) {
+	vault, _ := testVault(t)
+	handler := NewHandlerWithVault(NewServiceWithVault(config.NodeAccessConfig{}, nil, vault), vault, "management-secret", false, true)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/node-access/credentials", strings.NewReader(`{"profile_id":"http-compatible","priority":10,"username":"user","password":"secret","enabled":true}`))
+	request.Header.Set("X-Atlas-Admin-Token", "management-secret")
+	response := httptest.NewRecorder()
+	handler.HandleCredentials(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected explicit HTTP compatibility, got %d: %s", response.Code, response.Body.String())
+	}
+	overviewResponse := httptest.NewRecorder()
+	handler.HandleOverview(overviewResponse, httptest.NewRequest(http.MethodGet, "/api/v1/node-access/overview", nil))
+	if !strings.Contains(overviewResponse.Body.String(), `"insecure_http_allowed":true`) || !strings.Contains(overviewResponse.Body.String(), `"secure_write_only":false`) {
+		t.Fatalf("overview did not expose HTTP compatibility warning: %s", overviewResponse.Body.String())
+	}
+}

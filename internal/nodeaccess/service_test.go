@@ -93,4 +93,10 @@ func TestOverviewDoesNotExposeSecretReferences(t *testing.T) {
 	if len(overview.Commands) == 0 {
 		t.Fatal("expected registered command catalog")
 	}
+	if len(overview.Skills) != 3 ||
+		overview.Skills[0].ID != "atlas-node-evidence" ||
+		overview.Skills[1].ID != "atlas-fault-analysis" ||
+		overview.Skills[2].ID != "atlas-case-learning" {
+		t.Fatalf("unexpected foundational skill catalog: %#v", overview.Skills)
+	}
 }
