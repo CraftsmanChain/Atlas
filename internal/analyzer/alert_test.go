@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"testing"
+	"time"
 
 	"atlas/pkg/api"
 	"atlas/pkg/storage"
@@ -56,5 +57,24 @@ func TestProcessTreatsSameAlertAsIndependentEvents(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("expected 2 alert rows, got %d", count)
+	}
+}
+
+func TestProcessUsesSourceTimestampAsLastOccurrence(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatalf("InitDB returned error: %v", err)
+	}
+	analyzer := NewAlertAnalyzer(db, nil)
+	observedAt := time.Date(2026, 7, 26, 17, 44, 10, 0, time.Local)
+	event := &api.AlertEvent{
+		Source: "alertmanager", Host: "10.114.4.113", Level: "critical",
+		Message: "节点失活", Labels: api.StringMap{"alert_state": "recovered"}, Timestamp: observedAt,
+	}
+	if err := analyzer.Process(event); err != nil {
+		t.Fatalf("Process returned error: %v", err)
+	}
+	if !event.LastSeenAt.Equal(observedAt) {
+		t.Fatalf("expected last occurrence %s, got %s", observedAt, event.LastSeenAt)
 	}
 }

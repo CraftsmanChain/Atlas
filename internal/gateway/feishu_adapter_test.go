@@ -1,6 +1,11 @@
 package gateway
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"atlas/pkg/api"
+)
 
 func TestParseFeishuWebhookAlertText(t *testing.T) {
 	body := []byte(`{
@@ -239,9 +244,65 @@ func TestParseFeishuWebhookAlertInteractiveCardSplitIntoMultipleEvents(t *testin
 	}
 }
 
+func TestParseFeishuWebhookAlertInteractiveOperationalCard(t *testing.T) {
+	event, err := parseFeishuWebhookAlert([]byte(operationalRecoveredCardPayload))
+	if err != nil {
+		t.Fatalf("parseFeishuWebhookAlert returned error: %v", err)
+	}
+	if event.Source != "alertmanager" || event.Level != "critical" {
+		t.Fatalf("expected alertmanager critical, got source=%q level=%q", event.Source, event.Level)
+	}
+	if event.Message != "节点失活" || event.Host != "10.114.4.113" {
+		t.Fatalf("expected resolved node alert, got message=%q host=%q", event.Message, event.Host)
+	}
+	if event.Labels["host_id"] != "8e727b60-3e9c-4ebe-b656-e36f77c1ecaf" ||
+		event.Labels["exporter"] != "node_exporter" ||
+		event.Labels["severity_text"] != "严重级" ||
+		event.Labels["alert_state"] != "recovered" ||
+		event.Labels["duration_text"] != "8h 5m 0s" ||
+		event.Labels["resolution_text"] != "服务已恢复" {
+		t.Fatalf("expected operational labels, got %#v", event.Labels)
+	}
+	expected := time.Date(2026, 7, 26, 17, 44, 10, 0, time.Local)
+	if !event.Timestamp.Equal(expected) {
+		t.Fatalf("expected recovery timestamp %s, got %s", expected, event.Timestamp)
+	}
+}
+
+func TestEnrichHistoricalIngestionViewFromRawPayload(t *testing.T) {
+	view := alertIngestionView{AlertIngestionRecord: api.AlertIngestionRecord{
+		Message: "节点失活", Level: "info", RawPayload: operationalRecoveredCardPayload,
+	}}
+	enrichIngestionViewFromRawPayload(&view)
+	if view.Host != "10.114.4.113" || view.Level != "critical" {
+		t.Fatalf("expected repaired host and level, got host=%q level=%q", view.Host, view.Level)
+	}
+	if view.Labels["sn"] != "A514359X4407148" || view.Labels["model"] != "H100" {
+		t.Fatalf("expected raw labels to be restored, got %#v", view.Labels)
+	}
+	if view.EventTimestamp == nil || view.EventTimestamp.Format("2006-01-02 15:04:05") != "2026-07-26 17:44:10" {
+		t.Fatalf("expected source recovery time, got %v", view.EventTimestamp)
+	}
+}
+
 func TestExtractFeishuHookToken(t *testing.T) {
 	token := extractFeishuHookToken("/open-apis/bot/v2/hook/test-token")
 	if token != "test-token" {
 		t.Fatalf("expected token test-token, got %q", token)
 	}
 }
+
+const operationalRecoveredCardPayload = `{
+	"card":{
+		"config":{"enable_forward":true,"update_multi":false,"wide_screen_mode":true},
+		"elements":[
+			{
+				"content":"\n \n**状态总览:** <font color='green'> **严重级 · 已恢复** </font>\n**告警名称:** **节点失活**\n\n**▌ 核心信息**\n- **触发时间:** 2026-07-26 09:39:10\n- **恢复时间:** 2026-07-26 17:44:10\n- **持续时长:** 8h 5m 0s\n\n**▌ 定位标签**\n- device_type: server\n- exporter: node_exporter\n- host_id: 8e727b60-3e9c-4ebe-b656-e36f77c1ecaf\n- host_ip: 10.114.4.113\n- host_type_id: 51a69aa2-67fa-4620-8d67-a08ca2a45170\n- instance: 10.114.4.113\n- job: node_exporter\n- model: H100\n- sn: A514359X4407148 \n\n**▌ 处理结论:** **服务已恢复**",
+				"tag":"markdown"
+			}
+		],
+		"header":{"template":"green","title":{"content":"节点失活-已恢复","tag":"plain_text"}}
+	},
+	"content":{},
+	"msg_type":"interactive"
+}`

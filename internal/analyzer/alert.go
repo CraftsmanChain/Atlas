@@ -39,7 +39,7 @@ func (a *AlertAnalyzer) Process(event *api.AlertEvent) error {
 	if event.Timestamp.IsZero() {
 		event.Timestamp = now
 	}
-	event.LastSeenAt = now
+	event.LastSeenAt = event.Timestamp
 	event.IsProcessed = true
 
 	// 当前暂不识别重复告警，所有入站事件都按独立告警处理。
