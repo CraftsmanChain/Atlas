@@ -99,4 +99,18 @@ func TestOverviewDoesNotExposeSecretReferences(t *testing.T) {
 		overview.Skills[2].ID != "atlas-case-learning" {
 		t.Fatalf("unexpected foundational skill catalog: %#v", overview.Skills)
 	}
+	if !overview.DefaultReadOnlyMode {
+		t.Fatal("read-only evidence must use the default collection policy")
+	}
+	for _, command := range overview.Commands {
+		if command.ApprovalClass == "read_only" {
+			if command.CollectionMode != "default_read_only" || command.PlanningStatus != "automatic" {
+				t.Fatalf("read-only command must not require per-run planning: %#v", command)
+			}
+			continue
+		}
+		if command.CollectionMode != "human_confirmation_required" || command.PlanningStatus != "approval_required" {
+			t.Fatalf("high-impact command must require human confirmation: %#v", command)
+		}
+	}
 }

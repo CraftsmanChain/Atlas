@@ -174,32 +174,3 @@ func TestConnectivityHandlerRequiresManagementTokenAndReturnsRedactedResult(t *t
 		}
 	}
 }
-
-func TestPlanHandlerReturnsPreviewOnlyAndRejectsUnsafeCommand(t *testing.T) {
-	db := connectivityTestDB(t)
-	vault, _ := testVault(t)
-	access := NewService(config.NodeAccessConfig{SkillID: SkillID, SkillVersion: SkillVersion, MaxCommandsPerNode: 3}, nil)
-	handler := NewHandlerWithVault(access, vault, "management-secret")
-	handler.SetPlanner(NewPlanner(db, access))
-
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/node-access/plans", strings.NewReader(`{"node_ip":"10.114.4.25","command_ids":["node.identity","gpu.snapshot"]}`))
-	request.TLS = &tls.ConnectionState{}
-	request.Header.Set("X-Atlas-Admin-Token", "management-secret")
-	response := httptest.NewRecorder()
-	handler.HandlePlans(response, request)
-	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), `"status":"preview_only"`) ||
-		!strings.Contains(response.Body.String(), `"execution_enabled":false`) ||
-		!strings.Contains(response.Body.String(), `"no_command_executed":true`) {
-		t.Fatalf("unexpected plan response %d: %s", response.Code, response.Body.String())
-	}
-
-	request = httptest.NewRequest(http.MethodPost, "/api/v1/node-access/plans", strings.NewReader(`{"node_ip":"10.114.4.25","command_ids":["maintenance.node_reboot"]}`))
-	request.TLS = &tls.ConnectionState{}
-	request.Header.Set("X-Atlas-Admin-Token", "management-secret")
-	response = httptest.NewRecorder()
-	handler.HandlePlans(response, request)
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("unsafe command must not enter a preview plan: %d %s", response.Code, response.Body.String())
-	}
-}
