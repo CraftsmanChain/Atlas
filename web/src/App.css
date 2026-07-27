@@ -196,6 +196,7 @@ main { min-height:100vh; margin-left:var(--sidebar-width); }.topbar { position:s
 .credential-form .primary-action,.connectivity-runner .primary-action { min-height:34px; display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:8px 12px; font-size:11px; line-height:1; white-space:nowrap; }.credential-form .primary-action svg,.connectivity-runner .primary-action svg { width:14px; height:14px; }
 .connectivity-runner { display:grid; grid-template-columns:minmax(220px,360px) auto; align-items:end; gap:10px; margin-bottom:14px; }.connectivity-runner label { display:grid; gap:5px; color:var(--muted); font-size:10px; }.connectivity-runner input { width:100%; padding:8px 9px; border:1px solid var(--border); border-radius:5px; outline:0; color:var(--text); background:var(--bg); }.connectivity-table-wrap { border:1px solid var(--border); border-radius:7px; }
 .secondary-page .compact-quality-metric { min-height:132px; padding:17px 18px; }.compact-quality-metric>strong { margin-top:auto; font-size:27px; }.compact-quality-metric>svg { top:15px; right:16px; }
+.coverage-metric>strong,.coverage-metric>b,.coverage-metric>small { transform:translateY(3px); }
 .secondary-page .node-command-card { min-height:300px; }
 .node-command-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
 .node-command-list article { min-width:0; padding:11px; border:1px solid var(--border); border-radius:6px; background:var(--surface-2); }
