@@ -50,3 +50,21 @@ func TestBuildPlaceholderAIReportForNetworkAlert(t *testing.T) {
 		t.Fatalf("expected network summary, got %q", summary)
 	}
 }
+
+func TestRefreshPlaceholderAIReportUsesReparsedFields(t *testing.T) {
+	report := &api.AIAnalysisReport{
+		Model: "atlas-placeholder", Severity: "info",
+		Summary: "Alert from alertmanager on unknown-host requires triage",
+	}
+	event := api.AlertEvent{
+		Source: "alertmanager", Level: "critical", Host: "10.114.4.113",
+		Message: "节点失活", Labels: api.StringMap{"alert_state": "recovered", "model": "H100"},
+	}
+	refreshPlaceholderAIReport(report, event)
+	if report.Severity != "critical" || !strings.Contains(report.Summary, "10.114.4.113") {
+		t.Fatalf("expected refreshed host/severity, got severity=%q summary=%q", report.Severity, report.Summary)
+	}
+	if len(report.Evidence) < 2 || report.Evidence[1] != "level=critical" {
+		t.Fatalf("expected refreshed evidence, got %#v", report.Evidence)
+	}
+}
