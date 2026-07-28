@@ -122,3 +122,10 @@ func TestAssetConfigHandlerRequiresAuthorizedCompatibilityMode(t *testing.T) {
 		t.Fatalf("expected authorized compatibility write, got %d: %s", response.Code, response.Body.String())
 	}
 }
+
+func TestClassifyAssetPrefersNetworkIdentityOverGPUFabricName(t *testing.T) {
+	item := LXOPAsset{Name: "GPU33-48_leaf8", Type: "交换机", Model: "MQM9790-NS2S", State: "已上架使用中"}
+	if kind := classifyAsset(item); kind != "network" {
+		t.Fatalf("GPU fabric switch entered %q domain", kind)
+	}
+}
