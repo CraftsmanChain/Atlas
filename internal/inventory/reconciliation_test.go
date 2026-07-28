@@ -41,7 +41,7 @@ func TestReconciliationMatchesBySNThenIPAndClassifiesTypes(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Summary.Total != 4 || payload.Summary.ByScope[reconcileBoth] != 1 || payload.Summary.ByScope[reconcileOpsOnly] != 1 || payload.Summary.ByScope[reconcileMachineOnly] != 2 {
+	if payload.Summary.Total != 4 || payload.Summary.ByScope[reconcileBoth] != 1 || payload.Summary.ByScope[reconcileOpsOnly] != 1 || payload.Summary.ByScope[reconcileMachineOnly] != 0 {
 		t.Fatalf("unexpected summary: %+v", payload.Summary)
 	}
 	if len(payload.Summary.GPUModels) != 2 || payload.Summary.GPUModels[0].Count != 1 || payload.Summary.GPUModels[1].Count != 1 {
@@ -72,7 +72,8 @@ func TestReconciliationFiltersDifferenceScope(t *testing.T) {
 	now := time.Now()
 	rows := []api.InfrastructureAsset{
 		{AssetKey: "ops-only", Source: "ops_host", IPAddress: "10.0.0.2", Type: "server", Model: "H200", InUse: true, Present: true, EntityKind: "gpu_node", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
-		{AssetKey: "machine-only", Source: "asset_machine", Type: "UFM", Name: "ufm-1", InUse: true, Present: true, FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
+		{AssetKey: "machine-only", Source: "asset_machine", Type: "H100", Name: "H100gpu-3", InUse: true, Present: true, EntityKind: "gpu_node", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
+		{AssetKey: "ufm-only", Source: "asset_machine", Type: "UFM", Name: "ufm-1", InUse: true, Present: true, EntityKind: "unknown", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
 	}
 	if err := db.Create(&rows).Error; err != nil {
 		t.Fatal(err)

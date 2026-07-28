@@ -270,8 +270,8 @@ func (s *Service) finishRun(run *api.InventorySyncRun) (*api.InventorySyncRun, e
 func (s *Service) populateInventoryCounts(run *api.InventorySyncRun) {
 	activeNodeIDs := s.db.Model(&api.GPUNode{}).Select("id").Where("lifecycle <> ?", "retired")
 	var gpuCount, knownUUIDCount int64
-	s.db.Model(&api.GPUAsset{}).Where("node_id IN (?)", activeNodeIDs).Count(&gpuCount)
-	s.db.Model(&api.GPUAsset{}).Where("node_id IN (?) AND current_uuid <> ''", activeNodeIDs).Count(&knownUUIDCount)
+	s.db.Model(&api.GPUAsset{}).Where("node_id IN (?) AND current_node_identity = ?", activeNodeIDs, true).Count(&gpuCount)
+	s.db.Model(&api.GPUAsset{}).Where("node_id IN (?) AND current_node_identity = ? AND current_uuid <> ''", activeNodeIDs, true).Count(&knownUUIDCount)
 	run.GPUCount, run.KnownUUIDCount = int(gpuCount), int(knownUUIDCount)
 }
 
@@ -317,6 +317,49 @@ func (s *Service) persistInventory(now time.Time, runID uint, nodeIPs []string, 
 			node.NodeIP = nodeIP
 			if canonicalHostname := catalog[nodeIP]; canonicalHostname != "" {
 				node.Hostname = canonicalHostname
+			}
+			assetSerial, assetModel, identityErr := currentNodeAssetIdentity(tx, nodeIP)
+			if identityErr != nil {
+				return identityErr
+			}
+			replaced := hasExisting && node.AssetSerial != "" && assetSerial != "" &&
+				!strings.EqualFold(node.AssetSerial, assetSerial)
+			if replaced {
+				oldIdentity := nodeIdentityValue(node.AssetSerial, node.AssetModel, node.IdentityGeneration)
+				node.IdentityGeneration++
+				node.IdentityChangedAt = now
+				if err := tx.Model(&api.GPUAsset{}).
+					Where("node_id = ? AND current_node_identity = ?", node.ID, true).
+					Update("current_node_identity", false).Error; err != nil {
+					return err
+				}
+				oldAssetIDs := tx.Model(&api.GPUAsset{}).
+					Select("id").
+					Where("node_id = ? AND current_node_identity = ?", node.ID, false)
+				if err := tx.Model(&api.GPUHealthScore{}).
+					Where("gpu_asset_id IN (?) AND current = ?", oldAssetIDs, true).
+					Update("current", false).Error; err != nil {
+					return err
+				}
+				if err := s.createChange(
+					tx,
+					runID,
+					now,
+					"node_replaced",
+					nodeIP,
+					nodeIP,
+					oldIdentity,
+					nodeIdentityValue(assetSerial, assetModel, node.IdentityGeneration),
+				); err != nil {
+					return err
+				}
+				changeCount++
+			}
+			if assetSerial != "" {
+				node.AssetSerial = assetSerial
+			}
+			if assetModel != "" {
+				node.AssetModel = assetModel
 			}
 			node.BMCIP = mapPrefix(nodeIP, s.config.NodePrefix, s.config.BMCPrefix)
 			node.ExpectedGPUCount = s.config.ExpectedGPUCount
@@ -372,7 +415,8 @@ func (s *Service) persistInventory(now time.Time, runID uint, nodeIPs []string, 
 			}
 
 			for slot := 0; slot < s.config.ExpectedGPUCount; slot++ {
-				key := slotKey(nodeIP, slot)
+				sampleKey := slotKey(nodeIP, slot)
+				key := identitySlotKey(nodeIP, node.IdentityGeneration, slot)
 				var asset api.GPUAsset
 				hasAsset := tx.Where("asset_key = ?", key).First(&asset).Error == nil
 				if !hasAsset {
@@ -380,8 +424,9 @@ func (s *Service) persistInventory(now time.Time, runID uint, nodeIPs []string, 
 				}
 				oldUUID, oldState := asset.CurrentUUID, asset.State
 				asset.AssetKey, asset.NodeID, asset.NodeIP, asset.GPUIndex = key, node.ID, nodeIP, slot
+				asset.NodeIdentityGeneration, asset.CurrentNodeIdentity = node.IdentityGeneration, true
 				asset.LastSyncedAt = now
-				if sample, ok := samples[key]; ok {
+				if sample, ok := samples[sampleKey]; ok {
 					metric := sample.Metric
 					asset.CurrentUUID = metric["UUID"]
 					asset.Device = metric["device"]
@@ -430,6 +475,57 @@ func (s *Service) persistInventory(now time.Time, runID uint, nodeIPs []string, 
 		return nil
 	})
 	return changeCount, knownUUIDs, err
+}
+
+func currentNodeAssetIdentity(tx *gorm.DB, nodeIP string) (string, string, error) {
+	var rows []api.InfrastructureAsset
+	if err := tx.Where(
+		"present = ? AND in_use = ? AND entity_kind = ? AND ip_address = ?",
+		true,
+		true,
+		"gpu_node",
+		nodeIP,
+	).Order("source ASC, id ASC").Find(&rows).Error; err != nil {
+		return "", "", err
+	}
+	var serial, model string
+	// asset_machine carries the device classification, so inspect it before
+	// ops_host when both APIs describe the same node.
+	for _, preferredSource := range []string{"asset_machine", "ops_host"} {
+		for _, row := range rows {
+			if row.Source != preferredSource {
+				continue
+			}
+			if serial == "" {
+				serial = normalizedSN(row.SerialNumber)
+			}
+			if model == "" {
+				_, _, model = assetCategory(row)
+				if model == "" {
+					model = strings.TrimSpace(row.Model)
+				}
+			}
+		}
+	}
+	return serial, model, nil
+}
+
+func nodeIdentityValue(serial, model string, generation int) string {
+	return fmt.Sprintf("sn=%s model=%s generation=%d", fallbackIdentity(serial), fallbackIdentity(model), generation)
+}
+
+func fallbackIdentity(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "unknown"
+	}
+	return strings.TrimSpace(value)
+}
+
+func identitySlotKey(ip string, generation, slot int) string {
+	if generation <= 0 {
+		return slotKey(ip, slot)
+	}
+	return fmt.Sprintf("%s:g%d:%d", ip, generation, slot)
 }
 
 func (s *Service) persistTargets(now time.Time, runID uint, nodeIPs []string, targets map[string]prometheus.Target) (int, error) {

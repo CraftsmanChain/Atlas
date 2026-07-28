@@ -170,20 +170,44 @@ func TestSyncDetectedIssuesExcludesTargetsOnRetiredNodes(t *testing.T) {
 	if err := db.Create(&hardware).Error; err != nil {
 		t.Fatal(err)
 	}
+	retiredAccess := api.PlatformIssue{IssueKey: "node_access_auth:" + node.NodeIP, Category: "access", IssueType: "node_authentication", Title: "retired access failure", NodeIP: node.NodeIP, Severity: "warning", Status: "open", DetectionState: "active", DetectionSource: "node_access_auth", FirstDetectedAt: now.Add(-time.Hour), LastDetectedAt: now.Add(-time.Hour)}
+	if err := db.Create(&retiredAccess).Error; err != nil {
+		t.Fatal(err)
+	}
+	activeNode := api.GPUNode{NodeIP: "10.114.4.21", State: "up", Lifecycle: "active", LastSyncedAt: now}
+	if err := db.Create(&activeNode).Error; err != nil {
+		t.Fatal(err)
+	}
+	activeAccess := api.PlatformIssue{IssueKey: "node_access_auth:" + activeNode.NodeIP, Category: "access", IssueType: "node_authentication", Title: "active access failure", NodeIP: activeNode.NodeIP, Severity: "warning", Status: "open", DetectionState: "active", DetectionSource: "node_access_auth", FirstDetectedAt: now.Add(-time.Hour), LastDetectedAt: now.Add(-time.Hour)}
+	if err := db.Create(&activeAccess).Error; err != nil {
+		t.Fatal(err)
+	}
 	service := NewService(db)
 	service.now = func() time.Time { return now }
 	if err := service.SyncDetectedIssues(); err != nil {
 		t.Fatal(err)
 	}
 	var monitoringIssues, resolutions, hardwareIssues int64
-	db.Model(&api.PlatformIssue{}).Where("id = ?", legacy.ID).Count(&monitoringIssues)
+	db.Model(&api.PlatformIssue{}).Where("id = ? AND status = ? AND detection_state = ?", legacy.ID, "resolved", "cleared").Count(&monitoringIssues)
 	db.Model(&api.IssueResolution{}).Where("issue_id = ?", legacy.ID).Count(&resolutions)
 	db.Model(&api.PlatformIssue{}).Where("id = ?", hardware.ID).Count(&hardwareIssues)
-	if monitoringIssues != 0 || resolutions != 0 {
-		t.Fatalf("retired-node monitoring history remained: issues=%d resolutions=%d", monitoringIssues, resolutions)
+	if monitoringIssues != 1 || resolutions != 1 {
+		t.Fatalf("retired-node monitoring history was not preserved and cleared: issues=%d resolutions=%d", monitoringIssues, resolutions)
 	}
 	if hardwareIssues != 1 {
 		t.Fatal("retired-node hardware evidence was deleted")
+	}
+	if err := db.First(&retiredAccess, retiredAccess.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if retiredAccess.DetectionState != "cleared" || retiredAccess.Status != "resolved" {
+		t.Fatalf("retired-node access issue remained current: %+v", retiredAccess)
+	}
+	if err := db.First(&activeAccess, activeAccess.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if activeAccess.DetectionState != "active" || activeAccess.Status != "open" {
+		t.Fatalf("active-node access issue was incorrectly cleared: %+v", activeAccess)
 	}
 }
 

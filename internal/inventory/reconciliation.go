@@ -216,7 +216,9 @@ func summarizeReconciliation(rows []reconciliationRow) reconciliationSummary {
 	scopeCounts := map[string]int{reconcileBoth: 0, reconcileOpsOnly: 0, reconcileMachineOnly: 0}
 	categoryCounts, typeCounts, modelCounts := make(map[string]int), make(map[string]int), make(map[string]int)
 	for _, row := range rows {
-		scopeCounts[row.Scope]++
+		if row.Category == "gpu" {
+			scopeCounts[row.Scope]++
+		}
 		categoryCounts[row.Category]++
 		typeCounts[row.Type]++
 		if row.GPUModel != "" {
@@ -237,6 +239,9 @@ func filterReconciliation(rows []reconciliationRow, r *http.Request) []reconcili
 	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	result := make([]reconciliationRow, 0, len(rows))
 	for _, row := range rows {
+		if scope != "" && row.Category != "gpu" {
+			continue
+		}
 		if scope != "" && row.Scope != scope {
 			continue
 		}

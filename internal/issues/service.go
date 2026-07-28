@@ -53,17 +53,15 @@ func (s *Service) Run(ctx context.Context, interval time.Duration) {
 }
 
 // SyncDetectedIssues materializes current platform findings into a durable,
-// normalized issue ledger. Manual resolution history is never overwritten.
+// normalized issue ledger. Historical findings and manual resolutions remain
+// available after an asset leaves the current monitoring scope.
 func (s *Service) SyncDetectedIssues() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := deleteRetiredNodeMonitoringHistory(tx); err != nil {
-			return err
-		}
 		activeBySource := map[string]map[string]bool{
-			"inventory_node": {}, "inventory_gpu": {}, "collector_target": {}, "health_score": {}, "telemetry_continuity": {}, "source_consistency": {},
+			"inventory_node": {}, "inventory_gpu": {}, "collector_target": {}, "health_score": {}, "telemetry_continuity": {}, "source_consistency": {}, "node_access_auth": {},
 		}
 
 		var nodes []api.GPUNode
@@ -75,7 +73,7 @@ func (s *Service) SyncDetectedIssues() error {
 			if severity == "" {
 				severity = "attention"
 			}
-			item := detectedIssue{key: "node_state:" + node.NodeIP, category: "availability", issueType: "node_state", title: fmt.Sprintf("Node %s is %s", node.NodeIP, node.State), description: fmt.Sprintf("Observed GPU node state is %s (%d/%d GPUs visible)", node.State, node.ObservedGPUCount, node.ExpectedGPUCount), entityType: "node", entityKey: node.NodeIP, nodeIP: node.NodeIP, severity: severity, source: "inventory_node", detectionState: "active", sourceRecordID: node.ID, lastDetectedAt: fallbackTime(node.LastSyncedAt, now)}
+			item := detectedIssue{key: issueKeyForNodeGeneration("node_state:"+node.NodeIP, node.IdentityGeneration), category: "availability", issueType: "node_state", title: fmt.Sprintf("Node %s is %s", node.NodeIP, node.State), description: fmt.Sprintf("Observed GPU node state is %s (%d/%d GPUs visible)", node.State, node.ObservedGPUCount, node.ExpectedGPUCount), entityType: "node", entityKey: node.NodeIP, nodeIP: node.NodeIP, severity: severity, source: "inventory_node", detectionState: "active", sourceRecordID: node.ID, lastDetectedAt: fallbackTime(node.LastSyncedAt, now)}
 			activeBySource[item.source][item.key] = true
 			if err := upsertDetected(tx, item, now); err != nil {
 				return err
@@ -84,7 +82,7 @@ func (s *Service) SyncDetectedIssues() error {
 
 		activeNodeIDs := tx.Model(&api.GPUNode{}).Select("id").Where("lifecycle <> ?", "retired")
 		var assets []api.GPUAsset
-		if err := tx.Where("node_id IN (?) AND state <> ?", activeNodeIDs, "active").Find(&assets).Error; err != nil {
+		if err := tx.Where("node_id IN (?) AND current_node_identity = ? AND state <> ?", activeNodeIDs, true, "active").Find(&assets).Error; err != nil {
 			return err
 		}
 		for _, asset := range assets {
@@ -102,6 +100,29 @@ func (s *Service) SyncDetectedIssues() error {
 		}
 
 		activeNodeIPs := tx.Model(&api.GPUNode{}).Select("node_ip").Where("lifecycle <> ?", "retired")
+		var activeIdentityRows []api.GPUNode
+		if err := tx.Select("node_ip", "identity_generation").Where("lifecycle <> ?", "retired").Find(&activeIdentityRows).Error; err != nil {
+			return err
+		}
+		generationByIP := make(map[string]int, len(activeIdentityRows))
+		for _, node := range activeIdentityRows {
+			generationByIP[node.NodeIP] = node.IdentityGeneration
+		}
+		var activeAccessIssues []api.PlatformIssue
+		if err := tx.Where(
+			"detection_source = ? AND detection_state = ? AND node_ip IN (?)",
+			"node_access_auth",
+			"active",
+			activeNodeIPs,
+		).Find(&activeAccessIssues).Error; err != nil {
+			return err
+		}
+		for _, issue := range activeAccessIssues {
+			expectedKey := issueKeyForNodeGeneration("node_access_auth:"+issue.NodeIP, generationByIP[issue.NodeIP])
+			if issue.IssueKey == expectedKey {
+				activeBySource["node_access_auth"][issue.IssueKey] = true
+			}
+		}
 		var targets []api.CollectorTarget
 		if err := tx.Where("node_ip IN (?) AND health <> ?", activeNodeIPs, "up").Find(&targets).Error; err != nil {
 			return err
@@ -113,7 +134,7 @@ func (s *Service) SyncDetectedIssues() error {
 			} else if target.Health == "missing" {
 				severity = "attention"
 			}
-			item := detectedIssue{key: "target_health:" + target.TargetKey, category: "data_quality", issueType: "target_health", title: fmt.Sprintf("%s target on %s is %s", target.Job, target.NodeIP, target.Health), description: strings.TrimSpace(strings.Join([]string{target.ReasonCode, target.LastError}, ": ")), entityType: "target", entityKey: target.TargetKey, nodeIP: target.NodeIP, severity: severity, source: "collector_target", detectionState: "active", sourceRecordID: target.ID, lastDetectedAt: fallbackTime(target.LastSyncedAt, now)}
+			item := detectedIssue{key: issueKeyForNodeGeneration("target_health:"+target.TargetKey, generationByIP[target.NodeIP]), category: "data_quality", issueType: "target_health", title: fmt.Sprintf("%s target on %s is %s", target.Job, target.NodeIP, target.Health), description: strings.TrimSpace(strings.Join([]string{target.ReasonCode, target.LastError}, ": ")), entityType: "target", entityKey: target.TargetKey, nodeIP: target.NodeIP, severity: severity, source: "collector_target", detectionState: "active", sourceRecordID: target.ID, lastDetectedAt: fallbackTime(target.LastSyncedAt, now)}
 			activeBySource[item.source][item.key] = true
 			if err := upsertDetected(tx, item, now); err != nil {
 				return err
@@ -177,40 +198,11 @@ func (s *Service) SyncDetectedIssues() error {
 	})
 }
 
-// deleteRetiredNodeMonitoringHistory removes false-positive monitoring
-// history after an asset leaves the authoritative in-use GPU set. Hardware
-// fault events are intentionally excluded because they are real operational
-// evidence even when a node is later powered off or removed.
-func deleteRetiredNodeMonitoringHistory(tx *gorm.DB) error {
-	activeNodeIPs := tx.Model(&api.GPUNode{}).Select("node_ip").Where("lifecycle <> ?", "retired")
-	automaticSources := []string{
-		"inventory_node",
-		"inventory_gpu",
-		"collector_target",
-		"health_score",
-		"telemetry_continuity",
-		"source_consistency",
-		"node_access_auth",
+func issueKeyForNodeGeneration(base string, generation int) string {
+	if generation <= 0 {
+		return base
 	}
-	var stale []api.PlatformIssue
-	if err := tx.Where(
-		"node_ip <> '' AND node_ip NOT IN (?) AND detection_source IN ?",
-		activeNodeIPs,
-		automaticSources,
-	).Find(&stale).Error; err != nil {
-		return err
-	}
-	if len(stale) == 0 {
-		return nil
-	}
-	ids := make([]uint, 0, len(stale))
-	for _, issue := range stale {
-		ids = append(ids, issue.ID)
-	}
-	if err := tx.Where("issue_id IN ?", ids).Delete(&api.IssueResolution{}).Error; err != nil {
-		return err
-	}
-	return tx.Where("id IN ?", ids).Delete(&api.PlatformIssue{}).Error
+	return fmt.Sprintf("%s:g%d", base, generation)
 }
 
 func upsertDetected(tx *gorm.DB, item detectedIssue, now time.Time) error {

@@ -45,7 +45,8 @@ func (s *ConnectivityService) Check(ctx context.Context, node string) (*api.Node
 		return nil, ErrConnectivityUnavailable
 	}
 	node = strings.TrimSpace(node)
-	if err := validateManagedNode(s.db, node); err != nil {
+	managed, err := managedNode(s.db, node)
+	if err != nil {
 		return nil, err
 	}
 	startedAt := s.now()
@@ -65,7 +66,7 @@ func (s *ConnectivityService) Check(ctx context.Context, node string) (*api.Node
 		if err := tx.Create(record).Error; err != nil {
 			return err
 		}
-		return syncConnectivityIssue(tx, record, finishedAt)
+		return syncConnectivityIssue(tx, record, managed.IdentityGeneration, finishedAt)
 	}); err != nil {
 		return nil, err
 	}
@@ -73,17 +74,22 @@ func (s *ConnectivityService) Check(ctx context.Context, node string) (*api.Node
 }
 
 func validateManagedNode(db *storage.DB, node string) error {
+	_, err := managedNode(db, node)
+	return err
+}
+
+func managedNode(db *storage.DB, node string) (*api.GPUNode, error) {
 	if net.ParseIP(node) == nil {
-		return ErrNodeNotManaged
+		return nil, ErrNodeNotManaged
 	}
 	var managed api.GPUNode
 	if err := db.Where("node_ip = ? AND lifecycle <> ?", node, "retired").First(&managed).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrNodeNotManaged
+			return nil, ErrNodeNotManaged
 		}
-		return err
+		return nil, err
 	}
-	return nil
+	return &managed, nil
 }
 
 func (s *ConnectivityService) List(limit int) ([]api.NodeAccessCheck, error) {
@@ -95,8 +101,11 @@ func (s *ConnectivityService) List(limit int) ([]api.NodeAccessCheck, error) {
 	return rows, err
 }
 
-func syncConnectivityIssue(tx *gorm.DB, check *api.NodeAccessCheck, now time.Time) error {
+func syncConnectivityIssue(tx *gorm.DB, check *api.NodeAccessCheck, identityGeneration int, now time.Time) error {
 	key := "node_access_auth:" + check.NodeIP
+	if identityGeneration > 0 {
+		key = fmt.Sprintf("%s:g%d", key, identityGeneration)
+	}
 	var issue api.PlatformIssue
 	err := tx.Where("issue_key = ?", key).First(&issue).Error
 	if check.Status == "authenticated" {
