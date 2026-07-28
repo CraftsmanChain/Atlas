@@ -20,7 +20,7 @@ func TestReconciliationMatchesBySNThenIPAndClassifiesTypes(t *testing.T) {
 	rows := []api.InfrastructureAsset{
 		{AssetKey: "ops-gpu", Source: "ops_host", IPAddress: "10.0.0.1", Name: "gpu-01", Type: "server", Model: "H100", SerialNumber: "GPU-1", InUse: true, Present: true, EntityKind: "gpu_node", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
 		{AssetKey: "machine-gpu", Source: "asset_machine", IPAddress: "", Name: "H100gpu-01", Type: "H100", Model: "server-model", SerialNumber: "GPU-1", InUse: true, Present: true, EntityKind: "gpu_node", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
-		{AssetKey: "ops-only", Source: "ops_host", IPAddress: "10.0.0.2", Name: "gpu-02", Type: "server", Model: "A800", SerialNumber: "GPU-2", InUse: true, Present: true, EntityKind: "gpu_node", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
+		{AssetKey: "ops-only", Source: "ops_host", IPAddress: "10.0.0.2", Name: "H200gpu-02", Type: "server", Model: "H100", SerialNumber: "GPU-2", InUse: true, Present: true, EntityKind: "gpu_node", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
 		{AssetKey: "machine-network", Source: "asset_machine", Name: "GPU_Fabric_leaf", Type: "交换机", Model: "MQM9790", SerialNumber: "SW-1", InUse: true, Present: true, EntityKind: "network", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
 		{AssetKey: "machine-storage", Source: "asset_machine", Name: "storage-01", Type: "存储", Model: "storage", SerialNumber: "ST-1", InUse: true, Present: true, EntityKind: "unknown", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
 	}
@@ -46,7 +46,7 @@ func TestReconciliationMatchesBySNThenIPAndClassifiesTypes(t *testing.T) {
 	if len(payload.Summary.GPUModels) != 2 || payload.Summary.GPUModels[0].Count != 1 || payload.Summary.GPUModels[1].Count != 1 {
 		t.Fatalf("unexpected GPU model counts: %+v", payload.Summary.GPUModels)
 	}
-	var matched, network bool
+	var matched, network, h200 bool
 	for _, row := range payload.Data {
 		if row.Scope == reconcileBoth && row.IPAddress == "10.0.0.1" && row.Category == "gpu" && row.GPUModel == "H100" {
 			matched = true
@@ -54,8 +54,11 @@ func TestReconciliationMatchesBySNThenIPAndClassifiesTypes(t *testing.T) {
 		if row.Type == "交换机" && row.Category == "network" {
 			network = true
 		}
+		if row.Scope == reconcileOpsOnly && row.GPUModel == "H200" && row.Type == "H200" {
+			h200 = true
+		}
 	}
-	if !matched || !network {
+	if !matched || !network || !h200 {
 		t.Fatalf("expected SN match and network classification, rows=%+v", payload.Data)
 	}
 }
