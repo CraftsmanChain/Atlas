@@ -146,7 +146,7 @@ func (s *Service) Evaluate(ctx context.Context) (*api.HealthEvaluationRun, error
 
 	activeNodeIDs := s.db.Model(&api.GPUNode{}).Select("id").Where("lifecycle <> ?", "retired")
 	var assets []api.GPUAsset
-	if err := s.db.Where("node_id IN (?) AND current_uuid <> ''", activeNodeIDs).Order("node_ip ASC, gpu_index ASC").Find(&assets).Error; err != nil {
+	if err := s.db.Where("node_id IN (?) AND current_node_identity = ? AND current_uuid <> ''", activeNodeIDs, true).Order("node_ip ASC, gpu_index ASC").Find(&assets).Error; err != nil {
 		return fail(err)
 	}
 	run.AssetCount = len(assets)

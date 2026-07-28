@@ -11,6 +11,7 @@ extra_git_remote="${EXTRA_GIT_REMOTE:-github}"
 branch="${BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
 skip_npm_install="${SKIP_NPM_INSTALL:-0}"
 version_name="${VERSION_NAME:-prod}"
+release_strategy="${RELEASE_STRATEGY:-remote-source}"
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "$repo_root" ]]; then
@@ -30,7 +31,7 @@ usage() {
 
 模式说明:
   check   仅检查本地 Git 状态、远端提交差异、线上服务接口
-  deploy  检查 -> 推送 Git -> 构建产物 -> 上传 -> 重启 atlas.service -> 验证接口
+  deploy  检查 -> 推送 Git -> 默认远端源码构建 -> 原子切换 -> 验证接口
   all     等同 deploy
 
 常用环境变量:
@@ -43,6 +44,7 @@ usage() {
   BRANCH=main
   VERSION_NAME=prod
   SKIP_NPM_INSTALL=1
+  RELEASE_STRATEGY=remote-source   # 可设为 legacy-binary 使用旧二进制上传流程
 EOF
 }
 
@@ -251,8 +253,24 @@ query_remote_service
 
 if [[ "$mode" == "deploy" || "$mode" == "all" ]]; then
   ensure_ready_for_deploy
-  push_git_updates
-  build_artifacts
-  deploy_remote
-  verify_remote_after_deploy
+  if [[ "$release_strategy" == "remote-source" ]]; then
+    print_section "远端源码构建发布"
+    REMOTE_URL="$remote_url" \
+      REMOTE_SSH="$remote_ssh" \
+      REMOTE_ROOT="$remote_root" \
+      VERSION_NAME="$version_name" \
+      BRANCH="$branch" \
+      GIT_REMOTE="$git_remote" \
+      EXTRA_GIT_REMOTE="$extra_git_remote" \
+      SKIP_NPM_INSTALL="$skip_npm_install" \
+      bash "$repo_root/scripts/deploy_remote_source.sh"
+  elif [[ "$release_strategy" == "legacy-binary" ]]; then
+    push_git_updates
+    build_artifacts
+    deploy_remote
+    verify_remote_after_deploy
+  else
+    echo "未知发布策略: $release_strategy" >&2
+    exit 1
+  fi
 fi

@@ -201,3 +201,82 @@ func TestIdentitySyncImmediatelyRetiresNodesRemovedFromAuthoritativeCatalog(t *t
 		t.Fatal("retired node retained a current health score")
 	}
 }
+
+func TestIdentitySyncCreatesNewGenerationWhenSerialChangesAtSameIP(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &fakePrometheus{}
+	source := &fakeAssetSource{catalog: map[string]string{"10.114.4.21": "H100gpu-21"}}
+	cfg := config.InventoryConfig{ExpectedGPUCount: 2, TargetJobs: []string{"dcgm_exporter"}}
+	service := NewServiceWithAssets(db, reader, cfg, source)
+	now := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	assetSourceRow := api.InfrastructureAsset{
+		AssetKey: "machine-21", Source: "asset_machine", IPAddress: "10.114.4.21",
+		Name: "H100gpu-21", Type: "H100", Model: "server-v1", State: "on",
+		SerialNumber: "SN-OLD", InUse: true, Present: true, EntityKind: "gpu_node",
+	}
+	if err := db.Create(&assetSourceRow).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SyncFull(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var node api.GPUNode
+	if err := db.Where("node_ip = ?", "10.114.4.21").First(&node).Error; err != nil {
+		t.Fatal(err)
+	}
+	if node.AssetSerial != "SN-OLD" || node.IdentityGeneration != 0 {
+		t.Fatalf("unexpected initial node identity: %+v", node)
+	}
+	var oldAssets []api.GPUAsset
+	if err := db.Where("node_id = ? AND current_node_identity = ?", node.ID, true).Find(&oldAssets).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(oldAssets) != 2 {
+		t.Fatalf("expected two initial slots, got %d", len(oldAssets))
+	}
+	score := api.GPUHealthScore{GPUAssetID: oldAssets[0].ID, NodeIP: node.NodeIP, Level: "unknown", Current: true, EvaluatedAt: now}
+	if err := db.Create(&score).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Model(&assetSourceRow).Updates(map[string]any{
+		"serial_number": "SN-NEW",
+		"type":          "H200",
+		"model":         "server-v2",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(10 * time.Minute)
+	if _, err := service.SyncIdentity(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&node, node.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if node.AssetSerial != "SN-NEW" || node.AssetModel != "H200" || node.IdentityGeneration != 1 || node.IdentityChangedAt.IsZero() {
+		t.Fatalf("replacement identity was not recorded: %+v", node)
+	}
+	var oldCount, currentCount int64
+	db.Model(&api.GPUAsset{}).Where("node_id = ? AND current_node_identity = ?", node.ID, false).Count(&oldCount)
+	db.Model(&api.GPUAsset{}).Where("node_id = ? AND current_node_identity = ?", node.ID, true).Count(&currentCount)
+	if oldCount != 2 || currentCount != 2 {
+		t.Fatalf("GPU slot generations were not separated: old=%d current=%d", oldCount, currentCount)
+	}
+	if err := db.First(&score, score.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if score.Current {
+		t.Fatal("old node identity retained a current health score")
+	}
+	var replacement api.AssetChangeEvent
+	if err := db.Where("event_type = ? AND node_ip = ?", "node_replaced", node.NodeIP).First(&replacement).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(replacement.OldValue, "SN-OLD") || !strings.Contains(replacement.NewValue, "SN-NEW") {
+		t.Fatalf("replacement audit lost identity evidence: %+v", replacement)
+	}
+}

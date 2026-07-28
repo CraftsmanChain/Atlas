@@ -33,10 +33,10 @@ func (h *Handler) HandleFleetSummary(w http.ResponseWriter, r *http.Request) {
 	activeNodeIDs := h.db.Model(&api.GPUNode{}).Select("id").Where("lifecycle <> ?", "retired")
 	activeNodeIPs := h.db.Model(&api.GPUNode{}).Select("node_ip").Where("lifecycle <> ?", "retired")
 	h.db.Model(&api.GPUNode{}).Where("lifecycle <> ?", "retired").Count(&nodeTotal)
-	h.db.Model(&api.GPUAsset{}).Where("node_id IN (?)", activeNodeIDs).Count(&gpuTotal)
-	h.db.Model(&api.GPUAsset{}).Where("node_id IN (?) AND current_uuid <> ''", activeNodeIDs).Count(&knownUUIDs)
+	h.db.Model(&api.GPUAsset{}).Where("node_id IN (?) AND current_node_identity = ?", activeNodeIDs, true).Count(&gpuTotal)
+	h.db.Model(&api.GPUAsset{}).Where("node_id IN (?) AND current_node_identity = ? AND current_uuid <> ''", activeNodeIDs, true).Count(&knownUUIDs)
 	h.db.Model(&api.GPUNode{}).Where("lifecycle <> ?", "retired").Select("state AS name, count(*) AS count").Group("state").Scan(&nodeStates)
-	h.db.Model(&api.GPUAsset{}).Where("node_id IN (?)", activeNodeIDs).Select("state AS name, count(*) AS count").Group("state").Scan(&gpuStates)
+	h.db.Model(&api.GPUAsset{}).Where("node_id IN (?) AND current_node_identity = ?", activeNodeIDs, true).Select("state AS name, count(*) AS count").Group("state").Scan(&gpuStates)
 	h.db.Model(&api.CollectorTarget{}).Where("node_ip IN (?)", activeNodeIPs).Select("health AS name, count(*) AS count").Group("health").Scan(&targetHealth)
 	var latest api.InventorySyncRun
 	latestErr := h.db.Where("status = ?", "success").Order("finished_at DESC").First(&latest).Error
@@ -108,7 +108,11 @@ func (h *Handler) HandleNodeDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	var gpus []api.GPUAsset
 	var targets []api.CollectorTarget
-	h.db.Where("node_id = ?", node.ID).Order("gpu_index ASC").Find(&gpus)
+	gpuQuery := h.db.Where("node_id = ?", node.ID)
+	if includeHistory, _ := strconv.ParseBool(r.URL.Query().Get("include_history")); !includeHistory {
+		gpuQuery = gpuQuery.Where("current_node_identity = ?", true)
+	}
+	gpuQuery.Order("node_identity_generation DESC, gpu_index ASC").Find(&gpus)
 	h.db.Where("node_ip = ?", node.NodeIP).Order("job ASC").Find(&targets)
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"node": node, "gpus": gpus, "targets": targets}})
 }
@@ -119,7 +123,7 @@ func (h *Handler) HandleGPUs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	activeNodeIDs := h.db.Model(&api.GPUNode{}).Select("id").Where("lifecycle <> ?", "retired")
-	query := h.db.Model(&api.GPUAsset{}).Where("node_id IN (?)", activeNodeIDs)
+	query := h.db.Model(&api.GPUAsset{}).Where("node_id IN (?) AND current_node_identity = ?", activeNodeIDs, true)
 	for field, column := range map[string]string{"node_ip": "node_ip", "state": "state", "model": "model_name"} {
 		if value := strings.TrimSpace(r.URL.Query().Get(field)); value != "" {
 			query = query.Where(column+" = ?", value)
