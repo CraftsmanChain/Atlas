@@ -7,6 +7,8 @@ commit="${3:?commit is required}"
 remote_root="${ATLAS_REMOTE_ROOT:-/ops/atlas}"
 service_name="${ATLAS_SERVICE_NAME:-atlas.service}"
 build_image="${ATLAS_GO_BUILD_IMAGE:-docker.m.daocloud.io/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac}"
+go_proxy="${ATLAS_GOPROXY:-https://goproxy.cn|https://proxy.golang.org|direct}"
+go_sumdb="${ATLAS_GOSUMDB:-sum.golang.google.cn}"
 
 if [[ ! "$release_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "Invalid release id: $release_id" >&2
@@ -56,6 +58,8 @@ docker run --rm \
   --volume "$remote_root/build-cache/go-mod:/go/pkg/mod" \
   --workdir /src \
   --env CGO_ENABLED=1 \
+  --env "GOPROXY=$go_proxy" \
+  --env "GOSUMDB=$go_sumdb" \
   "$build_image" \
   bash -c "set -euo pipefail
 go build -ldflags '-X main.Version=$version_name -X main.Commit=$commit -X main.BuildTime=$build_time' -o /out/atlas-server ./cmd/server
