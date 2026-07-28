@@ -17,6 +17,7 @@ const (
 )
 
 var gpuTypePattern = regexp.MustCompile(`(?i)^(?:rtx[\s_-]*)?(?:4090|[ahbvltp]\d{2,4}[a-z]*)$`)
+var gpuModelInTextPattern = regexp.MustCompile(`(?i)(?:4090|[ahbvltp]\d{2,4})`)
 
 type sourceAssetView struct {
 	AssetKey string `json:"asset_key"`
@@ -178,7 +179,7 @@ func assetCategory(asset api.InfrastructureAsset) (category, assetType, gpuModel
 	switch normalized {
 	case "交换机":
 		return "network", assetType, ""
-	case "ufm":
+	case "ufm", "防火墙":
 		return "firewall", assetType, ""
 	case "腾讯云":
 		return "cloud", assetType, ""
@@ -191,12 +192,24 @@ func assetCategory(asset api.InfrastructureAsset) (category, assetType, gpuModel
 		return "gpu", assetType, strings.ToUpper(strings.ReplaceAll(assetType, " ", ""))
 	}
 	if asset.EntityKind == "gpu_node" {
-		model := strings.TrimSpace(asset.Model)
-		if gpuTypePattern.MatchString(model) {
-			return "gpu", defaultString(assetType, model), strings.ToUpper(strings.ReplaceAll(model, " ", ""))
+		// ops_host exposes type=server, so an ops-only record has no
+		// authoritative device type. Prefer an explicit model embedded in the
+		// hostname (for example H200gpu-01) over its sometimes stale model
+		// field, then fall back to the model field.
+		model := extractGPUModel(asset.Name)
+		if model == "" {
+			model = extractGPUModel(asset.Model)
+		}
+		if model != "" {
+			return "gpu", model, model
 		}
 	}
 	return "other", defaultString(assetType, "UNKNOWN"), ""
+}
+
+func extractGPUModel(value string) string {
+	match := gpuModelInTextPattern.FindString(strings.TrimSpace(value))
+	return strings.ToUpper(strings.ReplaceAll(match, " ", ""))
 }
 
 func summarizeReconciliation(rows []reconciliationRow) reconciliationSummary {
