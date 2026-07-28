@@ -30,6 +30,12 @@ type Failure = { id: number; source: string; level: string; message: string; pro
 type Report = { status: string; model: string; severity: string; summary: string; probable_causes?: string[]; recommended_actions?: string[]; confidence?: number };
 type ServerStatus = { status: string; version: string; commit: string; build_time: string; server_time: string };
 type PlatformConfig = { instance_name: string; product_name: string; product_tagline: string; environment: string; updated_at?: string };
+type LXOPAssetConfig = {
+  ops_host_url: string; asset_machine_url: string; data_center_id: string;
+  insecure_skip_verify: boolean; enabled: boolean; api_key_configured: boolean;
+  last_sync_status: string; last_sync_error?: string; last_sync_at?: string;
+  last_ops_host_count: number; last_machine_count: number; updated_at?: string;
+};
 type FreshnessSource = { status: string; observed_at?: string; age_seconds?: number; stale_after_seconds: number; source_mode?: string; collection_status?: string; collection_started_at?: string; collection_age_seconds?: number; collection_interval_seconds?: number; message?: string };
 type DataFreshness = { overall_status: string; server_time: string; sources: Record<string, FreshnessSource> };
 type GPUAsset = { id: number; asset_key: string; node_id: number; node_ip: string; gpu_index: number; gpu_uuid: string; device: string; model: string; model_name: string; pci_bus_id: string; host_serial: string; driver_version: string; state: string; sample_state: string; last_seen_at: string; last_synced_at: string };
@@ -702,7 +708,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
     { id: 'degradation', name: tx('性能衰减识别', 'Performance Degradation Detection'), version: 'v0.2.0', status: tx('历史基线影子检测', 'HISTORICAL SHADOW BASELINE'), desc: tx('高负载 SM 时钟检测优先消费成熟的同型号 7 天历史基线，未成熟时以同节点或同型号集群实时中位数兜底；结果不影响健康分，不输出故障概率。', 'High-load SM-clock detection prefers mature same-model seven-day historical baselines and falls back to live same-node or same-model fleet medians. Results do not affect health scores or emit failure probabilities.'), history: [tx('v0.2.0 · 接入型号/负载/版本历史基线，保留实时同类兜底', 'v0.2.0 · model/load/version historical baselines with live peer fallback'), tx('v0.1.0 · 被动候选 API、同类中位数基线、证据/置信度与影子模式页面', 'v0.1.0 · passive candidate APIs, peer-median baseline, evidence/confidence and shadow-mode UI'), tx('v0.0.1 · 性能特征、SuperBench/DCGM 验证和基线契约', 'v0.0.1 · performance features, SuperBench/DCGM validation and baseline contract'), tx('v0.0.0 · 被动检测与主动验证安全门设计', 'v0.0.0 · passive detection and active-validation safety gates')] },
     { id: 'incident', name: tx('告警中心', 'Alert Center'), version: 'v0.3.1', status: tx('结构化接收增强', 'STRUCTURED INGESTION PLUS'), desc: tx('分层管理原始接收记录与 Atlas 硬件告警；兼容新旧飞书卡片，保留源事件时间、主机和定位标签，并对历史 RAW 记录只读回退解析。', 'Separate raw ingestion records and Atlas hardware alerts. Support legacy and current Feishu cards, preserve source event time, host and locator labels, and read-only reparse historical RAW records.'), history: [tx('v0.3.1 · 新版状态总览/定位标签/恢复卡片解析、历史 RAW 回退与完整通知', 'v0.3.1 · current status/locator/recovery card parsing, historical RAW fallback and complete notifications'), tx('v0.3.0 · 硬件告警关联处置台账并支持详情与人工处置', 'v0.3.0 · hardware alerts link to details and operator resolution workflows'), tx('v0.2.2 · 硬件事件稳定 ID 游标、服务端筛选与前端分页', 'v0.2.2 · stable hardware-event ID cursor, server-side filtering and UI pagination'), tx('v0.2.1 · 只读生产接收库、真实总数、游标分页与新鲜度', 'v0.2.1 · read-only production ingestion store, real totals, cursor pagination and freshness'), tx('v0.2.0 · 接收记录、硬件事件与故障案例分层', 'v0.2.0 · ingestion, hardware event and fault case layers'), tx('v0.1.0 · open / recovered 事件生命周期', 'v0.1.0 · open/recovered event lifecycle')] },
     { id: 'issue', name: tx('数据统计', 'Data Statistics'), version: 'v0.5.1', status: tx('分类展示优化', 'CATEGORY UI REFINED'), desc: tx('在统一分类统计和人工处置台账之上，输出经过完整性审核、直接标识脱敏和实体隔离划分的训练/评估数据集，并清晰区分可用性、资产、数据质量与节点访问问题。', 'Build on classified statistics and human resolution records to export training/evaluation data with completeness gates, direct-identifier redaction and entity-isolated splits, while clearly separating availability, inventory, data-quality, and node-access issues.'), history: [tx('v0.5.1 · 问题分类补充节点访问分类和协调尺寸的分类图标', 'v0.5.1 · added the node-access category and consistently sized category icons'), tx('v0.5.0 · atlas-issue-training-v1 增加稳定快照、默认脱敏、质量门、训练/评估划分和页面导出', 'v0.5.0 · atlas-issue-training-v1 added stable snapshots, default redaction, quality gates, train/evaluation splits and UI export'), tx('v0.4.0 · 新增按分类的解决、遗留和当前检测统计', 'v0.4.0 · resolved, remaining and active counts by category'), tx('v0.3.0 · 更名为数据统计，硬件故障迁入告警中心且保留底层处置台账', 'v0.3.0 · renamed Data Statistics; hardware faults moved to Alert Center with resolution records retained'), tx('v0.2.3 · 恢复节点的 GPU/Target 状态同批更新并自动退出遗留统计', 'v0.2.3 · recovered GPU/target state updates in one run and automatically leaves remaining totals'), tx('v0.2.2 · 退休节点历史 Target 问题自动清除并退出活跃统计', 'v0.2.2 · historical target issues on retired nodes are automatically cleared and removed from active analytics')] },
-    { id: 'platform', name: tx('平台实例配置', 'Platform Instance Configuration'), version: 'v0.1.0', status: tx('配置基线完成', 'CONFIGURATION BASELINE'), desc: tx('通过平台概览维护实例名称、产品名称、产品副标题和环境标识，并统一驱动导航、面包屑、环境徽标与浏览器标题。', 'Manage the instance name, product name, product tagline and environment label from Platform Overview, consistently driving navigation, breadcrumbs, environment badges and the browser title.'), history: [tx('v0.1.0 · 数据库持久化、运行时读取、页面编辑与安全字段边界', 'v0.1.0 · database persistence, runtime reads, UI editing and public-field safety boundary')] },
+    { id: 'platform', name: tx('平台实例与资产源配置', 'Platform & Asset Source Configuration'), version: 'v0.2.0', status: tx('LXOP 实时资产接入', 'LXOP LIVE ASSETS'), desc: tx('在平台展示配置之上，支持加密维护 LXOP 双资产接口、数据中心范围和自签名 TLS 兼容，并以实时资产快照驱动 GPU 库存对账。', 'Extends display settings with encrypted LXOP dual-endpoint configuration, explicit data-center scope, self-signed TLS compatibility, and live asset snapshots for GPU inventory reconciliation.'), history: [tx('v0.2.0 · LXOP 运维主机与资产设备双接口、API Key 加密、状态归一、通用资产快照与 GPU 域隔离', 'v0.2.0 · LXOP ops-host and asset-machine endpoints, encrypted API key, normalized lifecycle, general asset snapshots, and GPU-domain isolation'), tx('v0.1.0 · 数据库持久化、运行时读取、页面编辑与安全字段边界', 'v0.1.0 · database persistence, runtime reads, UI editing and public-field safety boundary')] },
     { id: 'validation', name: tx('维修验证闭环', 'Repair Validation Workflow'), version: 'v0.0.0', status: tx('方案阶段', 'DESIGNED'), desc: tx('记录人工维修反馈、根因、修复或更换结果，并通过识别、遥测、错误计数和性能复测验证重新上线。', 'Capture repair feedback, root cause and replacement results, then validate return to service through identity, telemetry, counters and performance checks.'), history: [tx('v0.0.0 · 状态机、维护窗口和验证门设计', 'v0.0.0 · state machine, maintenance window and validation gates')] },
   ];
   const milestones = [
@@ -717,7 +723,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.19.2" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.20.0" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>
@@ -773,7 +779,80 @@ function PlatformSettings({ tx, value, onSaved }: { tx: Tx; value: PlatformConfi
       <dl><div><dt>{tx('浏览器标题', 'Browser title')}</dt><dd>{draft.instance_name || '—'} · {draft.product_name || '—'}</dd></div><div><dt>{tx('生效范围', 'Applied to')}</dt><dd>{tx('侧边栏、面包屑、环境徽标、浏览器标题', 'Sidebar, breadcrumbs, environment badge and browser title')}</dd></div></dl>
       {value.updated_at && <small className="settings-updated">{tx('最近更新', 'Last updated')} · {time(value.updated_at)}</small>}
     </Card>
+    <LXOPAssetSettings tx={tx} />
   </div>;
+}
+
+function LXOPAssetSettings({ tx }: { tx: Tx }) {
+  const empty: LXOPAssetConfig = {
+    ops_host_url: '', asset_machine_url: '', data_center_id: '', insecure_skip_verify: true,
+    enabled: true, api_key_configured: false, last_sync_status: 'not_configured',
+    last_ops_host_count: 0, last_machine_count: 0,
+  };
+  const [config, setConfig] = useState<LXOPAssetConfig>(empty);
+  const [apiKey, setAPIKey] = useState('');
+  const [adminToken, setAdminToken] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    void fetch('/api/v1/platform-config/assets').then(async response => {
+      const payload = await response.json();
+      if (!cancelled && response.ok && payload.data) setConfig({ ...empty, ...payload.data });
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+  const update = <K extends keyof LXOPAssetConfig>(field: K, next: LXOPAssetConfig[K]) => setConfig(current => ({ ...current, [field]: next }));
+  const save = async () => {
+    setSaving(true); setMessage(''); setError('');
+    try {
+      const response = await fetch('/api/v1/platform-config/assets', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-Atlas-Admin-Token': adminToken },
+        body: JSON.stringify({
+          ops_host_url: config.ops_host_url, asset_machine_url: config.asset_machine_url,
+          data_center_id: config.data_center_id, api_key: apiKey,
+          insecure_skip_verify: config.insecure_skip_verify, enabled: config.enabled,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error?.message || `HTTP ${response.status}`);
+      setConfig({ ...empty, ...payload.data }); setAPIKey(''); setAdminToken('');
+      setMessage(tx('资产源配置已加密保存；下一轮同步开始使用', 'Asset source saved encrypted and will be used by the next sync'));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : tx('保存失败', 'Save failed'));
+    } finally { setSaving(false); }
+  };
+  const valid = config.ops_host_url.trim() && config.asset_machine_url.trim() && config.data_center_id.trim() && (config.api_key_configured || apiKey.trim()) && adminToken.trim();
+  return <>
+    <Card className="span-8 lxop-settings">
+      <CardHead code="LXOP ASSET SOURCE" title={tx('实时资产源配置', 'Real-time Asset Source')} action={<Badge value={config.enabled ? 'ENABLED' : 'DISABLED'} kind={config.enabled ? 'healthy' : 'neutral'} />} />
+      <p className="settings-intro">{tx('每轮库存对账只读调用两个 LXOP OpenAPI。API Key 使用 AES-256-GCM 加密保存，保存后不回显；dataCenterId 必须明确配置。', 'Each inventory reconciliation reads both LXOP OpenAPIs. The API key is AES-256-GCM encrypted and never returned; dataCenterId must be explicit.')}</p>
+      <form className="settings-form" onSubmit={event => { event.preventDefault(); void save(); }}>
+        <label><span>{tx('运维主机接口', 'Ops host endpoint')}<small>GET · FULL URL</small></span><input value={config.ops_host_url} onChange={event => update('ops_host_url', event.target.value)} placeholder="https://host:7090/openapi/v1/ops/host/list" /></label>
+        <label><span>{tx('资产设备接口', 'Asset machine endpoint')}<small>GET · FULL URL</small></span><input value={config.asset_machine_url} onChange={event => update('asset_machine_url', event.target.value)} placeholder="https://host:7090/openapi/v1/asset/machine/list" /></label>
+        <label><span>{tx('数据中心 ID', 'Data center ID')}<small>dataCenterId · REQUIRED</small></span><input value={config.data_center_id} onChange={event => update('data_center_id', event.target.value)} /></label>
+        <label><span>X-API-Key<small>{config.api_key_configured ? tx('已加密保存 · 留空保持不变', 'ENCRYPTED · BLANK KEEPS CURRENT') : tx('首次配置必填', 'REQUIRED INITIALLY')}</small></span><input type="password" autoComplete="new-password" value={apiKey} onChange={event => setAPIKey(event.target.value)} placeholder={config.api_key_configured ? '••••••••••••' : 'X-API-Key'} /></label>
+        <label><span>{tx('管理口令', 'Management token')}<small>X-Atlas-Admin-Token</small></span><input type="password" autoComplete="off" value={adminToken} onChange={event => setAdminToken(event.target.value)} /></label>
+        <label className="settings-check"><span>{tx('连接选项', 'Connection options')}<small>INTERNAL COMPATIBILITY</small></span><span className="check-options"><input type="checkbox" checked={config.enabled} onChange={event => update('enabled', event.target.checked)} />{tx('启用实时同步', 'Enable live sync')}<input type="checkbox" checked={config.insecure_skip_verify} onChange={event => update('insecure_skip_verify', event.target.checked)} />{tx('允许自签名 TLS', 'Allow self-signed TLS')}</span></label>
+        {error && <p className="form-error">{error}</p>}
+        {message && <p className="form-success">{message}</p>}
+        <button className="primary-action" type="submit" disabled={saving || !valid}><Save size={15} />{saving ? tx('保存中', 'Saving') : tx('加密保存', 'Save Encrypted')}</button>
+      </form>
+    </Card>
+    <Card className="span-4 settings-preview lxop-status">
+      <CardHead code="SOURCE STATUS" title={tx('资产同步状态', 'Asset Sync Status')} />
+      <div className="preview-environment"><i /><span><b>{config.last_sync_status.toUpperCase()}</b><small>{config.last_sync_at ? time(config.last_sync_at) : tx('等待首次同步', 'Awaiting first sync')}</small></span></div>
+      <dl>
+        <div><dt>{tx('运维主机', 'Ops hosts')}</dt><dd>{config.last_ops_host_count}</dd></div>
+        <div><dt>{tx('资产设备', 'Machines')}</dt><dd>{config.last_machine_count}</dd></div>
+        <div><dt>API KEY</dt><dd>{config.api_key_configured ? tx('已加密保存', 'Encrypted at rest') : tx('未配置', 'Not configured')}</dd></div>
+        <div><dt>{tx('在用状态', 'In-use states')}</dt><dd><code>on</code> · <code>已上架使用中</code></dd></div>
+      </dl>
+      {config.last_sync_error && <p className="form-error">{config.last_sync_error}</p>}
+    </Card>
+  </>;
 }
 
 function FaultEventList({ tx, items }: { tx: Tx; items: FaultEvent[] }) { return <div className="event-list">{items.map(x => <div className="event-row" key={x.id}><Badge value={x.severity.toUpperCase()} kind={tone(x.severity)} /><span><b>{x.rule_code}</b><small>{x.node_ip} · GPU {x.gpu_index} · {x.evidence}</small></span><code>×{x.occurrence_count}</code></div>)}{items.length === 0 && <Empty tx={tx} title={tx('无未恢复硬件事件', 'No open hardware events')} />}</div>; }

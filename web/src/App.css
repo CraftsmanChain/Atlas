@@ -164,6 +164,11 @@ main { min-height:100vh; margin-left:var(--sidebar-width); }.topbar { position:s
 .settings-preview dl { display:grid; gap:0; margin:18px 0 0; }.settings-preview dl>div { display:grid; grid-template-columns:120px 1fr; gap:12px; padding:11px 0; border-top:1px solid var(--border); }
 .settings-preview dt { color:var(--faint); font-size:10px; }.settings-preview dd { margin:0; color:var(--text); font-size:11px; line-height:1.5; overflow-wrap:anywhere; }
 .settings-updated { margin-top:auto; padding-top:18px; color:var(--faint); font:9px ui-monospace,monospace; }
+.settings-form .settings-check { align-items:start; }
+.settings-form .check-options { display:flex; align-items:center; flex-wrap:wrap; gap:8px 10px; color:var(--muted); font-size:11px; font-weight:500; }
+.settings-form .check-options input { width:15px; height:15px; padding:0; }
+.lxop-settings,.lxop-status { min-height:auto; }
+.lxop-status .form-error { margin-top:12px; overflow-wrap:anywhere; }
 @media(max-width:620px){.settings-form label{grid-template-columns:1fr;gap:7px}.settings-preview dl>div{grid-template-columns:1fr;gap:5px}}
 
 /* Passive performance degradation */

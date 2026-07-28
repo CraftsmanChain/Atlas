@@ -2,6 +2,29 @@ package api
 
 import "time"
 
+// InfrastructureAsset is the latest durable LXOP source snapshot. It covers
+// GPU/CPU hosts and is intentionally extensible to network and other devices.
+type InfrastructureAsset struct {
+	ID           uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	AssetKey     string    `json:"asset_key" gorm:"uniqueIndex;not null"`
+	Source       string    `json:"source" gorm:"index;not null"` // ops_host/asset_machine
+	DataCenterID string    `json:"data_center_id" gorm:"index"`
+	IPAddress    string    `json:"ip_address" gorm:"index"`
+	Name         string    `json:"name" gorm:"index"`
+	Type         string    `json:"type" gorm:"index"`
+	Model        string    `json:"model" gorm:"index"`
+	State        string    `json:"state" gorm:"index"`
+	SerialNumber string    `json:"sn" gorm:"index"`
+	InUse        bool      `json:"in_use" gorm:"index"`
+	Present      bool      `json:"present" gorm:"index"`
+	EntityKind   string    `json:"entity_kind" gorm:"index"` // gpu_node/cpu_node/network/unknown
+	FirstSeenAt  time.Time `json:"first_seen_at"`
+	LastSeenAt   time.Time `json:"last_seen_at" gorm:"index"`
+	LastSyncedAt time.Time `json:"last_synced_at" gorm:"index"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 // InventorySyncRun is the audit record for one Prometheus reconciliation.
 type InventorySyncRun struct {
 	ID             uint       `json:"id" gorm:"primaryKey;autoIncrement"`

@@ -215,6 +215,44 @@ func (h *Handler) HandleChanges(w http.ResponseWriter, r *http.Request) {
 	writeList(w, rows, total, limit, offset)
 }
 
+func (h *Handler) HandleSourceAssets(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	query := h.db.Model(&api.InfrastructureAsset{})
+	for field, column := range map[string]string{
+		"source": "source", "data_center_id": "data_center_id", "entity_kind": "entity_kind", "state": "state",
+	} {
+		if value := strings.TrimSpace(r.URL.Query().Get(field)); value != "" {
+			query = query.Where(column+" = ?", value)
+		}
+	}
+	if value := strings.TrimSpace(r.URL.Query().Get("in_use")); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			query = query.Where("in_use = ?", parsed)
+		}
+	}
+	if value := strings.TrimSpace(r.URL.Query().Get("present")); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			query = query.Where("present = ?", parsed)
+		}
+	}
+	if value := strings.TrimSpace(r.URL.Query().Get("q")); value != "" {
+		like := "%" + strings.ToLower(value) + "%"
+		query = query.Where("LOWER(ip_address) LIKE ? OR LOWER(name) LIKE ? OR LOWER(type) LIKE ? OR LOWER(model) LIKE ? OR LOWER(serial_number) LIKE ?", like, like, like, like, like)
+	}
+	var total int64
+	query.Count(&total)
+	limit, offset := pagination(r, 200, 2000)
+	var rows []api.InfrastructureAsset
+	if err := query.Order("ip_address ASC, source ASC").Limit(limit).Offset(offset).Find(&rows).Error; err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeList(w, rows, total, limit, offset)
+}
+
 func pagination(r *http.Request, defaultLimit, maxLimit int) (int, int) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
