@@ -258,7 +258,7 @@ func (s *AssetSource) fetch(ctx context.Context, endpoint, dataCenterID, key str
 		return nil, fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
 	}
 	var payload struct {
-		Code    int    `json:"code"`
+		Code    *int   `json:"code"`
 		Message string `json:"message"`
 		Data    struct {
 			List []LXOPAsset `json:"list"`
@@ -268,8 +268,8 @@ func (s *AssetSource) fetch(ctx context.Context, endpoint, dataCenterID, key str
 	if err := decoder.Decode(&payload); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
-	if payload.Code != http.StatusOK {
-		return nil, fmt.Errorf("LXOP code %d: %s", payload.Code, payload.Message)
+	if payload.Code != nil && *payload.Code != http.StatusOK {
+		return nil, fmt.Errorf("LXOP code %d: %s", *payload.Code, payload.Message)
 	}
 	return payload.Data.List, nil
 }

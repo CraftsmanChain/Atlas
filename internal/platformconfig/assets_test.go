@@ -62,7 +62,9 @@ func TestAssetSyncPersistsBothSourcesAndFiltersActiveGPUAssets(t *testing.T) {
 				return jsonResponse(http.StatusUnauthorized, `{"code":401,"message":"Unauthorized"}`), nil
 			}
 			if r.URL.Path == "/ops" {
-				return jsonResponse(http.StatusOK, `{"code":200,"message":"success","data":{"list":[{"dataCenterId":"dc-1","ipAddress":"10.0.0.1","name":"H100gpu-01","type":"server","model":"H100","state":"on","sn":"GPU-1"},{"dataCenterId":"dc-1","ipAddress":"10.0.0.2","name":"cpu-01","type":"server","model":"CPU","state":"on","sn":"CPU-1"}]}}`), nil
+				// The deployed LXOP omits the optional application code and relies
+				// on HTTP 200. Atlas accepts both this shape and explicit code=200.
+				return jsonResponse(http.StatusOK, `{"data":{"list":[{"dataCenterId":"dc-1","ipAddress":"10.0.0.1","name":"H100gpu-01","type":"server","model":"H100","state":"on","sn":"GPU-1"},{"dataCenterId":"dc-1","ipAddress":"10.0.0.2","name":"cpu-01","type":"server","model":"CPU","state":"on","sn":"CPU-1"}]}}`), nil
 			}
 			return jsonResponse(http.StatusOK, `{"code":200,"message":"success","data":{"list":[{"dataCenterId":"dc-1","ipAddress":"10.0.0.3","name":"H100gpu-03","type":"H100","model":"SYSGP801","state":"已上架使用中","sn":"GPU-3"},{"dataCenterId":"dc-1","ipAddress":"10.0.0.4","name":"H100gpu-04","type":"H100","model":"SYSGP801","state":"下架","sn":"GPU-4"}]}}`), nil
 		})}
