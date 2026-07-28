@@ -233,6 +233,7 @@ func main() {
 	mux.HandleFunc("/api/v1/sync-runs", inventoryHandler.HandleSyncRuns)
 	mux.HandleFunc("/api/v1/inventory/changes", inventoryHandler.HandleChanges)
 	mux.HandleFunc("/api/v1/inventory/source-assets", inventoryHandler.HandleSourceAssets)
+	mux.HandleFunc("/api/v1/inventory/reconciliation", inventoryHandler.HandleReconciliation)
 	mux.HandleFunc("/api/v1/health/summary", healthHandler.HandleSummary)
 	mux.HandleFunc("/api/v1/health/gpus", healthHandler.HandleScores)
 	mux.HandleFunc("/api/v1/health/runs", healthHandler.HandleRuns)
