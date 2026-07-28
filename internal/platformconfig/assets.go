@@ -317,14 +317,17 @@ func isInUseState(state string) bool {
 
 func classifyAsset(item LXOPAsset) string {
 	value := strings.ToLower(strings.Join([]string{item.Name, item.Type, item.Model}, " "))
+	// Device identity wins over topology-oriented names such as GPU_Spine or
+	// GPU1-32_leaf: those switches belong to the GPU fabric, not the GPU-node
+	// health domain.
+	for _, hint := range []string{"switch", "交换机", "network", "网络", "spine", "leaf"} {
+		if strings.Contains(value, hint) {
+			return "network"
+		}
+	}
 	for _, hint := range []string{"gpu", "h100", "h800", "a800", "a100", "4090", "l40", "v100", "rtx"} {
 		if strings.Contains(value, hint) {
 			return "gpu_node"
-		}
-	}
-	for _, hint := range []string{"switch", "交换机", "network", "网络"} {
-		if strings.Contains(value, hint) {
-			return "network"
 		}
 	}
 	for _, hint := range []string{"server", "服务器", "cpu"} {
