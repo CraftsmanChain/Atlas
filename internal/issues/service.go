@@ -59,6 +59,9 @@ func (s *Service) SyncDetectedIssues() error {
 	defer s.mu.Unlock()
 	now := s.now()
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := deleteRetiredNodeMonitoringHistory(tx); err != nil {
+			return err
+		}
 		activeBySource := map[string]map[string]bool{
 			"inventory_node": {}, "inventory_gpu": {}, "collector_target": {}, "health_score": {}, "telemetry_continuity": {}, "source_consistency": {},
 		}
@@ -118,7 +121,7 @@ func (s *Service) SyncDetectedIssues() error {
 		}
 
 		var unknownScores []api.GPUHealthScore
-		if err := tx.Where("current = ? AND (score IS NULL OR level = ?)", true, "unknown").Find(&unknownScores).Error; err != nil {
+		if err := tx.Where("current = ? AND node_ip IN (?) AND (score IS NULL OR level = ?)", true, activeNodeIPs, "unknown").Find(&unknownScores).Error; err != nil {
 			return err
 		}
 		for _, score := range unknownScores {
@@ -133,7 +136,7 @@ func (s *Service) SyncDetectedIssues() error {
 		var currentSnapshots []api.GPUFeatureSnapshot
 		if err := tx.Model(&api.GPUFeatureSnapshot{}).
 			Joins("JOIN gpu_health_scores ON gpu_health_scores.feature_snapshot_id = gpu_feature_snapshots.id").
-			Where("gpu_health_scores.current = ?", true).
+			Where("gpu_health_scores.current = ? AND gpu_feature_snapshots.node_ip IN (?)", true, activeNodeIPs).
 			Find(&currentSnapshots).Error; err != nil {
 			return err
 		}
@@ -172,6 +175,42 @@ func (s *Service) SyncDetectedIssues() error {
 		}
 		return nil
 	})
+}
+
+// deleteRetiredNodeMonitoringHistory removes false-positive monitoring
+// history after an asset leaves the authoritative in-use GPU set. Hardware
+// fault events are intentionally excluded because they are real operational
+// evidence even when a node is later powered off or removed.
+func deleteRetiredNodeMonitoringHistory(tx *gorm.DB) error {
+	activeNodeIPs := tx.Model(&api.GPUNode{}).Select("node_ip").Where("lifecycle <> ?", "retired")
+	automaticSources := []string{
+		"inventory_node",
+		"inventory_gpu",
+		"collector_target",
+		"health_score",
+		"telemetry_continuity",
+		"source_consistency",
+		"node_access_auth",
+	}
+	var stale []api.PlatformIssue
+	if err := tx.Where(
+		"node_ip <> '' AND node_ip NOT IN (?) AND detection_source IN ?",
+		activeNodeIPs,
+		automaticSources,
+	).Find(&stale).Error; err != nil {
+		return err
+	}
+	if len(stale) == 0 {
+		return nil
+	}
+	ids := make([]uint, 0, len(stale))
+	for _, issue := range stale {
+		ids = append(ids, issue.ID)
+	}
+	if err := tx.Where("issue_id IN ?", ids).Delete(&api.IssueResolution{}).Error; err != nil {
+		return err
+	}
+	return tx.Where("id IN ?", ids).Delete(&api.PlatformIssue{}).Error
 }
 
 func upsertDetected(tx *gorm.DB, item detectedIssue, now time.Time) error {

@@ -12,17 +12,34 @@ import (
 	"atlas/pkg/storage"
 )
 
+func seedActiveGPU(t *testing.T, db *storage.DB, nodeIP string, gpuIndex int) api.GPUAsset {
+	t.Helper()
+	var node api.GPUNode
+	if err := db.Where("node_ip = ?", nodeIP).First(&node).Error; err != nil {
+		node = api.GPUNode{NodeIP: nodeIP, State: "up", Lifecycle: "active", ExpectedGPUCount: 8, ObservedGPUCount: 8}
+		if err := db.Create(&node).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	asset := api.GPUAsset{AssetKey: fmt.Sprintf("%s:%d", nodeIP, gpuIndex), NodeID: node.ID, NodeIP: nodeIP, GPUIndex: gpuIndex, State: "active"}
+	if err := db.Create(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	return asset
+}
+
 func TestHealthAPIExposesFallbackAndSourceDifferenceProvenance(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot := api.GPUFeatureSnapshot{MetricSources: api.StringMap{"gpu_temp": "gpu_exporter"}, SourcesAvailable: api.StringList{"dcgm_exporter", "gpu_exporter"}, FallbackMetricCount: 1, ConsistencyCandidates: api.StringList{"gpu_temp_max_15m: dcgm=60 gpu_exporter=70"}, ConsistencyCandidateCount: 1, ObservedAt: time.Now()}
+	asset := seedActiveGPU(t, db, "10.114.4.21", 0)
+	snapshot := api.GPUFeatureSnapshot{GPUAssetID: asset.ID, NodeIP: asset.NodeIP, MetricSources: api.StringMap{"gpu_temp": "gpu_exporter"}, SourcesAvailable: api.StringList{"dcgm_exporter", "gpu_exporter"}, FallbackMetricCount: 1, ConsistencyCandidates: api.StringList{"gpu_temp_max_15m: dcgm=60 gpu_exporter=70"}, ConsistencyCandidateCount: 1, ObservedAt: time.Now()}
 	if err := db.Create(&snapshot).Error; err != nil {
 		t.Fatal(err)
 	}
 	scoreValue := 100
-	score := api.GPUHealthScore{FeatureSnapshotID: snapshot.ID, GPUAssetID: 1, GPUUUID: "GPU-A", Score: &scoreValue, Level: "healthy", DataConfidence: "C", Current: true, EvaluatedAt: time.Now()}
+	score := api.GPUHealthScore{FeatureSnapshotID: snapshot.ID, GPUAssetID: asset.ID, NodeIP: asset.NodeIP, GPUUUID: "GPU-A", Score: &scoreValue, Level: "healthy", DataConfidence: "C", Current: true, EvaluatedAt: time.Now()}
 	if err := db.Create(&score).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -36,6 +53,62 @@ func TestHealthAPIExposesFallbackAndSourceDifferenceProvenance(t *testing.T) {
 	handler.HandleSummary(response, httptest.NewRequest("GET", "/api/v1/health/summary", nil))
 	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"fallback_gpus":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"source_difference_gpus":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"inconsistent_gpus":0`)) {
 		t.Fatalf("unexpected summary response: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestHealthAPIsExcludeRetiredNodesFromCurrentViews(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := seedActiveGPU(t, db, "10.114.4.21", 0)
+	retiredNode := api.GPUNode{NodeIP: "10.111.4.23", State: "offline", Lifecycle: "retired"}
+	if err := db.Create(&retiredNode).Error; err != nil {
+		t.Fatal(err)
+	}
+	retired := api.GPUAsset{AssetKey: "10.111.4.23:0", NodeID: retiredNode.ID, NodeIP: retiredNode.NodeIP, GPUIndex: 0, State: "uuid_unknown"}
+	if err := db.Create(&retired).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	finished := now
+	run := api.HealthEvaluationRun{Status: "success", StartedAt: now.Add(-time.Minute), FinishedAt: &finished}
+	if err := db.Create(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	activeSnapshot := api.GPUFeatureSnapshot{EvaluationRunID: run.ID, GPUAssetID: active.ID, NodeIP: active.NodeIP, GPUIndex: 0, Metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15}, ObservedAt: now}
+	retiredSnapshot := api.GPUFeatureSnapshot{EvaluationRunID: run.ID, GPUAssetID: retired.ID, NodeIP: retired.NodeIP, GPUIndex: 0, Metrics: api.FloatMap{}, ObservedAt: now}
+	if err := db.Create(&[]api.GPUFeatureSnapshot{activeSnapshot, retiredSnapshot}).Error; err != nil {
+		t.Fatal(err)
+	}
+	scoreValue := 100
+	scores := []api.GPUHealthScore{
+		{GPUAssetID: active.ID, NodeIP: active.NodeIP, Score: &scoreValue, Level: "healthy", Current: true, EvaluatedAt: now},
+		{GPUAssetID: retired.ID, NodeIP: retired.NodeIP, Level: "unknown", Current: true, EvaluatedAt: now},
+	}
+	if err := db.Create(&scores).Error; err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(db)
+	for _, call := range []struct {
+		path string
+		run  func(*httptest.ResponseRecorder)
+	}{
+		{path: "/api/v1/health/summary", run: func(response *httptest.ResponseRecorder) {
+			handler.HandleSummary(response, httptest.NewRequest("GET", "/api/v1/health/summary", nil))
+		}},
+		{path: "/api/v1/health/gpus", run: func(response *httptest.ResponseRecorder) {
+			handler.HandleScores(response, httptest.NewRequest("GET", "/api/v1/health/gpus", nil))
+		}},
+		{path: "/api/v1/health/telemetry-quality", run: func(response *httptest.ResponseRecorder) {
+			handler.HandleTelemetryQuality(response, httptest.NewRequest("GET", "/api/v1/health/telemetry-quality", nil))
+		}},
+	} {
+		response := httptest.NewRecorder()
+		call.run(response)
+		if response.Code != 200 || bytes.Contains(response.Body.Bytes(), []byte("10.111.4.23")) {
+			t.Fatalf("%s exposed retired node: %d %s", call.path, response.Code, response.Body.String())
+		}
 	}
 }
 
@@ -143,10 +216,15 @@ func TestTelemetryQualitySummaryAndClassification(t *testing.T) {
 	if err := db.Create(&run).Error; err != nil {
 		t.Fatal(err)
 	}
+	assets := []api.GPUAsset{
+		seedActiveGPU(t, db, "10.114.4.21", 0),
+		seedActiveGPU(t, db, "10.114.4.21", 1),
+		seedActiveGPU(t, db, "10.114.4.21", 2),
+	}
 	snapshots := []api.GPUFeatureSnapshot{
-		{EvaluationRunID: run.ID, GPUAssetID: 1, GPUUUID: "GPU-A", NodeIP: "10.114.4.21", GPUIndex: 0, Metrics: api.FloatMap{"gpu_metric_samples_1h": 240, "gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "gpu_metric_gap_max_seconds_1h": 15, "gpu_uuid_presence_flap_count_1h": 0, "target_scrape_success_ratio_5m": 100, "target_scrape_samples_ratio_5m": 100, "target_scrape_duration_ratio_5m": 110}, FeatureCatalogVersion: "1.5.0", ObservedAt: now},
-		{EvaluationRunID: run.ID, GPUAssetID: 2, GPUUUID: "GPU-B", NodeIP: "10.114.4.21", GPUIndex: 1, Metrics: api.FloatMap{"gpu_metric_samples_1h": 180, "gpu_metric_presence_ratio_1h": 75, "gpu_metric_sample_age_seconds": 20, "gpu_metric_gap_max_seconds_1h": 150, "gpu_uuid_presence_flap_count_1h": 2}, FeatureCatalogVersion: "1.5.0", ObservedAt: now},
-		{EvaluationRunID: run.ID, GPUAssetID: 3, GPUUUID: "GPU-C", NodeIP: "10.114.4.21", GPUIndex: 2, Metrics: api.FloatMap{}, FeatureCatalogVersion: "1.5.0", ObservedAt: now},
+		{EvaluationRunID: run.ID, GPUAssetID: assets[0].ID, GPUUUID: "GPU-A", NodeIP: "10.114.4.21", GPUIndex: 0, Metrics: api.FloatMap{"gpu_metric_samples_1h": 240, "gpu_metric_presence_ratio_1h": 100, "gpu_metric_sample_age_seconds": 15, "gpu_metric_gap_max_seconds_1h": 15, "gpu_uuid_presence_flap_count_1h": 0, "target_scrape_success_ratio_5m": 100, "target_scrape_samples_ratio_5m": 100, "target_scrape_duration_ratio_5m": 110}, FeatureCatalogVersion: "1.5.0", ObservedAt: now},
+		{EvaluationRunID: run.ID, GPUAssetID: assets[1].ID, GPUUUID: "GPU-B", NodeIP: "10.114.4.21", GPUIndex: 1, Metrics: api.FloatMap{"gpu_metric_samples_1h": 180, "gpu_metric_presence_ratio_1h": 75, "gpu_metric_sample_age_seconds": 20, "gpu_metric_gap_max_seconds_1h": 150, "gpu_uuid_presence_flap_count_1h": 2}, FeatureCatalogVersion: "1.5.0", ObservedAt: now},
+		{EvaluationRunID: run.ID, GPUAssetID: assets[2].ID, GPUUUID: "GPU-C", NodeIP: "10.114.4.21", GPUIndex: 2, Metrics: api.FloatMap{}, FeatureCatalogVersion: "1.5.0", ObservedAt: now},
 	}
 	if err := db.Create(&snapshots).Error; err != nil {
 		t.Fatal(err)

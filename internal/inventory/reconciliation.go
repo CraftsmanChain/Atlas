@@ -63,7 +63,7 @@ func (h *Handler) HandleReconciliation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var assets []api.InfrastructureAsset
-	if err := h.db.Where("present = ?", true).Order("source ASC, id ASC").Find(&assets).Error; err != nil {
+	if err := h.db.Where("present = ? AND in_use = ?", true, true).Order("source ASC, id ASC").Find(&assets).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -30,15 +30,16 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 	var fallbackGPUs, consistencyCandidateGPUs int64
 	var average float64
 	var levels, confidence []countRow
-	query := h.db.Model(&api.GPUHealthScore{}).Where("current = ?", true)
+	activeNodeIPs := h.db.Model(&api.GPUNode{}).Select("node_ip").Where("lifecycle <> ?", "retired")
+	query := h.db.Model(&api.GPUHealthScore{}).Where("current = ? AND node_ip IN (?)", true, activeNodeIPs)
 	query.Count(&total)
 	query.Where("score IS NOT NULL").Count(&scored)
 	unknown = total - scored
-	h.db.Model(&api.GPUHealthScore{}).Where("current = ? AND score IS NOT NULL", true).Select("coalesce(avg(score), 0)").Scan(&average)
-	h.db.Model(&api.GPUHealthScore{}).Where("current = ?", true).Select("level AS name, count(*) AS count").Group("level").Scan(&levels)
-	h.db.Model(&api.GPUHealthScore{}).Where("current = ?", true).Select("data_confidence AS name, count(*) AS count").Group("data_confidence").Scan(&confidence)
-	h.db.Model(&api.GPUHealthScore{}).Joins("JOIN gpu_feature_snapshots ON gpu_feature_snapshots.id = gpu_health_scores.feature_snapshot_id").Where("gpu_health_scores.current = ? AND gpu_feature_snapshots.fallback_metric_count > 0", true).Count(&fallbackGPUs)
-	h.db.Model(&api.GPUHealthScore{}).Joins("JOIN gpu_feature_snapshots ON gpu_feature_snapshots.id = gpu_health_scores.feature_snapshot_id").Where("gpu_health_scores.current = ? AND gpu_feature_snapshots.consistency_candidate_count > 0", true).Count(&consistencyCandidateGPUs)
+	h.db.Model(&api.GPUHealthScore{}).Where("current = ? AND node_ip IN (?) AND score IS NOT NULL", true, activeNodeIPs).Select("coalesce(avg(score), 0)").Scan(&average)
+	h.db.Model(&api.GPUHealthScore{}).Where("current = ? AND node_ip IN (?)", true, activeNodeIPs).Select("level AS name, count(*) AS count").Group("level").Scan(&levels)
+	h.db.Model(&api.GPUHealthScore{}).Where("current = ? AND node_ip IN (?)", true, activeNodeIPs).Select("data_confidence AS name, count(*) AS count").Group("data_confidence").Scan(&confidence)
+	h.db.Model(&api.GPUHealthScore{}).Joins("JOIN gpu_feature_snapshots ON gpu_feature_snapshots.id = gpu_health_scores.feature_snapshot_id").Where("gpu_health_scores.current = ? AND gpu_health_scores.node_ip IN (?) AND gpu_feature_snapshots.fallback_metric_count > 0", true, activeNodeIPs).Count(&fallbackGPUs)
+	h.db.Model(&api.GPUHealthScore{}).Joins("JOIN gpu_feature_snapshots ON gpu_feature_snapshots.id = gpu_health_scores.feature_snapshot_id").Where("gpu_health_scores.current = ? AND gpu_health_scores.node_ip IN (?) AND gpu_feature_snapshots.consistency_candidate_count > 0", true, activeNodeIPs).Count(&consistencyCandidateGPUs)
 	var latest api.HealthEvaluationRun
 	var latestValue any
 	if h.db.Where("status = ?", "success").Order("finished_at DESC").First(&latest).Error == nil {
@@ -52,7 +53,8 @@ func (h *Handler) HandleScores(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	query := h.db.Model(&api.GPUHealthScore{}).Where("current = ?", true)
+	activeNodeIPs := h.db.Model(&api.GPUNode{}).Select("node_ip").Where("lifecycle <> ?", "retired")
+	query := h.db.Model(&api.GPUHealthScore{}).Where("current = ? AND node_ip IN (?)", true, activeNodeIPs)
 	for field, column := range map[string]string{"node_ip": "node_ip", "level": "level", "data_confidence": "data_confidence", "model": "model_name"} {
 		if value := strings.TrimSpace(r.URL.Query().Get(field)); value != "" {
 			query = query.Where(column+" = ?", value)
@@ -149,8 +151,9 @@ func (h *Handler) HandleTelemetryQuality(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusOK, map[string]any{"data": []telemetryQualityItem{}, "summary": map[string]any{"total": 0, "by_status": map[string]int64{}, "feature_catalog_version": ""}, "meta": map[string]any{"total": 0}})
 		return
 	}
+	activeNodeIPs := h.db.Model(&api.GPUNode{}).Select("node_ip").Where("lifecycle <> ?", "retired")
 	var snapshots []api.GPUFeatureSnapshot
-	if err := h.db.Where("evaluation_run_id = ?", latest.ID).Order("node_ip ASC, gpu_index ASC").Find(&snapshots).Error; err != nil {
+	if err := h.db.Where("evaluation_run_id = ? AND node_ip IN (?)", latest.ID, activeNodeIPs).Order("node_ip ASC, gpu_index ASC").Find(&snapshots).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

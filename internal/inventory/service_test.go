@@ -8,11 +8,24 @@ import (
 	"testing"
 	"time"
 
+	"atlas/internal/platformconfig"
 	"atlas/internal/prometheus"
 	"atlas/pkg/api"
 	"atlas/pkg/config"
 	"atlas/pkg/storage"
 )
+
+type fakeAssetSource struct {
+	catalog map[string]string
+}
+
+func (f *fakeAssetSource) Sync(context.Context) (*platformconfig.AssetSyncResult, error) {
+	return &platformconfig.AssetSyncResult{Configured: true, GPUCatalog: f.catalog}, nil
+}
+
+func (f *fakeAssetSource) LastGPUCatalog() (map[string]string, error) {
+	return f.catalog, nil
+}
 
 type fakePrometheus struct {
 	targets          []prometheus.Target
@@ -130,5 +143,61 @@ func TestSyncBuildsSlotsRecoversHistoryAndTracksReplacement(t *testing.T) {
 	db.Where("sync_run_id = ? AND event_type = ?", targetRun.ID, "target_state_changed").Find(&targetChanges)
 	if len(targetChanges) != 1 || targetChanges[0].AssetKey != "dcgm_exporter|10.114.4.21" || targetChanges[0].NewValue != "down" {
 		t.Fatalf("unexpected target changes: %+v", targetChanges)
+	}
+}
+
+func TestIdentitySyncImmediatelyRetiresNodesRemovedFromAuthoritativeCatalog(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &fakePrometheus{}
+	source := &fakeAssetSource{catalog: map[string]string{
+		"10.114.4.21": "H100gpu-21",
+		"10.114.4.23": "H100gpu-23",
+	}}
+	cfg := config.InventoryConfig{
+		ExpectedGPUCount: 1,
+		TargetJobs:       []string{"dcgm_exporter"},
+	}
+	service := NewServiceWithAssets(db, reader, cfg, source)
+	now := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	if _, err := service.SyncFull(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var retiredAsset api.GPUAsset
+	if err := db.Where("node_ip = ?", "10.114.4.23").First(&retiredAsset).Error; err != nil {
+		t.Fatal(err)
+	}
+	score := api.GPUHealthScore{
+		GPUAssetID:  retiredAsset.ID,
+		NodeIP:      retiredAsset.NodeIP,
+		Level:       "unknown",
+		Current:     true,
+		EvaluatedAt: now,
+	}
+	if err := db.Create(&score).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	source.catalog = map[string]string{"10.114.4.21": "H100gpu-21"}
+	now = now.Add(10 * time.Minute)
+	run, err := service.SyncIdentity(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var removed api.GPUNode
+	if err := db.Where("node_ip = ?", "10.114.4.23").First(&removed).Error; err != nil {
+		t.Fatal(err)
+	}
+	if removed.Lifecycle != "retired" || run.ChangeCount == 0 {
+		t.Fatalf("authoritative removal was not applied in identity sync: node=%+v run=%+v", removed, run)
+	}
+	if err := db.First(&score, score.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if score.Current {
+		t.Fatal("retired node retained a current health score")
 	}
 }
