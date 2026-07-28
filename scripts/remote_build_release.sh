@@ -57,7 +57,7 @@ docker run --rm \
   --workdir /src \
   --env CGO_ENABLED=1 \
   "$build_image" \
-  bash -lc "set -euo pipefail
+  bash -c "set -euo pipefail
 go build -ldflags '-X main.Version=$version_name -X main.Commit=$commit -X main.BuildTime=$build_time' -o /out/atlas-server ./cmd/server
 go build -o /out/atlas-db-migrate ./cmd/dbmigrate
 "

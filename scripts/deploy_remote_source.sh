@@ -17,7 +17,7 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 commit="$(git rev-parse --short HEAD)"
-release_id="${version_name}-${commit}"
+release_id="${version_name}-${commit}-$(date -u +%Y%m%dT%H%M%SZ)"
 temporary_dir="$(mktemp -d)"
 cleanup() {
   rm -rf "$temporary_dir"
