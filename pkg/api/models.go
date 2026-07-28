@@ -125,6 +125,26 @@ type PlatformDisplayConfig struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+// LXOPAssetConfig stores the singleton connection configuration for the
+// read-only LXOP asset OpenAPI. APIKeyCiphertext is never serialized.
+type LXOPAssetConfig struct {
+	ID                 uint       `json:"-" gorm:"primaryKey"`
+	OpsHostURL         string     `json:"ops_host_url"`
+	AssetMachineURL    string     `json:"asset_machine_url"`
+	DataCenterID       string     `json:"data_center_id" gorm:"index"`
+	APIKeyCiphertext   []byte     `json:"-" gorm:"not null"`
+	KeyVersion         string     `json:"-" gorm:"size:24;not null"`
+	InsecureSkipVerify bool       `json:"insecure_skip_verify"`
+	Enabled            bool       `json:"enabled" gorm:"index"`
+	LastSyncStatus     string     `json:"last_sync_status" gorm:"index"`
+	LastSyncError      string     `json:"last_sync_error,omitempty" gorm:"type:text"`
+	LastSyncAt         *time.Time `json:"last_sync_at,omitempty" gorm:"index"`
+	LastOpsHostCount   int        `json:"last_ops_host_count"`
+	LastMachineCount   int        `json:"last_machine_count"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
 // NodeCredentialProfile stores only encrypted node-access credential material.
 // Ciphertext contains an AEAD-protected username/password payload and must
 // never be serialized by an API.

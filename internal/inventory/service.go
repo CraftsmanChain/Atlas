@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"atlas/internal/platformconfig"
 	"atlas/internal/prometheus"
 	"atlas/pkg/api"
 	"atlas/pkg/config"
@@ -25,9 +26,15 @@ type prometheusReader interface {
 	Query(context.Context, string) ([]prometheus.Sample, error)
 }
 
+type assetSource interface {
+	Sync(context.Context) (*platformconfig.AssetSyncResult, error)
+	LastGPUCatalog() (map[string]string, error)
+}
+
 type Service struct {
 	db     *storage.DB
 	prom   prometheusReader
+	assets assetSource
 	config config.InventoryConfig
 	now    func() time.Time
 }
@@ -45,6 +52,12 @@ const (
 
 func NewService(db *storage.DB, prom prometheusReader, cfg config.InventoryConfig) *Service {
 	return &Service{db: db, prom: prom, config: cfg, now: time.Now}
+}
+
+func NewServiceWithAssets(db *storage.DB, prom prometheusReader, cfg config.InventoryConfig, assets assetSource) *Service {
+	service := NewService(db, prom, cfg)
+	service.assets = assets
+	return service
 }
 
 // Run establishes a full baseline, then performs one combined monitoring
@@ -106,7 +119,7 @@ func (s *Service) SyncTargets(ctx context.Context) (*api.InventorySyncRun, error
 	if err != nil {
 		return s.failRun(run, err)
 	}
-	catalog, err := loadGPUCatalog(s.config.AssetFile)
+	catalog, err := s.loadGPUCatalog(ctx)
 	if err != nil {
 		return s.failRun(run, err)
 	}
@@ -152,7 +165,7 @@ func (s *Service) syncInventory(ctx context.Context, taskType string, recoverHis
 		return s.failRun(run, err)
 	}
 
-	catalog, err := loadGPUCatalog(s.config.AssetFile)
+	catalog, err := s.loadGPUCatalog(ctx)
 	if err != nil {
 		return s.failRun(run, err)
 	}
@@ -201,6 +214,28 @@ func (s *Service) syncInventory(ctx context.Context, taskType string, recoverHis
 	run.TargetCount = len(nodeIPs) * len(s.config.TargetJobs)
 	run.ChangeCount = changes
 	return s.finishRun(run)
+}
+
+func (s *Service) loadGPUCatalog(ctx context.Context) (map[string]string, error) {
+	if s.assets == nil {
+		return loadGPUCatalog(s.config.AssetFile)
+	}
+	result, err := s.assets.Sync(ctx)
+	if err != nil {
+		cached, cacheErr := s.assets.LastGPUCatalog()
+		if cacheErr == nil && len(cached) > 0 {
+			log.Printf("LXOP asset sync failed; using last successful snapshot: %v", err)
+			return cached, nil
+		}
+		return nil, err
+	}
+	if result.Configured {
+		if len(result.GPUCatalog) == 0 {
+			return nil, fmt.Errorf("LXOP asset sync returned no active GPU nodes")
+		}
+		return result.GPUCatalog, nil
+	}
+	return loadGPUCatalog(s.config.AssetFile)
 }
 
 func (s *Service) startRun(now time.Time, taskType string) (*api.InventorySyncRun, error) {

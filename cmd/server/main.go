@@ -112,6 +112,15 @@ func main() {
 	issueService := issues.NewService(db)
 	issueHandler := issues.NewHandlerWithService(db, issueService)
 	platformConfigHandler := platformconfig.NewHandler(db, cfg.Branding)
+	secretMasterKey := os.Getenv("ATLAS_PLATFORM_SECRET_MASTER_KEY")
+	if strings.TrimSpace(secretMasterKey) == "" {
+		secretMasterKey = os.Getenv("ATLAS_NODE_CREDENTIAL_MASTER_KEY")
+	}
+	assetSource, assetSourceErr := platformconfig.NewAssetSource(db, secretMasterKey)
+	if assetSourceErr != nil {
+		log.Printf("LXOP asset configuration encryption is unavailable: %v", assetSourceErr)
+		assetSource = nil
+	}
 	var credentialVault *nodeaccess.CredentialVault
 	credentialVault, err = nodeaccess.NewCredentialVault(db, os.Getenv("ATLAS_NODE_CREDENTIAL_MASTER_KEY"))
 	if err != nil {
@@ -124,6 +133,7 @@ func main() {
 	if allowCredentialInsecureHTTP {
 		log.Printf("WARNING: node credential writes are allowed over plaintext HTTP")
 	}
+	assetConfigHandler := platformconfig.NewAssetConfigHandler(assetSource, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialInsecureHTTP)
 	nodeAccessHandler := nodeaccess.NewHandlerWithVault(nodeAccessService, credentialVault, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialLoopbackHTTP, allowCredentialInsecureHTTP)
 	connectTimeout := parseDurationOrDefault("node SSH connect", cfg.NodeAccess.ConnectTimeout, 5*time.Second)
 	sshAuthenticator, sshErr := nodeaccess.NewSSHAuthenticator(cfg.NodeAccess.SSHPort, connectTimeout, cfg.NodeAccess.KnownHostsFile)
@@ -147,7 +157,11 @@ func main() {
 		} else {
 			monitoringInterval := parseDurationOrDefault("monitoring reconciliation", cfg.Inventory.TargetSyncInterval, 10*time.Minute)
 			fullInterval := parseDurationOrDefault("full reconciliation", cfg.Inventory.FullSyncInterval, 24*time.Hour)
-			go inventory.NewService(db, prometheusClient, cfg.Inventory).Run(context.Background(), monitoringInterval, fullInterval)
+			inventoryService := inventory.NewService(db, prometheusClient, cfg.Inventory)
+			if assetSource != nil {
+				inventoryService = inventory.NewServiceWithAssets(db, prometheusClient, cfg.Inventory, assetSource)
+			}
+			go inventoryService.Run(context.Background(), monitoringInterval, fullInterval)
 			if cfg.Health.Enabled {
 				healthInterval := parseDurationOrDefault("GPU health score", cfg.Health.ScoreInterval, 10*time.Minute)
 				healthService := health.NewService(db, prometheusClient, cfg.Health)
@@ -204,6 +218,7 @@ func main() {
 	mux.HandleFunc("/api/v1/issues", issueHandler.HandleCollection)
 	mux.HandleFunc("/api/v1/issues/", issueHandler.HandleSubresource)
 	mux.HandleFunc("/api/v1/platform-config", platformConfigHandler.Handle)
+	mux.HandleFunc("/api/v1/platform-config/assets", assetConfigHandler.Handle)
 	mux.HandleFunc("/api/v1/node-access/overview", nodeAccessHandler.HandleOverview)
 	mux.HandleFunc("/api/v1/node-access/credentials", nodeAccessHandler.HandleCredentials)
 	mux.HandleFunc("/api/v1/node-access/credentials/", nodeAccessHandler.HandleCredential)
@@ -217,6 +232,7 @@ func main() {
 	mux.HandleFunc("/api/v1/targets", inventoryHandler.HandleTargets)
 	mux.HandleFunc("/api/v1/sync-runs", inventoryHandler.HandleSyncRuns)
 	mux.HandleFunc("/api/v1/inventory/changes", inventoryHandler.HandleChanges)
+	mux.HandleFunc("/api/v1/inventory/source-assets", inventoryHandler.HandleSourceAssets)
 	mux.HandleFunc("/api/v1/health/summary", healthHandler.HandleSummary)
 	mux.HandleFunc("/api/v1/health/gpus", healthHandler.HandleScores)
 	mux.HandleFunc("/api/v1/health/runs", healthHandler.HandleRuns)
