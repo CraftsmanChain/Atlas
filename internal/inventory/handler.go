@@ -63,6 +63,8 @@ func (h *Handler) HandleNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	if value := strings.TrimSpace(r.URL.Query().Get("lifecycle")); value != "" {
 		query = query.Where("lifecycle = ?", value)
+	} else {
+		query = query.Where("lifecycle <> ?", "retired")
 	}
 	if value := strings.TrimSpace(r.URL.Query().Get("q")); value != "" {
 		like := "%" + value + "%"
