@@ -129,3 +129,19 @@ func TestClassifyAssetPrefersNetworkIdentityOverGPUFabricName(t *testing.T) {
 		t.Fatalf("GPU fabric switch entered %q domain", kind)
 	}
 }
+
+func TestInUseStateBoundary(t *testing.T) {
+	tests := map[string]bool{
+		"on":     true,
+		" ON ":   true,
+		"已上架使用中": true,
+		"停机":     false,
+		"off":    false,
+		"":       false,
+	}
+	for state, expected := range tests {
+		if actual := isInUseState(state); actual != expected {
+			t.Fatalf("state %q: expected in_use=%t, got %t", state, expected, actual)
+		}
+	}
+}

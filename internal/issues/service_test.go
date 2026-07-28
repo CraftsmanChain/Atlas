@@ -162,21 +162,28 @@ func TestSyncDetectedIssuesExcludesTargetsOnRetiredNodes(t *testing.T) {
 	if err := db.Create(&legacy).Error; err != nil {
 		t.Fatal(err)
 	}
+	resolution := api.IssueResolution{IssueID: legacy.ID, Status: "resolved", RootCause: "false monitoring finding", TrainingEligible: true, CreatedAt: now.Add(-time.Hour)}
+	if err := db.Create(&resolution).Error; err != nil {
+		t.Fatal(err)
+	}
+	hardware := api.PlatformIssue{IssueKey: "fault_event:37", Category: "hardware_fault", IssueType: "xid_critical", Title: "historical hardware event", NodeIP: node.NodeIP, Severity: "critical", Status: "resolved", DetectionState: "cleared", DetectionSource: "health_rule", FirstDetectedAt: now.Add(-48 * time.Hour), LastDetectedAt: now.Add(-48 * time.Hour)}
+	if err := db.Create(&hardware).Error; err != nil {
+		t.Fatal(err)
+	}
 	service := NewService(db)
 	service.now = func() time.Time { return now }
 	if err := service.SyncDetectedIssues(); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.First(&legacy, legacy.ID).Error; err != nil {
-		t.Fatal(err)
+	var monitoringIssues, resolutions, hardwareIssues int64
+	db.Model(&api.PlatformIssue{}).Where("id = ?", legacy.ID).Count(&monitoringIssues)
+	db.Model(&api.IssueResolution{}).Where("issue_id = ?", legacy.ID).Count(&resolutions)
+	db.Model(&api.PlatformIssue{}).Where("id = ?", hardware.ID).Count(&hardwareIssues)
+	if monitoringIssues != 0 || resolutions != 0 {
+		t.Fatalf("retired-node monitoring history remained: issues=%d resolutions=%d", monitoringIssues, resolutions)
 	}
-	if legacy.Status != "resolved" || legacy.DetectionState != "cleared" || legacy.SourceRecoveredAt == nil {
-		t.Fatalf("retired-node target issue was not cleared: %+v", legacy)
-	}
-	var generated int64
-	db.Model(&api.PlatformIssue{}).Where("node_ip = ? AND detection_state = ?", node.NodeIP, "active").Count(&generated)
-	if generated != 0 {
-		t.Fatalf("retired node generated %d active issues", generated)
+	if hardwareIssues != 1 {
+		t.Fatal("retired-node hardware evidence was deleted")
 	}
 }
 
@@ -279,6 +286,9 @@ func TestSyncDetectedIssuesTracksTelemetryContinuityAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
+	if err := db.Create(&api.GPUNode{NodeIP: "10.114.4.21", State: "up", Lifecycle: "active"}).Error; err != nil {
+		t.Fatal(err)
+	}
 	snapshot := api.GPUFeatureSnapshot{GPUAssetID: 12, GPUUUID: "GPU-A", NodeIP: "10.114.4.21", GPUIndex: 2, Metrics: api.FloatMap{"gpu_metric_presence_ratio_1h": 70, "gpu_metric_sample_age_seconds": 30}, ObservedAt: now}
 	if err := db.Create(&snapshot).Error; err != nil {
 		t.Fatal(err)

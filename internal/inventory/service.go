@@ -199,6 +199,11 @@ func (s *Service) syncInventory(ctx context.Context, taskType string, recoverHis
 		}
 	}
 
+	// A non-nil catalog is an authoritative asset snapshot (LXOP or the
+	// configured asset file). Apply removals on every monitoring
+	// reconciliation so state/IP changes do not linger until the daily full
+	// reconciliation.
+	retireMissing = retireMissing || catalog != nil
 	changes, knownUUIDs, err := s.persistInventory(now, run.ID, nodeIPs, samples, targetIndex, catalog, retireMissing)
 	if err != nil {
 		return s.failRun(run, err)
@@ -280,7 +285,9 @@ func (s *Service) persistInventory(now time.Time, runID uint, nodeIPs []string, 
 			if err := tx.Where("node_ip NOT IN ? AND lifecycle <> ?", nodeIPs, "retired").Find(&retired).Error; err != nil {
 				return err
 			}
+			retiredNodeIDs := make([]uint, 0, len(retired))
 			for _, node := range retired {
+				retiredNodeIDs = append(retiredNodeIDs, node.ID)
 				if err := tx.Model(&node).Update("lifecycle", "retired").Error; err != nil {
 					return err
 				}
@@ -288,6 +295,14 @@ func (s *Service) persistInventory(now time.Time, runID uint, nodeIPs []string, 
 					return err
 				}
 				changeCount++
+			}
+			if len(retiredNodeIDs) > 0 {
+				retiredAssetIDs := tx.Model(&api.GPUAsset{}).Select("id").Where("node_id IN ?", retiredNodeIDs)
+				if err := tx.Model(&api.GPUHealthScore{}).
+					Where("gpu_asset_id IN (?) AND current = ?", retiredAssetIDs, true).
+					Update("current", false).Error; err != nil {
+					return err
+				}
 			}
 		}
 		for _, nodeIP := range nodeIPs {

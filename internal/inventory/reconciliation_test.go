@@ -23,6 +23,7 @@ func TestReconciliationMatchesBySNThenIPAndClassifiesTypes(t *testing.T) {
 		{AssetKey: "ops-only", Source: "ops_host", IPAddress: "10.0.0.2", Name: "H200gpu-02", Type: "server", Model: "H100", SerialNumber: "GPU-2", InUse: true, Present: true, EntityKind: "gpu_node", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
 		{AssetKey: "machine-network", Source: "asset_machine", Name: "GPU_Fabric_leaf", Type: "交换机", Model: "MQM9790", SerialNumber: "SW-1", InUse: true, Present: true, EntityKind: "network", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
 		{AssetKey: "machine-storage", Source: "asset_machine", Name: "storage-01", Type: "存储", Model: "storage", SerialNumber: "ST-1", InUse: true, Present: true, EntityKind: "unknown", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
+		{AssetKey: "stopped-gpu", Source: "asset_machine", IPAddress: "10.0.0.9", Name: "H100gpu-09", Type: "H100", State: "停机", SerialNumber: "GPU-9", InUse: false, Present: true, EntityKind: "gpu_node", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
 	}
 	if err := db.Create(&rows).Error; err != nil {
 		t.Fatal(err)
@@ -70,8 +71,8 @@ func TestReconciliationFiltersDifferenceScope(t *testing.T) {
 	}
 	now := time.Now()
 	rows := []api.InfrastructureAsset{
-		{AssetKey: "ops-only", Source: "ops_host", IPAddress: "10.0.0.2", Type: "server", Model: "H200", Present: true, EntityKind: "gpu_node", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
-		{AssetKey: "machine-only", Source: "asset_machine", Type: "UFM", Name: "ufm-1", Present: true, FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
+		{AssetKey: "ops-only", Source: "ops_host", IPAddress: "10.0.0.2", Type: "server", Model: "H200", InUse: true, Present: true, EntityKind: "gpu_node", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
+		{AssetKey: "machine-only", Source: "asset_machine", Type: "UFM", Name: "ufm-1", InUse: true, Present: true, FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
 	}
 	if err := db.Create(&rows).Error; err != nil {
 		t.Fatal(err)
