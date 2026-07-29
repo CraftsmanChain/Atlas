@@ -47,10 +47,31 @@ func (a *SSHAuthenticator) Authenticate(ctx context.Context, node, username, aut
 		return fmt.Errorf("%w: unsupported authentication type", ErrAuthenticationRejected)
 	}
 	address := net.JoinHostPort(node, strconv.Itoa(a.port))
+	err := a.authenticateOnce(ctx, address, username, secret, nil)
+	var hostKeyError *knownhosts.KeyError
+	if errors.As(err, &hostKeyError) && len(hostKeyError.Want) > 0 {
+		if algorithms := trustedHostKeyAlgorithms(hostKeyError.Want); len(algorithms) > 0 {
+			err = a.authenticateOnce(ctx, address, username, secret, algorithms)
+		}
+	}
+	if err == nil {
+		return nil
+	}
+	if errors.As(err, &hostKeyError) || strings.Contains(strings.ToLower(err.Error()), "knownhosts:") {
+		return fmt.Errorf("%w: SSH host identity verification failed", ErrHostIdentityFailed)
+	}
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "unable to authenticate") || strings.Contains(lower, "no supported methods remain") {
+		return fmt.Errorf("%w: SSH authentication rejected", ErrAuthenticationRejected)
+	}
+	return fmt.Errorf("%w: SSH handshake unavailable", ErrNetworkUnavailable)
+}
+
+func (a *SSHAuthenticator) authenticateOnce(ctx context.Context, address, username string, secret []byte, hostKeyAlgorithms []string) error {
 	dialer := net.Dialer{Timeout: a.connectTimeout}
 	connection, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
-		return fmt.Errorf("%w: SSH transport unavailable", ErrNetworkUnavailable)
+		return err
 	}
 	defer connection.Close()
 	deadline := time.Now().Add(a.connectTimeout)
@@ -59,23 +80,42 @@ func (a *SSHAuthenticator) Authenticate(ctx context.Context, node, username, aut
 	}
 	_ = connection.SetDeadline(deadline)
 	config := &ssh.ClientConfig{
-		User:            username,
-		Auth:            []ssh.AuthMethod{ssh.Password(string(secret))},
-		HostKeyCallback: a.hostKeyCallback,
-		Timeout:         a.connectTimeout,
+		User:              username,
+		Auth:              []ssh.AuthMethod{ssh.Password(string(secret))},
+		HostKeyCallback:   a.hostKeyCallback,
+		HostKeyAlgorithms: hostKeyAlgorithms,
+		Timeout:           a.connectTimeout,
 	}
 	clientConnection, channels, requests, err := ssh.NewClientConn(connection, address, config)
 	if err != nil {
-		var hostKeyError *knownhosts.KeyError
-		if errors.As(err, &hostKeyError) || strings.Contains(strings.ToLower(err.Error()), "knownhosts:") {
-			return fmt.Errorf("%w: SSH host identity verification failed", ErrHostIdentityFailed)
-		}
-		lower := strings.ToLower(err.Error())
-		if strings.Contains(lower, "unable to authenticate") || strings.Contains(lower, "no supported methods remain") {
-			return fmt.Errorf("%w: SSH authentication rejected", ErrAuthenticationRejected)
-		}
-		return fmt.Errorf("%w: SSH handshake unavailable", ErrNetworkUnavailable)
+		return err
 	}
 	client := ssh.NewClient(clientConnection, channels, requests)
 	return client.Close()
+}
+
+func trustedHostKeyAlgorithms(keys []knownhosts.KnownKey) []string {
+	result := make([]string, 0, len(keys))
+	seen := make(map[string]struct{})
+	add := func(algorithm string) {
+		if algorithm == "" {
+			return
+		}
+		if _, exists := seen[algorithm]; exists {
+			return
+		}
+		seen[algorithm] = struct{}{}
+		result = append(result, algorithm)
+	}
+	for _, knownKey := range keys {
+		switch knownKey.Key.Type() {
+		case ssh.KeyAlgoRSA:
+			add(ssh.KeyAlgoRSASHA512)
+			add(ssh.KeyAlgoRSASHA256)
+			add(ssh.KeyAlgoRSA)
+		default:
+			add(knownKey.Key.Type())
+		}
+	}
+	return result
 }

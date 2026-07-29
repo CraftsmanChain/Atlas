@@ -2,7 +2,9 @@ package nodeaccess
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"errors"
 	"net"
@@ -54,6 +56,40 @@ func TestSSHAuthenticatorRejectsUnknownHostIdentity(t *testing.T) {
 	}
 }
 
+func TestSSHAuthenticatorRetriesWithKnownHostKeyAlgorithm(t *testing.T) {
+	ecdsaPrivateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ecdsaSigner, err := ssh.NewSignerFromKey(ecdsaPrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, ed25519PrivateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustedSigner, err := ssh.NewSignerFromKey(ed25519PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, stop := startSSHTestServerWithHostKeys(t, "correct-password", ecdsaSigner, trustedSigner)
+	defer stop()
+	host, portText, _ := net.SplitHostPort(address)
+	knownHostsFile := t.TempDir() + "/known_hosts"
+	if err := os.WriteFile(knownHostsFile, []byte(knownhosts.Line([]string{address}, trustedSigner.PublicKey())+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	port, _ := strconv.Atoi(portText)
+	authenticator, err := NewSSHAuthenticator(port, 2*time.Second, knownHostsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authenticator.Authenticate(context.Background(), host, "atlas", "password", []byte("correct-password")); err != nil {
+		t.Fatalf("authentication should retry with the trusted ED25519 algorithm: %v", err)
+	}
+}
+
 func startSSHTestServer(t *testing.T, password string) (string, ssh.Signer, func()) {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -64,6 +100,12 @@ func startSSHTestServer(t *testing.T, password string) (string, ssh.Signer, func
 	if err != nil {
 		t.Fatal(err)
 	}
+	address, stop := startSSHTestServerWithHostKeys(t, password, signer)
+	return address, signer, stop
+}
+
+func startSSHTestServerWithHostKeys(t *testing.T, password string, signers ...ssh.Signer) (string, func()) {
+	t.Helper()
 	config := &ssh.ServerConfig{
 		PasswordCallback: func(metadata ssh.ConnMetadata, provided []byte) (*ssh.Permissions, error) {
 			if string(provided) != password {
@@ -72,7 +114,9 @@ func startSSHTestServer(t *testing.T, password string) (string, ssh.Signer, func
 			return nil, nil
 		},
 	}
-	config.AddHostKey(signer)
+	for _, signer := range signers {
+		config.AddHostKey(signer)
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -103,5 +147,5 @@ func startSSHTestServer(t *testing.T, password string) (string, ssh.Signer, func
 		_ = listener.Close()
 		<-stopped
 	}
-	return listener.Addr().String(), signer, stop
+	return listener.Addr().String(), stop
 }
