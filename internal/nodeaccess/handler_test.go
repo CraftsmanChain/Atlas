@@ -137,4 +137,23 @@ func TestConnectivityHandlerAllowsOpenHTTPAndReturnsRedactedResult(t *testing.T)
 			t.Fatalf("connectivity response exposed %q: %s", forbidden, response.Body.String())
 		}
 	}
+
+	for range 5 {
+		request = httptest.NewRequest(http.MethodPost, "/api/v1/node-access/checks", strings.NewReader(`{"node_ip":"10.114.4.25"}`))
+		response = httptest.NewRecorder()
+		handler.HandleChecks(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("unexpected repeated connectivity response %d: %s", response.Code, response.Body.String())
+		}
+	}
+	response = httptest.NewRecorder()
+	handler.HandleChecks(response, httptest.NewRequest(http.MethodGet, "/api/v1/node-access/checks", nil))
+	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `"node_ip"`) != 5 || !strings.Contains(response.Body.String(), `"has_more":true`) {
+		t.Fatalf("default connectivity page should contain five rows and more metadata: %d %s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler.HandleChecks(response, httptest.NewRequest(http.MethodGet, "/api/v1/node-access/checks?limit=30", nil))
+	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `"node_ip"`) != 6 || !strings.Contains(response.Body.String(), `"has_more":false`) {
+		t.Fatalf("expanded connectivity page should contain all rows: %d %s", response.Code, response.Body.String())
+	}
 }

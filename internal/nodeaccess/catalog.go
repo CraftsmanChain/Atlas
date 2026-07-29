@@ -3,7 +3,7 @@ package nodeaccess
 func skillCatalog() []SkillDefinition {
 	return []SkillDefinition{
 		{
-			ID: "atlas-node-evidence", Version: "v0.4.2", Class: "evidence", Status: "open_readonly_collection",
+			ID: "atlas-node-evidence", Version: "v0.4.3", Class: "evidence", Status: "open_readonly_collection",
 			Purpose: Text{ZH: "按注册命令、固定参数和资源预算采集节点只读证据", EN: "Collect read-only node evidence through registered commands, fixed parameters, and resource budgets"},
 		},
 		{
