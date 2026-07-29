@@ -210,9 +210,16 @@ func TestCollectionHandlerDefaultsToFiveAndRetriesFailedAudit(t *testing.T) {
 
 	response := httptest.NewRecorder()
 	handler.HandleCollections(response, httptest.NewRequest(http.MethodGet, "/api/v1/node-access/collections", nil))
+	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `"node_ip"`) != 1 ||
+		!strings.Contains(response.Body.String(), `"history":false`) {
+		t.Fatalf("default collection page should contain only the latest source result: %d %s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler.HandleCollections(response, httptest.NewRequest(http.MethodGet, "/api/v1/node-access/collections?history=1", nil))
 	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `"node_ip"`) != 5 ||
-		!strings.Contains(response.Body.String(), `"has_more":true`) {
-		t.Fatalf("default collection page should contain five rows: %d %s", response.Code, response.Body.String())
+		!strings.Contains(response.Body.String(), `"has_more":true`) ||
+		!strings.Contains(response.Body.String(), `"history":true`) {
+		t.Fatalf("history collection page should contain five rows: %d %s", response.Code, response.Body.String())
 	}
 
 	body := `{"retry_collection_id":` + strconv.FormatUint(uint64(retrySource.ID), 10) + `}`

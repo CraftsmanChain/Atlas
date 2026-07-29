@@ -37,7 +37,7 @@ health:
 node_access:
   enabled: true
   skill_id: "atlas-node-evidence"
-  skill_version: "v0.6.2"
+  skill_version: "v0.6.3"
   ssh_port: 22
   known_hosts_file: "/root/.ssh/known_hosts"
   connect_timeout: "5s"

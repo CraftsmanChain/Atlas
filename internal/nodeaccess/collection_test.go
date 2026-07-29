@@ -418,4 +418,16 @@ func TestCurrentSummaryCountsOnlyLatestSourceOutcome(t *testing.T) {
 		summary.Failed != 1 || summary.Partial != 0 {
 		t.Fatalf("unexpected current collection summary: %#v", summary)
 	}
+	current, err := collector.ListCurrent(0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current) != 3 || current[0].FaultEventID != 33 ||
+		current[1].PlatformIssueID != 22 || current[2].Status != "completed" {
+		t.Fatalf("unexpected latest collection rows: %#v", current)
+	}
+	history, err := collector.List(0, 20)
+	if err != nil || len(history) != len(rows) {
+		t.Fatalf("full audit history was not preserved: rows=%#v err=%v", history, err)
+	}
 }
