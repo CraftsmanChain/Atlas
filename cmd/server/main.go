@@ -23,6 +23,7 @@ import (
 	"atlas/internal/issues"
 	"atlas/internal/nodeaccess"
 	"atlas/internal/platformconfig"
+	"atlas/internal/prediction"
 	promclient "atlas/internal/prometheus"
 	"atlas/pkg/config"
 	"atlas/pkg/logging"
@@ -75,6 +76,9 @@ func main() {
 	if err := features.SeedBuiltins(db); err != nil {
 		log.Fatalf("Failed to seed feature catalog: %v", err)
 	}
+	if err := prediction.SeedBuiltins(db); err != nil {
+		log.Fatalf("Failed to seed prediction model contracts: %v", err)
+	}
 	ingestionDB := db
 	if readDSN := strings.TrimSpace(cfg.Storage.IngestionReadDSN); readDSN != "" {
 		ingestionDB, err = storage.OpenReadOnlyDB(readDSN)
@@ -109,6 +113,7 @@ func main() {
 	featureHandler := features.NewHandler(db)
 	baselineHandler := features.NewBaselineHandler(db)
 	degradationHandler := degradation.NewHandler(db)
+	predictionHandler := prediction.NewHandler(db)
 	issueService := issues.NewService(db)
 	issueHandler := issues.NewHandlerWithService(db, issueService)
 	platformConfigHandler := platformconfig.NewHandler(db, cfg.Branding)
@@ -250,6 +255,10 @@ func main() {
 	mux.HandleFunc("/api/v1/fault-events/", evidenceHandler.HandleEventSubresource)
 	mux.HandleFunc("/api/v1/degradation/summary", degradationHandler.HandleSummary)
 	mux.HandleFunc("/api/v1/degradation/candidates", degradationHandler.HandleCandidates)
+	mux.HandleFunc("/api/v1/prediction/overview", predictionHandler.HandleOverview)
+	mux.HandleFunc("/api/v1/prediction/models", predictionHandler.HandleModels)
+	mux.HandleFunc("/api/v1/prediction/readiness", predictionHandler.HandleReadiness)
+	mux.HandleFunc("/api/v1/prediction/results", predictionHandler.HandleResults)
 
 	// 7. 启动服务
 	port := cfg.Gateway.Port

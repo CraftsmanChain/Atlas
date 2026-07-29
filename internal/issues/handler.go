@@ -179,7 +179,24 @@ func (h *Handler) detail(w http.ResponseWriter, id uint) {
 		issueError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	issueJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"issue": issue, "resolutions": resolutions}})
+	var nodeEvidence *api.NodeEvidenceCollection
+	var collection api.NodeEvidenceCollection
+	err := h.db.
+		Preload("Records", func(db *gorm.DB) *gorm.DB { return db.Order("id ASC") }).
+		Where("platform_issue_id = ?", id).
+		Order("id DESC").
+		First(&collection).Error
+	if err == nil {
+		nodeEvidence = &collection
+	} else if err != gorm.ErrRecordNotFound {
+		issueError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	issueJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+		"issue":                    issue,
+		"resolutions":              resolutions,
+		"node_evidence_collection": nodeEvidence,
+	}})
 }
 
 type resolutionRequest struct {
