@@ -57,6 +57,10 @@ func TestCollectionUsesRegisteredCommandsAndPersistsSanitizedEvidence(t *testing
 				t.Fatalf("unexpected registered command: %#v", command)
 			}
 		}
+		if !strings.Contains(commands[2].Command, "--since=@") ||
+			!strings.Contains(commands[2].Command, "--until=@") {
+			t.Fatalf("kernel window must use systemd epoch timestamps: %q", commands[2].Command)
+		}
 		return []CommandOutcome{
 			{CommandID: commands[0].ID, Kind: commands[0].Kind, Status: "completed", Output: "node-a\npassword=should-not-persist"},
 			{CommandID: commands[1].ID, Kind: commands[1].Kind, Status: "completed", Output: "3, GPU-A, NVIDIA H100"},
@@ -263,6 +267,11 @@ func TestOfflineNodeCollectionWaitsForRecovery(t *testing.T) {
 		if record.CommandID != wantIDs[index] {
 			t.Fatalf("unexpected recovery command order: %#v", waiting.Records)
 		}
+	}
+	commands := recoveryCollectionCommands(issue, 16*1024)
+	if !strings.Contains(commands[3].Command, "--since=@") ||
+		!strings.Contains(commands[3].Command, "--until=@") {
+		t.Fatalf("recovery kernel window must use systemd epoch timestamps: %q", commands[3].Command)
 	}
 }
 

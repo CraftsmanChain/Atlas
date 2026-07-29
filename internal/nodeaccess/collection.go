@@ -315,7 +315,6 @@ func collectionCommands(event api.GPUFaultEvent, totalOutputBytes int) []ReadOnl
 	if end.Sub(start) > 2*time.Hour {
 		start = end.Add(-2 * time.Hour)
 	}
-	timeFormat := "2006-01-02 15:04:05Z07:00"
 	return []ReadOnlyCommand{
 		{
 			ID: "node.identity", Kind: "node_inventory", MaxOutputBytes: perCommand,
@@ -328,8 +327,8 @@ func collectionCommands(event api.GPUFaultEvent, totalOutputBytes int) []ReadOnl
 		{
 			ID: "logs.kernel_window", Kind: "node_log", MaxOutputBytes: perCommand,
 			Command: fmt.Sprintf(
-				"journalctl -k --since %q --until %q --no-pager -n 2000",
-				start.Format(timeFormat), end.Format(timeFormat),
+				"journalctl -k --since=@%d --until=@%d --no-pager -n 2000",
+				start.Unix(), end.Unix(),
 			),
 		},
 	}
@@ -351,7 +350,6 @@ func recoveryCollectionCommands(issue api.PlatformIssue, totalOutputBytes int) [
 	if end.Sub(start) > 24*time.Hour {
 		start = end.Add(-24 * time.Hour)
 	}
-	timeFormat := "2006-01-02 15:04:05Z07:00"
 	return []ReadOnlyCommand{
 		{
 			ID: "node.identity", Kind: "node_inventory", MaxOutputBytes: perCommand,
@@ -368,8 +366,8 @@ func recoveryCollectionCommands(issue api.PlatformIssue, totalOutputBytes int) [
 		{
 			ID: "logs.kernel_window", Kind: "node_log", MaxOutputBytes: perCommand,
 			Command: fmt.Sprintf(
-				"journalctl -k --since %q --until %q --no-pager -n 2000",
-				start.Format(timeFormat), end.Format(timeFormat),
+				"journalctl -k --since=@%d --until=@%d --no-pager -n 2000",
+				start.Unix(), end.Unix(),
 			),
 		},
 	}

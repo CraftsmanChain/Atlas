@@ -765,7 +765,7 @@ function Quality({ tx, view, targets, summary, issueSummary, inventoryError, syn
     const statusKind = nodeAccess?.status === 'connectivity_ready' ? 'healthy' : nodeAccess?.status === 'credentials_missing' || nodeAccess?.status === 'known_hosts_missing' ? 'warning' : 'neutral';
     return <div className="grid node-access-page">
       <Card className="span-12 node-access-guard">
-        <div><ShieldCheck size={21} /><div><CardHead code={`${nodeAccess?.skill_id || 'atlas-node-evidence'} / ${nodeAccess?.skill_version || 'v0.6.0'}`} title={tx('节点只读证据 Skill', 'Node Read-only Evidence Skill')} /><p>{tx('低负载只读信息按注册命令和固定资源预算自动采集；节点失联时等待恢复，恢复为 up 后使用全局密码字典补采，失败任务可保留历史并人工重试。', 'Low-impact read-only evidence is collected through registered commands and fixed budgets; offline nodes wait until recovery, then use the global credential dictionary for collection, while failed tasks preserve history and support manual retry.')}</p></div></div>
+        <div><ShieldCheck size={21} /><div><CardHead code={`${nodeAccess?.skill_id || 'atlas-node-evidence'} / ${nodeAccess?.skill_version || 'v0.6.1'}`} title={tx('节点只读证据 Skill', 'Node Read-only Evidence Skill')} /><p>{tx('低负载只读信息按注册命令和固定资源预算自动采集；节点失联时等待恢复，恢复为 up 后使用全局密码字典补采，失败任务可保留历史并人工重试。', 'Low-impact read-only evidence is collected through registered commands and fixed budgets; offline nodes wait until recovery, then use the global credential dictionary for collection, while failed tasks preserve history and support manual retry.')}</p></div></div>
         <div className="node-access-badges"><Badge value={(nodeAccess?.status || 'unavailable').toUpperCase()} kind={statusKind} /><Badge value="HANDSHAKE ONLY" kind="info" /><Badge value="NO COMMAND EXECUTED" kind="healthy" /></div>
       </Card>
       {[
@@ -872,12 +872,13 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   ];
   const modules = baseModules.map(module => module.id === 'node-access' ? {
     ...module,
-    version: 'v0.6.0',
+    version: 'v0.6.1',
     desc: tx(
       '硬件事件立即采集，节点失联恢复后补采故障证据；任务保留可分页审计历史，失败后可使用当前全局密码字典人工重试且不覆盖旧记录。',
       'Hardware events collect immediately and outage evidence is collected after recovery. Tasks retain paginated audit history and failed collections can be retried manually with the current global credential dictionary without overwriting old records.',
     ),
     history: [
+      tx('v0.6.1 · journalctl 时间窗改用 systemd epoch 语法，兼容 Ubuntu 22.04 / systemd 249', 'v0.6.1 · journalctl windows use systemd epoch syntax for Ubuntu 22.04 / systemd 249 compatibility'),
       tx('v0.6.0 · 最近 5 条证据任务、按需加载更多、失败原因与保留历史的人工只读重试', 'v0.6.0 · five recent evidence tasks, on-demand history, failure reasons, and manual read-only retry with preserved audit history'),
       tx('v0.5.1 · 全局密码字典按优先级轮询，任一凭据成功不告警，仅全部耗尽后产生访问问题', 'v0.5.1 · global credential dictionary rotation by priority; any success suppresses access findings and only full exhaustion creates one'),
       ...module.history,
@@ -895,7 +896,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.25.0" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.25.1" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>
