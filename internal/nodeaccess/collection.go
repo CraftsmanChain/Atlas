@@ -179,6 +179,14 @@ func (s *CollectionService) executeCollection(ctx context.Context, collection *a
 }
 
 func (s *CollectionService) List(eventID uint, limit int) ([]api.NodeEvidenceCollection, error) {
+	return s.list(eventID, limit, false)
+}
+
+func (s *CollectionService) ListCurrent(eventID uint, limit int) ([]api.NodeEvidenceCollection, error) {
+	return s.list(eventID, limit, true)
+}
+
+func (s *CollectionService) list(eventID uint, limit int, currentOnly bool) ([]api.NodeEvidenceCollection, error) {
 	if limit <= 0 || limit > 101 {
 		limit = 20
 	}
@@ -191,9 +199,28 @@ func (s *CollectionService) List(eventID uint, limit int) ([]api.NodeEvidenceCol
 	if eventID > 0 {
 		query = query.Where("fault_event_id = ?", eventID)
 	}
+	if currentOnly {
+		query = query.Where(latestCollectionWhere)
+	}
 	var rows []api.NodeEvidenceCollection
 	return rows, query.Find(&rows).Error
 }
+
+const latestCollectionWhere = `
+	NOT EXISTS (
+		SELECT 1
+		FROM node_evidence_collections AS newer
+		WHERE newer.id > node_evidence_collections.id
+		AND (
+			(node_evidence_collections.fault_event_id > 0
+				AND newer.fault_event_id = node_evidence_collections.fault_event_id)
+			OR
+			(node_evidence_collections.fault_event_id = 0
+				AND node_evidence_collections.platform_issue_id > 0
+				AND newer.platform_issue_id = node_evidence_collections.platform_issue_id)
+		)
+	)
+`
 
 // CurrentSummary counts only the latest audit result for each originating
 // fault event or platform condition. Superseded failures remain queryable in
@@ -202,21 +229,7 @@ func (s *CollectionService) CurrentSummary() (CollectionStatusSummary, error) {
 	var rows []api.NodeEvidenceCollection
 	err := s.db.Model(&api.NodeEvidenceCollection{}).
 		Select("status").
-		Where(`
-			NOT EXISTS (
-				SELECT 1
-				FROM node_evidence_collections AS newer
-				WHERE newer.id > node_evidence_collections.id
-				AND (
-					(node_evidence_collections.fault_event_id > 0
-						AND newer.fault_event_id = node_evidence_collections.fault_event_id)
-					OR
-					(node_evidence_collections.fault_event_id = 0
-						AND node_evidence_collections.platform_issue_id > 0
-						AND newer.platform_issue_id = node_evidence_collections.platform_issue_id)
-				)
-			)
-		`).
+		Where(latestCollectionWhere).
 		Find(&rows).Error
 	if err != nil {
 		return CollectionStatusSummary{}, err

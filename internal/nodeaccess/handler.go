@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"atlas/pkg/api"
 	"gorm.io/gorm"
 )
 
@@ -48,7 +49,21 @@ func (h *Handler) HandleCollections(w http.ResponseWriter, r *http.Request) {
 			}
 			limit = parsed
 		}
-		rows, err := h.collections.List(eventID, limit+1)
+		includeHistory := false
+		switch value := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("history"))); value {
+		case "", "0", "false":
+		case "1", "true":
+			includeHistory = true
+		default:
+			writeNodeAccessError(w, http.StatusBadRequest, "history must be true or false")
+			return
+		}
+		var rows []api.NodeEvidenceCollection
+		if includeHistory {
+			rows, err = h.collections.List(eventID, limit+1)
+		} else {
+			rows, err = h.collections.ListCurrent(eventID, limit+1)
+		}
 		if err != nil {
 			writeNodeAccessError(w, http.StatusInternalServerError, "failed to list node evidence collections")
 			return
@@ -59,7 +74,7 @@ func (h *Handler) HandleCollections(w http.ResponseWriter, r *http.Request) {
 		}
 		writeNodeAccessJSON(w, http.StatusOK, map[string]any{
 			"data": rows,
-			"meta": map[string]any{"limit": limit, "has_more": hasMore},
+			"meta": map[string]any{"limit": limit, "has_more": hasMore, "history": includeHistory},
 		})
 	case http.MethodPost:
 		var request struct {
