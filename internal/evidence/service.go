@@ -39,13 +39,14 @@ func (s *Service) BuildBundle(eventID uint) (Bundle, error) {
 			Type: "gpu", GPUAssetID: event.GPUAssetID, GPUUUID: event.GPUUUID,
 			NodeIP: event.NodeIP, GPUIndex: event.GPUIndex, ModelName: event.ModelName,
 		},
-		RuleHits:    []api.GPUHealthRuleHit{},
-		Resolutions: []api.IssueResolution{},
-		Evidence:    []Item{},
-		Timeline:    []TimelineEntry{},
+		RuleHits:     []api.GPUHealthRuleHit{},
+		Resolutions:  []api.IssueResolution{},
+		NodeEvidence: []api.NodeEvidenceRecord{},
+		Evidence:     []Item{},
+		Timeline:     []TimelineEntry{},
 		SourceStatus: []SourceStatus{
 			{Source: "atlas_database", Status: "available", Detail: text("Atlas 事件与健康数据库可用", "Atlas event and health database is available")},
-			{Source: "node_readonly", Status: "not_collected", Detail: text("v0.1 未触发节点命令", "v0.1 did not invoke node commands")},
+			{Source: "node_readonly", Status: "not_collected", Detail: text("尚无节点只读采集结果", "No node read-only collection is available")},
 			{Source: "bmc_readonly", Status: "not_collected", Detail: text("v0.1 未触发 BMC 查询", "v0.1 did not invoke BMC queries")},
 		},
 		Limitations: defaultLimitations(),
@@ -120,10 +121,10 @@ func (s *Service) BuildBundle(eventID uint) (Bundle, error) {
 	default:
 		return Bundle{}, err
 	}
-	bundle.MissingEvidence = append(bundle.MissingEvidence,
-		gap("node_logs", "尚未采集故障时间窗内的节点日志", "Node logs for the incident window have not been collected"),
-		gap("bmc_evidence", "尚未采集 BMC 传感器与 SEL 证据", "BMC sensor and SEL evidence has not been collected"),
-	)
+	if err := s.addNodeEvidence(&bundle); err != nil {
+		return Bundle{}, err
+	}
+	bundle.MissingEvidence = append(bundle.MissingEvidence, gap("bmc_evidence", "尚未采集 BMC 传感器与 SEL 证据", "BMC sensor and SEL evidence has not been collected"))
 	sort.SliceStable(bundle.Evidence, func(i, j int) bool {
 		if bundle.Evidence[i].ObservedAt.Equal(bundle.Evidence[j].ObservedAt) {
 			return bundle.Evidence[i].ID < bundle.Evidence[j].ID
@@ -134,6 +135,65 @@ func (s *Service) BuildBundle(eventID uint) (Bundle, error) {
 		bundle.Timeline = append(bundle.Timeline, TimelineEntry{At: item.ObservedAt, EvidenceID: item.ID, Label: item.Summary})
 	}
 	return bundle, nil
+}
+
+func (s *Service) addNodeEvidence(bundle *Bundle) error {
+	var collection api.NodeEvidenceCollection
+	err := s.db.
+		Where("fault_event_id = ? AND status IN ?", bundle.FaultEvent.ID, []string{"completed", "partial"}).
+		Order("id DESC").
+		First(&collection).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		err = s.db.Where("fault_event_id = ?", bundle.FaultEvent.ID).Order("id DESC").First(&collection).Error
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		bundle.MissingEvidence = append(bundle.MissingEvidence, gap("node_logs", "尚未采集故障时间窗内的节点日志", "Node logs for the incident window have not been collected"))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	observedAt := collection.FinishedAt
+	for index := range bundle.SourceStatus {
+		if bundle.SourceStatus[index].Source == "node_readonly" {
+			bundle.SourceStatus[index] = SourceStatus{
+				Source: "node_readonly", Status: collection.Status, ObservedAt: &observedAt,
+				Detail: text(
+					fmt.Sprintf("节点只读采集 %s，共 %d 个注册命令", collection.Status, collection.CommandCount),
+					fmt.Sprintf("Node read-only collection %s with %d registered command(s)", collection.Status, collection.CommandCount),
+				),
+			}
+		}
+	}
+	if err := s.db.Where("collection_id = ?", collection.ID).Order("id ASC").Find(&bundle.NodeEvidence).Error; err != nil {
+		return err
+	}
+	hasKernelLog := false
+	for _, record := range bundle.NodeEvidence {
+		if record.Status != "completed" || strings.TrimSpace(record.Output) == "" {
+			continue
+		}
+		if record.Kind == "node_log" {
+			hasKernelLog = true
+		}
+		bundle.Evidence = append(bundle.Evidence, Item{
+			ID: fmt.Sprintf("node-evidence:%d", record.ID), Kind: record.Kind, Source: "node_readonly",
+			ObservedAt: record.ObservedAt,
+			Summary: text(
+				fmt.Sprintf("节点只读证据：%s", record.CommandID),
+				fmt.Sprintf("Node read-only evidence: %s", record.CommandID),
+			),
+			Detail: map[string]any{
+				"command_id": record.CommandID, "output": record.Output,
+				"output_bytes": record.OutputBytes, "truncated": record.Truncated,
+			},
+			Provenance: "node_evidence_records",
+		})
+	}
+	if !hasKernelLog {
+		bundle.MissingEvidence = append(bundle.MissingEvidence, gap("node_logs", "节点采集未返回可用的故障时间窗内核日志", "Node collection did not return usable kernel logs for the incident window"))
+	}
+	return nil
 }
 
 func (s *Service) BuildReport(eventID uint) (Report, error) {
@@ -310,7 +370,7 @@ func domainChecks(domain string) []Text {
 func defaultLimitations() []Text {
 	return []Text{
 		text("这是确定性分析辅助，不是已确认根因。", "This is deterministic analysis assistance, not a confirmed root cause."),
-		text("v0.1 仅聚合 Atlas 已有只读数据，未执行节点、BMC、任务或配置操作。", "v0.1 only aggregates existing read-only Atlas data and performs no node, BMC, workload, or configuration actions."),
+		text("Atlas 仅聚合监控数据和受控节点只读证据；未执行 BMC、任务、配置、重启或主动诊断操作。", "Atlas aggregates monitoring data and controlled node read-only evidence only; it performs no BMC, workload, configuration, restart, or active diagnostic action."),
 	}
 }
 

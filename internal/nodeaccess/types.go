@@ -1,10 +1,13 @@
 package nodeaccess
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 const (
 	SkillID      = "atlas-node-evidence"
-	SkillVersion = "v0.3.2"
+	SkillVersion = "v0.4.0"
 )
 
 type Text struct {
@@ -86,4 +89,32 @@ type AuthenticationResult struct {
 	Attempts              []CredentialAttempt `json:"attempts"`
 	AlertRequired         bool                `json:"alert_required"`
 	NoCredentialDisclosed bool                `json:"no_credential_disclosed"`
+}
+
+type ReadOnlyCommand struct {
+	ID             string
+	Kind           string
+	Command        string
+	MaxOutputBytes int
+}
+
+type CommandOutcome struct {
+	CommandID string
+	Kind      string
+	Status    string
+	Output    string
+	Truncated bool
+}
+
+type ExecutionResult struct {
+	Node                  string
+	Status                string
+	CredentialProfileID   string
+	Attempts              []CredentialAttempt
+	Outcomes              []CommandOutcome
+	NoCredentialDisclosed bool
+}
+
+type ReadOnlyExecutor interface {
+	Execute(ctx context.Context, node, username, authType string, secret []byte, commands []ReadOnlyCommand, timeout time.Duration) ([]CommandOutcome, error)
 }

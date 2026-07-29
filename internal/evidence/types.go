@@ -55,20 +55,21 @@ type Gap struct {
 }
 
 type Bundle struct {
-	SchemaVersion   string                  `json:"schema_version"`
-	GeneratedAt     time.Time               `json:"generated_at"`
-	FaultEvent      api.GPUFaultEvent       `json:"fault_event"`
-	Entity          Entity                  `json:"entity"`
-	HealthScore     *api.GPUHealthScore     `json:"health_snapshot,omitempty"`
-	FeatureSnapshot *api.GPUFeatureSnapshot `json:"feature_snapshot,omitempty"`
-	RuleHits        []api.GPUHealthRuleHit  `json:"rule_hits"`
-	Issue           *api.PlatformIssue      `json:"issue,omitempty"`
-	Resolutions     []api.IssueResolution   `json:"resolutions"`
-	Evidence        []Item                  `json:"evidence"`
-	Timeline        []TimelineEntry         `json:"timeline"`
-	SourceStatus    []SourceStatus          `json:"source_status"`
-	MissingEvidence []Gap                   `json:"missing_evidence"`
-	Limitations     []Text                  `json:"limitations"`
+	SchemaVersion   string                   `json:"schema_version"`
+	GeneratedAt     time.Time                `json:"generated_at"`
+	FaultEvent      api.GPUFaultEvent        `json:"fault_event"`
+	Entity          Entity                   `json:"entity"`
+	HealthScore     *api.GPUHealthScore      `json:"health_snapshot,omitempty"`
+	FeatureSnapshot *api.GPUFeatureSnapshot  `json:"feature_snapshot,omitempty"`
+	RuleHits        []api.GPUHealthRuleHit   `json:"rule_hits"`
+	Issue           *api.PlatformIssue       `json:"issue,omitempty"`
+	Resolutions     []api.IssueResolution    `json:"resolutions"`
+	NodeEvidence    []api.NodeEvidenceRecord `json:"node_evidence"`
+	Evidence        []Item                   `json:"evidence"`
+	Timeline        []TimelineEntry          `json:"timeline"`
+	SourceStatus    []SourceStatus           `json:"source_status"`
+	MissingEvidence []Gap                    `json:"missing_evidence"`
+	Limitations     []Text                   `json:"limitations"`
 }
 
 type Finding struct {

@@ -126,7 +126,7 @@ func (s *Service) Overview() Overview {
 		},
 		CredentialProfiles: statuses, Skills: skillCatalog(), Commands: commandCatalog(),
 		Boundaries: []Text{
-			{ZH: "低负载只读证据按注册命令和固定预算默认采集，无需逐次计划或确认；受控执行器交付前仍不创建 session、不执行命令。", EN: "Low-impact read-only evidence is collected by default through registered commands and fixed budgets without per-run planning or confirmation; no session or command is executed until the controlled runner is delivered."},
+			{ZH: "低负载只读证据按注册命令和固定预算默认采集，无需逐次计划或确认；每次采集均保留脱敏审计。", EN: "Low-impact read-only evidence is collected by default through registered commands and fixed budgets without per-run planning or confirmation; every collection retains a redacted audit record."},
 			{ZH: "密码和私钥只通过受控密钥引用解析，永不进入接口、日志或证据。", EN: "Passwords and private keys resolve only through controlled secret references and never enter APIs, logs, or evidence."},
 			{ZH: "诊断、性能或功能测试、服务或节点重启、GPU 重置及 GPU 任务终止必须指定节点和操作并由人工确认。", EN: "Diagnostics, performance or functional tests, service or node restarts, GPU resets, and GPU workload termination require an exact node and operation plus human confirmation."},
 		},
@@ -184,6 +184,73 @@ func (s *Service) Authenticate(ctx context.Context, node string, authenticator A
 		}
 	}
 	result.Status, result.AlertRequired = "credential_exhausted", true
+	return result
+}
+
+func (s *Service) ExecuteReadOnly(ctx context.Context, node string, commands []ReadOnlyCommand, executor ReadOnlyExecutor) ExecutionResult {
+	result := ExecutionResult{
+		Node: node, Attempts: []CredentialAttempt{}, Outcomes: []CommandOutcome{},
+		NoCredentialDisclosed: true,
+	}
+	if executor == nil {
+		result.Status = "transport_unavailable"
+		return result
+	}
+	maxCommands := s.cfg.MaxCommandsPerNode
+	if maxCommands <= 0 {
+		maxCommands = 6
+	}
+	if len(commands) == 0 || len(commands) > maxCommands {
+		result.Status = "command_budget_rejected"
+		return result
+	}
+	timeout, err := time.ParseDuration(s.cfg.CommandTimeout)
+	if err != nil || timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	profiles := append([]config.NodeCredentialProfile(nil), s.cfg.CredentialProfiles...)
+	if s.vault != nil {
+		stored, vaultErr := s.vault.Profiles()
+		if vaultErr != nil {
+			result.Status = "credential_store_failed"
+			return result
+		}
+		profiles = append(profiles, stored...)
+	}
+	for _, profile := range sortedProfiles(profiles) {
+		if !profile.Enabled {
+			continue
+		}
+		var secret []byte
+		if strings.HasPrefix(profile.SecretRef, vaultRefPrefix) && s.vault != nil {
+			secret, err = s.vault.Resolve(profile.SecretRef)
+		} else {
+			secret, err = s.resolver.Resolve(profile.SecretRef)
+		}
+		if err != nil {
+			result.Attempts = append(result.Attempts, CredentialAttempt{ProfileID: profile.ID, Outcome: "secret_unavailable"})
+			continue
+		}
+		outcomes, executeErr := executor.Execute(ctx, node, profile.Username, profile.AuthType, secret, commands, timeout)
+		clear(secret)
+		switch {
+		case executeErr == nil:
+			result.Status, result.CredentialProfileID, result.Outcomes = "completed", profile.ID, outcomes
+			result.Attempts = append(result.Attempts, CredentialAttempt{ProfileID: profile.ID, Outcome: "success"})
+			return result
+		case errors.Is(executeErr, ErrAuthenticationRejected):
+			result.Attempts = append(result.Attempts, CredentialAttempt{ProfileID: profile.ID, Outcome: "rejected"})
+		case errors.Is(executeErr, ErrHostIdentityFailed):
+			result.Status = "host_identity_failed"
+			result.Attempts = append(result.Attempts, CredentialAttempt{ProfileID: profile.ID, Outcome: "host_identity_failed"})
+			return result
+		default:
+			result.Status = "network_failed"
+			result.Attempts = append(result.Attempts, CredentialAttempt{ProfileID: profile.ID, Outcome: "network_failed"})
+			return result
+		}
+	}
+	result.Status = "credential_exhausted"
 	return result
 }
 

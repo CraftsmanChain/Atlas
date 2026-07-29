@@ -52,7 +52,7 @@ func main() {
 			Logging: config.LoggingConfig{Dir: "logs"},
 			Web:     config.WebConfig{StaticDir: "web/dist"},
 			NodeAccess: config.NodeAccessConfig{
-				SkillID: "atlas-node-evidence", SkillVersion: "v0.3.2", SSHPort: 22,
+				SkillID: "atlas-node-evidence", SkillVersion: "v0.4.0", SSHPort: 22,
 				ConnectTimeout: "5s", CommandTimeout: "10s", MaxOutputBytes: 1024 * 1024,
 				MaxConcurrentNodes: 2, MaxCommandsPerNode: 6,
 			},
@@ -141,6 +141,13 @@ func main() {
 		log.Printf("Known-host SSH connectivity checks are unavailable: %v", sshErr)
 	}
 	nodeAccessHandler.SetConnectivity(nodeaccess.NewConnectivityService(db, nodeAccessService, sshAuthenticator, cfg.NodeAccess.Enabled))
+	sshReadOnlyExecutor, runnerErr := nodeaccess.NewSSHReadOnlyExecutor(cfg.NodeAccess.SSHPort, connectTimeout, cfg.NodeAccess.KnownHostsFile)
+	if runnerErr != nil {
+		log.Printf("Known-host SSH read-only collection is unavailable: %v", runnerErr)
+	}
+	nodeEvidenceCollections := nodeaccess.NewCollectionService(db, nodeAccessService, sshReadOnlyExecutor, cfg.NodeAccess.MaxConcurrentNodes)
+	nodeAccessHandler.SetCollections(nodeEvidenceCollections)
+	go nodeEvidenceCollections.Run(context.Background(), time.Minute)
 	go issueService.Run(context.Background(), time.Minute)
 
 	// Inventory discovery is read-only and best-effort. Prometheus outages are
@@ -223,6 +230,7 @@ func main() {
 	mux.HandleFunc("/api/v1/node-access/credentials", nodeAccessHandler.HandleCredentials)
 	mux.HandleFunc("/api/v1/node-access/credentials/", nodeAccessHandler.HandleCredential)
 	mux.HandleFunc("/api/v1/node-access/checks", nodeAccessHandler.HandleChecks)
+	mux.HandleFunc("/api/v1/node-access/collections", nodeAccessHandler.HandleCollections)
 
 	// 6.4 GPU hardware inventory and collection coverage (read-only).
 	mux.HandleFunc("/api/v1/fleet/summary", inventoryHandler.HandleFleetSummary)
