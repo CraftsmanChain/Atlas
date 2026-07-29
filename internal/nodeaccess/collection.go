@@ -49,7 +49,14 @@ func (s *CollectionService) Collect(ctx context.Context, eventID uint) (*api.Nod
 		}
 		return nil, err
 	}
-	if _, err := managedNode(s.db, event.NodeIP); err != nil {
+	collection := &api.NodeEvidenceCollection{
+		FaultEventID: event.ID, NodeIP: event.NodeIP, Trigger: "immediate",
+	}
+	return s.executeCollection(ctx, collection, collectionCommands(event, s.access.cfg.MaxOutputBytes))
+}
+
+func (s *CollectionService) executeCollection(ctx context.Context, collection *api.NodeEvidenceCollection, commands []ReadOnlyCommand) (*api.NodeEvidenceCollection, error) {
+	if _, err := managedNode(s.db, collection.NodeIP); err != nil {
 		return nil, err
 	}
 	select {
@@ -60,15 +67,18 @@ func (s *CollectionService) Collect(ctx context.Context, eventID uint) (*api.Nod
 	}
 
 	startedAt := s.now()
-	commands := collectionCommands(event, s.access.cfg.MaxOutputBytes)
-	result := s.access.ExecuteReadOnly(ctx, event.NodeIP, commands, s.executor)
+	result := s.access.ExecuteReadOnly(ctx, collection.NodeIP, commands, s.executor)
 	finishedAt := s.now()
-	collection := &api.NodeEvidenceCollection{
-		FaultEventID: event.ID, NodeIP: event.NodeIP, Status: result.Status,
-		CredentialProfileID:   result.CredentialProfileID,
-		NoCredentialDisclosed: result.NoCredentialDisclosed, ReadOnly: true,
-		StartedAt: startedAt, FinishedAt: finishedAt,
-	}
+	collection.Status = result.Status
+	collection.CredentialProfileID = result.CredentialProfileID
+	collection.NoCredentialDisclosed = result.NoCredentialDisclosed
+	collection.ReadOnly = true
+	collection.StartedAt = startedAt
+	collection.FinishedAt = finishedAt
+	collection.CommandCount = 0
+	collection.OutputBytes = 0
+	collection.OutputTruncated = false
+	collection.FailureCode = ""
 	records := make([]api.NodeEvidenceRecord, 0, len(result.Outcomes))
 	allCompleted := len(result.Outcomes) > 0
 	for _, outcome := range result.Outcomes {
@@ -90,8 +100,20 @@ func (s *CollectionService) Collect(ctx context.Context, eventID uint) (*api.Nod
 		collection.Status = "partial"
 	}
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(collection).Error; err != nil {
-			return err
+		if collection.ID == 0 {
+			if err := tx.Create(collection).Error; err != nil {
+				return err
+			}
+		} else {
+			if err := tx.Model(collection).Updates(map[string]any{
+				"status": collection.Status, "credential_profile_id": collection.CredentialProfileID,
+				"command_count": collection.CommandCount, "output_bytes": collection.OutputBytes,
+				"output_truncated": collection.OutputTruncated, "failure_code": collection.FailureCode,
+				"no_credential_disclosed": collection.NoCredentialDisclosed, "read_only": collection.ReadOnly,
+				"started_at": collection.StartedAt, "finished_at": collection.FinishedAt,
+			}).Error; err != nil {
+				return err
+			}
 		}
 		for index := range records {
 			records[index].CollectionID = collection.ID
@@ -143,6 +165,9 @@ func (s *CollectionService) Run(ctx context.Context, interval time.Duration) {
 }
 
 func (s *CollectionService) collectPending(ctx context.Context, limit int) {
+	s.queueOfflineRecoveryCollections(limit)
+	s.collectRecoveredNodes(ctx, limit)
+
 	var eventIDs []uint
 	err := s.db.Model(&api.GPUFaultEvent{}).
 		Select("gpu_fault_events.id").
@@ -164,6 +189,62 @@ func (s *CollectionService) collectPending(ctx context.Context, limit int) {
 			return
 		}
 		_, _ = s.Collect(ctx, eventID)
+	}
+}
+
+// queueOfflineRecoveryCollections models an offline node as a durable
+// condition. Collection waits until inventory observes the same managed node
+// as up again, because SSH evidence is unavailable while the condition is
+// active.
+func (s *CollectionService) queueOfflineRecoveryCollections(limit int) {
+	var issues []api.PlatformIssue
+	err := s.db.Model(&api.PlatformIssue{}).
+		Joins("JOIN gpu_nodes ON gpu_nodes.node_ip = platform_issues.node_ip").
+		Where("platform_issues.detection_source = ? AND platform_issues.issue_type = ?", "inventory_node", "node_state").
+		Where("platform_issues.detection_state = ? AND gpu_nodes.state = ? AND gpu_nodes.lifecycle <> ?", "active", "offline", "retired").
+		Where("NOT EXISTS (?)",
+			s.db.Model(&api.NodeEvidenceCollection{}).
+				Select("1").
+				Where("node_evidence_collections.platform_issue_id = platform_issues.id"),
+		).
+		Order("platform_issues.id ASC").
+		Limit(limit).
+		Find(&issues).Error
+	if err != nil {
+		return
+	}
+	for _, issue := range issues {
+		now := s.now()
+		_ = s.db.Create(&api.NodeEvidenceCollection{
+			PlatformIssueID: issue.ID, NodeIP: issue.NodeIP, Trigger: "after_recovery",
+			Status: "waiting_recovery", FailureCode: "node_offline",
+			NoCredentialDisclosed: true, ReadOnly: true, StartedAt: now, FinishedAt: now,
+		}).Error
+	}
+}
+
+func (s *CollectionService) collectRecoveredNodes(ctx context.Context, limit int) {
+	var pending []api.NodeEvidenceCollection
+	err := s.db.Model(&api.NodeEvidenceCollection{}).
+		Joins("JOIN platform_issues ON platform_issues.id = node_evidence_collections.platform_issue_id").
+		Joins("JOIN gpu_nodes ON gpu_nodes.node_ip = node_evidence_collections.node_ip").
+		Where("node_evidence_collections.status = ? AND node_evidence_collections.trigger = ?", "waiting_recovery", "after_recovery").
+		Where("platform_issues.detection_state = ? AND gpu_nodes.state = ? AND gpu_nodes.lifecycle <> ?", "cleared", "up", "retired").
+		Order("node_evidence_collections.id ASC").
+		Limit(limit).
+		Find(&pending).Error
+	if err != nil {
+		return
+	}
+	for index := range pending {
+		if ctx.Err() != nil {
+			return
+		}
+		var issue api.PlatformIssue
+		if err := s.db.First(&issue, pending[index].PlatformIssueID).Error; err != nil {
+			continue
+		}
+		_, _ = s.executeCollection(ctx, &pending[index], recoveryCollectionCommands(issue, s.access.cfg.MaxOutputBytes))
 	}
 }
 
@@ -189,6 +270,46 @@ func collectionCommands(event api.GPUFaultEvent, totalOutputBytes int) []ReadOnl
 		{
 			ID: "gpu.snapshot", Kind: "gpu_snapshot", MaxOutputBytes: perCommand,
 			Command: "nvidia-smi --query-gpu=index,uuid,name,pci.bus_id,driver_version,temperature.gpu,power.draw,power.limit,clocks.current.sm,clocks.current.memory,utilization.gpu,utilization.memory,pstate --format=csv,noheader,nounits",
+		},
+		{
+			ID: "logs.kernel_window", Kind: "node_log", MaxOutputBytes: perCommand,
+			Command: fmt.Sprintf(
+				"journalctl -k --since %q --until %q --no-pager -n 2000",
+				start.Format(timeFormat), end.Format(timeFormat),
+			),
+		},
+	}
+}
+
+func recoveryCollectionCommands(issue api.PlatformIssue, totalOutputBytes int) []ReadOnlyCommand {
+	if totalOutputBytes <= 0 {
+		totalOutputBytes = 1024 * 1024
+	}
+	perCommand := totalOutputBytes / 4
+	if perCommand < 4096 {
+		perCommand = 4096
+	}
+	start := issue.FirstDetectedAt.Add(-30 * time.Minute)
+	end := issue.LastDetectedAt.Add(30 * time.Minute)
+	if issue.SourceRecoveredAt != nil {
+		end = issue.SourceRecoveredAt.Add(30 * time.Minute)
+	}
+	if end.Sub(start) > 24*time.Hour {
+		start = end.Add(-24 * time.Hour)
+	}
+	timeFormat := "2006-01-02 15:04:05Z07:00"
+	return []ReadOnlyCommand{
+		{
+			ID: "node.identity", Kind: "node_inventory", MaxOutputBytes: perCommand,
+			Command: "hostname; uname -srmo; sed -n '1,8p' /etc/os-release",
+		},
+		{
+			ID: "node.recovery_context", Kind: "recovery_context", MaxOutputBytes: perCommand,
+			Command: "uptime -s; who -b; journalctl --list-boots --no-pager | tail -n 10",
+		},
+		{
+			ID: "gpu.snapshot", Kind: "gpu_snapshot", MaxOutputBytes: perCommand,
+			Command: "nvidia-smi --query-gpu=index,uuid,name,pci.bus_id,driver_version,temperature.gpu,pstate --format=csv,noheader,nounits",
 		},
 		{
 			ID: "logs.kernel_window", Kind: "node_log", MaxOutputBytes: perCommand,

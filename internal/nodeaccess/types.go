@@ -7,7 +7,7 @@ import (
 
 const (
 	SkillID      = "atlas-node-evidence"
-	SkillVersion = "v0.4.3"
+	SkillVersion = "v0.5.0"
 )
 
 type Text struct {
@@ -43,6 +43,21 @@ type SkillDefinition struct {
 	Purpose Text   `json:"purpose"`
 }
 
+type AlertEvidencePolicy struct {
+	Category          string   `json:"category"`
+	IssueTypes        []string `json:"issue_types"`
+	Semantics         string   `json:"semantics"`
+	CollectionTrigger string   `json:"collection_trigger"`
+	Purpose           Text     `json:"purpose"`
+}
+
+type CollectionStatusSummary struct {
+	WaitingRecovery int `json:"waiting_recovery"`
+	Completed       int `json:"completed"`
+	Partial         int `json:"partial"`
+	Failed          int `json:"failed"`
+}
+
 type CredentialProfileStatus struct {
 	ID              string `json:"id"`
 	Priority        int    `json:"priority"`
@@ -73,6 +88,8 @@ type Overview struct {
 	CredentialProfiles  []CredentialProfileStatus `json:"credential_profiles"`
 	Skills              []SkillDefinition         `json:"skills"`
 	Commands            []CommandDefinition       `json:"commands"`
+	AlertPolicies       []AlertEvidencePolicy     `json:"alert_evidence_policies"`
+	CollectionSummary   CollectionStatusSummary   `json:"collection_summary"`
 	Boundaries          []Text                    `json:"boundaries"`
 	GeneratedAt         time.Time                 `json:"generated_at"`
 }
