@@ -126,6 +126,10 @@ func syncConnectivityIssue(tx *gorm.DB, check *api.NodeAccessCheck, identityGene
 	}
 	title := fmt.Sprintf("Node authentication check failed on %s", check.NodeIP)
 	description := fmt.Sprintf("known-host SSH authentication check status=%s; no command executed", check.Status)
+	if check.Status == "credential_exhausted" {
+		title = fmt.Sprintf("Credential dictionary exhausted on %s", check.NodeIP)
+		description = fmt.Sprintf("all enabled credential profiles were rejected or unavailable after %d attempts; no command executed", len(check.Attempts))
+	}
 	severity := "warning"
 	if check.Status == "host_identity_failed" {
 		severity = "critical"

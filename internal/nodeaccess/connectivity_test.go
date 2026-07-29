@@ -42,11 +42,18 @@ func TestConnectivityCheckRejectsUnmanagedNodeBeforeAuthentication(t *testing.T)
 func TestConnectivityCheckPersistsRedactedSuccess(t *testing.T) {
 	db := connectivityTestDB(t)
 	access := NewService(config.NodeAccessConfig{CredentialProfiles: []config.NodeCredentialProfile{
-		{ID: "node-a", Priority: 10, Username: "atlas", AuthType: "password", SecretRef: "env:A", Enabled: true},
-	}}, mapResolver{"env:A": "secret"})
+		{ID: "node-a", Priority: 10, Username: "first", AuthType: "password", SecretRef: "env:A", Enabled: true},
+		{ID: "node-b", Priority: 20, Username: "second", AuthType: "password", SecretRef: "env:B", Enabled: true},
+	}}, mapResolver{"env:A": "wrong", "env:B": "secret"})
 	checker := NewConnectivityService(db, access, authFunc(func(_ context.Context, node, username, _ string, secret []byte) error {
-		if node != "10.114.4.25" || username != "atlas" || string(secret) != "secret" {
-			t.Fatal("unexpected authentication input")
+		if node != "10.114.4.25" {
+			t.Fatal("unexpected authentication node")
+		}
+		if username == "first" && string(secret) == "wrong" {
+			return ErrAuthenticationRejected
+		}
+		if username != "second" || string(secret) != "secret" {
+			t.Fatal("unexpected credential dictionary input")
 		}
 		return nil
 	}), true)
@@ -56,7 +63,7 @@ func TestConnectivityCheckPersistsRedactedSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.Status != "authenticated" || record.CredentialProfileID != "node-a" ||
+	if record.Status != "authenticated" || record.CredentialProfileID != "node-b" ||
 		!record.NoCredentialDisclosed || !record.NoCommandExecuted {
 		t.Fatalf("unexpected connectivity record: %#v", record)
 	}
@@ -64,8 +71,16 @@ func TestConnectivityCheckPersistsRedactedSuccess(t *testing.T) {
 	if err := db.First(&stored, record.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if stored.Status != "authenticated" || len(stored.Attempts) != 1 || stored.Attempts[0] != "node-a:success" {
+	if stored.Status != "authenticated" || len(stored.Attempts) != 2 ||
+		stored.Attempts[0] != "node-a:rejected" || stored.Attempts[1] != "node-b:success" {
 		t.Fatalf("unexpected stored record: %#v", stored)
+	}
+	var issueCount int64
+	if err := db.Model(&api.PlatformIssue{}).Where("detection_source = ?", "node_access_auth").Count(&issueCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if issueCount != 0 {
+		t.Fatalf("dictionary success must not create an access issue, got %d", issueCount)
 	}
 }
 
@@ -87,6 +102,10 @@ func TestCredentialExhaustionCreatesAndSuccessClearsAccessIssue(t *testing.T) {
 	}
 	if issue.Status != "open" || issue.DetectionState != "active" || issue.Category != "access" {
 		t.Fatalf("unexpected active issue: %#v", issue)
+	}
+	if issue.Title != "Credential dictionary exhausted on 10.114.4.25" ||
+		issue.Description != "all enabled credential profiles were rejected or unavailable after 1 attempts; no command executed" {
+		t.Fatalf("unexpected credential exhaustion issue text: %#v", issue)
 	}
 	authError = nil
 	if record, err := checker.Check(context.Background(), "10.114.4.25"); err != nil || record.Status != "authenticated" {
