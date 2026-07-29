@@ -52,7 +52,7 @@ func main() {
 			Logging: config.LoggingConfig{Dir: "logs"},
 			Web:     config.WebConfig{StaticDir: "web/dist"},
 			NodeAccess: config.NodeAccessConfig{
-				SkillID: "atlas-node-evidence", SkillVersion: "v0.4.2", SSHPort: 22,
+				SkillID: "atlas-node-evidence", SkillVersion: "v0.4.3", SSHPort: 22,
 				ConnectTimeout: "5s", CommandTimeout: "10s", MaxOutputBytes: 1024 * 1024,
 				MaxConcurrentNodes: 2, MaxCommandsPerNode: 6,
 			},

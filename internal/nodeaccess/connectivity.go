@@ -93,7 +93,7 @@ func managedNode(db *storage.DB, node string) (*api.GPUNode, error) {
 }
 
 func (s *ConnectivityService) List(limit int) ([]api.NodeAccessCheck, error) {
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 || limit > 101 {
 		limit = 30
 	}
 	var rows []api.NodeAccessCheck

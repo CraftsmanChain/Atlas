@@ -207,7 +207,7 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.NodeAccess.SkillID = "atlas-node-evidence"
 	}
 	if cfg.NodeAccess.SkillVersion == "" {
-		cfg.NodeAccess.SkillVersion = "v0.4.2"
+		cfg.NodeAccess.SkillVersion = "v0.4.3"
 	}
 	if cfg.NodeAccess.ConnectTimeout == "" {
 		cfg.NodeAccess.ConnectTimeout = "5s"

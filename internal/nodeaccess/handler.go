@@ -108,12 +108,28 @@ func (h *Handler) HandleChecks(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := h.connectivity.List(30)
+		limit := 5
+		if value := strings.TrimSpace(r.URL.Query().Get("limit")); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 1 || parsed > 100 {
+				writeNodeAccessError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+				return
+			}
+			limit = parsed
+		}
+		rows, err := h.connectivity.List(limit + 1)
 		if err != nil {
 			writeNodeAccessError(w, http.StatusInternalServerError, "failed to list node connectivity checks")
 			return
 		}
-		writeNodeAccessJSON(w, http.StatusOK, map[string]any{"data": rows})
+		hasMore := len(rows) > limit
+		if hasMore {
+			rows = rows[:limit]
+		}
+		writeNodeAccessJSON(w, http.StatusOK, map[string]any{
+			"data": rows,
+			"meta": map[string]any{"limit": limit, "has_more": hasMore},
+		})
 	case http.MethodPost:
 		var request struct {
 			NodeIP string `json:"node_ip"`
