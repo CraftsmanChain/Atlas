@@ -52,7 +52,7 @@ func main() {
 			Logging: config.LoggingConfig{Dir: "logs"},
 			Web:     config.WebConfig{StaticDir: "web/dist"},
 			NodeAccess: config.NodeAccessConfig{
-				SkillID: "atlas-node-evidence", SkillVersion: "v0.4.0", SSHPort: 22,
+				SkillID: "atlas-node-evidence", SkillVersion: "v0.4.1", SSHPort: 22,
 				ConnectTimeout: "5s", CommandTimeout: "10s", MaxOutputBytes: 1024 * 1024,
 				MaxConcurrentNodes: 2, MaxCommandsPerNode: 6,
 			},
@@ -128,13 +128,12 @@ func main() {
 		credentialVault = nil
 	}
 	nodeAccessService := nodeaccess.NewServiceWithVault(cfg.NodeAccess, nil, credentialVault)
-	allowCredentialLoopbackHTTP := strings.EqualFold(strings.TrimSpace(os.Getenv("ATLAS_NODE_CREDENTIAL_ALLOW_INSECURE_LOOPBACK")), "true")
 	allowCredentialInsecureHTTP := strings.EqualFold(strings.TrimSpace(os.Getenv("ATLAS_NODE_CREDENTIAL_ALLOW_INSECURE_HTTP")), "true")
 	if allowCredentialInsecureHTTP {
-		log.Printf("WARNING: node credential writes are allowed over plaintext HTTP")
+		log.Printf("WARNING: asset configuration writes are allowed over plaintext HTTP")
 	}
 	assetConfigHandler := platformconfig.NewAssetConfigHandler(assetSource, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialInsecureHTTP)
-	nodeAccessHandler := nodeaccess.NewHandlerWithVault(nodeAccessService, credentialVault, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialLoopbackHTTP, allowCredentialInsecureHTTP)
+	nodeAccessHandler := nodeaccess.NewHandlerWithVault(nodeAccessService, credentialVault)
 	connectTimeout := parseDurationOrDefault("node SSH connect", cfg.NodeAccess.ConnectTimeout, 5*time.Second)
 	sshAuthenticator, sshErr := nodeaccess.NewSSHAuthenticator(cfg.NodeAccess.SSHPort, connectTimeout, cfg.NodeAccess.KnownHostsFile)
 	if sshErr != nil {

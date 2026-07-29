@@ -1,11 +1,9 @@
 package nodeaccess
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,13 +12,10 @@ import (
 )
 
 type Handler struct {
-	service           *Service
-	vault             *CredentialVault
-	connectivity      *ConnectivityService
-	collections       *CollectionService
-	adminToken        string
-	allowLoopbackHTTP bool
-	allowInsecureHTTP bool
+	service      *Service
+	vault        *CredentialVault
+	connectivity *ConnectivityService
+	collections  *CollectionService
 }
 
 func NewHandler(service *Service) *Handler { return &Handler{service: service} }
@@ -28,15 +23,8 @@ func NewHandler(service *Service) *Handler { return &Handler{service: service} }
 func (h *Handler) SetConnectivity(service *ConnectivityService) { h.connectivity = service }
 func (h *Handler) SetCollections(service *CollectionService)    { h.collections = service }
 
-func NewHandlerWithVault(service *Service, vault *CredentialVault, adminToken string, allowLoopbackHTTP ...bool) *Handler {
-	handler := &Handler{service: service, vault: vault, adminToken: strings.TrimSpace(adminToken)}
-	if len(allowLoopbackHTTP) > 0 {
-		handler.allowLoopbackHTTP = allowLoopbackHTTP[0]
-	}
-	if len(allowLoopbackHTTP) > 1 {
-		handler.allowInsecureHTTP = allowLoopbackHTTP[1]
-	}
-	return handler
+func NewHandlerWithVault(service *Service, vault *CredentialVault) *Handler {
+	return &Handler{service: service, vault: vault}
 }
 
 func (h *Handler) HandleCollections(w http.ResponseWriter, r *http.Request) {
@@ -58,14 +46,6 @@ func (h *Handler) HandleCollections(w http.ResponseWriter, r *http.Request) {
 		}
 		writeNodeAccessJSON(w, http.StatusOK, map[string]any{"data": rows})
 	case http.MethodPost:
-		if !h.secureWriteTransport(r) {
-			writeNodeAccessError(w, http.StatusUpgradeRequired, "node evidence collection requires HTTPS or an approved HTTP compatibility mode")
-			return
-		}
-		if !h.authorized(r) {
-			writeNodeAccessError(w, http.StatusUnauthorized, "invalid management credential")
-			return
-		}
 		var request struct {
 			FaultEventID uint `json:"fault_event_id"`
 		}
@@ -105,9 +85,9 @@ func (h *Handler) HandleOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	overview := h.service.Overview()
-	overview.ManagementReady = h.vault != nil && h.adminToken != ""
-	overview.SecureWriteOnly = !h.allowInsecureHTTP
-	overview.InsecureHTTPAllowed = h.allowInsecureHTTP
+	overview.ManagementReady = h.vault != nil
+	overview.SecureWriteOnly = false
+	overview.InsecureHTTPAllowed = true
 	overview.ConnectivityEnabled = h.connectivity != nil && h.connectivity.Enabled()
 	overview.KnownHostsReady = h.connectivity != nil && h.connectivity.KnownHostsReady()
 	overview.ExecutionEnabled = h.collections != nil && h.collections.Enabled()
@@ -135,14 +115,6 @@ func (h *Handler) HandleChecks(w http.ResponseWriter, r *http.Request) {
 		}
 		writeNodeAccessJSON(w, http.StatusOK, map[string]any{"data": rows})
 	case http.MethodPost:
-		if !h.secureWriteTransport(r) {
-			writeNodeAccessError(w, http.StatusUpgradeRequired, "node connectivity checks require HTTPS or an approved HTTP compatibility mode")
-			return
-		}
-		if !h.authorized(r) {
-			writeNodeAccessError(w, http.StatusUnauthorized, "invalid management credential")
-			return
-		}
 		var request struct {
 			NodeIP string `json:"node_ip"`
 		}
@@ -181,14 +153,6 @@ func (h *Handler) HandleCredentials(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		h.listCredentials(w)
 	case http.MethodPost:
-		if !h.secureWriteTransport(r) {
-			writeNodeAccessError(w, http.StatusUpgradeRequired, "credential writes require HTTPS or an approved loopback connection")
-			return
-		}
-		if !h.authorized(r) {
-			writeNodeAccessError(w, http.StatusUnauthorized, "invalid management credential")
-			return
-		}
 		h.createCredential(w, r)
 	default:
 		w.Header().Set("Allow", "GET, POST")
@@ -200,14 +164,6 @@ func (h *Handler) HandleCredential(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		w.Header().Set("Allow", "DELETE")
 		writeNodeAccessError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if !h.secureWriteTransport(r) {
-		writeNodeAccessError(w, http.StatusUpgradeRequired, "credential writes require HTTPS or an approved loopback connection")
-		return
-	}
-	if !h.authorized(r) {
-		writeNodeAccessError(w, http.StatusUnauthorized, "invalid management credential")
 		return
 	}
 	profileID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/node-access/credentials/"), "/")
@@ -282,35 +238,6 @@ func (h *Handler) createCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeNodeAccessJSON(w, http.StatusCreated, map[string]any{"data": record})
-}
-
-func (h *Handler) authorized(r *http.Request) bool {
-	if h.vault == nil || h.adminToken == "" {
-		return false
-	}
-	provided := r.Header.Get("X-Atlas-Admin-Token")
-	if len(provided) != len(h.adminToken) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(provided), []byte(h.adminToken)) == 1
-}
-
-func (h *Handler) secureWriteTransport(r *http.Request) bool {
-	if r.TLS != nil {
-		return true
-	}
-	if h.allowInsecureHTTP {
-		return true
-	}
-	if !h.allowLoopbackHTTP {
-		return false
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	ip := net.ParseIP(strings.Trim(host, "[]"))
-	return ip != nil && ip.IsLoopback()
 }
 
 func writeNodeAccessJSON(w http.ResponseWriter, status int, payload any) {
