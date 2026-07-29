@@ -6,9 +6,12 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"atlas/pkg/api"
 	"atlas/pkg/config"
 	"atlas/pkg/storage"
 )
@@ -155,5 +158,69 @@ func TestConnectivityHandlerAllowsOpenHTTPAndReturnsRedactedResult(t *testing.T)
 	handler.HandleChecks(response, httptest.NewRequest(http.MethodGet, "/api/v1/node-access/checks?limit=30", nil))
 	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `"node_ip"`) != 6 || !strings.Contains(response.Body.String(), `"has_more":false`) {
 		t.Fatalf("expanded connectivity page should contain all rows: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestCollectionHandlerDefaultsToFiveAndRetriesFailedAudit(t *testing.T) {
+	db := connectivityTestDB(t)
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	event := api.GPUFaultEvent{
+		EpisodeKey: "handler:retry", State: "open", NodeIP: "10.114.4.25",
+		RuleCode: "xid_critical", FirstObservedAt: now.Add(-time.Hour), LastObservedAt: now,
+	}
+	if err := db.Create(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	var retrySource api.NodeEvidenceCollection
+	for index := 0; index < 6; index++ {
+		row := api.NodeEvidenceCollection{
+			FaultEventID: event.ID, NodeIP: event.NodeIP, Trigger: "immediate",
+			Status: "failed", FailureCode: "credential_exhausted",
+			NoCredentialDisclosed: true, ReadOnly: true,
+			StartedAt:  now.Add(time.Duration(index) * time.Minute),
+			FinishedAt: now.Add(time.Duration(index) * time.Minute),
+		}
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+		if index == 5 {
+			retrySource = row
+		}
+	}
+	access := NewService(config.NodeAccessConfig{
+		Enabled: true, MaxCommandsPerNode: 3,
+		CredentialProfiles: []config.NodeCredentialProfile{
+			{ID: "working", Username: "atlas", AuthType: "password", SecretRef: "env:A", Enabled: true},
+		},
+	}, mapResolver{"env:A": "secret"})
+	collector := NewCollectionService(db, access, executorFunc(func(
+		_ context.Context, _ string, _ string, _ string, _ []byte,
+		commands []ReadOnlyCommand, _ time.Duration,
+	) ([]CommandOutcome, error) {
+		outcomes := make([]CommandOutcome, 0, len(commands))
+		for _, command := range commands {
+			outcomes = append(outcomes, CommandOutcome{
+				CommandID: command.ID, Kind: command.Kind, Status: "completed", Output: "sanitized",
+			})
+		}
+		return outcomes, nil
+	}), 1)
+	handler := NewHandler(access)
+	handler.SetCollections(collector)
+
+	response := httptest.NewRecorder()
+	handler.HandleCollections(response, httptest.NewRequest(http.MethodGet, "/api/v1/node-access/collections", nil))
+	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `"node_ip"`) != 5 ||
+		!strings.Contains(response.Body.String(), `"has_more":true`) {
+		t.Fatalf("default collection page should contain five rows: %d %s", response.Code, response.Body.String())
+	}
+
+	body := `{"retry_collection_id":` + strconv.FormatUint(uint64(retrySource.ID), 10) + `}`
+	response = httptest.NewRecorder()
+	handler.HandleCollections(response, httptest.NewRequest(http.MethodPost, "/api/v1/node-access/collections", strings.NewReader(body)))
+	if response.Code != http.StatusCreated ||
+		!strings.Contains(response.Body.String(), `"retry_of_collection_id":`+strconv.FormatUint(uint64(retrySource.ID), 10)) ||
+		!strings.Contains(response.Body.String(), `"status":"completed"`) {
+		t.Fatalf("unexpected collection retry response: %d %s", response.Code, response.Body.String())
 	}
 }

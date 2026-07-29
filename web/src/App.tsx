@@ -81,6 +81,14 @@ type NodeAccessSkill = { id: string; version: string; class: string; status: str
 type AlertEvidencePolicy = { category: string; issue_types: string[]; semantics: string; collection_trigger: string; purpose: LocalizedText };
 type NodeCredentialStatus = { id: string; priority: number; username_masked: string; auth_type: string; secret_provider: string; enabled: boolean; secret_available: boolean; status: string };
 type NodeAccessCheck = { id: number; node_ip: string; status: string; credential_profile_id?: string; attempts: string[]; alert_required: boolean; no_credential_disclosed: boolean; no_command_executed: boolean; started_at: string; finished_at: string };
+type NodeEvidenceRecord = { id: number; collection_id: number; command_id: string; kind: string; status: string; output_bytes: number; truncated: boolean; observed_at: string };
+type NodeEvidenceCollection = {
+  id: number; fault_event_id?: number; platform_issue_id?: number; retry_of_collection_id?: number;
+  node_ip: string; trigger: string; status: string; credential_profile_id?: string;
+  command_count: number; output_bytes: number; output_truncated: boolean; failure_code?: string;
+  no_credential_disclosed: boolean; read_only: boolean; started_at: string; finished_at: string;
+  records?: NodeEvidenceRecord[];
+};
 type NodeAccessOverview = {
   skill_id: string; skill_version: string; status: string; enabled: boolean; execution_enabled: boolean;
   no_arbitrary_shell: boolean; no_change_executed: boolean; encryption_ready: boolean; management_ready: boolean; secure_write_only: boolean; insecure_http_allowed: boolean; connectivity_check_enabled: boolean; known_hosts_ready: boolean; default_read_only_collection: boolean;
@@ -628,6 +636,13 @@ function Quality({ tx, view, targets, summary, issueSummary, inventoryError, syn
   const [connectivityLoadingMore, setConnectivityLoadingMore] = useState(false);
   const [connectivityChecking, setConnectivityChecking] = useState(false);
   const [connectivityError, setConnectivityError] = useState('');
+  const [evidenceCollections, setEvidenceCollections] = useState<NodeEvidenceCollection[]>([]);
+  const [collectionLimit, setCollectionLimit] = useState(5);
+  const [collectionHasMore, setCollectionHasMore] = useState(false);
+  const [collectionLoadingMore, setCollectionLoadingMore] = useState(false);
+  const [retryingCollectionID, setRetryingCollectionID] = useState<number | null>(null);
+  const [collectionError, setCollectionError] = useState('');
+  const [collectionMessage, setCollectionMessage] = useState('');
   const loadConnectivityChecks = useCallback(async (limit: number) => {
     try {
       const response = await fetch(`/api/v1/node-access/checks?limit=${limit}`);
@@ -637,17 +652,35 @@ function Quality({ tx, view, targets, summary, issueSummary, inventoryError, syn
       setConnectivityHasMore(Boolean(payload.meta?.has_more));
     } catch { /* overview remains usable when the check ledger is unavailable */ }
   }, []);
+  const loadEvidenceCollections = useCallback(async (limit: number) => {
+    try {
+      const response = await fetch(`/api/v1/node-access/collections?limit=${limit}`);
+      if (!response.ok) return;
+      const payload = await response.json();
+      setEvidenceCollections(payload.data || []);
+      setCollectionHasMore(Boolean(payload.meta?.has_more));
+    } catch { /* node access remains usable when the collection ledger is unavailable */ }
+  }, []);
   useEffect(() => {
     if (view !== 'node-access') return;
     setConnectivityLimit(5);
+    setCollectionLimit(5);
     void loadConnectivityChecks(5);
-  }, [view, loadConnectivityChecks]);
+    void loadEvidenceCollections(5);
+  }, [view, loadConnectivityChecks, loadEvidenceCollections]);
   const loadMoreConnectivityChecks = async () => {
     const nextLimit = Math.min(connectivityLimit + 25, 100);
     setConnectivityLoadingMore(true);
     await loadConnectivityChecks(nextLimit);
     setConnectivityLimit(nextLimit);
     setConnectivityLoadingMore(false);
+  };
+  const loadMoreEvidenceCollections = async () => {
+    const nextLimit = Math.min(collectionLimit + 25, 100);
+    setCollectionLoadingMore(true);
+    await loadEvidenceCollections(nextLimit);
+    setCollectionLimit(nextLimit);
+    setCollectionLoadingMore(false);
   };
   const runConnectivityCheck = async () => {
     setConnectivityChecking(true); setConnectivityError('');
@@ -665,6 +698,23 @@ function Quality({ tx, view, targets, summary, issueSummary, inventoryError, syn
     } catch (reason) {
       setConnectivityError(reason instanceof Error ? reason.message : tx('检查失败', 'Check failed'));
     } finally { setConnectivityChecking(false); }
+  };
+  const retryEvidenceCollection = async (collectionID: number) => {
+    setRetryingCollectionID(collectionID); setCollectionError(''); setCollectionMessage('');
+    try {
+      const response = await fetch('/api/v1/node-access/collections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ retry_collection_id: collectionID }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error?.message || `HTTP ${response.status}`);
+      setCollectionMessage(tx(`采集任务 #${collectionID} 已重试并保留原审计记录`, `Collection #${collectionID} retried with the original audit record preserved`));
+      await loadEvidenceCollections(collectionLimit);
+      reloadNodeAccess();
+    } catch (reason) {
+      setCollectionError(reason instanceof Error ? reason.message : tx('重试失败', 'Retry failed'));
+    } finally { setRetryingCollectionID(null); }
   };
   const saveCredential = async () => {
     setCredentialSaving(true); setCredentialMessage(''); setCredentialError('');
@@ -715,7 +765,7 @@ function Quality({ tx, view, targets, summary, issueSummary, inventoryError, syn
     const statusKind = nodeAccess?.status === 'connectivity_ready' ? 'healthy' : nodeAccess?.status === 'credentials_missing' || nodeAccess?.status === 'known_hosts_missing' ? 'warning' : 'neutral';
     return <div className="grid node-access-page">
       <Card className="span-12 node-access-guard">
-        <div><ShieldCheck size={21} /><div><CardHead code={`${nodeAccess?.skill_id || 'atlas-node-evidence'} / ${nodeAccess?.skill_version || 'v0.5.1'}`} title={tx('节点只读证据 Skill', 'Node Read-only Evidence Skill')} /><p>{tx('低负载只读信息按注册命令和固定资源预算自动采集；节点失联时等待恢复，恢复为 up 后使用全局密码字典补采启动历史和故障时间窗证据。', 'Low-impact read-only evidence is collected through registered commands and fixed budgets; offline nodes wait until recovery, then use the global credential dictionary to collect boot history and incident-window evidence.')}</p></div></div>
+        <div><ShieldCheck size={21} /><div><CardHead code={`${nodeAccess?.skill_id || 'atlas-node-evidence'} / ${nodeAccess?.skill_version || 'v0.6.0'}`} title={tx('节点只读证据 Skill', 'Node Read-only Evidence Skill')} /><p>{tx('低负载只读信息按注册命令和固定资源预算自动采集；节点失联时等待恢复，恢复为 up 后使用全局密码字典补采，失败任务可保留历史并人工重试。', 'Low-impact read-only evidence is collected through registered commands and fixed budgets; offline nodes wait until recovery, then use the global credential dictionary for collection, while failed tasks preserve history and support manual retry.')}</p></div></div>
         <div className="node-access-badges"><Badge value={(nodeAccess?.status || 'unavailable').toUpperCase()} kind={statusKind} /><Badge value="HANDSHAKE ONLY" kind="info" /><Badge value="NO COMMAND EXECUTED" kind="healthy" /></div>
       </Card>
       {[
@@ -760,6 +810,13 @@ function Quality({ tx, view, targets, summary, issueSummary, inventoryError, syn
         {connectivityError && <p className="form-error">{connectivityError}</p>}
         <div className="table-wrap connectivity-table-wrap"><table className="node-access-table"><thead><tr><th>{tx('节点', 'Node')}</th><th>{tx('结果', 'Result')}</th><th>PROFILE</th><th>{tx('尝试', 'Attempts')}</th><th>{tx('提醒', 'Alert')}</th><th>{tx('完成时间', 'Finished')}</th></tr></thead><tbody>{connectivityChecks.map(check => <tr key={check.id}><td><b>{check.node_ip}</b><small>#{check.id}</small></td><td><Badge value={check.status.toUpperCase()} kind={check.status === 'authenticated' ? 'healthy' : check.status === 'host_identity_failed' ? 'danger' : 'warning'} /></td><td><code>{check.credential_profile_id || '—'}</code></td><td><small>{(check.attempts || []).join(' · ') || '—'}</small></td><td><Badge value={check.alert_required ? 'REQUIRED' : 'NO'} kind={check.alert_required ? 'warning' : 'neutral'} /></td><td>{time(check.finished_at, lang)}</td></tr>)}</tbody></table>{connectivityChecks.length === 0 && <Empty tx={tx} title={tx('尚无节点认证检查记录', 'No node authentication checks yet')} />}</div>
         {connectivityHasMore && <button className="module-history-more connectivity-more" type="button" onClick={() => void loadMoreConnectivityChecks()} disabled={connectivityLoadingMore}>{connectivityLoadingMore ? tx('查询中…', 'Loading…') : tx('更多记录', 'Load more')}<ChevronRight size={13} /></button>}
+      </Card>
+      <Card className="span-12 evidence-collection-card">
+        <CardHead code="EVIDENCE COLLECTION AUDIT" title={tx('节点证据采集任务', 'Node Evidence Collection Tasks')} action={<div className="table-actions"><Badge value={`${nodeAccess?.collection_summary?.completed || 0} COMPLETED`} kind="healthy" /><Badge value={`${nodeAccess?.collection_summary?.failed || 0} FAILED`} kind={(nodeAccess?.collection_summary?.failed || 0) > 0 ? 'warning' : 'neutral'} /><Badge value={`${evidenceCollections.length} RECENT`} kind="info" /></div>} />
+        <p className="node-access-note">{tx('展示最近的自动采集、恢复后补采和人工重试审计。失败或部分成功任务可重试；系统新建记录并保留原失败历史，只执行同一组注册的低负载只读命令。任务列表只返回命令元数据，日志正文继续通过故障报告按事件查看。', 'Shows recent automatic, post-recovery, and manual-retry audits. Failed or partial tasks can be retried; Atlas creates a new record, preserves the original failure, and executes only the same registered low-impact read-only commands. The ledger returns command metadata only; log bodies remain available through the event fault report.')}</p>
+        {collectionError && <p className="form-error">{collectionError}</p>}{collectionMessage && <p className="form-success">{collectionMessage}</p>}
+        <div className="table-wrap evidence-collection-wrap"><table className="node-access-table evidence-collection-table"><thead><tr><th>ID</th><th>{tx('节点 / 来源', 'Node / Source')}</th><th>{tx('触发', 'Trigger')}</th><th>{tx('结果', 'Result')}</th><th>{tx('注册命令', 'Registered Commands')}</th><th>{tx('输出', 'Output')}</th><th>{tx('完成时间', 'Finished')}</th><th>{tx('操作', 'Action')}</th></tr></thead><tbody>{evidenceCollections.map(collection => { const retryable = collection.status === 'failed' || collection.status === 'partial'; const source = collection.fault_event_id ? `EVENT #${collection.fault_event_id}` : collection.platform_issue_id ? `ISSUE #${collection.platform_issue_id}` : 'UNKNOWN'; return <tr key={collection.id}><td><code>#{collection.id}</code>{collection.retry_of_collection_id ? <small>RETRY OF #{collection.retry_of_collection_id}</small> : null}</td><td><b>{collection.node_ip}</b><small>{source}</small></td><td><Badge value={(collection.trigger || 'legacy').toUpperCase()} kind={collection.trigger === 'manual_retry' ? 'info' : collection.trigger === 'after_recovery' ? 'warning' : 'neutral'} /></td><td><Badge value={collection.status.toUpperCase()} kind={collection.status === 'completed' ? 'healthy' : collection.status === 'failed' ? 'danger' : 'warning'} /><small>{collection.failure_code || collection.credential_profile_id || '—'}</small></td><td><div className="collection-command-meta">{(collection.records || []).map(record => <span key={record.id}><code>{record.command_id}</code><Badge value={record.status.toUpperCase()} kind={record.status === 'completed' ? 'healthy' : 'warning'} /></span>)}{!(collection.records || []).length && <small>{collection.command_count || 0} COMMANDS</small>}</div></td><td>{collection.output_bytes ? `${(collection.output_bytes / 1024).toFixed(1)} KiB` : '—'}<small>{collection.output_truncated ? 'TRUNCATED' : 'BOUNDED'}</small></td><td>{time(collection.finished_at, lang)}</td><td><button className="collection-retry" type="button" onClick={() => void retryEvidenceCollection(collection.id)} disabled={!retryable || retryingCollectionID !== null} title={retryable ? tx('使用当前密码字典重试只读采集', 'Retry read-only collection with the current credential dictionary') : tx('只有失败或部分成功任务可重试', 'Only failed or partial tasks can be retried')}><RefreshCw size={13} />{retryingCollectionID === collection.id ? tx('重试中', 'Retrying') : tx('重试', 'Retry')}</button></td></tr>; })}</tbody></table>{evidenceCollections.length === 0 && <Empty tx={tx} title={tx('尚无证据采集任务', 'No evidence collection tasks yet')} />}</div>
+        {collectionHasMore && <button className="module-history-more connectivity-more" type="button" onClick={() => void loadMoreEvidenceCollections()} disabled={collectionLoadingMore}>{collectionLoadingMore ? tx('查询中…', 'Loading…') : tx('更多记录', 'Load more')}<ChevronRight size={13} /></button>}
       </Card>
       <Card className="span-7 node-command-card">
         <CardHead code="DEFAULT / READ-ONLY" title={tx('默认自动采集', 'Default Automatic Collection')} action={<Badge value={`${readOnly.length} COMMANDS`} kind="healthy" />} />
@@ -815,12 +872,13 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   ];
   const modules = baseModules.map(module => module.id === 'node-access' ? {
     ...module,
-    version: 'v0.5.1',
+    version: 'v0.6.0',
     desc: tx(
-      '节点凭据作为全局密码字典按优先级尝试，任一凭据成功即认为可访问；仅字典全部耗尽后产生访问问题。硬件事件立即采集，节点失联恢复后补采故障证据。',
-      'Node credentials form a global dictionary tried by priority. Any successful credential makes the node accessible; an access issue is created only after the dictionary is exhausted. Hardware events collect immediately, while outage evidence is collected after recovery.',
+      '硬件事件立即采集，节点失联恢复后补采故障证据；任务保留可分页审计历史，失败后可使用当前全局密码字典人工重试且不覆盖旧记录。',
+      'Hardware events collect immediately and outage evidence is collected after recovery. Tasks retain paginated audit history and failed collections can be retried manually with the current global credential dictionary without overwriting old records.',
     ),
     history: [
+      tx('v0.6.0 · 最近 5 条证据任务、按需加载更多、失败原因与保留历史的人工只读重试', 'v0.6.0 · five recent evidence tasks, on-demand history, failure reasons, and manual read-only retry with preserved audit history'),
       tx('v0.5.1 · 全局密码字典按优先级轮询，任一凭据成功不告警，仅全部耗尽后产生访问问题', 'v0.5.1 · global credential dictionary rotation by priority; any success suppresses access findings and only full exhaustion creates one'),
       ...module.history,
     ],
@@ -837,7 +895,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.24.1" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.25.0" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>

@@ -39,19 +39,37 @@ func (h *Handler) HandleCollections(w http.ResponseWriter, r *http.Request) {
 			writeNodeAccessError(w, http.StatusBadRequest, "invalid fault event id")
 			return
 		}
-		rows, err := h.collections.List(eventID, 20)
+		limit := 5
+		if value := strings.TrimSpace(r.URL.Query().Get("limit")); value != "" {
+			parsed, parseErr := strconv.Atoi(value)
+			if parseErr != nil || parsed < 1 || parsed > 100 {
+				writeNodeAccessError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+				return
+			}
+			limit = parsed
+		}
+		rows, err := h.collections.List(eventID, limit+1)
 		if err != nil {
 			writeNodeAccessError(w, http.StatusInternalServerError, "failed to list node evidence collections")
 			return
 		}
-		writeNodeAccessJSON(w, http.StatusOK, map[string]any{"data": rows})
+		hasMore := len(rows) > limit
+		if hasMore {
+			rows = rows[:limit]
+		}
+		writeNodeAccessJSON(w, http.StatusOK, map[string]any{
+			"data": rows,
+			"meta": map[string]any{"limit": limit, "has_more": hasMore},
+		})
 	case http.MethodPost:
 		var request struct {
-			FaultEventID uint `json:"fault_event_id"`
+			FaultEventID      uint `json:"fault_event_id"`
+			RetryCollectionID uint `json:"retry_collection_id"`
 		}
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<10))
 		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&request); err != nil || request.FaultEventID == 0 {
+		if err := decoder.Decode(&request); err != nil ||
+			(request.FaultEventID == 0) == (request.RetryCollectionID == 0) {
 			writeNodeAccessError(w, http.StatusBadRequest, "invalid node evidence collection")
 			return
 		}
@@ -60,12 +78,20 @@ func (h *Handler) HandleCollections(w http.ResponseWriter, r *http.Request) {
 			writeNodeAccessError(w, http.StatusBadRequest, "invalid node evidence collection")
 			return
 		}
-		record, err := h.collections.Collect(r.Context(), request.FaultEventID)
+		var record any
+		var err error
+		if request.RetryCollectionID > 0 {
+			record, err = h.collections.Retry(r.Context(), request.RetryCollectionID)
+		} else {
+			record, err = h.collections.Collect(r.Context(), request.FaultEventID)
+		}
 		if err != nil {
 			status := http.StatusInternalServerError
 			switch {
-			case errors.Is(err, ErrFaultEventNotFound), errors.Is(err, ErrNodeNotManaged):
+			case errors.Is(err, ErrFaultEventNotFound), errors.Is(err, ErrEvidenceCollectionNotFound), errors.Is(err, ErrNodeNotManaged):
 				status = http.StatusNotFound
+			case errors.Is(err, ErrEvidenceCollectionNotRetryable):
+				status = http.StatusConflict
 			case errors.Is(err, ErrConnectivityUnavailable):
 				status = http.StatusServiceUnavailable
 			}

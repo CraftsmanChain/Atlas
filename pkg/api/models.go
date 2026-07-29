@@ -183,6 +183,7 @@ type NodeEvidenceCollection struct {
 	ID                    uint                 `json:"id" gorm:"primaryKey;autoIncrement"`
 	FaultEventID          uint                 `json:"fault_event_id,omitempty" gorm:"index"`
 	PlatformIssueID       uint                 `json:"platform_issue_id,omitempty" gorm:"index"`
+	RetryOfCollectionID   uint                 `json:"retry_of_collection_id,omitempty" gorm:"index"`
 	NodeIP                string               `json:"node_ip" gorm:"index;not null"`
 	Trigger               string               `json:"trigger" gorm:"index;size:32"`
 	Status                string               `json:"status" gorm:"index;not null"`
@@ -207,7 +208,7 @@ type NodeEvidenceRecord struct {
 	CommandID    string    `json:"command_id" gorm:"index;size:64;not null"`
 	Kind         string    `json:"kind" gorm:"index;size:32;not null"`
 	Status       string    `json:"status" gorm:"index;size:32;not null"`
-	Output       string    `json:"output" gorm:"type:text"`
+	Output       string    `json:"output,omitempty" gorm:"type:text"`
 	OutputBytes  int       `json:"output_bytes"`
 	Truncated    bool      `json:"truncated"`
 	ObservedAt   time.Time `json:"observed_at" gorm:"index"`
