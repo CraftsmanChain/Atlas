@@ -144,6 +144,9 @@ func migrateSchema(db *gorm.DB) error {
 		&api.NodeAccessCheck{},
 		&api.NodeEvidenceCollection{},
 		&api.NodeEvidenceRecord{},
+		&api.PredictionModelSpec{},
+		&api.FailureLabel{},
+		&api.HardwareRiskPrediction{},
 	)
 }
 

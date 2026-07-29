@@ -55,6 +55,9 @@ var migrationModels = []migrationModel{
 	{name: "node_access_checks", value: &api.NodeAccessCheck{}, order: "id", autoIncrement: true},
 	{name: "node_evidence_collections", value: &api.NodeEvidenceCollection{}, order: "id", autoIncrement: true},
 	{name: "node_evidence_records", value: &api.NodeEvidenceRecord{}, order: "id", autoIncrement: true},
+	{name: "prediction_model_specs", value: &api.PredictionModelSpec{}, order: "id", autoIncrement: true},
+	{name: "failure_labels", value: &api.FailureLabel{}, order: "id", autoIncrement: true},
+	{name: "hardware_risk_predictions", value: &api.HardwareRiskPrediction{}, order: "id", autoIncrement: true},
 }
 
 // MigrateSQLite copies a consistent SQLite backup into PostgreSQL. Existing

@@ -304,6 +304,76 @@ func TestIssueSummaryResolutionAndTrainingDataAPI(t *testing.T) {
 	}
 }
 
+func TestIssueDetailIncludesLatestRecoveryEvidence(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 29, 9, 0, 0, 0, time.UTC)
+	issue := api.PlatformIssue{
+		IssueKey:        "node_state:10.114.4.23",
+		Category:        "availability",
+		IssueType:       "node_state",
+		Title:           "node recovered",
+		EntityType:      "node",
+		EntityKey:       "10.114.4.23",
+		NodeIP:          "10.114.4.23",
+		Severity:        "critical",
+		Status:          "resolved",
+		DetectionState:  "cleared",
+		DetectionSource: "inventory",
+		FirstDetectedAt: now.Add(-time.Hour),
+		LastDetectedAt:  now,
+	}
+	if err := db.Create(&issue).Error; err != nil {
+		t.Fatal(err)
+	}
+	previous := api.NodeEvidenceCollection{
+		PlatformIssueID: issue.ID, NodeIP: issue.NodeIP, Trigger: "node_recovered",
+		Status: "failed", FailureCode: "authentication_failed", ReadOnly: true,
+		NoCredentialDisclosed: true, StartedAt: now.Add(-10 * time.Minute), FinishedAt: now.Add(-9 * time.Minute),
+	}
+	if err := db.Create(&previous).Error; err != nil {
+		t.Fatal(err)
+	}
+	latest := api.NodeEvidenceCollection{
+		PlatformIssueID: issue.ID, RetryOfCollectionID: previous.ID, NodeIP: issue.NodeIP,
+		Trigger: "manual_retry", Status: "completed", CommandCount: 2, OutputBytes: 34,
+		ReadOnly: true, NoCredentialDisclosed: true, StartedAt: now.Add(-5 * time.Minute), FinishedAt: now.Add(-4 * time.Minute),
+	}
+	if err := db.Create(&latest).Error; err != nil {
+		t.Fatal(err)
+	}
+	records := []api.NodeEvidenceRecord{
+		{CollectionID: latest.ID, CommandID: "node.identity", Kind: "identity", Status: "completed", Output: "boot_id=abc", OutputBytes: 11, ObservedAt: now.Add(-5 * time.Minute)},
+		{CollectionID: latest.ID, CommandID: "logs.kernel_window", Kind: "log", Status: "completed", Output: "kernel: recovered", OutputBytes: 17, ObservedAt: now.Add(-4 * time.Minute)},
+	}
+	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	NewHandler(db).HandleSubresource(response, httptest.NewRequest("GET", "/api/v1/issues/"+itoa(issue.ID), nil))
+	if response.Code != 200 {
+		t.Fatalf("detail status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, expected := range []string{
+		`"node_evidence_collection"`,
+		`"status":"completed"`,
+		`"retry_of_collection_id":` + itoa(previous.ID),
+		`"command_id":"node.identity"`,
+		`"output":"boot_id=abc"`,
+		`"command_id":"logs.kernel_window"`,
+	} {
+		if !bytes.Contains(response.Body.Bytes(), []byte(expected)) {
+			t.Fatalf("issue detail missing %q: %s", expected, response.Body.String())
+		}
+	}
+	if bytes.Contains(response.Body.Bytes(), []byte(`"failure_code":"authentication_failed"`)) {
+		t.Fatalf("historical failed collection replaced latest recovery evidence: %s", response.Body.String())
+	}
+}
+
 func TestSyncDetectedIssuesTracksTelemetryContinuityAndRecovery(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
