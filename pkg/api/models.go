@@ -181,8 +181,10 @@ type NodeAccessCheck struct {
 // read-only evidence collection associated with a fault event.
 type NodeEvidenceCollection struct {
 	ID                    uint                 `json:"id" gorm:"primaryKey;autoIncrement"`
-	FaultEventID          uint                 `json:"fault_event_id" gorm:"index;not null"`
+	FaultEventID          uint                 `json:"fault_event_id,omitempty" gorm:"index"`
+	PlatformIssueID       uint                 `json:"platform_issue_id,omitempty" gorm:"index"`
 	NodeIP                string               `json:"node_ip" gorm:"index;not null"`
+	Trigger               string               `json:"trigger" gorm:"index;size:32"`
 	Status                string               `json:"status" gorm:"index;not null"`
 	CredentialProfileID   string               `json:"credential_profile_id,omitempty" gorm:"index"`
 	CommandCount          int                  `json:"command_count"`

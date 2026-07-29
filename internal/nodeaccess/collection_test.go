@@ -191,3 +191,77 @@ func TestPendingCollectionRunsOnceForOpenManagedEvents(t *testing.T) {
 		t.Fatalf("unexpected pending collections: %#v", collections)
 	}
 }
+
+func TestOfflineNodeCollectionWaitsForRecovery(t *testing.T) {
+	db := connectivityTestDB(t)
+	now := time.Date(2026, 7, 29, 8, 0, 0, 0, time.UTC)
+	if err := db.Model(&api.GPUNode{}).Where("node_ip = ?", "10.114.4.25").Update("state", "offline").Error; err != nil {
+		t.Fatal(err)
+	}
+	issue := api.PlatformIssue{
+		IssueKey: "node_state:10.114.4.25", Category: "availability", IssueType: "node_state",
+		NodeIP: "10.114.4.25", DetectionSource: "inventory_node", DetectionState: "active",
+		Status: "open", FirstDetectedAt: now.Add(-time.Hour), LastDetectedAt: now,
+	}
+	if err := db.Create(&issue).Error; err != nil {
+		t.Fatal(err)
+	}
+	access := NewService(config.NodeAccessConfig{
+		Enabled: true, MaxCommandsPerNode: 4,
+		CredentialProfiles: []config.NodeCredentialProfile{
+			{ID: "a", Username: "atlas", AuthType: "password", SecretRef: "env:A", Enabled: true},
+		},
+	}, mapResolver{"env:A": "secret"})
+	calls := 0
+	collector := NewCollectionService(db, access, executorFunc(func(
+		_ context.Context, _ string, _ string, _ string, _ []byte,
+		commands []ReadOnlyCommand, _ time.Duration,
+	) ([]CommandOutcome, error) {
+		calls++
+		outcomes := make([]CommandOutcome, 0, len(commands))
+		for _, command := range commands {
+			outcomes = append(outcomes, CommandOutcome{
+				CommandID: command.ID, Kind: command.Kind, Status: "completed", Output: "ok",
+			})
+		}
+		return outcomes, nil
+	}), 1)
+
+	collector.collectPending(context.Background(), 10)
+	if calls != 0 {
+		t.Fatalf("offline node must not be contacted, got %d calls", calls)
+	}
+	var waiting api.NodeEvidenceCollection
+	if err := db.Where("platform_issue_id = ?", issue.ID).First(&waiting).Error; err != nil {
+		t.Fatal(err)
+	}
+	if waiting.Status != "waiting_recovery" || waiting.Trigger != "after_recovery" {
+		t.Fatalf("unexpected waiting collection: %#v", waiting)
+	}
+
+	recoveredAt := now.Add(5 * time.Minute)
+	if err := db.Model(&issue).Updates(map[string]any{
+		"detection_state": "cleared", "status": "resolved", "source_recovered_at": &recoveredAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&api.GPUNode{}).Where("node_ip = ?", issue.NodeIP).Update("state", "up").Error; err != nil {
+		t.Fatal(err)
+	}
+	collector.collectPending(context.Background(), 10)
+	if calls != 1 {
+		t.Fatalf("recovered node must be collected once, got %d calls", calls)
+	}
+	if err := db.Preload("Records").First(&waiting, waiting.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if waiting.Status != "completed" || len(waiting.Records) != 4 {
+		t.Fatalf("unexpected recovered collection: %#v", waiting)
+	}
+	wantIDs := []string{"node.identity", "node.recovery_context", "gpu.snapshot", "logs.kernel_window"}
+	for index, record := range waiting.Records {
+		if record.CommandID != wantIDs[index] {
+			t.Fatalf("unexpected recovery command order: %#v", waiting.Records)
+		}
+	}
+}

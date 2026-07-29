@@ -125,6 +125,7 @@ func (s *Service) Overview() Overview {
 			MaxCommandsPerNode: s.cfg.MaxCommandsPerNode, MaxLogLines: 2000, DefaultWindowMinutes: 30,
 		},
 		CredentialProfiles: statuses, Skills: skillCatalog(), Commands: commandCatalog(),
+		AlertPolicies: alertEvidencePolicies(),
 		Boundaries: []Text{
 			{ZH: "低负载只读证据按注册命令和固定预算默认采集，无需逐次计划或确认；每次采集均保留脱敏审计。", EN: "Low-impact read-only evidence is collected by default through registered commands and fixed budgets without per-run planning or confirmation; every collection retains a redacted audit record."},
 			{ZH: "密码和私钥只通过受控密钥引用解析，永不进入接口、日志或证据。", EN: "Passwords and private keys resolve only through controlled secret references and never enter APIs, logs, or evidence."},
