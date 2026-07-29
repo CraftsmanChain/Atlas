@@ -24,9 +24,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-git push "$git_remote" "$branch"
-if [[ -n "$extra_git_remote" ]] && git remote get-url "$extra_git_remote" >/dev/null 2>&1; then
-  git push "$extra_git_remote" "$branch"
+if [[ "${SKIP_GIT_PUSH:-0}" != "1" ]]; then
+  git push "$git_remote" "$branch"
+  if [[ -n "$extra_git_remote" ]] && git remote get-url "$extra_git_remote" >/dev/null 2>&1; then
+    git push "$extra_git_remote" "$branch"
+  fi
 fi
 
 echo "Building web assets locally without replacing current page data"
