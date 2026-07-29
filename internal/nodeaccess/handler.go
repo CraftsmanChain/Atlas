@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"gorm.io/gorm"
@@ -16,6 +17,7 @@ type Handler struct {
 	service           *Service
 	vault             *CredentialVault
 	connectivity      *ConnectivityService
+	collections       *CollectionService
 	adminToken        string
 	allowLoopbackHTTP bool
 	allowInsecureHTTP bool
@@ -24,6 +26,7 @@ type Handler struct {
 func NewHandler(service *Service) *Handler { return &Handler{service: service} }
 
 func (h *Handler) SetConnectivity(service *ConnectivityService) { h.connectivity = service }
+func (h *Handler) SetCollections(service *CollectionService)    { h.collections = service }
 
 func NewHandlerWithVault(service *Service, vault *CredentialVault, adminToken string, allowLoopbackHTTP ...bool) *Handler {
 	handler := &Handler{service: service, vault: vault, adminToken: strings.TrimSpace(adminToken)}
@@ -34,6 +37,66 @@ func NewHandlerWithVault(service *Service, vault *CredentialVault, adminToken st
 		handler.allowInsecureHTTP = allowLoopbackHTTP[1]
 	}
 	return handler
+}
+
+func (h *Handler) HandleCollections(w http.ResponseWriter, r *http.Request) {
+	if h.collections == nil {
+		writeNodeAccessError(w, http.StatusServiceUnavailable, "node evidence collection is unavailable")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		eventID, err := positiveUintQuery(r, "fault_event_id")
+		if err != nil {
+			writeNodeAccessError(w, http.StatusBadRequest, "invalid fault event id")
+			return
+		}
+		rows, err := h.collections.List(eventID, 20)
+		if err != nil {
+			writeNodeAccessError(w, http.StatusInternalServerError, "failed to list node evidence collections")
+			return
+		}
+		writeNodeAccessJSON(w, http.StatusOK, map[string]any{"data": rows})
+	case http.MethodPost:
+		if !h.secureWriteTransport(r) {
+			writeNodeAccessError(w, http.StatusUpgradeRequired, "node evidence collection requires HTTPS or an approved HTTP compatibility mode")
+			return
+		}
+		if !h.authorized(r) {
+			writeNodeAccessError(w, http.StatusUnauthorized, "invalid management credential")
+			return
+		}
+		var request struct {
+			FaultEventID uint `json:"fault_event_id"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<10))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil || request.FaultEventID == 0 {
+			writeNodeAccessError(w, http.StatusBadRequest, "invalid node evidence collection")
+			return
+		}
+		var extra any
+		if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+			writeNodeAccessError(w, http.StatusBadRequest, "invalid node evidence collection")
+			return
+		}
+		record, err := h.collections.Collect(r.Context(), request.FaultEventID)
+		if err != nil {
+			status := http.StatusInternalServerError
+			switch {
+			case errors.Is(err, ErrFaultEventNotFound), errors.Is(err, ErrNodeNotManaged):
+				status = http.StatusNotFound
+			case errors.Is(err, ErrConnectivityUnavailable):
+				status = http.StatusServiceUnavailable
+			}
+			writeNodeAccessError(w, status, err.Error())
+			return
+		}
+		writeNodeAccessJSON(w, http.StatusCreated, map[string]any{"data": record})
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeNodeAccessError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 func (h *Handler) HandleOverview(w http.ResponseWriter, r *http.Request) {
@@ -47,8 +110,11 @@ func (h *Handler) HandleOverview(w http.ResponseWriter, r *http.Request) {
 	overview.InsecureHTTPAllowed = h.allowInsecureHTTP
 	overview.ConnectivityEnabled = h.connectivity != nil && h.connectivity.Enabled()
 	overview.KnownHostsReady = h.connectivity != nil && h.connectivity.KnownHostsReady()
+	overview.ExecutionEnabled = h.collections != nil && h.collections.Enabled()
 	if overview.Enabled && !overview.KnownHostsReady {
 		overview.Status = "known_hosts_missing"
+	} else if overview.ExecutionEnabled {
+		overview.Status = "readonly_collection_ready"
 	} else if overview.Enabled && overview.KnownHostsReady && overview.Status == "ready_no_transport" {
 		overview.Status = "connectivity_ready"
 	}
@@ -257,4 +323,16 @@ func writeNodeAccessJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeNodeAccessError(w http.ResponseWriter, status int, message string) {
 	writeNodeAccessJSON(w, status, map[string]any{"error": map[string]any{"status": status, "message": message}})
+}
+
+func positiveUintQuery(r *http.Request, name string) (uint, error) {
+	value := strings.TrimSpace(r.URL.Query().Get(name))
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	if err != nil || parsed == 0 {
+		return 0, errors.New("invalid positive integer")
+	}
+	return uint(parsed), nil
 }

@@ -160,3 +160,56 @@ func TestBuildBundleReturnsTypedNotFound(t *testing.T) {
 		t.Fatalf("expected ErrEventNotFound, got %v", err)
 	}
 }
+
+func TestBuildBundleIncludesLatestNodeEvidence(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 29, 4, 0, 0, 0, time.UTC)
+	event := api.GPUFaultEvent{
+		EpisodeKey: "node-evidence", Source: "health_rule", State: "open",
+		NodeIP: "10.114.4.25", RuleCode: "xid_critical", Domain: "stability",
+		Severity: "critical", Evidence: "XID 79",
+		FirstObservedAt: now.Add(-time.Hour), LastObservedAt: now,
+	}
+	if err := db.Create(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	collection := api.NodeEvidenceCollection{
+		FaultEventID: event.ID, NodeIP: event.NodeIP, Status: "completed",
+		CommandCount: 1, NoCredentialDisclosed: true, ReadOnly: true,
+		StartedAt: now, FinishedAt: now.Add(time.Second),
+	}
+	if err := db.Create(&collection).Error; err != nil {
+		t.Fatal(err)
+	}
+	record := api.NodeEvidenceRecord{
+		CollectionID: collection.ID, CommandID: "logs.kernel_window", Kind: "node_log",
+		Status: "completed", Output: "NVRM: Xid 79", OutputBytes: 12, ObservedAt: now,
+	}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := NewService(db).BuildBundle(event.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.NodeEvidence) != 1 || bundle.SourceStatus[1].Status != "completed" {
+		t.Fatalf("node evidence was not linked: %+v", bundle)
+	}
+	for _, missing := range bundle.MissingEvidence {
+		if missing.Code == "node_logs" {
+			t.Fatalf("usable node log must close node_logs gap: %+v", bundle.MissingEvidence)
+		}
+	}
+	found := false
+	for _, item := range bundle.Evidence {
+		if item.ID == fmt.Sprintf("node-evidence:%d", record.ID) && item.Provenance == "node_evidence_records" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("node evidence item missing from bundle: %+v", bundle.Evidence)
+	}
+}

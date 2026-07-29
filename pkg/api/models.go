@@ -177,6 +177,41 @@ type NodeAccessCheck struct {
 	CreatedAt             time.Time  `json:"created_at"`
 }
 
+// NodeEvidenceCollection is the redacted audit envelope for one bounded,
+// read-only evidence collection associated with a fault event.
+type NodeEvidenceCollection struct {
+	ID                    uint                 `json:"id" gorm:"primaryKey;autoIncrement"`
+	FaultEventID          uint                 `json:"fault_event_id" gorm:"index;not null"`
+	NodeIP                string               `json:"node_ip" gorm:"index;not null"`
+	Status                string               `json:"status" gorm:"index;not null"`
+	CredentialProfileID   string               `json:"credential_profile_id,omitempty" gorm:"index"`
+	CommandCount          int                  `json:"command_count"`
+	OutputBytes           int                  `json:"output_bytes"`
+	OutputTruncated       bool                 `json:"output_truncated"`
+	FailureCode           string               `json:"failure_code,omitempty" gorm:"index"`
+	NoCredentialDisclosed bool                 `json:"no_credential_disclosed"`
+	ReadOnly              bool                 `json:"read_only"`
+	StartedAt             time.Time            `json:"started_at" gorm:"index"`
+	FinishedAt            time.Time            `json:"finished_at" gorm:"index"`
+	CreatedAt             time.Time            `json:"created_at"`
+	Records               []NodeEvidenceRecord `json:"records,omitempty" gorm:"foreignKey:CollectionID"`
+}
+
+// NodeEvidenceRecord contains output only from a registered, fixed command.
+// Output is size-bounded and sanitized before persistence.
+type NodeEvidenceRecord struct {
+	ID           uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	CollectionID uint      `json:"collection_id" gorm:"index;not null"`
+	CommandID    string    `json:"command_id" gorm:"index;size:64;not null"`
+	Kind         string    `json:"kind" gorm:"index;size:32;not null"`
+	Status       string    `json:"status" gorm:"index;size:32;not null"`
+	Output       string    `json:"output" gorm:"type:text"`
+	OutputBytes  int       `json:"output_bytes"`
+	Truncated    bool      `json:"truncated"`
+	ObservedAt   time.Time `json:"observed_at" gorm:"index"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
 // AlertIngestionRecord 记录 webhook 告警异步处理与回调确认全链路状态。
 type AlertIngestionRecord struct {
 	ID                 uint      `json:"id" gorm:"primaryKey;autoIncrement;index:idx_ingestions_created_id,priority:2"`
