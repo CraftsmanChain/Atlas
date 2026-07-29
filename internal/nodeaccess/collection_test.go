@@ -265,3 +265,119 @@ func TestOfflineNodeCollectionWaitsForRecovery(t *testing.T) {
 		}
 	}
 }
+
+func TestFailedCollectionRetryCreatesNewAuditRecord(t *testing.T) {
+	db := connectivityTestDB(t)
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	event := api.GPUFaultEvent{
+		EpisodeKey: "retry:xid", State: "open", NodeIP: "10.114.4.25",
+		RuleCode: "xid_critical", FirstObservedAt: now.Add(-time.Hour), LastObservedAt: now,
+	}
+	if err := db.Create(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	previous := api.NodeEvidenceCollection{
+		FaultEventID: event.ID, NodeIP: event.NodeIP, Trigger: "immediate",
+		Status: "failed", FailureCode: "credential_exhausted",
+		NoCredentialDisclosed: true, ReadOnly: true, StartedAt: now, FinishedAt: now,
+	}
+	if err := db.Create(&previous).Error; err != nil {
+		t.Fatal(err)
+	}
+	access := NewService(config.NodeAccessConfig{
+		Enabled: true, MaxCommandsPerNode: 3,
+		CredentialProfiles: []config.NodeCredentialProfile{
+			{ID: "working", Username: "atlas", AuthType: "password", SecretRef: "env:A", Enabled: true},
+		},
+	}, mapResolver{"env:A": "secret"})
+	collector := NewCollectionService(db, access, executorFunc(func(
+		_ context.Context, _ string, _ string, _ string, _ []byte,
+		commands []ReadOnlyCommand, _ time.Duration,
+	) ([]CommandOutcome, error) {
+		outcomes := make([]CommandOutcome, 0, len(commands))
+		for _, command := range commands {
+			outcomes = append(outcomes, CommandOutcome{
+				CommandID: command.ID, Kind: command.Kind, Status: "completed", Output: "ok",
+			})
+		}
+		return outcomes, nil
+	}), 1)
+
+	retry, err := collector.Retry(context.Background(), previous.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry.ID == previous.ID || retry.RetryOfCollectionID != previous.ID ||
+		retry.Trigger != "manual_retry" || retry.Status != "completed" ||
+		retry.FaultEventID != event.ID || len(retry.Records) != 3 {
+		t.Fatalf("unexpected retry collection: %#v", retry)
+	}
+	var storedPrevious api.NodeEvidenceCollection
+	if err := db.First(&storedPrevious, previous.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if storedPrevious.Status != "failed" || storedPrevious.FailureCode != "credential_exhausted" {
+		t.Fatalf("retry must preserve the original audit record: %#v", storedPrevious)
+	}
+	if _, err := collector.Retry(context.Background(), retry.ID); !errors.Is(err, ErrEvidenceCollectionNotRetryable) {
+		t.Fatalf("completed collection must not be retryable, got %v", err)
+	}
+}
+
+func TestFailedRecoveryCollectionRetryUsesRecoveryCommands(t *testing.T) {
+	db := connectivityTestDB(t)
+	now := time.Date(2026, 7, 29, 11, 0, 0, 0, time.UTC)
+	recoveredAt := now.Add(10 * time.Minute)
+	issue := api.PlatformIssue{
+		IssueKey: "node_state:retry", Category: "availability", IssueType: "node_state",
+		NodeIP: "10.114.4.25", DetectionSource: "inventory_node", DetectionState: "cleared",
+		Status: "resolved", FirstDetectedAt: now.Add(-time.Hour), LastDetectedAt: now,
+		SourceRecoveredAt: &recoveredAt,
+	}
+	if err := db.Create(&issue).Error; err != nil {
+		t.Fatal(err)
+	}
+	previous := api.NodeEvidenceCollection{
+		PlatformIssueID: issue.ID, NodeIP: issue.NodeIP, Trigger: "after_recovery",
+		Status: "failed", FailureCode: "credential_exhausted",
+		NoCredentialDisclosed: true, ReadOnly: true, StartedAt: now, FinishedAt: now,
+	}
+	if err := db.Create(&previous).Error; err != nil {
+		t.Fatal(err)
+	}
+	access := NewService(config.NodeAccessConfig{
+		Enabled: true, MaxCommandsPerNode: 4,
+		CredentialProfiles: []config.NodeCredentialProfile{
+			{ID: "working", Username: "atlas", AuthType: "password", SecretRef: "env:A", Enabled: true},
+		},
+	}, mapResolver{"env:A": "secret"})
+	var commandIDs []string
+	collector := NewCollectionService(db, access, executorFunc(func(
+		_ context.Context, _ string, _ string, _ string, _ []byte,
+		commands []ReadOnlyCommand, _ time.Duration,
+	) ([]CommandOutcome, error) {
+		outcomes := make([]CommandOutcome, 0, len(commands))
+		for _, command := range commands {
+			commandIDs = append(commandIDs, command.ID)
+			outcomes = append(outcomes, CommandOutcome{
+				CommandID: command.ID, Kind: command.Kind, Status: "completed", Output: "ok",
+			})
+		}
+		return outcomes, nil
+	}), 1)
+
+	retry, err := collector.Retry(context.Background(), previous.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"node.identity", "node.recovery_context", "gpu.snapshot", "logs.kernel_window"}
+	if retry.PlatformIssueID != issue.ID || retry.RetryOfCollectionID != previous.ID ||
+		len(commandIDs) != len(want) {
+		t.Fatalf("unexpected recovery retry: %#v commands=%#v", retry, commandIDs)
+	}
+	for index := range want {
+		if commandIDs[index] != want[index] {
+			t.Fatalf("unexpected recovery retry commands: %#v", commandIDs)
+		}
+	}
+}

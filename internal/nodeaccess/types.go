@@ -7,7 +7,7 @@ import (
 
 const (
 	SkillID      = "atlas-node-evidence"
-	SkillVersion = "v0.5.1"
+	SkillVersion = "v0.6.0"
 )
 
 type Text struct {

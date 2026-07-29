@@ -14,7 +14,11 @@ import (
 	"gorm.io/gorm"
 )
 
-var ErrFaultEventNotFound = errors.New("fault event not found")
+var (
+	ErrFaultEventNotFound             = errors.New("fault event not found")
+	ErrEvidenceCollectionNotFound     = errors.New("node evidence collection not found")
+	ErrEvidenceCollectionNotRetryable = errors.New("node evidence collection is not retryable")
+)
 
 type CollectionService struct {
 	db       *storage.DB
@@ -53,6 +57,51 @@ func (s *CollectionService) Collect(ctx context.Context, eventID uint) (*api.Nod
 		FaultEventID: event.ID, NodeIP: event.NodeIP, Trigger: "immediate",
 	}
 	return s.executeCollection(ctx, collection, collectionCommands(event, s.access.cfg.MaxOutputBytes))
+}
+
+// Retry creates a new audit envelope instead of mutating the previous
+// collection. Only failed or partial collections can be retried, and the
+// original event/condition determines the same registered read-only commands.
+func (s *CollectionService) Retry(ctx context.Context, collectionID uint) (*api.NodeEvidenceCollection, error) {
+	if !s.Enabled() {
+		return nil, ErrConnectivityUnavailable
+	}
+	var previous api.NodeEvidenceCollection
+	if err := s.db.First(&previous, collectionID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrEvidenceCollectionNotFound
+		}
+		return nil, err
+	}
+	if previous.Status != "failed" && previous.Status != "partial" {
+		return nil, ErrEvidenceCollectionNotRetryable
+	}
+	retry := &api.NodeEvidenceCollection{
+		FaultEventID: previous.FaultEventID, PlatformIssueID: previous.PlatformIssueID,
+		RetryOfCollectionID: previous.ID, NodeIP: previous.NodeIP, Trigger: "manual_retry",
+	}
+	switch {
+	case previous.FaultEventID > 0:
+		var event api.GPUFaultEvent
+		if err := s.db.First(&event, previous.FaultEventID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, ErrFaultEventNotFound
+			}
+			return nil, err
+		}
+		return s.executeCollection(ctx, retry, collectionCommands(event, s.access.cfg.MaxOutputBytes))
+	case previous.PlatformIssueID > 0:
+		var issue api.PlatformIssue
+		if err := s.db.First(&issue, previous.PlatformIssueID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, ErrEvidenceCollectionNotFound
+			}
+			return nil, err
+		}
+		return s.executeCollection(ctx, retry, recoveryCollectionCommands(issue, s.access.cfg.MaxOutputBytes))
+	default:
+		return nil, ErrEvidenceCollectionNotRetryable
+	}
 }
 
 func (s *CollectionService) executeCollection(ctx context.Context, collection *api.NodeEvidenceCollection, commands []ReadOnlyCommand) (*api.NodeEvidenceCollection, error) {
@@ -130,10 +179,15 @@ func (s *CollectionService) executeCollection(ctx context.Context, collection *a
 }
 
 func (s *CollectionService) List(eventID uint, limit int) ([]api.NodeEvidenceCollection, error) {
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 || limit > 101 {
 		limit = 20
 	}
-	query := s.db.Preload("Records").Order("id DESC").Limit(limit)
+	query := s.db.Preload("Records", func(tx *gorm.DB) *gorm.DB {
+		return tx.Select(
+			"id", "collection_id", "command_id", "kind", "status",
+			"output_bytes", "truncated", "observed_at", "created_at",
+		).Order("id ASC")
+	}).Order("id DESC").Limit(limit)
 	if eventID > 0 {
 		query = query.Where("fault_event_id = ?", eventID)
 	}
