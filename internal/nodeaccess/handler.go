@@ -118,19 +118,8 @@ func (h *Handler) HandleOverview(w http.ResponseWriter, r *http.Request) {
 	overview.KnownHostsReady = h.connectivity != nil && h.connectivity.KnownHostsReady()
 	overview.ExecutionEnabled = h.collections != nil && h.collections.Enabled()
 	if h.collections != nil {
-		if collections, err := h.collections.List(0, 100); err == nil {
-			for _, collection := range collections {
-				switch collection.Status {
-				case "waiting_recovery":
-					overview.CollectionSummary.WaitingRecovery++
-				case "completed":
-					overview.CollectionSummary.Completed++
-				case "partial":
-					overview.CollectionSummary.Partial++
-				case "failed":
-					overview.CollectionSummary.Failed++
-				}
-			}
+		if summary, err := h.collections.CurrentSummary(); err == nil {
+			overview.CollectionSummary = summary
 		}
 	}
 	if overview.Enabled && !overview.KnownHostsReady {

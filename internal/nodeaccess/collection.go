@@ -195,6 +195,48 @@ func (s *CollectionService) List(eventID uint, limit int) ([]api.NodeEvidenceCol
 	return rows, query.Find(&rows).Error
 }
 
+// CurrentSummary counts only the latest audit result for each originating
+// fault event or platform condition. Superseded failures remain queryable in
+// the ledger but do not present as current collection failures.
+func (s *CollectionService) CurrentSummary() (CollectionStatusSummary, error) {
+	var rows []api.NodeEvidenceCollection
+	err := s.db.Model(&api.NodeEvidenceCollection{}).
+		Select("status").
+		Where(`
+			NOT EXISTS (
+				SELECT 1
+				FROM node_evidence_collections AS newer
+				WHERE newer.id > node_evidence_collections.id
+				AND (
+					(node_evidence_collections.fault_event_id > 0
+						AND newer.fault_event_id = node_evidence_collections.fault_event_id)
+					OR
+					(node_evidence_collections.fault_event_id = 0
+						AND node_evidence_collections.platform_issue_id > 0
+						AND newer.platform_issue_id = node_evidence_collections.platform_issue_id)
+				)
+			)
+		`).
+		Find(&rows).Error
+	if err != nil {
+		return CollectionStatusSummary{}, err
+	}
+	var summary CollectionStatusSummary
+	for _, collection := range rows {
+		switch collection.Status {
+		case "waiting_recovery":
+			summary.WaitingRecovery++
+		case "completed":
+			summary.Completed++
+		case "partial":
+			summary.Partial++
+		case "failed":
+			summary.Failed++
+		}
+	}
+	return summary, nil
+}
+
 // Run performs bounded default collection for new, open fault events. A
 // collection audit row, including a failed one, suppresses automatic retries;
 // operators can make an explicit retry through the protected API.

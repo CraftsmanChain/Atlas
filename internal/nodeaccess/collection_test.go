@@ -390,3 +390,32 @@ func TestFailedRecoveryCollectionRetryUsesRecoveryCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestCurrentSummaryCountsOnlyLatestSourceOutcome(t *testing.T) {
+	db := connectivityTestDB(t)
+	rows := []api.NodeEvidenceCollection{
+		{FaultEventID: 11, NodeIP: "10.114.4.25", Status: "failed"},
+		{FaultEventID: 11, NodeIP: "10.114.4.25", Status: "partial"},
+		{FaultEventID: 11, NodeIP: "10.114.4.25", Status: "completed"},
+		{PlatformIssueID: 22, NodeIP: "10.114.4.25", Status: "waiting_recovery"},
+		{FaultEventID: 33, NodeIP: "10.114.4.25", Status: "failed"},
+	}
+	for index := range rows {
+		if err := db.Create(&rows[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	collector := NewCollectionService(db, NewService(config.NodeAccessConfig{Enabled: true}, mapResolver{}), executorFunc(func(
+		context.Context, string, string, string, []byte, []ReadOnlyCommand, time.Duration,
+	) ([]CommandOutcome, error) {
+		return nil, nil
+	}), 1)
+	summary, err := collector.CurrentSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Completed != 1 || summary.WaitingRecovery != 1 ||
+		summary.Failed != 1 || summary.Partial != 0 {
+		t.Fatalf("unexpected current collection summary: %#v", summary)
+	}
+}
