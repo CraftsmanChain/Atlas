@@ -148,6 +148,8 @@ func migrateSchema(db *gorm.DB) error {
 		&api.FailureLabel{},
 		&api.HardwareRiskPrediction{},
 		&api.MonitoringHistoryAudit{},
+		&api.HistoryBackfillRun{},
+		&api.HistoricalFaultCandidate{},
 	)
 }
 
