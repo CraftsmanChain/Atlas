@@ -93,7 +93,9 @@ func (h *Handler) HandleCandidates(w http.ResponseWriter, r *http.Request) {
 		historyJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	historyJSON(w, http.StatusOK, map[string]any{"data": rows, "summary": summary})
+	historyJSON(w, http.StatusOK, map[string]any{
+		"data": rows, "summary": summary, "training_policy": CurrentTrainingCohortPolicy(),
+	})
 }
 
 func historyJSON(w http.ResponseWriter, status int, payload any) {

@@ -79,6 +79,11 @@ func TestHistoryHandlerIsReadOnlyExceptExplicitAudit(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"source_version":"2.54.0"`) {
 		t.Fatalf("POST audit status=%d body=%s", response.Code, response.Body.String())
 	}
+	response = httptest.NewRecorder()
+	handler.HandleCandidates(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/history/candidates", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"version":"gpu-training-cohort-v1"`) {
+		t.Fatalf("GET candidates status=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func newTestPrometheus(t *testing.T) *httptest.Server {
@@ -112,8 +117,12 @@ func newTestPrometheus(t *testing.T) *httptest.Server {
 		case "/api/v1/query_range":
 			if strings.Contains(r.URL.Query().Get("query"), "ALERTS") {
 				_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
-					{"metric":{"__name__":"ALERTS","UUID":"GPU-1","instance":"10.0.0.1:9400","modelName":"NVIDIA H100","pci_bus_id":"0000:01:00.0","alertname":"hash-critical","alertstate":"firing","err_code":"79","err_msg":"GPU has fallen off the bus","severity":"紧急"},"values":[[1782864000,"1"],[1782864060,"1"],[1782864120,"1"],[1782871200,"1"]]},
-					{"metric":{"__name__":"ALERTS","UUID":"GPU-2","instance":"10.0.0.2:9400","device_type":"H100","alertname":"hash-ecc","alertstate":"firing","err_code":"94","err_msg":"Contained ECC error","severity":"紧急"},"values":[[1782864300,"1"],[1782864360,"1"]]}
+					{"metric":{"__name__":"ALERTS","UUID":"GPU-1","instance":"10.0.0.1:9400","modelName":"NVIDIA H100","pci_bus_id":"0000:01:00.0","alertname":"hash-critical","alert_template":"XID故障-高优先级","alertstate":"firing","err_code":"79","err_msg":"GPU has fallen off the bus","severity":"紧急"},"values":[[1782864000,"1"],[1782864060,"1"],[1782864120,"1"],[1782871200,"1"]]},
+					{"metric":{"__name__":"ALERTS","UUID":"GPU-2","instance":"10.0.0.2:9400","device_type":"H100","alertname":"hash-ecc","alert_template":"XID故障-高优先级","alertstate":"firing","err_code":"94","err_msg":"Contained ECC error","severity":"紧急"},"values":[[1782864300,"1"],[1782864360,"1"]]}
+				]}}`))
+			} else if strings.Contains(r.URL.Query().Get("query"), "UNCORRECTABLE_REMAPPED_ROWS") {
+				_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
+					{"metric":{"__name__":"DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS","UUID":"GPU-3","instance":"10.0.0.3:9400","modelName":"NVIDIA H100","pci_bus_id":"0000:03:00.0"},"values":[[1782864500,"8"]]}
 				]}}`))
 			} else {
 				_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[{"metric":{},"values":[[1750000000,"0"],[1756425600,"472"]]}]}}`))

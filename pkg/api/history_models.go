@@ -32,8 +32,8 @@ type MonitoringHistoryAudit struct {
 }
 
 // HistoryBackfillRun is the durable progress envelope for a bounded historical
-// scan. The first implementation reconstructs sparse GPU alert onsets and does
-// not export full-resolution telemetry.
+// scan. The implementation reconstructs sparse GPU fault-signal onsets and
+// does not export full-resolution telemetry.
 type HistoryBackfillRun struct {
 	ID                uint       `json:"id" gorm:"primaryKey;autoIncrement"`
 	SourceKey         string     `json:"source_key" gorm:"index;not null"`
@@ -76,6 +76,11 @@ type HistoricalFaultCandidate struct {
 	EventMessage         string     `json:"event_message" gorm:"type:text"`
 	Severity             string     `json:"severity" gorm:"index"`
 	QualityTier          string     `json:"quality_tier" gorm:"index;not null"`
+	OperationalPriority  string     `json:"operational_priority" gorm:"index;not null;default:'unclassified'"`
+	HardwareCertainty    string     `json:"hardware_certainty" gorm:"index;not null;default:'unclassified'"`
+	TrainingDisposition  string     `json:"training_disposition" gorm:"index;not null;default:'pending_review'"`
+	RecommendedAction    string     `json:"recommended_action" gorm:"type:text"`
+	RecoveryAware        bool       `json:"recovery_aware" gorm:"index;not null;default:false"`
 	ReviewStatus         string     `json:"review_status" gorm:"index;not null"`
 	SourceMetric         string     `json:"source_metric" gorm:"index;not null"`
 	SourceAlertName      string     `json:"source_alert_name" gorm:"index"`
