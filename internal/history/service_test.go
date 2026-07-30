@@ -162,7 +162,7 @@ func newTestPrometheus(t *testing.T) *httptest.Server {
 			} else if strings.Contains(r.URL.Query().Get("query"), "DCGM_FI_DEV_GPU_UTIL") {
 				_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
 					{"metric":{"__name__":"DCGM_FI_DEV_GPU_UTIL","UUID":"GPU-OLD","host_ip":"10.0.0.9","Hostname":"gpu-9","host_id":"HOST-9","sn":"SN-9","gpu":"0","modelName":"NVIDIA H100","pci_bus_id":"0000:01:00.0","DCGM_FI_DRIVER_VERSION":"560.35.03","job":"dcgm_exporter"},"values":[[1782864000,"0"],[1783123200,"10"]]},
-					{"metric":{"__name__":"DCGM_FI_DEV_GPU_UTIL","UUID":"GPU-OLD","host_ip":"10.0.0.9","Hostname":"gpu-9","host_id":"HOST-9","sn":"SN-9","gpu":"0","modelName":"NVIDIA H100","pci_bus_id":"0000:01:00.0","DCGM_FI_DRIVER_VERSION":"560.35.03","job":"gpu_exporter"},"values":[[1782864000,"0"],[1783123200,"10"]]},
+					{"metric":{"__name__":"DCGM_FI_DEV_GPU_UTIL","UUID":"GPU-OLD","host_ip":"10.0.0.9","Hostname":"gpu-9","host_id":"HOST-9","gpu":"0","modelName":"NVIDIA H100","pci_bus_id":"0000:01:00.0","DCGM_FI_DRIVER_VERSION":"560.35.03","job":"gpu_exporter"},"values":[[1782864000,"0"],[1783123200,"10"]]},
 					{"metric":{"__name__":"DCGM_FI_DEV_GPU_UTIL","UUID":"GPU-NEW","host_ip":"10.0.0.9","Hostname":"gpu-9","host_id":"HOST-9","sn":"SN-9","gpu":"0","modelName":"NVIDIA H100","pci_bus_id":"0000:01:00.0","DCGM_FI_DRIVER_VERSION":"560.35.03","job":"dcgm_exporter"},"values":[[1783209600,"0"],[1783382400,"20"]]}
 				]}}`))
 			} else if strings.Contains(r.URL.Query().Get("query"), "UNCORRECTABLE_REMAPPED_ROWS") {

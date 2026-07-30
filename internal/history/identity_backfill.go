@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	identityBackfillQueryVersion = "gpu-identity-interval-v1"
+	identityBackfillQueryVersion = "gpu-identity-interval-v2"
 	identityInventoryQuery       = `max_over_time(DCGM_FI_DEV_GPU_UTIL[6h]) >= 0`
 )
 
@@ -181,15 +181,15 @@ func (s *Service) executeIdentityBackfill(runID uint, source config.HistorySourc
 			}
 			labels := item.Metric
 			nodeIP := normalizeInstance(firstNonEmpty(labels["host_ip"], labels["instance"]))
-			uuid := firstNonEmpty(labels["UUID"], labels["uuid"])
+			uuid := normalizeHistoricalGPUUUID(firstNonEmpty(labels["UUID"], labels["uuid"]))
 			if nodeIP == "" || uuid == "" {
 				continue
 			}
-			key := historicalIdentityKey(source.ID, nodeIP, labels["pci_bus_id"], uuid,
-				labels["host_id"], labels["sn"], firstNonEmpty(labels["gpu"], labels["device"]))
+			gpuLabel := firstNonEmpty(labels["gpu"], strings.TrimPrefix(labels["device"], "nvidia"))
+			key := historicalIdentityKey(source.ID, nodeIP, labels["pci_bus_id"], uuid, gpuLabel)
 			aggregate := aggregates[key]
 			if aggregate == nil {
-				gpuIndex, _ := strconv.Atoi(firstNonEmpty(labels["gpu"], strings.TrimPrefix(labels["device"], "nvidia")))
+				gpuIndex, _ := strconv.Atoi(gpuLabel)
 				aggregate = &identityAggregate{row: api.HistoricalGPUIdentityInterval{
 					IntervalKey: key, SourceKey: source.ID, BackfillRunID: run.ID,
 					NodeIP: nodeIP, HostID: labels["host_id"], HostSerial: labels["sn"],
@@ -204,6 +204,15 @@ func (s *Service) executeIdentityBackfill(runID uint, source config.HistorySourc
 			}
 			if item.Values[0].Timestamp.Before(aggregate.row.FirstSeenAt) {
 				aggregate.row.FirstSeenAt = item.Values[0].Timestamp
+			}
+			if aggregate.row.HostID == "" {
+				aggregate.row.HostID = labels["host_id"]
+			}
+			if aggregate.row.HostSerial == "" {
+				aggregate.row.HostSerial = labels["sn"]
+			}
+			if aggregate.row.Hostname == "" {
+				aggregate.row.Hostname = firstNonEmpty(labels["Hostname"], labels["hostname"])
 			}
 			last := item.Values[len(item.Values)-1].Timestamp
 			if last.After(aggregate.row.LastSeenAt) {
@@ -248,6 +257,14 @@ func (s *Service) executeIdentityBackfill(runID uint, source config.HistorySourc
 			return
 		}
 		run.RecordsUpdated++
+	}
+	// A completed scan is authoritative for this source. Remove intervals
+	// produced by older query versions only after every new interval has been
+	// persisted, so a query failure never destroys the last usable result.
+	if err := s.db.Where("source_key = ? AND backfill_run_id <> ?", source.ID, run.ID).
+		Delete(&api.HistoricalGPUIdentityInterval{}).Error; err != nil {
+		s.failBackfill(&run, err)
+		return
 	}
 	if err := s.deriveIdentityTransitions(source.ID); err != nil {
 		s.failBackfill(&run, err)
@@ -331,7 +348,8 @@ func (s *Service) annotateCandidatesWithIdentity(sourceKey string) (int, error) 
 		var matched *api.HistoricalGPUIdentityInterval
 		for index := range intervals {
 			interval := &intervals[index]
-			if interval.NodeIP != candidate.NodeIP || interval.GPUUUID != candidate.GPUUUID ||
+			if interval.NodeIP != candidate.NodeIP ||
+				normalizeHistoricalGPUUUID(interval.GPUUUID) != normalizeHistoricalGPUUUID(candidate.GPUUUID) ||
 				!sameSlot(candidate.PCIBusID, interval.PCIBusID) {
 				continue
 			}
@@ -366,6 +384,7 @@ func (s *Service) annotateCandidatesWithIdentity(sourceKey string) (int, error) 
 			status = "uuid_mismatch_at_event"
 		}
 		if err := s.db.Model(&candidate).Updates(map[string]any{
+			"gpu_uuid":                 normalizeHistoricalGPUUUID(candidate.GPUUUID),
 			"identity_evidence_status": status, "identity_interval_id": intervalID,
 			"identity_evidence": evidence,
 		}).Error; err != nil {
@@ -377,10 +396,13 @@ func (s *Service) annotateCandidatesWithIdentity(sourceKey string) (int, error) 
 }
 
 func replacementAfter(candidate api.HistoricalFaultCandidate, matched api.HistoricalGPUIdentityInterval, intervals []api.HistoricalGPUIdentityInterval) *api.HistoricalGPUIdentityInterval {
+	slot := firstNonEmpty(candidate.PCIBusID, matched.PCIBusID)
 	for index := range intervals {
 		row := &intervals[index]
-		if row.NodeIP == candidate.NodeIP && row.GPUUUID != candidate.GPUUUID &&
-			sameSlot(candidate.PCIBusID, row.PCIBusID) &&
+		if row.NodeIP == candidate.NodeIP &&
+			normalizeHistoricalGPUUUID(row.GPUUUID) != normalizeHistoricalGPUUUID(candidate.GPUUUID) &&
+			((slot != "" && strings.EqualFold(slot, row.PCIBusID)) ||
+				(slot == "" && matched.GPUIndex == row.GPUIndex)) &&
 			row.FirstSeenAt.After(candidate.OnsetAt) && !row.FirstSeenAt.After(candidate.OnsetAt.Add(7*24*time.Hour)) {
 			return row
 		}
@@ -407,9 +429,24 @@ func identityValueChanged(left, right string) bool {
 	return left != "" && right != "" && !strings.EqualFold(left, right)
 }
 
-func historicalIdentityKey(sourceKey, nodeIP, pciBusID, uuid, hostID, serial, gpu string) string {
+func normalizeHistoricalGPUUUID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if len(value) >= 4 && strings.EqualFold(value[:4], "GPU-") {
+		return "GPU-" + strings.ToLower(value[4:])
+	}
+	return "GPU-" + strings.ToLower(value)
+}
+
+func historicalIdentityKey(sourceKey, nodeIP, pciBusID, uuid, gpu string) string {
+	slot := strings.ToLower(strings.TrimSpace(pciBusID))
+	if slot == "" {
+		slot = "gpu-index:" + strings.TrimSpace(gpu)
+	}
 	sum := sha256.Sum256([]byte(strings.Join(
-		[]string{sourceKey, nodeIP, pciBusID, uuid, hostID, serial, gpu}, "|",
+		[]string{sourceKey, nodeIP, slot, normalizeHistoricalGPUUUID(uuid)}, "|",
 	)))
 	return hex.EncodeToString(sum[:])
 }

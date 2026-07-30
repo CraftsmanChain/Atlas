@@ -324,6 +324,9 @@ func (s *Service) executeAlertBackfill(runID uint, source config.HistorySourceCo
 		if err := s.db.Model(&existing).Updates(map[string]any{
 			"backfill_run_id": run.ID, "signal_samples": candidate.SignalSamples,
 			"detection_window_end_at": candidate.DetectionWindowEndAt, "labels": candidate.Labels,
+			"gpu_uuid": candidate.GPUUUID, "node_ip": candidate.NodeIP,
+			"hostname": candidate.Hostname, "model_name": candidate.ModelName,
+			"pci_bus_id": candidate.PCIBusID,
 			"event_type": candidate.EventType, "event_code": candidate.EventCode,
 			"severity": candidate.Severity, "quality_tier": candidate.QualityTier,
 			"operational_priority": candidate.OperationalPriority,
@@ -412,7 +415,7 @@ func buildCandidates(sourceKey string, runID uint, signals []onsetSignal) []api.
 			}
 		}
 		classification := classifySignal(labels, first.SourceMetric)
-		uuid := firstNonEmpty(labels["UUID"], labels["uuid"])
+		uuid := normalizeHistoricalGPUUUID(firstNonEmpty(labels["UUID"], labels["uuid"]))
 		candidate := api.HistoricalFaultCandidate{
 			SourceKey: sourceKey, BackfillRunID: runID, EntityType: "gpu",
 			GPUUUID: uuid, NodeIP: normalizeInstance(firstNonEmpty(labels["host_ip"], labels["instance"])),
