@@ -21,7 +21,7 @@ func TestAuditPersistsBoundedPrometheusCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.HistoryConfig{
-		Enabled: true, DatasetDir: "/sdb/atlas/training",
+		Enabled: true, DatasetDir: "/mnt/public/atlas/training",
 		Sources: []config.HistorySourceConfig{{
 			ID: "primary", Name: "Primary", Type: "prometheus", BaseURL: prometheus.URL, Enabled: true,
 		}},
@@ -62,7 +62,7 @@ func TestHistoryHandlerIsReadOnlyExceptExplicitAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := NewService(db, config.HistoryConfig{
-		DatasetDir: "/sdb/atlas/training",
+		DatasetDir: "/mnt/public/atlas/training",
 		Sources: []config.HistorySourceConfig{{
 			ID: "primary", Name: "Primary", Type: "prometheus", BaseURL: prometheus.URL, Enabled: true,
 		}},

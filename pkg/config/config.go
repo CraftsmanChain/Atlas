@@ -238,7 +238,7 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.History.RequestTimeout = "60s"
 	}
 	if cfg.History.DatasetDir == "" {
-		cfg.History.DatasetDir = "/sdb/atlas/training"
+		cfg.History.DatasetDir = "/mnt/public/atlas/training"
 	}
 	if cfg.History.MaxConcurrency <= 0 {
 		cfg.History.MaxConcurrency = 2

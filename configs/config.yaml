@@ -41,7 +41,7 @@ history:
   audit_interval: "6h"
   request_timeout: "60s"
   # 历史回填与训练在 Atlas/Prometheus 所在节点本地执行，不复制全量原始库到开发机。
-  dataset_dir: "/sdb/atlas/training"
+  dataset_dir: "/mnt/public/atlas/training"
   max_concurrency: 2
   sources:
     - id: "current-prometheus"
