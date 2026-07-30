@@ -61,6 +61,7 @@ var migrationModels = []migrationModel{
 	{name: "monitoring_history_audits", value: &api.MonitoringHistoryAudit{}, order: "id", autoIncrement: true},
 	{name: "history_backfill_runs", value: &api.HistoryBackfillRun{}, order: "id", autoIncrement: true},
 	{name: "historical_fault_candidates", value: &api.HistoricalFaultCandidate{}, order: "id", autoIncrement: true},
+	{name: "historical_gpu_identity_intervals", value: &api.HistoricalGPUIdentityInterval{}, order: "id", autoIncrement: true},
 }
 
 // MigrateSQLite copies a consistent SQLite backup into PostgreSQL. Existing

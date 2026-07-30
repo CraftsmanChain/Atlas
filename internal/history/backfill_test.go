@@ -129,6 +129,66 @@ func TestCandidateReviewRequiresEvidenceNote(t *testing.T) {
 	}
 }
 
+func TestIdentityBackfillFindsReplacementAndAnnotatesCandidate(t *testing.T) {
+	prometheus := newTestPrometheus(t)
+	defer prometheus.Close()
+	db, err := storage.InitDB(fmt.Sprintf("file:history-identity-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := api.HistoricalFaultCandidate{
+		CandidateKey: "dropout-before-replacement", SourceKey: "primary", BackfillRunID: 1,
+		EntityType: "gpu", GPUUUID: "GPU-OLD", NodeIP: "10.0.0.9", PCIBusID: "0000:01:00.0",
+		EventType: "gpu_dropout", EventCode: "gpu_dropout", QualityTier: "strong_proxy",
+		OperationalPriority: "critical", HardwareCertainty: "deterministic_hardware",
+		TrainingDisposition: "positive_after_identity_review", ReviewStatus: "pending_review",
+		SourceMetric: "ALERTS", OnsetAt: time.Unix(1783123200, 0), DetectionWindowEndAt: time.Unix(1783123200, 0),
+	}
+	if err := db.Create(&candidate).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, config.HistoryConfig{
+		Sources: []config.HistorySourceConfig{{
+			ID: "primary", Name: "Primary", Type: "prometheus", BaseURL: prometheus.URL, Enabled: true,
+		}},
+	}, time.Second)
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(7 * 24 * time.Hour)
+	run, err := service.StartIdentityBackfill(BackfillRequest{SourceKey: "primary", Start: &start, End: &end})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		runs, listErr := service.IdentityBackfillRuns(1)
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		if len(runs) == 1 && runs[0].Status == "completed" {
+			run = runs[0]
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if run.Status != "completed" || run.RecordsCreated != 2 || run.RecordsAnnotated != 1 {
+		t.Fatalf("unexpected identity run: %+v", run)
+	}
+	summary, intervals, err := service.IdentityIntervals(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Total != 2 || summary.ByTransition["gpu_uuid_changed"] != 1 {
+		t.Fatalf("unexpected identity summary=%+v intervals=%+v", summary, intervals)
+	}
+	if err := db.First(&candidate, candidate.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if candidate.IdentityEvidenceStatus != "replacement_after_event" || candidate.IdentityIntervalID == 0 ||
+		candidate.IdentityEvidence["successor_uuid"] != "GPU-NEW" {
+		t.Fatalf("candidate identity evidence mismatch: %+v", candidate)
+	}
+}
+
 func TestAlertBackfillRejectsConcurrentRun(t *testing.T) {
 	service := &Service{backfillRunning: true}
 	if _, err := service.StartAlertBackfill(BackfillRequest{}); err == nil {
