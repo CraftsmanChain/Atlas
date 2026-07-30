@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const CatalogVersion = "1.8.0"
+const CatalogVersion = "1.9.0"
 
 type MetricSpec struct {
 	Key      string
@@ -44,6 +44,8 @@ func Builtins() []api.FeatureDefinition {
 		metric("xid_current", "stability", "DCGM_FI_DEV_XID_ERRORS", "instant", "Current XID code", "当前 XID 代码"),
 		metric("xid_changes_24h", "stability", "changes(DCGM_FI_DEV_XID_ERRORS[24h])", "24h", "XID changes", "XID 变化次数"),
 		metricForDatacenter("uncorrectable_remapped_rows", "memory", "DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS", "instant", "Uncorrectable remapped rows", "不可纠正重映射行"),
+		metricForDatacenter("uncorrectable_remapped_rows_delta_1h", "memory", "clamp_min(delta(DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS[1h]), 0)", "1h", "Uncorrectable remapped rows increase", "不可纠正重映射行一小时增量"),
+		metricForDatacenter("uncorrectable_remapped_rows_delta_24h", "memory", "clamp_min(delta(DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS[24h]), 0)", "24h", "Uncorrectable remapped rows increase", "不可纠正重映射行二十四小时增量"),
 		metricForDatacenter("correctable_remapped_rows", "memory", "DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS", "instant", "Correctable remapped rows", "可纠正重映射行"),
 		metricForDatacenter("correctable_remapped_rows_delta_1h", "memory", "clamp_min(delta(DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS[1h]), 0)", "1h", "Correctable remapped rows increase", "可纠正重映射行一小时增量"),
 		metricForDatacenter("correctable_remapped_rows_delta_24h", "memory", "clamp_min(delta(DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS[24h]), 0)", "24h", "Correctable remapped rows increase", "可纠正重映射行二十四小时增量"),
@@ -60,6 +62,7 @@ func Builtins() []api.FeatureDefinition {
 		structuralMetric("target_scrape_duration_ratio_5m", "max by(instance,UUID)(DCGM_FI_DEV_GPU_UTIL * 0 + 1) * on(instance) group_left max by(instance)(avg_over_time(scrape_duration_seconds{job=\"dcgm_exporter\"}[5m]) / clamp_min(avg_over_time(scrape_duration_seconds{job=\"dcgm_exporter\"}[1h]), 0.000001) * 100)", "5m", "DCGM target scrape duration ratio", "DCGM Target 五分钟抓取耗时比"),
 		recordingRuleFeature("gpu_metric_family_count_delta_5m", "atlas:gpu_metric_family_count_delta_5m", "5m", "GPU metric-family count change", "GPU 指标族数量五分钟变化"),
 		gpuMetric("gpu_reset_required", "stability", "nvidia_smi_reset_status_reset_required", "instant", "GPU reset required", "GPU 需要重置", api.StringList{"*"}),
+		gpuMetric("uncorrected_ecc_volatile", "memory", "nvidia_smi_ecc_errors_uncorrected_volatile_total", "instant", "Uncorrected volatile ECC", "本次驱动加载后的不可纠正 ECC", api.StringList{"H100", "H200"}),
 		gpuMetric("uncorrected_ecc_delta_24h", "memory", "clamp_min(delta(nvidia_smi_ecc_errors_uncorrected_aggregate_total[24h]), 0)", "24h", "Uncorrected aggregate ECC increase", "不可纠正 ECC 累计增量", api.StringList{"H100", "H200"}),
 		gpuMetric("fan_speed_pct", "thermal", "nvidia_smi_fan_speed_ratio * 100", "instant", "Fan speed ratio", "风扇转速比例", api.StringList{"4090"}),
 		gpuMetric("pcie_link_width_current", "interconnect", "nvidia_smi_pcie_link_width_current", "instant", "Current PCIe link width", "当前 PCIe 链路宽度", api.StringList{"*"}),
@@ -160,6 +163,8 @@ func gpuFallbackSpecs() []MetricSpec {
 		{Key: "fb_used", Query: "nvidia_smi_memory_used_bytes / 1048576", Source: "gpu_exporter", Priority: 1},
 		{Key: "fb_free", Query: "nvidia_smi_memory_free_bytes / 1048576", Source: "gpu_exporter", Priority: 1},
 		{Key: "uncorrectable_remapped_rows", Query: "nvidia_smi_remapped_rows_uncorrectable", Source: "gpu_exporter", Priority: 1},
+		{Key: "uncorrectable_remapped_rows_delta_1h", Query: "clamp_min(delta(nvidia_smi_remapped_rows_uncorrectable[1h]), 0)", Source: "gpu_exporter", Priority: 1},
+		{Key: "uncorrectable_remapped_rows_delta_24h", Query: "clamp_min(delta(nvidia_smi_remapped_rows_uncorrectable[24h]), 0)", Source: "gpu_exporter", Priority: 1},
 		{Key: "correctable_remapped_rows", Query: "nvidia_smi_remapped_rows_correctable", Source: "gpu_exporter", Priority: 1},
 		{Key: "correctable_remapped_rows_delta_1h", Query: "clamp_min(delta(nvidia_smi_remapped_rows_correctable[1h]), 0)", Source: "gpu_exporter", Priority: 1},
 		{Key: "correctable_remapped_rows_delta_24h", Query: "clamp_min(delta(nvidia_smi_remapped_rows_correctable[24h]), 0)", Source: "gpu_exporter", Priority: 1},

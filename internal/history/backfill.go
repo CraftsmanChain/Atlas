@@ -335,13 +335,17 @@ func buildCandidates(sourceKey string, runID uint, signals []onsetSignal) []api.
 		signature := signalSignature(first.Labels)
 		end := first.At
 		samples := 1
+		lastSampleAt := first.At
 		index++
 		for index < len(signals) && signalSignature(signals[index].Labels) == signature &&
 			!signals[index].At.After(first.At.Add(time.Hour)) {
 			if signals[index].At.After(end) {
 				end = signals[index].At
 			}
-			samples++
+			if !signals[index].At.Equal(lastSampleAt) {
+				samples++
+				lastSampleAt = signals[index].At
+			}
 			index++
 		}
 		labels := api.StringMap{}

@@ -13,8 +13,8 @@ import (
 func TestBuiltinsCoverHealthConsumerAndModelCapabilities(t *testing.T) {
 	definitions := Builtins()
 	specs := HealthMetricSpecs()
-	if len(definitions) != 36 || len(specs) != 53 {
-		t.Fatalf("expected 36 catalog features and 53 live source specs, got definitions=%d specs=%d", len(definitions), len(specs))
+	if len(definitions) != 39 || len(specs) != 58 {
+		t.Fatalf("expected 39 catalog features and 58 live source specs, got definitions=%d specs=%d", len(definitions), len(specs))
 	}
 	for _, definition := range definitions {
 		if err := Validate(&definition); err != nil {
@@ -28,6 +28,9 @@ func TestBuiltinsCoverHealthConsumerAndModelCapabilities(t *testing.T) {
 	}
 	if !contains(api.StringList(h100), "correctable_remapped_rows_delta_1h") || !contains(api.StringList(h100), "correctable_remapped_rows_delta_24h") {
 		t.Fatal("H100 must consume correctable row-remap trend features")
+	}
+	if !contains(api.StringList(h100), "uncorrectable_remapped_rows_delta_1h") || !contains(api.StringList(h100), "uncorrectable_remapped_rows_delta_24h") {
+		t.Fatal("H100 must distinguish stable lifetime uncorrectable rows from new growth")
 	}
 	if !contains(api.StringList(h100), "gpu_metric_presence_ratio_1h") || !contains(api.StringList(rtx4090), "gpu_metric_sample_age_seconds") {
 		t.Fatal("all GPU models must consume structural telemetry features")
@@ -48,7 +51,7 @@ func TestBuiltinsCoverHealthConsumerAndModelCapabilities(t *testing.T) {
 	if contains(api.StringList(rtx4090), "row_remap_failure") || contains(api.StringList(rtx4090), "memory_temp") {
 		t.Fatal("4090 must not count unsupported row-remap or memory-temperature features as missing")
 	}
-	if !contains(api.StringList(h100), "gpu_reset_required") || !contains(api.StringList(h100), "uncorrected_ecc_delta_24h") {
+	if !contains(api.StringList(h100), "gpu_reset_required") || !contains(api.StringList(h100), "uncorrected_ecc_volatile") || !contains(api.StringList(h100), "uncorrected_ecc_delta_24h") {
 		t.Fatal("H100 must consume gpu_exporter reset and detailed ECC supplements")
 	}
 	if !contains(api.StringList(rtx4090), "fan_speed_pct") || contains(api.StringList(h100), "fan_speed_pct") {
@@ -68,7 +71,7 @@ func TestSeedRegisterListAndRead(t *testing.T) {
 		t.Fatalf("seeding must be idempotent: %v", err)
 	}
 	definitions, err := List(db, ListOptions{Purpose: "health", Status: "active"})
-	if err != nil || len(definitions) != 35 {
+	if err != nil || len(definitions) != 38 {
 		t.Fatalf("unexpected list result count=%d err=%v", len(definitions), err)
 	}
 	definition, err := Get(db, "gpu_temp", CatalogVersion)

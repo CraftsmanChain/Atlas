@@ -39,8 +39,21 @@ func evaluateRules(metrics api.FloatMap, model, confidence string) scoreResult {
 		v := value(metrics, "row_remap_failure")
 		add(ruleHit{"row_remap_failure", "memory", "critical", 45, v, "> 0", fmt.Sprintf("row remap failure=%.0f", v)})
 	}
-	if v := value(metrics, "uncorrectable_remapped_rows"); v > 0 {
-		add(ruleHit{"uncorrectable_remapped_rows", "memory", "critical", 30, v, "> 0", fmt.Sprintf("uncorrectable remapped rows=%.0f", v)})
+	uncorrectableRows := value(metrics, "uncorrectable_remapped_rows")
+	uncorrectableDelta1h := value(metrics, "uncorrectable_remapped_rows_delta_1h")
+	uncorrectableDelta24h := value(metrics, "uncorrectable_remapped_rows_delta_24h")
+	if uncorrectableDelta1h > 0 || uncorrectableDelta24h > 0 {
+		add(ruleHit{
+			"uncorrectable_remapped_rows_growth", "memory", "critical", 30,
+			math.Max(uncorrectableDelta1h, uncorrectableDelta24h),
+			"delta_1h > 0 or delta_24h > 0",
+			fmt.Sprintf("new uncorrectable remapped rows: total=%.0f delta_1h=%.0f delta_24h=%.0f", uncorrectableRows, uncorrectableDelta1h, uncorrectableDelta24h),
+		})
+	} else if uncorrectableRows > 0 {
+		result.evidence = append(result.evidence, fmt.Sprintf(
+			"historical uncorrectable remapped rows observation only: total=%.0f delta_1h=%.0f delta_24h=%.0f",
+			uncorrectableRows, uncorrectableDelta1h, uncorrectableDelta24h,
+		))
 	}
 	correctableRows := value(metrics, "correctable_remapped_rows")
 	correctableDelta1h := value(metrics, "correctable_remapped_rows_delta_1h")
@@ -56,8 +69,15 @@ func evaluateRules(metrics api.FloatMap, model, confidence string) scoreResult {
 	if v := value(metrics, "gpu_reset_required"); v > 0 {
 		add(ruleHit{"gpu_reset_required", "stability", "critical", 40, v, "> 0", "gpu_exporter reports that a GPU reset is required"})
 	}
-	if v := value(metrics, "uncorrected_ecc_delta_24h"); v > 0 {
-		add(ruleHit{"recent_uncorrected_ecc", "memory", "critical", 30, v, "> 0 in 24h", fmt.Sprintf("uncorrected aggregate ECC increased by %.0f in 24h", v)})
+	volatileUncorrectedECC := value(metrics, "uncorrected_ecc_volatile")
+	aggregateUncorrectedDelta24h := value(metrics, "uncorrected_ecc_delta_24h")
+	if volatileUncorrectedECC > 0 || aggregateUncorrectedDelta24h > 0 {
+		add(ruleHit{
+			"recent_uncorrected_ecc", "memory", "critical", 30,
+			math.Max(volatileUncorrectedECC, aggregateUncorrectedDelta24h),
+			"volatile > 0 or aggregate_delta_24h > 0",
+			fmt.Sprintf("new uncorrected ECC: volatile=%.0f aggregate_delta_24h=%.0f", volatileUncorrectedECC, aggregateUncorrectedDelta24h),
+		})
 	}
 	if v := value(metrics, "xid_changes_24h"); v > 0 {
 		xid := value(metrics, "xid_current")

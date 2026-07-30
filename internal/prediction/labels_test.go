@@ -18,7 +18,7 @@ func TestSyncLabelsKeepsProxyProvenanceAndRequiresHardwareConfirmation(t *testin
 	now := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
 	events := []api.GPUFaultEvent{
 		{EpisodeKey: "GPU-A:temp:1", GPUAssetID: 1, GPUUUID: "GPU-A", NodeIP: "10.114.4.21", ModelName: "H100", RuleCode: "gpu_temp_critical", RuleVersion: "gpu-health-v1.4.1", Severity: "critical", State: "recovered", FirstObservedAt: now.Add(-2 * time.Hour), LastObservedAt: now.Add(-time.Hour), CreatedAt: now.Add(-2 * time.Hour)},
-		{EpisodeKey: "GPU-B:ue:1", GPUAssetID: 2, GPUUUID: "GPU-B", NodeIP: "10.114.4.22", ModelName: "RTX 4090", RuleCode: "uncorrectable_remapped_rows", RuleVersion: "gpu-health-v1.4.1", Severity: "critical", State: "open", FirstObservedAt: now.Add(-time.Hour), LastObservedAt: now, CreatedAt: now.Add(-time.Hour)},
+		{EpisodeKey: "GPU-B:ue:1", GPUAssetID: 2, GPUUUID: "GPU-B", NodeIP: "10.114.4.22", ModelName: "H100", RuleCode: "uncorrectable_remapped_rows_growth", RuleVersion: "gpu-health-v1.5.0", Severity: "critical", State: "open", FirstObservedAt: now.Add(-time.Hour), LastObservedAt: now, CreatedAt: now.Add(-time.Hour)},
 	}
 	for index := range events {
 		if err := db.Create(&events[index]).Error; err != nil {
@@ -102,6 +102,14 @@ func TestSyncLabelsKeepsProxyProvenanceAndRequiresHardwareConfirmation(t *testin
 			(label.QualityTier != "weak_proxy" || label.ConfirmationResolutionID != 0 || label.ConfirmedAt != nil) {
 			t.Fatalf("superseding review did not revoke confirmed label: %+v", label)
 		}
+	}
+}
+
+func TestLegacyAggregateOnlyRemappedRowsLabelIsExcluded(t *testing.T) {
+	event := api.GPUFaultEvent{RuleCode: "uncorrectable_remapped_rows", RuleVersion: "gpu-health-v1.4.1"}
+	quality, excluded, reason := proxyLabelPolicy(event)
+	if quality != "excluded" || !excluded || reason == "" {
+		t.Fatalf("legacy aggregate-only event must not enter training: quality=%q excluded=%v reason=%q", quality, excluded, reason)
 	}
 }
 
