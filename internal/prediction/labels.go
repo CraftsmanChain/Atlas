@@ -77,14 +77,15 @@ func materializeProxyLabel(tx *gorm.DB, event api.GPUFaultEvent) error {
 	if availableAt.IsZero() {
 		availableAt = event.FirstObservedAt
 	}
+	qualityTier, excluded, exclusionReason := proxyLabelPolicy(event)
 	values := map[string]any{
 		"hardware_class": "gpu", "entity_type": "gpu", "entity_key": entityKey,
 		"gpu_asset_id": event.GPUAssetID, "gpu_uuid": event.GPUUUID, "node_ip": event.NodeIP,
 		"model_name": event.ModelName, "event_type": event.RuleCode, "rule_version": event.RuleVersion,
 		"label_value": 1, "source_type": "gpu_fault_event", "source_record_id": event.ID,
 		"label_contract_version": LabelContractVersion, "occurred_at": event.FirstObservedAt,
-		"available_at": availableAt, "excluded": false, "exclusion_reason": "",
-		"quality_tier": proxyQualityTier(event.RuleCode), "confirmation_resolution_id": 0,
+		"available_at": availableAt, "excluded": excluded, "exclusion_reason": exclusionReason,
+		"quality_tier": qualityTier, "confirmation_resolution_id": 0,
 		"confirmed_at": nil,
 	}
 	var label api.FailureLabel
@@ -94,10 +95,10 @@ func materializeProxyLabel(tx *gorm.DB, event api.GPUFaultEvent) error {
 			LabelKey: labelKey, HardwareClass: "gpu", EntityType: "gpu", EntityKey: entityKey,
 			GPUAssetID: event.GPUAssetID, GPUUUID: event.GPUUUID, NodeIP: event.NodeIP,
 			ModelName: event.ModelName, EventType: event.RuleCode, RuleVersion: event.RuleVersion,
-			LabelValue: 1, QualityTier: proxyQualityTier(event.RuleCode),
+			LabelValue: 1, QualityTier: qualityTier,
 			SourceType: "gpu_fault_event", SourceRecordID: event.ID,
 			LabelContractVersion: LabelContractVersion, OccurredAt: event.FirstObservedAt,
-			AvailableAt: availableAt,
+			AvailableAt: availableAt, Excluded: excluded, ExclusionReason: exclusionReason,
 		}
 		return tx.Create(&label).Error
 	}
@@ -145,6 +146,7 @@ func upgradeConfirmedLabels(tx *gorm.DB) error {
 		if err := tx.Model(&label).Updates(map[string]any{
 			"quality_tier": "confirmed", "confirmation_resolution_id": resolution.ID,
 			"confirmed_at": &confirmedAt, "available_at": confirmedAt,
+			"excluded": false, "exclusion_reason": "",
 		}).Error; err != nil {
 			return err
 		}
@@ -161,11 +163,19 @@ func completeHardwareConfirmation(resolution api.IssueResolution) bool {
 
 func proxyQualityTier(ruleCode string) string {
 	switch strings.ToLower(strings.TrimSpace(ruleCode)) {
-	case "uncorrectable_remapped_rows", "ecc_dbe", "xid_critical", "xid_repeated":
+	case "uncorrectable_remapped_rows_growth", "row_remap_failure", "recent_uncorrected_ecc",
+		"ecc_dbe", "xid_critical", "xid_repeated":
 		return "strong_proxy"
 	default:
 		return "weak_proxy"
 	}
+}
+
+func proxyLabelPolicy(event api.GPUFaultEvent) (qualityTier string, excluded bool, exclusionReason string) {
+	if strings.EqualFold(strings.TrimSpace(event.RuleCode), "uncorrectable_remapped_rows") {
+		return "excluded", true, "legacy rule treated a stable lifetime aggregate as a new fault"
+	}
+	return proxyQualityTier(event.RuleCode), false, ""
 }
 
 func (s *Service) Labels(limit int) (LabelSummary, []api.FailureLabel, error) {

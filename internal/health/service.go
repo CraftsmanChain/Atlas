@@ -18,6 +18,8 @@ import (
 	"gorm.io/gorm"
 )
 
+const CurrentRuleVersion = "gpu-health-v1.5.0"
+
 type prometheusReader interface {
 	BaseURL() string
 	Query(context.Context, string) ([]prometheus.Sample, error)
@@ -124,10 +126,9 @@ func (s *Service) evaluateAndLog(ctx context.Context) {
 
 func (s *Service) Evaluate(ctx context.Context) (*api.HealthEvaluationRun, error) {
 	now := s.now()
-	ruleVersion := strings.TrimSpace(s.config.RuleVersion)
-	if ruleVersion == "" {
-		ruleVersion = "gpu-health-v1.4.1"
-	}
+	// Rule semantics and version ship together. A stale deployment-node config
+	// must not stamp new evaluations with the previous rule contract.
+	ruleVersion := CurrentRuleVersion
 	run := &api.HealthEvaluationRun{Status: "running", RuleVersion: ruleVersion, Source: s.prom.BaseURL(), StartedAt: now}
 	if err := s.db.Create(run).Error; err != nil {
 		return nil, err
@@ -350,7 +351,9 @@ func consistencyTolerance(key string) (absolute, relative float64, comparable bo
 		return 10, 0, true
 	case "sm_clock_avg_15m":
 		return 150, .10, true
-	case "uncorrectable_remapped_rows", "correctable_remapped_rows", "row_remap_failure":
+	case "uncorrectable_remapped_rows", "uncorrectable_remapped_rows_delta_1h",
+		"uncorrectable_remapped_rows_delta_24h", "correctable_remapped_rows",
+		"correctable_remapped_rows_delta_1h", "correctable_remapped_rows_delta_24h", "row_remap_failure":
 		return 0, 0, true
 	default:
 		return 0, 0, false

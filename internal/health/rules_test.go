@@ -13,11 +13,12 @@ func TestEvaluateRulesUnknownAndCritical(t *testing.T) {
 	}
 
 	critical := evaluateRules(api.FloatMap{
-		"xid_changes_24h":             1,
-		"xid_current":                 43,
-		"uncorrectable_remapped_rows": 2,
-		"gpu_temp_max_15m":            70,
-		"memory_temp_max_15m":         75,
+		"xid_changes_24h":                      1,
+		"xid_current":                          43,
+		"uncorrectable_remapped_rows":          2,
+		"uncorrectable_remapped_rows_delta_1h": 1,
+		"gpu_temp_max_15m":                     70,
+		"memory_temp_max_15m":                  75,
 	}, "NVIDIA H100 80GB HBM3", "A")
 	if critical.score == nil || *critical.score != 35 || critical.level != "critical" || len(critical.hits) != 2 {
 		t.Fatalf("unexpected critical result: %+v", critical)
@@ -37,11 +38,21 @@ func TestEvaluateRulesUsesCounterDeltaAndLoadGuard(t *testing.T) {
 }
 
 func TestEvaluateRulesUsesRuleSeverityAsLevelFloor(t *testing.T) {
-	critical := evaluateRules(api.FloatMap{
+	historicalOnly := evaluateRules(api.FloatMap{
 		"uncorrectable_remapped_rows": 1,
 	}, "NVIDIA H100 80GB HBM3", "A")
-	if critical.score == nil || *critical.score != 70 || critical.level != "critical" {
-		t.Fatalf("critical rule did not set the risk-level floor: %+v", critical)
+	if historicalOnly.score == nil || *historicalOnly.score != 100 || historicalOnly.level != "healthy" || len(historicalOnly.hits) != 0 {
+		t.Fatalf("stable lifetime aggregate must remain observation-only: %+v", historicalOnly)
+	}
+
+	critical := evaluateRules(api.FloatMap{
+		"uncorrectable_remapped_rows":           2,
+		"uncorrectable_remapped_rows_delta_1h":  1,
+		"uncorrectable_remapped_rows_delta_24h": 1,
+	}, "NVIDIA H100 80GB HBM3", "A")
+	if critical.score == nil || *critical.score != 70 || critical.level != "critical" || len(critical.hits) != 1 ||
+		critical.hits[0].code != "uncorrectable_remapped_rows_growth" {
+		t.Fatalf("new uncorrectable row did not set the risk-level floor: %+v", critical)
 	}
 
 	stableCorrectable := evaluateRules(api.FloatMap{
@@ -84,12 +95,13 @@ func TestEvaluateRulesScoresOnlyCorrectableRowGrowth(t *testing.T) {
 func TestEvaluateRulesUsesGPUExporterSupplementsWithoutDuplicateEquivalentDeduction(t *testing.T) {
 	result := evaluateRules(api.FloatMap{
 		"gpu_reset_required":        1,
+		"uncorrected_ecc_volatile":  2,
 		"uncorrected_ecc_delta_24h": 2,
 		"pcie_link_width_current":   8,
 		"pcie_link_width_max":       16,
 		"gpu_util_avg_15m":          90,
 	}, "NVIDIA H100 80GB HBM3", "A")
 	if result.score == nil || *result.score != 15 || result.level != "critical" || len(result.hits) != 3 {
-		t.Fatalf("unexpected supplemental rules: %+v", result)
+		t.Fatalf("equivalent volatile and aggregate ECC signals must produce one deduction: %+v", result)
 	}
 }

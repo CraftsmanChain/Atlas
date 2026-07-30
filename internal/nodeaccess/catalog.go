@@ -51,7 +51,7 @@ func alertEvidencePolicies() []AlertEvidencePolicy {
 		{
 			Category: "hardware_fault",
 			IssueTypes: []string{
-				"row_remap_failure", "uncorrectable_remapped_rows", "correctable_remapped_rows", "correctable_remapped_rows_growth",
+				"row_remap_failure", "uncorrectable_remapped_rows", "uncorrectable_remapped_rows_growth", "correctable_remapped_rows", "correctable_remapped_rows_growth",
 				"correctable_remapped_rows_rapid_growth", "gpu_reset_required", "recent_uncorrected_ecc",
 				"recent_xid_change", "gpu_temp_high", "gpu_temp_critical", "memory_temp_high",
 				"memory_temp_critical", "pcie_replay_growth", "pcie_replay_spike",

@@ -226,7 +226,7 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Health.ScoreInterval = "10m"
 	}
 	if cfg.Health.RuleVersion == "" {
-		cfg.Health.RuleVersion = "gpu-health-v1.4.1"
+		cfg.Health.RuleVersion = "gpu-health-v1.5.0"
 	}
 	if cfg.Health.HistoryRetention == "" {
 		cfg.Health.HistoryRetention = "365d"

@@ -323,7 +323,7 @@ func (s *Service) Overview() (Overview, error) {
 			Version:               LabelContractVersion,
 			ConfirmedPositive:     []string{"operator-confirmed hardware failure", "component replacement with validated recovery"},
 			WeakPositive:          []string{"deterministic GPU fault episode", "repeated critical XID or uncorrectable error"},
-			ExcludedAsPositive:    []string{"telemetry missing only", "credential failure", "planned shutdown", "retired asset"},
+			ExcludedAsPositive:    []string{"stable lifetime aggregate without observed growth", "telemetry missing only", "credential failure", "planned shutdown", "retired asset"},
 			NegativePolicy:        "Only create negatives after the full prediction horizon and censoring window pass without a positive event.",
 			PointInTimeRule:       "Every feature must be observed before the label cutoff; post-failure evidence is forbidden.",
 			EntityIsolation:       "Train, calibration, and evaluation splits isolate GPU UUIDs and preserve time order.",
