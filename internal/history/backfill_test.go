@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"atlas/pkg/api"
 	"atlas/pkg/config"
 	"atlas/pkg/storage"
 )
@@ -68,6 +69,19 @@ func TestAlertBackfillCreatesReviewableEpisodes(t *testing.T) {
 			t.Fatalf("uncorrectable rows classification mismatch: %+v", row)
 		}
 	}
+	reviewed, err := service.ReviewCandidate(rows[0].ID, CandidateReviewRequest{
+		Status: "accepted_proxy", Note: "matched the original alert and GPU identity", ReviewedBy: "tester",
+	})
+	if err != nil || reviewed.ReviewStatus != "accepted_proxy" || reviewed.ReviewedAt == nil ||
+		reviewed.ReviewedBy != "tester" || reviewed.QualityTier == "confirmed" {
+		t.Fatalf("unexpected accepted review: candidate=%+v err=%v", reviewed, err)
+	}
+	reviewed, err = service.ReviewCandidate(rows[0].ID, CandidateReviewRequest{
+		Status: "excluded", Note: "maintenance test event", ReviewedBy: "tester",
+	})
+	if err != nil || reviewed.QualityTier != "excluded" || reviewed.TrainingDisposition != "excluded" {
+		t.Fatalf("unexpected exclusion review: candidate=%+v err=%v", reviewed, err)
+	}
 }
 
 func TestSignalClassificationSeparatesOperationsFromTrainingUse(t *testing.T) {
@@ -85,6 +99,33 @@ func TestSignalClassificationSeparatesOperationsFromTrainingUse(t *testing.T) {
 	if dropout.HardwareCertainty != "deterministic_hardware" ||
 		dropout.TrainingDisposition != "positive_after_identity_review" {
 		t.Fatalf("unexpected dropout classification: %+v", dropout)
+	}
+}
+
+func TestCandidateReviewRequiresEvidenceNote(t *testing.T) {
+	db, err := storage.InitDB(fmt.Sprintf("file:history-review-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := api.HistoricalFaultCandidate{
+		CandidateKey: "review-test", SourceKey: "primary", BackfillRunID: 1,
+		EntityType: "gpu", EventType: "xid_79_gpu_fallen_off_bus", EventCode: "79",
+		QualityTier: "strong_proxy", OperationalPriority: "high",
+		HardwareCertainty: "investigation_required", TrainingDisposition: "proxy_positive_after_review",
+		ReviewStatus: "pending_review", SourceMetric: "ALERTS",
+		OnsetAt: time.Now(), DetectionWindowEndAt: time.Now(),
+		Labels: api.StringMap{"alert_template": "XID故障-高优先级", "err_code": "79"},
+	}
+	if err := db.Create(&candidate).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, config.HistoryConfig{}, time.Second)
+	if _, err := service.ReviewCandidate(candidate.ID, CandidateReviewRequest{Status: "excluded"}); err == nil {
+		t.Fatal("expected exclusion without a review note to fail")
+	}
+	reviewed, err := service.ReviewCandidate(candidate.ID, CandidateReviewRequest{Status: "needs_evidence"})
+	if err != nil || reviewed.TrainingDisposition != "pending_review" {
+		t.Fatalf("needs-evidence review failed: candidate=%+v err=%v", reviewed, err)
 	}
 }
 

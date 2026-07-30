@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 type Handler struct {
@@ -96,6 +97,34 @@ func (h *Handler) HandleCandidates(w http.ResponseWriter, r *http.Request) {
 	historyJSON(w, http.StatusOK, map[string]any{
 		"data": rows, "summary": summary, "training_policy": CurrentTrainingCohortPolicy(),
 	})
+}
+
+func (h *Handler) HandleCandidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		historyJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	idText := strings.TrimPrefix(r.URL.Path, "/api/v1/prediction/history/candidates/")
+	id64, err := strconv.ParseUint(strings.Trim(idText, "/"), 10, 64)
+	if err != nil || id64 == 0 {
+		historyJSON(w, http.StatusBadRequest, map[string]any{"error": "valid candidate id is required"})
+		return
+	}
+	var request CandidateReviewRequest
+	if r.Body == nil || json.NewDecoder(r.Body).Decode(&request) != nil {
+		historyJSON(w, http.StatusBadRequest, map[string]any{"error": "valid JSON body is required"})
+		return
+	}
+	candidate, err := h.service.ReviewCandidate(uint(id64), request)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "record not found") {
+			status = http.StatusNotFound
+		}
+		historyJSON(w, status, map[string]any{"error": err.Error()})
+		return
+	}
+	historyJSON(w, http.StatusOK, map[string]any{"data": candidate})
 }
 
 func historyJSON(w http.ResponseWriter, status int, payload any) {

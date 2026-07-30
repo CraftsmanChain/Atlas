@@ -274,6 +274,7 @@ func main() {
 	mux.HandleFunc("/api/v1/prediction/history/audits", historyHandler.HandleAudits)
 	mux.HandleFunc("/api/v1/prediction/history/backfills", historyHandler.HandleBackfills)
 	mux.HandleFunc("/api/v1/prediction/history/candidates", historyHandler.HandleCandidates)
+	mux.HandleFunc("/api/v1/prediction/history/candidates/", historyHandler.HandleCandidate)
 
 	// 7. 启动服务
 	port := cfg.Gateway.Port
