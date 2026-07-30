@@ -11,6 +11,7 @@ import (
 	"atlas/pkg/api"
 	"atlas/pkg/config"
 	"atlas/pkg/storage"
+	"gorm.io/gorm"
 )
 
 type fakePrometheus struct {
@@ -142,5 +143,37 @@ func TestMergeFeatureCandidatesPrefersDCGMAndDetectsMismatch(t *testing.T) {
 func TestSourceDifferenceIsAuditOnly(t *testing.T) {
 	if confidence := degradeConfidence("A", 0); confidence != "A" {
 		t.Fatalf("audit-only source difference changed confidence: %s", confidence)
+	}
+}
+
+func TestPredictionHistoryRetentionDefaultsToYearAndPrunesConfiguredCutoff(t *testing.T) {
+	if actual := ParseHistoryRetention("365d"); actual != 365*24*time.Hour {
+		t.Fatalf("unexpected day retention: %s", actual)
+	}
+	if actual := ParseHistoryRetention("invalid"); actual != 365*24*time.Hour {
+		t.Fatalf("invalid retention did not preserve safe default: %s", actual)
+	}
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	rows := []api.GPUFeatureSnapshot{
+		{GPUAssetID: 1, ObservedAt: now.Add(-36 * 24 * time.Hour)},
+		{GPUAssetID: 2, ObservedAt: now.Add(-366 * 24 * time.Hour)},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, &fakePrometheus{}, config.HealthConfig{HistoryRetention: "365d"})
+	if err := db.Transaction(func(tx *gorm.DB) error { return service.pruneHistory(tx, now) }); err != nil {
+		t.Fatal(err)
+	}
+	var remaining []api.GPUFeatureSnapshot
+	if err := db.Order("gpu_asset_id").Find(&remaining).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 1 || remaining[0].GPUAssetID != 1 {
+		t.Fatalf("retention pruned wrong snapshots: %+v", remaining)
 	}
 }

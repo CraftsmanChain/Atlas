@@ -34,6 +34,8 @@ health:
   enabled: true
   score_interval: "10m"
   rule_version: "gpu-health-v1.4.1"
+  # 预测训练需要跨故障周期的历史；在线库先保留一年，后续再增加 Parquet 冷归档。
+  history_retention: "365d"
 node_access:
   enabled: true
   skill_id: "atlas-node-evidence"

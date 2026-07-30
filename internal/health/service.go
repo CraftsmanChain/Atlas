@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,10 +24,11 @@ type prometheusReader interface {
 }
 
 type Service struct {
-	db     *storage.DB
-	prom   prometheusReader
-	config config.HealthConfig
-	now    func() time.Time
+	db               *storage.DB
+	prom             prometheusReader
+	config           config.HealthConfig
+	historyRetention time.Duration
+	now              func() time.Time
 }
 
 type metricSpec struct {
@@ -73,7 +75,27 @@ type scoreResult struct {
 }
 
 func NewService(db *storage.DB, prom prometheusReader, cfg config.HealthConfig) *Service {
-	return &Service{db: db, prom: prom, config: cfg, now: time.Now}
+	return &Service{db: db, prom: prom, config: cfg, historyRetention: ParseHistoryRetention(cfg.HistoryRetention), now: time.Now}
+}
+
+// ParseHistoryRetention accepts Go durations and an operator-friendly integer
+// day suffix such as "365d". Invalid or non-positive values preserve one year
+// of prediction history instead of silently reverting to the old 35-day cap.
+func ParseHistoryRetention(value string) time.Duration {
+	const fallback = 365 * 24 * time.Hour
+	value = strings.TrimSpace(value)
+	if strings.HasSuffix(value, "d") {
+		days, err := strconv.Atoi(strings.TrimSuffix(value, "d"))
+		if err == nil && days > 0 {
+			return time.Duration(days) * 24 * time.Hour
+		}
+		return fallback
+	}
+	retention, err := time.ParseDuration(value)
+	if err != nil || retention <= 0 {
+		return fallback
+	}
+	return retention
 }
 
 func (s *Service) Run(ctx context.Context, interval time.Duration) {
@@ -195,14 +217,7 @@ func (s *Service) Evaluate(ctx context.Context) (*api.HealthEvaluationRun, error
 				return err
 			}
 		}
-		cutoff := now.Add(-35 * 24 * time.Hour)
-		if err := tx.Where("evaluated_at < ?", cutoff).Delete(&api.GPUHealthRuleHit{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("evaluated_at < ?", cutoff).Delete(&api.GPUHealthScore{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("observed_at < ?", cutoff).Delete(&api.GPUFeatureSnapshot{}).Error; err != nil {
+		if err := s.pruneHistory(tx, now); err != nil {
 			return err
 		}
 		return nil
@@ -219,6 +234,21 @@ func (s *Service) Evaluate(ctx context.Context) (*api.HealthEvaluationRun, error
 		log.Printf("historical feature baseline refresh failed without affecting health scores: %v", err)
 	}
 	return run, nil
+}
+
+func (s *Service) pruneHistory(tx *gorm.DB, now time.Time) error {
+	retention := s.historyRetention
+	if retention <= 0 {
+		retention = ParseHistoryRetention("")
+	}
+	cutoff := now.Add(-retention)
+	if err := tx.Where("evaluated_at < ?", cutoff).Delete(&api.GPUHealthRuleHit{}).Error; err != nil {
+		return err
+	}
+	if err := tx.Where("evaluated_at < ?", cutoff).Delete(&api.GPUHealthScore{}).Error; err != nil {
+		return err
+	}
+	return tx.Where("observed_at < ?", cutoff).Delete(&api.GPUFeatureSnapshot{}).Error
 }
 
 func expectedMetricKeys(model string) []string {
