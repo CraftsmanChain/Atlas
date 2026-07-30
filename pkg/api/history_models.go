@@ -30,3 +30,61 @@ type MonitoringHistoryAudit struct {
 	FinishedAt             time.Time  `json:"finished_at" gorm:"index;not null"`
 	CreatedAt              time.Time  `json:"created_at"`
 }
+
+// HistoryBackfillRun is the durable progress envelope for a bounded historical
+// scan. The first implementation reconstructs sparse GPU alert onsets and does
+// not export full-resolution telemetry.
+type HistoryBackfillRun struct {
+	ID                uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	SourceKey         string     `json:"source_key" gorm:"index;not null"`
+	JobType           string     `json:"job_type" gorm:"index;not null"`
+	Status            string     `json:"status" gorm:"index;not null"`
+	QueryVersion      string     `json:"query_version" gorm:"index;not null"`
+	RangeStart        time.Time  `json:"range_start" gorm:"index;not null"`
+	RangeEnd          time.Time  `json:"range_end" gorm:"index;not null"`
+	StepSeconds       int        `json:"step_seconds"`
+	ChunkHours        int        `json:"chunk_hours"`
+	ChunksTotal       int        `json:"chunks_total"`
+	ChunksCompleted   int        `json:"chunks_completed"`
+	SeriesScanned     int        `json:"series_scanned"`
+	SignalPoints      int        `json:"signal_points"`
+	CandidatesCreated int        `json:"candidates_created"`
+	CandidatesUpdated int        `json:"candidates_updated"`
+	ErrorMessage      string     `json:"error_message,omitempty" gorm:"type:text"`
+	StartedAt         time.Time  `json:"started_at" gorm:"index;not null"`
+	FinishedAt        *time.Time `json:"finished_at,omitempty" gorm:"index"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
+// HistoricalFaultCandidate is a reviewable incident candidate reconstructed
+// from historical monitoring state. A candidate is never a confirmed training
+// label until an operator or repair record validates it.
+type HistoricalFaultCandidate struct {
+	ID                   uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	CandidateKey         string     `json:"candidate_key" gorm:"uniqueIndex;size:64;not null"`
+	SourceKey            string     `json:"source_key" gorm:"index;not null"`
+	BackfillRunID        uint       `json:"backfill_run_id" gorm:"index;not null"`
+	EntityType           string     `json:"entity_type" gorm:"index;not null"`
+	GPUUUID              string     `json:"gpu_uuid" gorm:"column:gpu_uuid;index"`
+	NodeIP               string     `json:"node_ip" gorm:"index"`
+	Hostname             string     `json:"hostname" gorm:"index"`
+	ModelName            string     `json:"model_name" gorm:"index"`
+	PCIBusID             string     `json:"pci_bus_id" gorm:"index"`
+	EventType            string     `json:"event_type" gorm:"index;not null"`
+	EventCode            string     `json:"event_code" gorm:"index"`
+	EventMessage         string     `json:"event_message" gorm:"type:text"`
+	Severity             string     `json:"severity" gorm:"index"`
+	QualityTier          string     `json:"quality_tier" gorm:"index;not null"`
+	ReviewStatus         string     `json:"review_status" gorm:"index;not null"`
+	SourceMetric         string     `json:"source_metric" gorm:"index;not null"`
+	SourceAlertName      string     `json:"source_alert_name" gorm:"index"`
+	SignalSamples        int        `json:"signal_samples"`
+	Labels               StringMap  `json:"labels" gorm:"type:text"`
+	OnsetAt              time.Time  `json:"onset_at" gorm:"index;not null"`
+	DetectionWindowEndAt time.Time  `json:"detection_window_end_at" gorm:"index;not null"`
+	ReviewedAt           *time.Time `json:"reviewed_at,omitempty" gorm:"index"`
+	ReviewNote           string     `json:"review_note,omitempty" gorm:"type:text"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+}

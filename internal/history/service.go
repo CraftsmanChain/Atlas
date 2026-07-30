@@ -55,18 +55,25 @@ type SourceStatus struct {
 }
 
 type Service struct {
-	db      *storage.DB
-	config  config.HistoryConfig
-	timeout time.Duration
-	now     func() time.Time
-	mu      sync.Mutex
+	db              *storage.DB
+	config          config.HistoryConfig
+	timeout         time.Duration
+	now             func() time.Time
+	mu              sync.Mutex
+	backfillMu      sync.Mutex
+	backfillRunning bool
 }
 
 func NewService(db *storage.DB, cfg config.HistoryConfig, timeout time.Duration) *Service {
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
-	return &Service{db: db, config: cfg, timeout: timeout, now: time.Now}
+	service := &Service{db: db, config: cfg, timeout: timeout, now: time.Now}
+	now := time.Now()
+	_ = db.Model(&api.HistoryBackfillRun{}).Where("status IN ?", []string{"queued", "running"}).Updates(map[string]any{
+		"status": "interrupted", "error_message": "Atlas restarted before the backfill completed", "finished_at": &now,
+	}).Error
+	return service
 }
 
 func ResearchMetricFamilies() api.StringList {
