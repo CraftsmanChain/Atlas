@@ -1124,13 +1124,14 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   ];
   const modules = baseModules.map(module => module.id === 'prediction' ? {
     ...module,
-    version: 'v0.7.0',
-    status: tx('GPU 身份历史与换卡证据', 'GPU IDENTITY HISTORY'),
+    version: 'v0.8.0',
+    status: tx('GPU 身份历史清洗', 'GPU IDENTITY CLEANUP'),
     desc: tx(
-      '在部署节点本地重建 GPU 身份区间、同槽位换 UUID 和节点身份边界，并把身份变化证据关联到历史故障候选；身份变化只作为审核证据，不会自动确认硬件故障。',
-      'Reconstruct GPU identity intervals, same-slot UUID changes and node identity boundaries locally, then link identity evidence to historical fault candidates. Identity changes remain review evidence and never auto-confirm hardware failure.',
+      '统一掉卡告警与 DCGM 的 GPU UUID 格式，按稳定节点、PCI 槽位和 UUID 合并跨 exporter 身份区间；完整扫描成功后安全替换旧区间并重新关联历史故障候选。',
+      'Normalize GPU UUIDs across dropout alerts and DCGM, merge cross-exporter identity intervals by stable node, PCI slot and UUID, then replace stale intervals after a successful scan and relink historical fault candidates.',
     ),
     history: [
+      tx('v0.8.0 · UUID 前缀/大小写标准化、跨 exporter 去重、旧表无损迁移和回填成功后旧区间替换', 'v0.8.0 · UUID prefix/case normalization, cross-exporter deduplication, lossless legacy-table migration and post-success stale interval replacement'),
       tx('v0.7.0 · 六小时稀疏身份区间、同槽位换卡候选、整机身份边界和历史故障候选关联', 'v0.7.0 · six-hour sparse identity intervals, same-slot replacement candidates, node boundaries and historical candidate linkage'),
       tx('v0.6.0 · 历史候选审核 API、可重审训练用途、操作人/时间/备注审计和页面操作', 'v0.6.0 · candidate review API, repeatable training disposition, operator/time/note audit and UI actions'),
       tx('v0.5.0 · 覆盖低/高优先 XID、恢复型 120/154、GPU 掉卡与不可恢复显存，并定义正常对照和污染窗口', 'v0.5.0 · low/high-priority XIDs, recovery-latched 120/154, GPU dropout, uncorrectable memory, matched controls and censor windows'),
@@ -1182,7 +1183,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.33.0" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.34.0" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>

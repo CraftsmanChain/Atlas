@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"atlas/pkg/api"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 func TestListIngestionsPaginatesFiltersAndReturnsStats(t *testing.T) {
@@ -91,6 +93,38 @@ func TestInitDBWithDriverRejectsUnknownDriverAndEmptyDSN(t *testing.T) {
 	}
 	if _, err := InitDBWithDriver("postgres", ""); err == nil {
 		t.Fatal("expected empty PostgreSQL DSN to fail")
+	}
+}
+
+func TestMigrateSchemaRenamesLegacyGPUIdentityTable(t *testing.T) {
+	raw, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "legacy.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Table("historical_gp_uidentity_intervals").
+		AutoMigrate(&api.HistoricalGPUIdentityInterval{}); err != nil {
+		t.Fatal(err)
+	}
+	legacy := api.HistoricalGPUIdentityInterval{
+		IntervalKey: "legacy-row", SourceKey: "primary", BackfillRunID: 1,
+		NodeIP: "10.0.0.1", GPUUUID: "GPU-old", FirstSeenAt: time.Now(), LastSeenAt: time.Now(),
+	}
+	if err := raw.Table("historical_gp_uidentity_intervals").Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSchema(raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw.Migrator().HasTable("historical_gp_uidentity_intervals") ||
+		!raw.Migrator().HasTable("historical_gpu_identity_intervals") {
+		t.Fatal("legacy identity table was not renamed")
+	}
+	var count int64
+	if err := raw.Table("historical_gpu_identity_intervals").Where("interval_key = ?", "legacy-row").Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("legacy identity row count=%d", count)
 	}
 }
 

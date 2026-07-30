@@ -129,3 +129,7 @@ type HistoricalGPUIdentityInterval struct {
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 }
+
+func (HistoricalGPUIdentityInterval) TableName() string {
+	return "historical_gpu_identity_intervals"
+}

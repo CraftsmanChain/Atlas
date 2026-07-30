@@ -115,6 +115,18 @@ func InitDBWithDriver(driver, dsn string) (*DB, error) {
 }
 
 func migrateSchema(db *gorm.DB) error {
+	// GORM splits the GPU initialism as "gp_u" unless the table name is
+	// explicit. Preserve existing identity backfill data during the one-time
+	// correction to the stable table name.
+	if db.Migrator().HasTable("historical_gp_uidentity_intervals") &&
+		!db.Migrator().HasTable("historical_gpu_identity_intervals") {
+		if err := db.Migrator().RenameTable(
+			"historical_gp_uidentity_intervals",
+			"historical_gpu_identity_intervals",
+		); err != nil {
+			return err
+		}
+	}
 	return db.AutoMigrate(
 		&api.AlertEvent{},
 		&api.AlertIngestionRecord{},

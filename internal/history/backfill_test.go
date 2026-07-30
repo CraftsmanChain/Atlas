@@ -138,13 +138,21 @@ func TestIdentityBackfillFindsReplacementAndAnnotatesCandidate(t *testing.T) {
 	}
 	candidate := api.HistoricalFaultCandidate{
 		CandidateKey: "dropout-before-replacement", SourceKey: "primary", BackfillRunID: 1,
-		EntityType: "gpu", GPUUUID: "GPU-OLD", NodeIP: "10.0.0.9", PCIBusID: "0000:01:00.0",
+		EntityType: "gpu", GPUUUID: "old", NodeIP: "10.0.0.9",
 		EventType: "gpu_dropout", EventCode: "gpu_dropout", QualityTier: "strong_proxy",
 		OperationalPriority: "critical", HardwareCertainty: "deterministic_hardware",
 		TrainingDisposition: "positive_after_identity_review", ReviewStatus: "pending_review",
 		SourceMetric: "ALERTS", OnsetAt: time.Unix(1783123200, 0), DetectionWindowEndAt: time.Unix(1783123200, 0),
 	}
 	if err := db.Create(&candidate).Error; err != nil {
+		t.Fatal(err)
+	}
+	stale := api.HistoricalGPUIdentityInterval{
+		IntervalKey: "stale-v1-key", SourceKey: "primary", BackfillRunID: 99,
+		NodeIP: "10.0.0.9", GPUUUID: "GPU-old", PCIBusID: "0000:01:00.0",
+		FirstSeenAt: time.Unix(1782864000, 0), LastSeenAt: time.Unix(1782864000, 0),
+	}
+	if err := db.Create(&stale).Error; err != nil {
 		t.Fatal(err)
 	}
 	service := NewService(db, config.HistoryConfig{
@@ -183,9 +191,28 @@ func TestIdentityBackfillFindsReplacementAndAnnotatesCandidate(t *testing.T) {
 	if err := db.First(&candidate, candidate.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if candidate.IdentityEvidenceStatus != "replacement_after_event" || candidate.IdentityIntervalID == 0 ||
-		candidate.IdentityEvidence["successor_uuid"] != "GPU-NEW" {
+	if candidate.GPUUUID != "GPU-old" || candidate.IdentityEvidenceStatus != "replacement_after_event" ||
+		candidate.IdentityIntervalID == 0 || candidate.IdentityEvidence["successor_uuid"] != "GPU-new" {
 		t.Fatalf("candidate identity evidence mismatch: %+v", candidate)
+	}
+	var staleCount int64
+	db.Model(&api.HistoricalGPUIdentityInterval{}).Where("interval_key = ?", stale.IntervalKey).Count(&staleCount)
+	if staleCount != 0 {
+		t.Fatalf("stale v1 interval was not replaced")
+	}
+}
+
+func TestHistoricalGPUUUIDNormalizationAndStableIdentityKey(t *testing.T) {
+	if got := normalizeHistoricalGPUUUID("DAAE91F5-48B7"); got != "GPU-daae91f5-48b7" {
+		t.Fatalf("bare UUID normalization=%q", got)
+	}
+	if got := normalizeHistoricalGPUUUID("gpu-DAAE91F5-48B7"); got != "GPU-daae91f5-48b7" {
+		t.Fatalf("prefixed UUID normalization=%q", got)
+	}
+	left := historicalIdentityKey("primary", "10.0.0.9", "0000:01:00.0", "GPU-ABC", "0")
+	right := historicalIdentityKey("primary", "10.0.0.9", "0000:01:00.0", "abc", "0")
+	if left != right {
+		t.Fatalf("identity key must ignore UUID representation differences: %q != %q", left, right)
 	}
 }
 
