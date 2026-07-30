@@ -80,3 +80,45 @@ type HardwareRiskPrediction struct {
 	ExpiresAt         time.Time  `json:"expires_at" gorm:"index"`
 	CreatedAt         time.Time  `json:"created_at"`
 }
+
+// PredictionOutcomeEvaluation keeps the rule-derived outcome and any later
+// human correction side by side. Reconciliation may update the rule columns,
+// but must never overwrite the human decision columns.
+type PredictionOutcomeEvaluation struct {
+	ID                    uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	PredictionID          uint       `json:"prediction_id" gorm:"uniqueIndex;not null"`
+	ModelSpecID           uint       `json:"model_spec_id" gorm:"index;not null"`
+	ModelKey              string     `json:"model_key" gorm:"index;not null"`
+	ModelVersion          string     `json:"model_version" gorm:"index;not null"`
+	EntityType            string     `json:"entity_type" gorm:"index;not null"`
+	EntityKey             string     `json:"entity_key" gorm:"index;not null"`
+	GPUAssetID            uint       `json:"gpu_asset_id,omitempty" gorm:"index"`
+	GPUUUID               string     `json:"gpu_uuid,omitempty" gorm:"column:gpu_uuid;index"`
+	NodeIP                string     `json:"node_ip,omitempty" gorm:"index"`
+	HorizonMinutes        int        `json:"horizon_minutes" gorm:"index;not null"`
+	Probability           *float64   `json:"probability,omitempty"`
+	DecisionThreshold     *float64   `json:"decision_threshold,omitempty"`
+	PredictedPositive     bool       `json:"predicted_positive"`
+	PredictionEvaluatedAt time.Time  `json:"prediction_evaluated_at" gorm:"index;not null"`
+	WindowStartAt         time.Time  `json:"window_start_at" gorm:"index;not null"`
+	WindowEndAt           time.Time  `json:"window_end_at" gorm:"index;not null"`
+	MaturityStatus        string     `json:"maturity_status" gorm:"index;not null"`
+	MaturityReason        string     `json:"maturity_reason,omitempty" gorm:"type:text"`
+	RuleActualValue       *int       `json:"rule_actual_value,omitempty"`
+	RuleOutcome           string     `json:"rule_outcome" gorm:"index;not null"`
+	RuleLabelID           uint       `json:"rule_label_id,omitempty" gorm:"index"`
+	RuleLabelQuality      string     `json:"rule_label_quality,omitempty" gorm:"index"`
+	RuleDecisionVersion   string     `json:"rule_decision_version" gorm:"index;not null"`
+	RuleDecisionReason    string     `json:"rule_decision_reason,omitempty" gorm:"type:text"`
+	HumanActualValue      *int       `json:"human_actual_value,omitempty"`
+	HumanOutcome          string     `json:"human_outcome,omitempty" gorm:"index"`
+	HumanDecision         string     `json:"human_decision,omitempty" gorm:"index"`
+	HumanReason           string     `json:"human_reason,omitempty" gorm:"type:text"`
+	HumanDecidedBy        string     `json:"human_decided_by,omitempty" gorm:"index"`
+	HumanDecidedAt        *time.Time `json:"human_decided_at,omitempty" gorm:"index"`
+	FinalActualValue      *int       `json:"final_actual_value,omitempty"`
+	FinalOutcome          string     `json:"final_outcome" gorm:"index;not null"`
+	FinalSource           string     `json:"final_source" gorm:"index;not null"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+}

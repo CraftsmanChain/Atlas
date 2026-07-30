@@ -159,6 +159,7 @@ func main() {
 	go nodeEvidenceCollections.Run(context.Background(), time.Minute)
 	go issueService.Run(context.Background(), time.Minute)
 	go predictionService.RunLabelSync(context.Background(), time.Minute)
+	go predictionService.RunOutcomeSync(context.Background(), time.Minute)
 	if cfg.History.Enabled {
 		historyAuditInterval := parseDurationOrDefault("monitoring history audit", cfg.History.AuditInterval, 6*time.Hour)
 		go historyService.Run(context.Background(), historyAuditInterval)
@@ -270,6 +271,9 @@ func main() {
 	mux.HandleFunc("/api/v1/prediction/readiness", predictionHandler.HandleReadiness)
 	mux.HandleFunc("/api/v1/prediction/results", predictionHandler.HandleResults)
 	mux.HandleFunc("/api/v1/prediction/labels", predictionHandler.HandleLabels)
+	mux.HandleFunc("/api/v1/prediction/accuracy", predictionHandler.HandleAccuracy)
+	mux.HandleFunc("/api/v1/prediction/outcomes", predictionHandler.HandleOutcomes)
+	mux.HandleFunc("/api/v1/prediction/outcomes/", predictionHandler.HandleOutcome)
 	mux.HandleFunc("/api/v1/prediction/history/sources", historyHandler.HandleSources)
 	mux.HandleFunc("/api/v1/prediction/history/audits", historyHandler.HandleAudits)
 	mux.HandleFunc("/api/v1/prediction/history/backfills", historyHandler.HandleBackfills)
