@@ -2,6 +2,7 @@ package prediction
 
 import (
 	"sort"
+	"sync"
 	"time"
 
 	"atlas/internal/features"
@@ -87,6 +88,12 @@ type ResultSummary struct {
 	ProbabilityEmitted bool           `json:"probability_emitted"`
 }
 
+type RetentionPolicy struct {
+	OnlineRetentionDays int    `json:"online_retention_days"`
+	ColdArchiveStatus   string `json:"cold_archive_status"`
+	TrainingHistorySafe bool   `json:"training_history_safe"`
+}
+
 type Overview struct {
 	FrameworkVersion       string                    `json:"framework_version"`
 	Phase                  string                    `json:"phase"`
@@ -104,15 +111,29 @@ type Overview struct {
 	Models                 []api.PredictionModelSpec `json:"models"`
 	Readiness              ReadinessSummary          `json:"readiness"`
 	Results                ResultSummary             `json:"results"`
+	Labels                 LabelSummary              `json:"labels"`
+	Retention              RetentionPolicy           `json:"retention"`
 	GeneratedAt            time.Time                 `json:"generated_at"`
 }
 
 type Service struct {
-	db  *storage.DB
-	now func() time.Time
+	db                  *storage.DB
+	onlineRetentionDays int
+	now                 func() time.Time
+	labelMu             sync.Mutex
 }
 
-func NewService(db *storage.DB) *Service { return &Service{db: db, now: time.Now} }
+func NewService(db *storage.DB) *Service {
+	return NewServiceWithRetention(db, 365*24*time.Hour)
+}
+
+func NewServiceWithRetention(db *storage.DB, retention time.Duration) *Service {
+	days := int(retention / (24 * time.Hour))
+	if days <= 0 {
+		days = 365
+	}
+	return &Service{db: db, onlineRetentionDays: days, now: time.Now}
+}
 
 func BuiltinModels() []api.PredictionModelSpec {
 	return []api.PredictionModelSpec{
@@ -279,6 +300,10 @@ func (s *Service) Overview() (Overview, error) {
 	if err != nil {
 		return Overview{}, err
 	}
+	labels, _, err := s.Labels(100)
+	if err != nil {
+		return Overview{}, err
+	}
 	readiness, _, err := s.Readiness()
 	if err != nil {
 		return Overview{}, err
@@ -310,7 +335,13 @@ func (s *Service) Overview() (Overview, error) {
 			Calibration: "Brier score and reliability curve required per model and horizon",
 			TimeSplit:   true, EntitySplit: true, ShadowRequired: true, AutoAction: false,
 		},
-		Models: models, Readiness: readiness, Results: results, GeneratedAt: s.now(),
+		Models: models, Readiness: readiness, Results: results, Labels: labels,
+		Retention: RetentionPolicy{
+			OnlineRetentionDays: s.onlineRetentionDays,
+			ColdArchiveStatus:   "planned",
+			TrainingHistorySafe: s.onlineRetentionDays >= 180,
+		},
+		GeneratedAt: s.now(),
 	}, nil
 }
 

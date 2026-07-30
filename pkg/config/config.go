@@ -80,9 +80,10 @@ type InventoryConfig struct {
 }
 
 type HealthConfig struct {
-	Enabled       bool   `yaml:"enabled"`
-	ScoreInterval string `yaml:"score_interval"`
-	RuleVersion   string `yaml:"rule_version"`
+	Enabled          bool   `yaml:"enabled"`
+	ScoreInterval    string `yaml:"score_interval"`
+	RuleVersion      string `yaml:"rule_version"`
+	HistoryRetention string `yaml:"history_retention"`
 }
 
 type NodeAccessConfig struct {
@@ -202,6 +203,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Health.RuleVersion == "" {
 		cfg.Health.RuleVersion = "gpu-health-v1.4.1"
+	}
+	if cfg.Health.HistoryRetention == "" {
+		cfg.Health.HistoryRetention = "365d"
 	}
 	if cfg.NodeAccess.SkillID == "" {
 		cfg.NodeAccess.SkillID = "atlas-node-evidence"

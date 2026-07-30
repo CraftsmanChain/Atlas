@@ -31,24 +31,30 @@ type PredictionModelSpec struct {
 // FailureLabel preserves the provenance and quality tier of a training label.
 // Weak rule-derived labels must never be silently treated as confirmed repairs.
 type FailureLabel struct {
-	ID                   uint      `json:"id" gorm:"primaryKey;autoIncrement"`
-	LabelKey             string    `json:"label_key" gorm:"uniqueIndex;not null"`
-	HardwareClass        string    `json:"hardware_class" gorm:"index;not null"`
-	EntityType           string    `json:"entity_type" gorm:"index;not null"`
-	EntityKey            string    `json:"entity_key" gorm:"index;not null"`
-	NodeIP               string    `json:"node_ip,omitempty" gorm:"index"`
-	EventType            string    `json:"event_type" gorm:"index;not null"`
-	LabelValue           int       `json:"label_value" gorm:"index;not null"`
-	QualityTier          string    `json:"quality_tier" gorm:"index;not null"`
-	SourceType           string    `json:"source_type" gorm:"index;not null"`
-	SourceRecordID       uint      `json:"source_record_id" gorm:"index"`
-	LabelContractVersion string    `json:"label_contract_version" gorm:"index;not null"`
-	OccurredAt           time.Time `json:"occurred_at" gorm:"index;not null"`
-	AvailableAt          time.Time `json:"available_at" gorm:"index;not null"`
-	Excluded             bool      `json:"excluded" gorm:"index"`
-	ExclusionReason      string    `json:"exclusion_reason,omitempty" gorm:"type:text"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	ID                       uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	LabelKey                 string     `json:"label_key" gorm:"uniqueIndex;not null"`
+	HardwareClass            string     `json:"hardware_class" gorm:"index;not null"`
+	EntityType               string     `json:"entity_type" gorm:"index;not null"`
+	EntityKey                string     `json:"entity_key" gorm:"index;not null"`
+	GPUAssetID               uint       `json:"gpu_asset_id,omitempty" gorm:"index"`
+	GPUUUID                  string     `json:"gpu_uuid,omitempty" gorm:"column:gpu_uuid;index"`
+	NodeIP                   string     `json:"node_ip,omitempty" gorm:"index"`
+	ModelName                string     `json:"model_name,omitempty" gorm:"index"`
+	EventType                string     `json:"event_type" gorm:"index;not null"`
+	RuleVersion              string     `json:"rule_version,omitempty" gorm:"index"`
+	LabelValue               int        `json:"label_value" gorm:"index;not null"`
+	QualityTier              string     `json:"quality_tier" gorm:"index;not null"`
+	SourceType               string     `json:"source_type" gorm:"index;not null"`
+	SourceRecordID           uint       `json:"source_record_id" gorm:"index"`
+	ConfirmationResolutionID uint       `json:"confirmation_resolution_id,omitempty" gorm:"index"`
+	LabelContractVersion     string     `json:"label_contract_version" gorm:"index;not null"`
+	OccurredAt               time.Time  `json:"occurred_at" gorm:"index;not null"`
+	AvailableAt              time.Time  `json:"available_at" gorm:"index;not null"`
+	ConfirmedAt              *time.Time `json:"confirmed_at,omitempty" gorm:"index"`
+	Excluded                 bool       `json:"excluded" gorm:"index"`
+	ExclusionReason          string     `json:"exclusion_reason,omitempty" gorm:"type:text"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
 }
 
 // HardwareRiskPrediction is an append-only, model-versioned inference result.

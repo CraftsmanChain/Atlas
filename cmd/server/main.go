@@ -113,7 +113,8 @@ func main() {
 	featureHandler := features.NewHandler(db)
 	baselineHandler := features.NewBaselineHandler(db)
 	degradationHandler := degradation.NewHandler(db)
-	predictionHandler := prediction.NewHandler(db)
+	predictionService := prediction.NewServiceWithRetention(db, health.ParseHistoryRetention(cfg.Health.HistoryRetention))
+	predictionHandler := prediction.NewHandlerWithService(predictionService)
 	issueService := issues.NewService(db)
 	issueHandler := issues.NewHandlerWithService(db, issueService)
 	platformConfigHandler := platformconfig.NewHandler(db, cfg.Branding)
@@ -153,6 +154,7 @@ func main() {
 	nodeAccessHandler.SetCollections(nodeEvidenceCollections)
 	go nodeEvidenceCollections.Run(context.Background(), time.Minute)
 	go issueService.Run(context.Background(), time.Minute)
+	go predictionService.RunLabelSync(context.Background(), time.Minute)
 
 	// Inventory discovery is read-only and best-effort. Prometheus outages are
 	// recorded as failed sync runs and never prevent Atlas from serving APIs.
@@ -259,6 +261,7 @@ func main() {
 	mux.HandleFunc("/api/v1/prediction/models", predictionHandler.HandleModels)
 	mux.HandleFunc("/api/v1/prediction/readiness", predictionHandler.HandleReadiness)
 	mux.HandleFunc("/api/v1/prediction/results", predictionHandler.HandleResults)
+	mux.HandleFunc("/api/v1/prediction/labels", predictionHandler.HandleLabels)
 
 	// 7. 启动服务
 	port := cfg.Gateway.Port
