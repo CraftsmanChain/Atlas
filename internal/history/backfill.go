@@ -17,9 +17,18 @@ import (
 )
 
 const (
-	alertBackfillQueryVersion = "gpu-alert-onset-v1"
-	alertOnsetQuery           = `(ALERTS{UUID!="",alertstate="firing"} == 1) unless (ALERTS{UUID!="",alertstate="firing"} offset 5m)`
+	alertBackfillQueryVersion = "gpu-fault-signal-onset-v2"
+	alertOnsetQuery           = `(ALERTS{alert_template=~"XID故障(|-低优先级|-高优先级)|GPU掉卡",alertstate="firing"} == 1) unless (ALERTS{alert_template=~"XID故障(|-低优先级|-高优先级)|GPU掉卡",alertstate="firing"} offset 5m)`
+	uncorrectableRowsQuery    = `(DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS > 0) and (DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS > DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS offset 5m)`
 )
+
+var historicalSignalScans = []struct {
+	SourceMetric string
+	Query        string
+}{
+	{SourceMetric: "ALERTS", Query: alertOnsetQuery},
+	{SourceMetric: "DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS", Query: uncorrectableRowsQuery},
+}
 
 type BackfillRequest struct {
 	SourceKey string     `json:"source_key"`
@@ -32,14 +41,61 @@ type CandidateSummary struct {
 	Pending       int            `json:"pending_review"`
 	ByEventCode   map[string]int `json:"by_event_code"`
 	ByQuality     map[string]int `json:"by_quality_tier"`
+	ByPriority    map[string]int `json:"by_operational_priority"`
+	ByCertainty   map[string]int `json:"by_hardware_certainty"`
+	ByDisposition map[string]int `json:"by_training_disposition"`
 	ByModel       map[string]int `json:"by_model"`
 	LatestOnset   *time.Time     `json:"latest_onset_at,omitempty"`
 	EarliestOnset *time.Time     `json:"earliest_onset_at,omitempty"`
 }
 
+type TrainingCohortPolicy struct {
+	Version                   string   `json:"version"`
+	PositiveHorizonsMinutes   []int    `json:"positive_horizons_minutes"`
+	HealthyCensorBeforeHours  int      `json:"healthy_censor_before_hours"`
+	HealthyCensorAfterHours   int      `json:"healthy_censor_after_hours"`
+	ControlMatchDimensions    []string `json:"control_match_dimensions"`
+	NormalRangeStatistics     []string `json:"normal_range_statistics"`
+	PositiveCandidatePolicy   string   `json:"positive_candidate_policy"`
+	HealthyWindowPolicy       string   `json:"healthy_window_policy"`
+	ReplacementEvidencePolicy string   `json:"replacement_evidence_policy"`
+}
+
 type onsetSignal struct {
-	Labels map[string]string
-	At     time.Time
+	Labels       map[string]string
+	SourceMetric string
+	At           time.Time
+}
+
+type signalClassification struct {
+	EventType           string
+	EventCode           string
+	QualityTier         string
+	OperationalPriority string
+	HardwareCertainty   string
+	TrainingDisposition string
+	RecommendedAction   string
+	RecoveryAware       bool
+}
+
+func CurrentTrainingCohortPolicy() TrainingCohortPolicy {
+	return TrainingCohortPolicy{
+		Version: "gpu-training-cohort-v1",
+		PositiveHorizonsMinutes: []int{
+			1, 10, 30, 60, 180, 360, 720, 1440, 2880, 4320, 10080,
+		},
+		HealthyCensorBeforeHours: 168,
+		HealthyCensorAfterHours:  72,
+		ControlMatchDimensions: []string{
+			"model_name", "data_center_id", "load_bucket", "driver_version", "telemetry_coverage",
+		},
+		NormalRangeStatistics: []string{
+			"median", "MAD", "p01", "p05", "p95", "p99", "empirical_CDF",
+		},
+		PositiveCandidatePolicy:   "deterministic_hardware signals require identity review; high-risk XIDs remain proxy positives until reviewed",
+		HealthyWindowPolicy:       "exclude windows near high-risk/deterministic faults, telemetry gaps, node restarts, maintenance, and GPU identity changes",
+		ReplacementEvidencePolicy: "same stable node identity and PCI slot changing UUID is supporting evidence only; require non-overlap, persistence, and exclusion of whole-node identity/topology changes",
+	}
 }
 
 func (s *Service) BackfillRuns(limit int) ([]api.HistoryBackfillRun, error) {
@@ -60,7 +116,9 @@ func (s *Service) Candidates(limit int) (CandidateSummary, []api.HistoricalFault
 		return CandidateSummary{}, nil, err
 	}
 	summary := CandidateSummary{
-		Total: len(all), ByEventCode: map[string]int{}, ByQuality: map[string]int{}, ByModel: map[string]int{},
+		Total: len(all), ByEventCode: map[string]int{}, ByQuality: map[string]int{},
+		ByPriority: map[string]int{}, ByCertainty: map[string]int{},
+		ByDisposition: map[string]int{}, ByModel: map[string]int{},
 	}
 	for _, row := range all {
 		if row.ReviewStatus == "pending_review" {
@@ -68,6 +126,9 @@ func (s *Service) Candidates(limit int) (CandidateSummary, []api.HistoricalFault
 		}
 		summary.ByEventCode[row.EventCode]++
 		summary.ByQuality[row.QualityTier]++
+		summary.ByPriority[row.OperationalPriority]++
+		summary.ByCertainty[row.HardwareCertainty]++
+		summary.ByDisposition[row.TrainingDisposition]++
 		summary.ByModel[row.ModelName]++
 		if summary.EarliestOnset == nil || row.OnsetAt.Before(*summary.EarliestOnset) {
 			value := row.OnsetAt
@@ -120,7 +181,7 @@ func (s *Service) StartAlertBackfill(request BackfillRequest) (api.HistoryBackfi
 	const chunk = 7 * 24 * time.Hour
 	chunks := int((end.Sub(start) + chunk - 1) / chunk)
 	run := api.HistoryBackfillRun{
-		SourceKey: source.ID, JobType: "gpu_alert_onset", Status: "queued",
+		SourceKey: source.ID, JobType: "gpu_fault_signal_onset", Status: "queued",
 		QueryVersion: alertBackfillQueryVersion, RangeStart: start, RangeEnd: end,
 		StepSeconds: 60, ChunkHours: 168, ChunksTotal: chunks, StartedAt: s.now(),
 	}
@@ -159,19 +220,23 @@ func (s *Service) executeAlertBackfill(runID uint, source config.HistorySourceCo
 		if chunkEnd.After(run.RangeEnd) {
 			chunkEnd = run.RangeEnd
 		}
-		series, queryErr := client.QueryRange(ctx, alertOnsetQuery, cursor, chunkEnd, time.Duration(run.StepSeconds)*time.Second)
-		if queryErr != nil {
-			s.failBackfill(&run, fmt.Errorf("chunk %s..%s: %w", cursor.Format(time.RFC3339), chunkEnd.Format(time.RFC3339), queryErr))
-			return
-		}
-		for _, item := range series {
-			run.SeriesScanned++
-			for _, point := range item.Values {
-				if point.Value <= 0 {
-					continue
+		for _, scan := range historicalSignalScans {
+			series, queryErr := client.QueryRange(ctx, scan.Query, cursor, chunkEnd, time.Duration(run.StepSeconds)*time.Second)
+			if queryErr != nil {
+				s.failBackfill(&run, fmt.Errorf("%s chunk %s..%s: %w", scan.SourceMetric, cursor.Format(time.RFC3339), chunkEnd.Format(time.RFC3339), queryErr))
+				return
+			}
+			for _, item := range series {
+				run.SeriesScanned++
+				for _, point := range item.Values {
+					if point.Value <= 0 {
+						continue
+					}
+					signals = append(signals, onsetSignal{
+						Labels: item.Metric, SourceMetric: scan.SourceMetric, At: point.Timestamp,
+					})
+					run.SignalPoints++
 				}
-				signals = append(signals, onsetSignal{Labels: item.Metric, At: point.Timestamp})
-				run.SignalPoints++
 			}
 		}
 		run.ChunksCompleted++
@@ -203,6 +268,13 @@ func (s *Service) executeAlertBackfill(runID uint, source config.HistorySourceCo
 		if err := s.db.Model(&existing).Updates(map[string]any{
 			"backfill_run_id": run.ID, "signal_samples": candidate.SignalSamples,
 			"detection_window_end_at": candidate.DetectionWindowEndAt, "labels": candidate.Labels,
+			"event_type": candidate.EventType, "event_code": candidate.EventCode,
+			"severity": candidate.Severity, "quality_tier": candidate.QualityTier,
+			"operational_priority": candidate.OperationalPriority,
+			"hardware_certainty":   candidate.HardwareCertainty,
+			"training_disposition": candidate.TrainingDisposition,
+			"recommended_action":   candidate.RecommendedAction,
+			"recovery_aware":       candidate.RecoveryAware, "source_metric": candidate.SourceMetric,
 		}).Error; err != nil {
 			s.failBackfill(&run, err)
 			return
@@ -278,17 +350,22 @@ func buildCandidates(sourceKey string, runID uint, signals []onsetSignal) []api.
 				labels[key] = value
 			}
 		}
-		code := firstNonEmpty(labels["err_code"], labels["Xid"])
-		eventType, quality := classifyXID(code)
+		classification := classifySignal(labels, first.SourceMetric)
 		uuid := firstNonEmpty(labels["UUID"], labels["uuid"])
 		candidate := api.HistoricalFaultCandidate{
 			SourceKey: sourceKey, BackfillRunID: runID, EntityType: "gpu",
 			GPUUUID: uuid, NodeIP: normalizeInstance(firstNonEmpty(labels["host_ip"], labels["instance"])),
 			Hostname:  firstNonEmpty(labels["Hostname"], labels["hostname"], labels["node"]),
 			ModelName: firstNonEmpty(labels["modelName"], labels["device_type"], labels["model"]),
-			PCIBusID:  labels["pci_bus_id"], EventType: eventType, EventCode: code,
-			EventMessage: labels["err_msg"], Severity: labels["severity"], QualityTier: quality,
-			ReviewStatus: "pending_review", SourceMetric: "ALERTS",
+			PCIBusID:  labels["pci_bus_id"], EventType: classification.EventType,
+			EventCode: classification.EventCode, EventMessage: labels["err_msg"],
+			Severity: labels["severity"], QualityTier: classification.QualityTier,
+			OperationalPriority: classification.OperationalPriority,
+			HardwareCertainty:   classification.HardwareCertainty,
+			TrainingDisposition: classification.TrainingDisposition,
+			RecommendedAction:   classification.RecommendedAction,
+			RecoveryAware:       classification.RecoveryAware,
+			ReviewStatus:        "pending_review", SourceMetric: first.SourceMetric,
 			SourceAlertName: labels["alertname"], SignalSamples: samples, Labels: labels,
 			OnsetAt: first.At, DetectionWindowEndAt: end,
 		}
@@ -300,11 +377,20 @@ func buildCandidates(sourceKey string, runID uint, signals []onsetSignal) []api.
 }
 
 func signalSignature(labels map[string]string) string {
-	return strings.Join([]string{
-		firstNonEmpty(labels["UUID"], labels["uuid"]),
+	entityKey := firstNonEmpty(labels["UUID"], labels["uuid"])
+	if entityKey == "" {
+		entityKey = firstNonEmpty(labels["host_id"], labels["sn"], labels["host_ip"],
+			normalizeInstance(labels["instance"]), labels["Hostname"], labels["hostname"], labels["node"])
+	}
+	parts := []string{
+		entityKey,
 		firstNonEmpty(labels["err_code"], labels["Xid"]),
 		labels["alertname"],
-	}, "|")
+	}
+	if metric := labels["__name__"]; metric != "" && metric != "ALERTS" {
+		parts = append(parts, metric)
+	}
+	return strings.Join(parts, "|")
 }
 
 func candidateKey(sourceKey, signature string, onset time.Time) string {
@@ -314,18 +400,80 @@ func candidateKey(sourceKey, signature string, onset time.Time) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func classifyXID(code string) (string, string) {
+func classifySignal(labels map[string]string, sourceMetric string) signalClassification {
+	if sourceMetric == "DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS" {
+		return signalClassification{
+			EventType: "uncorrectable_remapped_rows", EventCode: "uncorrectable_remapped_rows",
+			QualityTier: "strong_proxy", OperationalPriority: "critical",
+			HardwareCertainty:   "deterministic_hardware",
+			TrainingDisposition: "positive_after_identity_review",
+			RecommendedAction:   "stop scheduling, preserve evidence, and arrange offline GPU memory inspection or replacement",
+		}
+	}
+	template := labels["alert_template"]
+	code := firstNonEmpty(labels["err_code"], labels["Xid"])
+	switch template {
+	case "GPU掉卡":
+		return signalClassification{
+			EventType: "gpu_dropout", EventCode: "gpu_dropout", QualityTier: "strong_proxy",
+			OperationalPriority: "critical", HardwareCertainty: "deterministic_hardware",
+			TrainingDisposition: "positive_after_identity_review",
+			RecommendedAction:   "stop scheduling, verify GPU identity and PCIe state, then arrange offline inspection",
+		}
+	case "XID故障":
+		return signalClassification{
+			EventType: "xid_120_154_recovery_latch", EventCode: firstNonEmpty(code, "120|154"),
+			QualityTier: "strong_proxy", OperationalPriority: "critical",
+			HardwareCertainty:   "high_risk_operational_signal",
+			TrainingDisposition: "proxy_positive_after_review",
+			RecommendedAction:   "reboot to recover; if the latch remains active, stop the node and inspect offline",
+			RecoveryAware:       true,
+		}
+	case "XID故障-低优先级":
+		return lowPriorityXID(code)
+	case "XID故障-高优先级":
+		return highPriorityXID(code)
+	}
+	if isLowPriorityXID(code) {
+		return lowPriorityXID(code)
+	}
+	return highPriorityXID(code)
+}
+
+func lowPriorityXID(code string) signalClassification {
+	return signalClassification{
+		EventType: "xid_" + firstNonEmpty(code, "unknown"), EventCode: code,
+		QualityTier: "weak_proxy", OperationalPriority: "low",
+		HardwareCertainty:   "operational_signal",
+		TrainingDisposition: "context_only",
+		RecommendedAction:   "retry the workload; investigate only when accompanied by other abnormal evidence",
+	}
+}
+
+func highPriorityXID(code string) signalClassification {
+	eventType := "xid_" + firstNonEmpty(code, "unknown")
 	switch code {
 	case "79":
-		return "xid_79_gpu_fallen_off_bus", "strong_proxy"
+		eventType = "xid_79_gpu_fallen_off_bus"
 	case "94":
-		return "xid_94_contained_ecc", "weak_proxy"
+		eventType = "xid_94_contained_ecc"
 	case "109":
-		return "xid_109_context_switch_timeout", "weak_proxy"
-	case "":
-		return "gpu_alert_unclassified", "weak_proxy"
+		eventType = "xid_109_context_switch_timeout"
+	}
+	return signalClassification{
+		EventType: eventType, EventCode: code, QualityTier: "strong_proxy",
+		OperationalPriority: "high", HardwareCertainty: "investigation_required",
+		TrainingDisposition: "proxy_positive_after_review",
+		RecommendedAction:   "confirm root cause and reboot to restore scheduling; repeated events require offline inspection",
+	}
+}
+
+func isLowPriorityXID(code string) bool {
+	switch code {
+	case "0", "13", "31", "43", "45":
+		return true
 	default:
-		return "xid_" + code, "weak_proxy"
+		return false
 	}
 }
 
