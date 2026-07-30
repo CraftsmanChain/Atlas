@@ -110,7 +110,8 @@ func (s *Service) BackfillRuns(limit int) ([]api.HistoryBackfillRun, error) {
 		limit = 20
 	}
 	var rows []api.HistoryBackfillRun
-	err := s.db.Order("created_at DESC, id DESC").Limit(limit).Find(&rows).Error
+	err := s.db.Where("job_type = ?", "gpu_fault_signal_onset").
+		Order("created_at DESC, id DESC").Limit(limit).Find(&rows).Error
 	return rows, err
 }
 
@@ -348,7 +349,8 @@ func (s *Service) failBackfill(run *api.HistoryBackfillRun, err error) {
 	_ = s.db.Model(run).Updates(map[string]any{
 		"status": "failed", "error_message": err.Error(), "finished_at": &finished,
 		"chunks_completed": run.ChunksCompleted, "series_scanned": run.SeriesScanned,
-		"signal_points": run.SignalPoints,
+		"signal_points": run.SignalPoints, "records_created": run.RecordsCreated,
+		"records_updated": run.RecordsUpdated, "records_annotated": run.RecordsAnnotated,
 	}).Error
 }
 

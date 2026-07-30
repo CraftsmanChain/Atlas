@@ -273,6 +273,8 @@ func main() {
 	mux.HandleFunc("/api/v1/prediction/history/sources", historyHandler.HandleSources)
 	mux.HandleFunc("/api/v1/prediction/history/audits", historyHandler.HandleAudits)
 	mux.HandleFunc("/api/v1/prediction/history/backfills", historyHandler.HandleBackfills)
+	mux.HandleFunc("/api/v1/prediction/history/identity-backfills", historyHandler.HandleIdentityBackfills)
+	mux.HandleFunc("/api/v1/prediction/history/identities", historyHandler.HandleIdentities)
 	mux.HandleFunc("/api/v1/prediction/history/candidates", historyHandler.HandleCandidates)
 	mux.HandleFunc("/api/v1/prediction/history/candidates/", historyHandler.HandleCandidate)
 

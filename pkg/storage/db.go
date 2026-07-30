@@ -150,6 +150,7 @@ func migrateSchema(db *gorm.DB) error {
 		&api.MonitoringHistoryAudit{},
 		&api.HistoryBackfillRun{},
 		&api.HistoricalFaultCandidate{},
+		&api.HistoricalGPUIdentityInterval{},
 	)
 }
 
