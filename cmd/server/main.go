@@ -19,6 +19,7 @@ import (
 	"atlas/internal/freshness"
 	ig "atlas/internal/gateway"
 	"atlas/internal/health"
+	"atlas/internal/history"
 	"atlas/internal/inventory"
 	"atlas/internal/issues"
 	"atlas/internal/nodeaccess"
@@ -115,6 +116,9 @@ func main() {
 	degradationHandler := degradation.NewHandler(db)
 	predictionService := prediction.NewServiceWithRetention(db, health.ParseHistoryRetention(cfg.Health.HistoryRetention))
 	predictionHandler := prediction.NewHandlerWithService(predictionService)
+	historyTimeout := parseDurationOrDefault("history source request", cfg.History.RequestTimeout, 60*time.Second)
+	historyService := history.NewService(db, cfg.History, historyTimeout)
+	historyHandler := history.NewHandler(historyService)
 	issueService := issues.NewService(db)
 	issueHandler := issues.NewHandlerWithService(db, issueService)
 	platformConfigHandler := platformconfig.NewHandler(db, cfg.Branding)
@@ -155,6 +159,10 @@ func main() {
 	go nodeEvidenceCollections.Run(context.Background(), time.Minute)
 	go issueService.Run(context.Background(), time.Minute)
 	go predictionService.RunLabelSync(context.Background(), time.Minute)
+	if cfg.History.Enabled {
+		historyAuditInterval := parseDurationOrDefault("monitoring history audit", cfg.History.AuditInterval, 6*time.Hour)
+		go historyService.Run(context.Background(), historyAuditInterval)
+	}
 
 	// Inventory discovery is read-only and best-effort. Prometheus outages are
 	// recorded as failed sync runs and never prevent Atlas from serving APIs.
@@ -262,6 +270,8 @@ func main() {
 	mux.HandleFunc("/api/v1/prediction/readiness", predictionHandler.HandleReadiness)
 	mux.HandleFunc("/api/v1/prediction/results", predictionHandler.HandleResults)
 	mux.HandleFunc("/api/v1/prediction/labels", predictionHandler.HandleLabels)
+	mux.HandleFunc("/api/v1/prediction/history/sources", historyHandler.HandleSources)
+	mux.HandleFunc("/api/v1/prediction/history/audits", historyHandler.HandleAudits)
 
 	// 7. 启动服务
 	port := cfg.Gateway.Port

@@ -36,6 +36,19 @@ health:
   rule_version: "gpu-health-v1.4.1"
   # 预测训练需要跨故障周期的历史；在线库先保留一年，后续再增加 Parquet 冷归档。
   history_retention: "365d"
+history:
+  enabled: true
+  audit_interval: "6h"
+  request_timeout: "60s"
+  # 历史回填与训练在 Atlas/Prometheus 所在节点本地执行，不复制全量原始库到开发机。
+  dataset_dir: "/sdb/atlas/training"
+  max_concurrency: 2
+  sources:
+    - id: "current-prometheus"
+      name: "Current Cluster Prometheus"
+      type: "prometheus"
+      base_url: "http://127.0.0.1:9090"
+      enabled: true
 node_access:
   enabled: true
   skill_id: "atlas-node-evidence"

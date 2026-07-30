@@ -18,6 +18,7 @@ type Config struct {
 	Prometheus PrometheusConfig `yaml:"prometheus"`
 	Inventory  InventoryConfig  `yaml:"inventory"`
 	Health     HealthConfig     `yaml:"health"`
+	History    HistoryConfig    `yaml:"history"`
 	NodeAccess NodeAccessConfig `yaml:"node_access"`
 }
 
@@ -84,6 +85,29 @@ type HealthConfig struct {
 	ScoreInterval    string `yaml:"score_interval"`
 	RuleVersion      string `yaml:"rule_version"`
 	HistoryRetention string `yaml:"history_retention"`
+}
+
+// HistoryConfig controls bounded, read-only inspection and later backfill jobs
+// executed by Atlas on the deployment node. SecretRef is reserved for
+// environment-backed authentication and is never returned by public APIs.
+type HistoryConfig struct {
+	Enabled        bool                  `yaml:"enabled"`
+	AuditInterval  string                `yaml:"audit_interval"`
+	RequestTimeout string                `yaml:"request_timeout"`
+	DatasetDir     string                `yaml:"dataset_dir"`
+	MaxConcurrency int                   `yaml:"max_concurrency"`
+	Sources        []HistorySourceConfig `yaml:"sources"`
+}
+
+type HistorySourceConfig struct {
+	ID        string `yaml:"id"`
+	Name      string `yaml:"name"`
+	Type      string `yaml:"type"`
+	BaseURL   string `yaml:"base_url"`
+	TenantID  string `yaml:"tenant_id"`
+	AuthType  string `yaml:"auth_type"`
+	SecretRef string `yaml:"secret_ref"`
+	Enabled   bool   `yaml:"enabled"`
 }
 
 type NodeAccessConfig struct {
@@ -206,6 +230,54 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Health.HistoryRetention == "" {
 		cfg.Health.HistoryRetention = "365d"
+	}
+	if cfg.History.AuditInterval == "" {
+		cfg.History.AuditInterval = "6h"
+	}
+	if cfg.History.RequestTimeout == "" {
+		cfg.History.RequestTimeout = "60s"
+	}
+	if cfg.History.DatasetDir == "" {
+		cfg.History.DatasetDir = "/sdb/atlas/training"
+	}
+	if cfg.History.MaxConcurrency <= 0 {
+		cfg.History.MaxConcurrency = 2
+	}
+	if len(cfg.History.Sources) == 0 && strings.TrimSpace(cfg.Prometheus.BaseURL) != "" {
+		cfg.History.Sources = []HistorySourceConfig{{
+			ID: "current-prometheus", Name: "Current Prometheus", Type: "prometheus",
+			BaseURL: cfg.Prometheus.BaseURL, Enabled: true,
+		}}
+		// Existing deployments gain the read-only audit without requiring an
+		// immediate shared-config rewrite. Explicit source lists still control
+		// whether the history subsystem is enabled.
+		cfg.History.Enabled = true
+	}
+	sourceIDs := make(map[string]struct{}, len(cfg.History.Sources))
+	for _, source := range cfg.History.Sources {
+		if _, exists := sourceIDs[source.ID]; source.ID != "" && exists {
+			return nil, fmt.Errorf("duplicate history source id %q", source.ID)
+		}
+		sourceIDs[source.ID] = struct{}{}
+		if !source.Enabled {
+			continue
+		}
+		if source.ID == "" || source.Name == "" || source.BaseURL == "" {
+			return nil, fmt.Errorf("enabled history sources require id, name, and base_url")
+		}
+		switch source.Type {
+		case "prometheus", "victoriametrics-single", "victoriametrics-cluster":
+		default:
+			return nil, fmt.Errorf("history source %q uses unsupported type %q", source.ID, source.Type)
+		}
+		if source.Type == "victoriametrics-cluster" && source.TenantID == "" {
+			return nil, fmt.Errorf("VictoriaMetrics cluster history source %q requires tenant_id", source.ID)
+		}
+		if source.AuthType != "" && source.AuthType != "none" {
+			if !strings.HasPrefix(source.SecretRef, "env:") || strings.TrimPrefix(source.SecretRef, "env:") == "" {
+				return nil, fmt.Errorf("authenticated history source %q must use a non-empty env: secret_ref", source.ID)
+			}
+		}
 	}
 	if cfg.NodeAccess.SkillID == "" {
 		cfg.NodeAccess.SkillID = "atlas-node-evidence"

@@ -58,6 +58,7 @@ var migrationModels = []migrationModel{
 	{name: "prediction_model_specs", value: &api.PredictionModelSpec{}, order: "id", autoIncrement: true},
 	{name: "failure_labels", value: &api.FailureLabel{}, order: "id", autoIncrement: true},
 	{name: "hardware_risk_predictions", value: &api.HardwareRiskPrediction{}, order: "id", autoIncrement: true},
+	{name: "monitoring_history_audits", value: &api.MonitoringHistoryAudit{}, order: "id", autoIncrement: true},
 }
 
 // MigrateSQLite copies a consistent SQLite backup into PostgreSQL. Existing
