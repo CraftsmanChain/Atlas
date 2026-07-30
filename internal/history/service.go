@@ -62,6 +62,7 @@ type Service struct {
 	mu              sync.Mutex
 	backfillMu      sync.Mutex
 	backfillRunning bool
+	datasetMu       sync.Mutex
 }
 
 func NewService(db *storage.DB, cfg config.HistoryConfig, timeout time.Duration) *Service {

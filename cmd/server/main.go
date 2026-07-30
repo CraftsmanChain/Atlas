@@ -275,6 +275,7 @@ func main() {
 	mux.HandleFunc("/api/v1/prediction/history/backfills", historyHandler.HandleBackfills)
 	mux.HandleFunc("/api/v1/prediction/history/identity-backfills", historyHandler.HandleIdentityBackfills)
 	mux.HandleFunc("/api/v1/prediction/history/identities", historyHandler.HandleIdentities)
+	mux.HandleFunc("/api/v1/prediction/history/datasets", historyHandler.HandleDatasets)
 	mux.HandleFunc("/api/v1/prediction/history/candidates", historyHandler.HandleCandidates)
 	mux.HandleFunc("/api/v1/prediction/history/candidates/", historyHandler.HandleCandidate)
 

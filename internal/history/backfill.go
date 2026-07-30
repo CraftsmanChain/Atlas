@@ -43,17 +43,18 @@ type CandidateReviewRequest struct {
 }
 
 type CandidateSummary struct {
-	Total         int            `json:"total"`
-	Pending       int            `json:"pending_review"`
-	ByReview      map[string]int `json:"by_review_status"`
-	ByEventCode   map[string]int `json:"by_event_code"`
-	ByQuality     map[string]int `json:"by_quality_tier"`
-	ByPriority    map[string]int `json:"by_operational_priority"`
-	ByCertainty   map[string]int `json:"by_hardware_certainty"`
-	ByDisposition map[string]int `json:"by_training_disposition"`
-	ByModel       map[string]int `json:"by_model"`
-	LatestOnset   *time.Time     `json:"latest_onset_at,omitempty"`
-	EarliestOnset *time.Time     `json:"earliest_onset_at,omitempty"`
+	Total          int            `json:"total"`
+	Pending        int            `json:"pending_review"`
+	ByReview       map[string]int `json:"by_review_status"`
+	ByRuleDecision map[string]int `json:"by_rule_decision"`
+	ByEventCode    map[string]int `json:"by_event_code"`
+	ByQuality      map[string]int `json:"by_quality_tier"`
+	ByPriority     map[string]int `json:"by_operational_priority"`
+	ByCertainty    map[string]int `json:"by_hardware_certainty"`
+	ByDisposition  map[string]int `json:"by_training_disposition"`
+	ByModel        map[string]int `json:"by_model"`
+	LatestOnset    *time.Time     `json:"latest_onset_at,omitempty"`
+	EarliestOnset  *time.Time     `json:"earliest_onset_at,omitempty"`
 }
 
 type TrainingCohortPolicy struct {
@@ -124,15 +125,18 @@ func (s *Service) Candidates(limit int) (CandidateSummary, []api.HistoricalFault
 		return CandidateSummary{}, nil, err
 	}
 	summary := CandidateSummary{
-		Total: len(all), ByReview: map[string]int{}, ByEventCode: map[string]int{}, ByQuality: map[string]int{},
+		Total: len(all), ByReview: map[string]int{}, ByRuleDecision: map[string]int{},
+		ByEventCode: map[string]int{}, ByQuality: map[string]int{},
 		ByPriority: map[string]int{}, ByCertainty: map[string]int{},
 		ByDisposition: map[string]int{}, ByModel: map[string]int{},
 	}
 	for _, row := range all {
-		if row.ReviewStatus == "pending_review" || row.ReviewStatus == "needs_evidence" {
+		if row.ReviewStatus == "pending_review" || row.ReviewStatus == "needs_evidence" ||
+			row.ReviewStatus == "needs_human_review" {
 			summary.Pending++
 		}
 		summary.ByReview[row.ReviewStatus]++
+		summary.ByRuleDecision[row.RuleDecision]++
 		summary.ByEventCode[row.EventCode]++
 		summary.ByQuality[row.QualityTier]++
 		summary.ByPriority[row.OperationalPriority]++

@@ -97,6 +97,11 @@ type HistoricalFaultCandidate struct {
 	IdentityEvidenceStatus string     `json:"identity_evidence_status,omitempty" gorm:"index"`
 	IdentityIntervalID     uint       `json:"identity_interval_id,omitempty" gorm:"index"`
 	IdentityEvidence       StringMap  `json:"identity_evidence,omitempty" gorm:"type:text"`
+	RuleDecision           string     `json:"rule_decision,omitempty" gorm:"index"`
+	RuleDecisionVersion    string     `json:"rule_decision_version,omitempty" gorm:"index"`
+	RuleDecisionReason     string     `json:"rule_decision_reason,omitempty" gorm:"type:text"`
+	RuleConfidence         float64    `json:"rule_confidence,omitempty"`
+	RuleDecidedAt          *time.Time `json:"rule_decided_at,omitempty" gorm:"index"`
 	CreatedAt              time.Time  `json:"created_at"`
 	UpdatedAt              time.Time  `json:"updated_at"`
 }
@@ -132,4 +137,33 @@ type HistoricalGPUIdentityInterval struct {
 
 func (HistoricalGPUIdentityInterval) TableName() string {
 	return "historical_gpu_identity_intervals"
+}
+
+// TrainingDatasetBuild records a versioned point-in-time cohort manifest
+// written on the Atlas deployment node. Raw Prometheus samples are not stored
+// in this table.
+type TrainingDatasetBuild struct {
+	ID                     uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	DatasetKey             string     `json:"dataset_key" gorm:"uniqueIndex;not null"`
+	Version                string     `json:"version" gorm:"index;not null"`
+	Status                 string     `json:"status" gorm:"index;not null"`
+	SourceKey              string     `json:"source_key" gorm:"index;not null"`
+	Horizons               StringList `json:"horizons" gorm:"type:text"`
+	CandidateCount         int        `json:"candidate_count"`
+	EligibleCandidateCount int        `json:"eligible_candidate_count"`
+	EpisodeCount           int        `json:"episode_count"`
+	WindowCount            int        `json:"window_count"`
+	PendingReviewCount     int        `json:"pending_review_count"`
+	IdentityMissingCount   int        `json:"identity_missing_count"`
+	ContextOnlyCount       int        `json:"context_only_count"`
+	ExcludedCount          int        `json:"excluded_count"`
+	OutputDir              string     `json:"output_dir" gorm:"type:text"`
+	ManifestPath           string     `json:"manifest_path" gorm:"type:text"`
+	WindowManifestPath     string     `json:"window_manifest_path" gorm:"type:text"`
+	WindowManifestSHA256   string     `json:"window_manifest_sha256"`
+	ErrorMessage           string     `json:"error_message,omitempty" gorm:"type:text"`
+	StartedAt              time.Time  `json:"started_at" gorm:"index;not null"`
+	FinishedAt             *time.Time `json:"finished_at,omitempty" gorm:"index"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
 }

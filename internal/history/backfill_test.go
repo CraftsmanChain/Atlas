@@ -147,6 +147,17 @@ func TestIdentityBackfillFindsReplacementAndAnnotatesCandidate(t *testing.T) {
 	if err := db.Create(&candidate).Error; err != nil {
 		t.Fatal(err)
 	}
+	missingIdentity := api.HistoricalFaultCandidate{
+		CandidateKey: "legacy-alert-without-gpu-identity", SourceKey: "primary", BackfillRunID: 1,
+		EntityType: "gpu", NodeIP: "10.0.0.9", EventType: "xid_43", EventCode: "43",
+		QualityTier: "weak_proxy", OperationalPriority: "low",
+		HardwareCertainty: "operational_signal", TrainingDisposition: "context_only",
+		ReviewStatus: "pending_review", SourceMetric: "ALERTS",
+		OnsetAt: time.Unix(1783123200, 0), DetectionWindowEndAt: time.Unix(1783123200, 0),
+	}
+	if err := db.Create(&missingIdentity).Error; err != nil {
+		t.Fatal(err)
+	}
 	stale := api.HistoricalGPUIdentityInterval{
 		IntervalKey: "stale-v1-key", SourceKey: "primary", BackfillRunID: 99,
 		NodeIP: "10.0.0.9", GPUUUID: "GPU-old", PCIBusID: "0000:01:00.0",
@@ -178,7 +189,7 @@ func TestIdentityBackfillFindsReplacementAndAnnotatesCandidate(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if run.Status != "completed" || run.RecordsCreated != 2 || run.RecordsAnnotated != 1 {
+	if run.Status != "completed" || run.RecordsCreated != 2 || run.RecordsAnnotated != 2 {
 		t.Fatalf("unexpected identity run: %+v", run)
 	}
 	summary, intervals, err := service.IdentityIntervals(10)
@@ -192,13 +203,59 @@ func TestIdentityBackfillFindsReplacementAndAnnotatesCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if candidate.GPUUUID != "GPU-old" || candidate.IdentityEvidenceStatus != "replacement_after_event" ||
-		candidate.IdentityIntervalID == 0 || candidate.IdentityEvidence["successor_uuid"] != "GPU-new" {
+		candidate.IdentityIntervalID == 0 || candidate.IdentityEvidence["successor_uuid"] != "GPU-new" ||
+		candidate.RuleDecision != "positive_proxy" || candidate.ReviewStatus != "available_for_override" {
 		t.Fatalf("candidate identity evidence mismatch: %+v", candidate)
 	}
 	var staleCount int64
 	db.Model(&api.HistoricalGPUIdentityInterval{}).Where("interval_key = ?", stale.IntervalKey).Count(&staleCount)
 	if staleCount != 0 {
 		t.Fatalf("stale v1 interval was not replaced")
+	}
+	if err := db.First(&missingIdentity, missingIdentity.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if missingIdentity.IdentityEvidenceStatus != "alert_identity_missing" ||
+		missingIdentity.RuleDecision != "context_only" || missingIdentity.ReviewStatus != "not_required" {
+		t.Fatalf("missing alert identity was misclassified: %+v", missingIdentity)
+	}
+	if _, err := service.ReviewCandidate(candidate.ID, CandidateReviewRequest{
+		Status: "excluded", Note: "operator confirmed maintenance replacement", ReviewedBy: "tester",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.annotateCandidatesWithIdentity("primary"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&candidate, candidate.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if candidate.RuleDecision != "positive_proxy" || candidate.ReviewStatus != "excluded" ||
+		candidate.ReviewedBy != "tester" {
+		t.Fatalf("rule refresh overwrote human decision: %+v", candidate)
+	}
+}
+
+func TestHistoricalRuleDecisionSeparatesAutomaticLabelsFromHumanOverride(t *testing.T) {
+	contextDecision := decideHistoricalCandidate(api.HistoricalFaultCandidate{
+		TrainingDisposition: "context_only",
+	}, "alert_identity_missing")
+	if contextDecision.Decision != "context_only" || contextDecision.DefaultReviewStatus != "not_required" {
+		t.Fatalf("context decision=%+v", contextDecision)
+	}
+	dropoutDecision := decideHistoricalCandidate(api.HistoricalFaultCandidate{
+		EventType: "gpu_dropout", TrainingDisposition: "positive_after_identity_review",
+	}, "same_gpu_observed_after_event")
+	if dropoutDecision.Decision != "positive_proxy" || dropoutDecision.Confidence != 0.9 ||
+		dropoutDecision.DefaultReviewStatus != "available_for_override" {
+		t.Fatalf("dropout decision=%+v", dropoutDecision)
+	}
+	missingDecision := decideHistoricalCandidate(api.HistoricalFaultCandidate{
+		EventType: "xid_79_gpu_fallen_off_bus", TrainingDisposition: "proxy_positive_after_review",
+	}, "alert_identity_missing")
+	if missingDecision.Decision != "needs_human_review" ||
+		missingDecision.DefaultReviewStatus != "needs_human_review" {
+		t.Fatalf("missing-identity decision=%+v", missingDecision)
 	}
 }
 
