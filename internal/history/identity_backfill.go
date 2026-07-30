@@ -15,9 +15,17 @@ import (
 )
 
 const (
-	identityBackfillQueryVersion = "gpu-identity-interval-v2"
-	identityInventoryQuery       = `max_over_time(DCGM_FI_DEV_GPU_UTIL[6h]) >= 0`
+	identityBackfillQueryVersion  = "gpu-identity-interval-v3"
+	identityInventoryQuery        = `max_over_time(DCGM_FI_DEV_GPU_UTIL[6h]) >= 0`
+	historicalRuleDecisionVersion = "historical-gpu-label-rule-v1"
 )
+
+type historicalRuleDecision struct {
+	Decision            string
+	Reason              string
+	Confidence          float64
+	DefaultReviewStatus string
+}
 
 type IdentitySummary struct {
 	Total             int            `json:"total"`
@@ -346,7 +354,13 @@ func (s *Service) annotateCandidatesWithIdentity(sourceKey string) (int, error) 
 	for _, candidate := range candidates {
 		status := "insufficient_identity_history"
 		var matched *api.HistoricalGPUIdentityInterval
+		if normalizeHistoricalGPUUUID(candidate.GPUUUID) == "" {
+			status = "alert_identity_missing"
+		}
 		for index := range intervals {
+			if status == "alert_identity_missing" {
+				break
+			}
 			interval := &intervals[index]
 			if interval.NodeIP != candidate.NodeIP ||
 				normalizeHistoricalGPUUUID(interval.GPUUUID) != normalizeHistoricalGPUUUID(candidate.GPUUUID) ||
@@ -380,19 +394,72 @@ func (s *Service) annotateCandidatesWithIdentity(sourceKey string) (int, error) 
 			} else if !matched.LastSeenAt.Before(candidate.OnsetAt.Add(-6 * time.Hour)) {
 				status = "telemetry_ended_near_event"
 			}
-		} else if slotObservedAt(candidate, intervals) {
+		} else if status != "alert_identity_missing" && slotObservedAt(candidate, intervals) {
 			status = "uuid_mismatch_at_event"
 		}
-		if err := s.db.Model(&candidate).Updates(map[string]any{
+		rule := decideHistoricalCandidate(candidate, status)
+		updates := map[string]any{
 			"gpu_uuid":                 normalizeHistoricalGPUUUID(candidate.GPUUUID),
 			"identity_evidence_status": status, "identity_interval_id": intervalID,
 			"identity_evidence": evidence,
-		}).Error; err != nil {
+			"rule_decision":     rule.Decision, "rule_decision_version": historicalRuleDecisionVersion,
+			"rule_decision_reason": rule.Reason, "rule_confidence": rule.Confidence,
+			"rule_decided_at": s.now(),
+		}
+		if candidate.ReviewedAt == nil {
+			updates["review_status"] = rule.DefaultReviewStatus
+		}
+		if err := s.db.Model(&candidate).Updates(updates).Error; err != nil {
 			return annotated, err
 		}
 		annotated++
 	}
 	return annotated, nil
+}
+
+func decideHistoricalCandidate(candidate api.HistoricalFaultCandidate, identityStatus string) historicalRuleDecision {
+	if candidate.TrainingDisposition == "context_only" {
+		return historicalRuleDecision{
+			Decision: "context_only", Confidence: 1, DefaultReviewStatus: "not_required",
+			Reason: "the alert rule classifies this event as operational context rather than a hardware-failure positive",
+		}
+	}
+	if identityStatus == "alert_identity_missing" || identityStatus == "insufficient_identity_history" ||
+		identityStatus == "uuid_mismatch_at_event" {
+		return historicalRuleDecision{
+			Decision: "needs_human_review", Confidence: 0, DefaultReviewStatus: "needs_human_review",
+			Reason: "historical alert identity is missing or cannot be joined to point-in-time GPU identity",
+		}
+	}
+	if identityStatus == "replacement_after_event" {
+		return historicalRuleDecision{
+			Decision: "positive_proxy", Confidence: 0.95, DefaultReviewStatus: "available_for_override",
+			Reason: "the same node and PCI slot changed to a successor GPU UUID after the fault signal",
+		}
+	}
+	if candidate.EventType == "uncorrectable_remapped_rows" {
+		return historicalRuleDecision{
+			Decision: "positive_proxy", Confidence: 0.95, DefaultReviewStatus: "available_for_override",
+			Reason: "a new uncorrectable remapped-row signal is deterministic GPU memory-fault evidence",
+		}
+	}
+	if candidate.EventType == "gpu_dropout" {
+		return historicalRuleDecision{
+			Decision: "positive_proxy", Confidence: 0.9, DefaultReviewStatus: "available_for_override",
+			Reason: "the dropout alert is a deterministic device-presence fault and the same GPU was observed after recovery",
+		}
+	}
+	if candidate.OperationalPriority == "critical" || candidate.OperationalPriority == "high" ||
+		candidate.TrainingDisposition == "proxy_positive_after_review" {
+		return historicalRuleDecision{
+			Decision: "positive_proxy", Confidence: 0.65, DefaultReviewStatus: "available_for_override",
+			Reason: "a versioned high-risk XID rule matched with point-in-time GPU identity evidence",
+		}
+	}
+	return historicalRuleDecision{
+		Decision: "needs_human_review", Confidence: 0, DefaultReviewStatus: "needs_human_review",
+		Reason: "no automatic historical-label rule reached the minimum evidence threshold",
+	}
 }
 
 func replacementAfter(candidate api.HistoricalFaultCandidate, matched api.HistoricalGPUIdentityInterval, intervals []api.HistoricalGPUIdentityInterval) *api.HistoricalGPUIdentityInterval {
