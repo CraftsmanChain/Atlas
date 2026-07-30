@@ -36,9 +36,16 @@ type BackfillRequest struct {
 	End       *time.Time `json:"end,omitempty"`
 }
 
+type CandidateReviewRequest struct {
+	Status     string `json:"status"`
+	Note       string `json:"note"`
+	ReviewedBy string `json:"reviewed_by"`
+}
+
 type CandidateSummary struct {
 	Total         int            `json:"total"`
 	Pending       int            `json:"pending_review"`
+	ByReview      map[string]int `json:"by_review_status"`
 	ByEventCode   map[string]int `json:"by_event_code"`
 	ByQuality     map[string]int `json:"by_quality_tier"`
 	ByPriority    map[string]int `json:"by_operational_priority"`
@@ -116,14 +123,15 @@ func (s *Service) Candidates(limit int) (CandidateSummary, []api.HistoricalFault
 		return CandidateSummary{}, nil, err
 	}
 	summary := CandidateSummary{
-		Total: len(all), ByEventCode: map[string]int{}, ByQuality: map[string]int{},
+		Total: len(all), ByReview: map[string]int{}, ByEventCode: map[string]int{}, ByQuality: map[string]int{},
 		ByPriority: map[string]int{}, ByCertainty: map[string]int{},
 		ByDisposition: map[string]int{}, ByModel: map[string]int{},
 	}
 	for _, row := range all {
-		if row.ReviewStatus == "pending_review" {
+		if row.ReviewStatus == "pending_review" || row.ReviewStatus == "needs_evidence" {
 			summary.Pending++
 		}
+		summary.ByReview[row.ReviewStatus]++
 		summary.ByEventCode[row.EventCode]++
 		summary.ByQuality[row.QualityTier]++
 		summary.ByPriority[row.OperationalPriority]++
@@ -143,6 +151,53 @@ func (s *Service) Candidates(limit int) (CandidateSummary, []api.HistoricalFault
 		all = all[:limit]
 	}
 	return summary, all, nil
+}
+
+func (s *Service) ReviewCandidate(id uint, request CandidateReviewRequest) (api.HistoricalFaultCandidate, error) {
+	var candidate api.HistoricalFaultCandidate
+	if id == 0 {
+		return candidate, fmt.Errorf("candidate id is required")
+	}
+	if err := s.db.First(&candidate, id).Error; err != nil {
+		return candidate, err
+	}
+	status := strings.ToLower(strings.TrimSpace(request.Status))
+	note := strings.TrimSpace(request.Note)
+	reviewedBy := strings.TrimSpace(request.ReviewedBy)
+	if reviewedBy == "" {
+		reviewedBy = "operator"
+	}
+	if status != "needs_evidence" && note == "" {
+		return candidate, fmt.Errorf("review note is required for status %q", status)
+	}
+	classification := classifySignal(candidate.Labels, candidate.SourceMetric)
+	updates := map[string]any{
+		"review_status": status, "review_note": note, "reviewed_by": reviewedBy,
+		"reviewed_at": s.now(), "quality_tier": classification.QualityTier,
+		"training_disposition": classification.TrainingDisposition,
+	}
+	switch status {
+	case "accepted_proxy":
+		// Preserve the rule-derived quality tier. Acceptance permits dataset
+		// construction but does not upgrade monitoring evidence to confirmed.
+	case "context_only":
+		updates["quality_tier"] = "weak_proxy"
+		updates["training_disposition"] = "context_only"
+	case "needs_evidence":
+		updates["training_disposition"] = "pending_review"
+	case "excluded":
+		updates["quality_tier"] = "excluded"
+		updates["training_disposition"] = "excluded"
+	default:
+		return candidate, fmt.Errorf("unsupported review status %q", status)
+	}
+	if err := s.db.Model(&candidate).Updates(updates).Error; err != nil {
+		return candidate, err
+	}
+	if err := s.db.First(&candidate, id).Error; err != nil {
+		return candidate, err
+	}
+	return candidate, nil
 }
 
 func (s *Service) StartAlertBackfill(request BackfillRequest) (api.HistoryBackfillRun, error) {

@@ -1,6 +1,7 @@
 package history
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"atlas/pkg/api"
 	"atlas/pkg/config"
 	"atlas/pkg/storage"
 )
@@ -83,6 +85,43 @@ func TestHistoryHandlerIsReadOnlyExceptExplicitAudit(t *testing.T) {
 	handler.HandleCandidates(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/history/candidates", nil))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"version":"gpu-training-cohort-v1"`) {
 		t.Fatalf("GET candidates status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestHistoryCandidateReviewHandler(t *testing.T) {
+	db, err := storage.InitDB(fmt.Sprintf("file:history-review-handler-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := api.HistoricalFaultCandidate{
+		CandidateKey: "handler-review-test", SourceKey: "primary", BackfillRunID: 1,
+		EntityType: "gpu", GPUUUID: "GPU-1", EventType: "xid_79_gpu_fallen_off_bus", EventCode: "79",
+		QualityTier: "strong_proxy", OperationalPriority: "high",
+		HardwareCertainty: "investigation_required", TrainingDisposition: "proxy_positive_after_review",
+		ReviewStatus: "pending_review", SourceMetric: "ALERTS",
+		OnsetAt: time.Now(), DetectionWindowEndAt: time.Now(),
+		Labels: api.StringMap{"alert_template": "XID故障-高优先级", "err_code": "79"},
+	}
+	if err := db.Create(&candidate).Error; err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(NewService(db, config.HistoryConfig{}, time.Second))
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPatch,
+		fmt.Sprintf("/api/v1/prediction/history/candidates/%d", candidate.ID),
+		bytes.NewBufferString(`{"status":"accepted_proxy","note":"matched incident evidence","reviewed_by":"tester"}`))
+	handler.HandleCandidate(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"review_status":"accepted_proxy"`) ||
+		!strings.Contains(response.Body.String(), `"reviewed_by":"tester"`) {
+		t.Fatalf("PATCH candidate status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	response = httptest.NewRecorder()
+	handler.HandleCandidate(response, httptest.NewRequest(http.MethodPatch,
+		"/api/v1/prediction/history/candidates/not-a-number", bytes.NewBufferString(`{}`)))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid candidate id status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

@@ -89,6 +89,7 @@ type HistoricalFaultCandidate struct {
 	OnsetAt              time.Time  `json:"onset_at" gorm:"index;not null"`
 	DetectionWindowEndAt time.Time  `json:"detection_window_end_at" gorm:"index;not null"`
 	ReviewedAt           *time.Time `json:"reviewed_at,omitempty" gorm:"index"`
+	ReviewedBy           string     `json:"reviewed_by,omitempty" gorm:"index"`
 	ReviewNote           string     `json:"review_note,omitempty" gorm:"type:text"`
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
