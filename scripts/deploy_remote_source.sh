@@ -33,7 +33,7 @@ fi
 
 echo "Building web assets locally without replacing current page data"
 if [[ "${SKIP_NPM_INSTALL:-1}" != "1" ]]; then
-  npm --prefix "$repo_root/web" install
+  npm --prefix "$repo_root/web" ci
 fi
 npm --prefix "$repo_root/web" run build
 

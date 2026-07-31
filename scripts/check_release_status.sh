@@ -178,7 +178,7 @@ push_git_updates() {
 build_artifacts() {
   print_section "构建前端产物"
   if [[ "$skip_npm_install" != "1" ]]; then
-    (cd "$repo_root/web" && npm install)
+    (cd "$repo_root/web" && npm ci)
   fi
   (cd "$repo_root/web" && npm run build)
 
