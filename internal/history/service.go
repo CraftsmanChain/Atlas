@@ -65,6 +65,7 @@ type Service struct {
 	datasetMu       sync.Mutex
 	featureMu       sync.Mutex
 	featureRunning  bool
+	preparationMu   sync.Mutex
 }
 
 func NewService(db *storage.DB, cfg config.HistoryConfig, timeout time.Duration) *Service {
@@ -78,6 +79,9 @@ func NewService(db *storage.DB, cfg config.HistoryConfig, timeout time.Duration)
 	}).Error
 	_ = db.Model(&api.TrainingFeatureBuild{}).Where("status IN ?", []string{"queued", "running"}).Updates(map[string]any{
 		"status": "interrupted", "error_message": "Atlas restarted before feature extraction completed", "finished_at": &now,
+	}).Error
+	_ = db.Model(&api.TrainingPreparationBuild{}).Where("status = ?", "running").Updates(map[string]any{
+		"status": "interrupted", "error_message": "Atlas restarted before training preparation completed", "finished_at": &now,
 	}).Error
 	return service
 }
