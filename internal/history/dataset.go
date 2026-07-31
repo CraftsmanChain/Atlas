@@ -16,7 +16,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const datasetBuildVersion = "gpu-fault-cohort-manifest-v1"
+const datasetBuildVersion = "gpu-fault-cohort-manifest-v2"
 
 type DatasetBuildRequest struct {
 	SourceKey string `json:"source_key"`
@@ -145,6 +145,22 @@ func (s *Service) buildDatasetManifest(build *api.TrainingDatasetBuild) error {
 		Order("onset_at ASC, id ASC").Find(&candidates).Error; err != nil {
 		return err
 	}
+	identityIDs := make([]uint, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.IdentityIntervalID > 0 {
+			identityIDs = append(identityIDs, candidate.IdentityIntervalID)
+		}
+	}
+	identityByID := map[uint]api.HistoricalGPUIdentityInterval{}
+	if len(identityIDs) > 0 {
+		var intervals []api.HistoricalGPUIdentityInterval
+		if err := s.db.Where("id IN ?", identityIDs).Find(&intervals).Error; err != nil {
+			return err
+		}
+		for _, interval := range intervals {
+			identityByID[interval.ID] = interval
+		}
+	}
 	build.CandidateCount = len(candidates)
 	episodesByKey := map[string]*datasetEpisode{}
 	for _, candidate := range candidates {
@@ -167,10 +183,14 @@ func (s *Service) buildDatasetManifest(build *api.TrainingDatasetBuild) error {
 		episodeKey := datasetEpisodeKey(candidate)
 		episode := episodesByKey[episodeKey]
 		if episode == nil {
+			modelName := candidate.ModelName
+			if modelName == "" {
+				modelName = identityByID[candidate.IdentityIntervalID].ModelName
+			}
 			episode = &datasetEpisode{
 				EpisodeKey: episodeKey, SourceKey: candidate.SourceKey,
 				NodeIP: candidate.NodeIP, GPUUUID: candidate.GPUUUID, PCIBusID: candidate.PCIBusID,
-				ModelName: candidate.ModelName, QualityTier: candidate.QualityTier,
+				ModelName: modelName, QualityTier: candidate.QualityTier,
 				Eligibility: eligibility, IdentityEvidence: candidate.IdentityEvidenceStatus,
 				SuccessorUUID: candidate.IdentityEvidence["successor_uuid"],
 				LabelOnsetAt:  candidate.OnsetAt, LabelAvailableAt: candidate.OnsetAt,
@@ -180,6 +200,9 @@ func (s *Service) buildDatasetManifest(build *api.TrainingDatasetBuild) error {
 				LabelSource: datasetLabelSource(candidate),
 			}
 			episodesByKey[episodeKey] = episode
+		}
+		if episode.ModelName == "" {
+			episode.ModelName = firstNonEmpty(candidate.ModelName, identityByID[candidate.IdentityIntervalID].ModelName)
 		}
 		episode.CandidateIDs = append(episode.CandidateIDs, candidate.ID)
 		episode.EventTypes = appendUnique(episode.EventTypes, candidate.EventType)

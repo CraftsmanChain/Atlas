@@ -140,3 +140,18 @@ func TestFeatureBuildRequiresCompletedCohort(t *testing.T) {
 		t.Fatal("expected completed cohort gate")
 	}
 }
+
+func TestExpectedHistoricalMetricsAreModelAware(t *testing.T) {
+	if got := len(expectedHistoricalMetrics("NVIDIA H100 80GB HBM3")); got != 18 {
+		t.Fatalf("H100 expected metrics=%d", got)
+	}
+	a100 := expectedHistoricalMetrics("NVIDIA A100")
+	if len(a100) != 16 {
+		t.Fatalf("A100 expected metrics=%d", len(a100))
+	}
+	for _, metric := range a100 {
+		if metric == "uncorrected_ecc_aggregate" || metric == "uncorrected_ecc_volatile" {
+			t.Fatalf("unsupported H100/H200-only metric leaked into A100 coverage: %s", metric)
+		}
+	}
+}

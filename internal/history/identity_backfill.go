@@ -406,6 +406,9 @@ func (s *Service) annotateCandidatesWithIdentity(sourceKey string) (int, error) 
 			"rule_decision_reason": rule.Reason, "rule_confidence": rule.Confidence,
 			"rule_decided_at": s.now(),
 		}
+		if strings.TrimSpace(candidate.ModelName) == "" && matched != nil && strings.TrimSpace(matched.ModelName) != "" {
+			updates["model_name"] = matched.ModelName
+		}
 		if candidate.ReviewedAt == nil {
 			updates["review_status"] = rule.DefaultReviewStatus
 		}

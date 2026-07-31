@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	featureDatasetVersion = "gpu-historical-features-v1"
+	featureDatasetVersion = "gpu-historical-features-v2"
 	featureLookback       = 24 * time.Hour
 	featureQueryStep      = 5 * time.Minute
 )
@@ -474,7 +474,7 @@ func normalizeHistoricalPoints(name string, points []promclient.RangePoint) []pr
 func summarizeFeatureWindow(build *api.TrainingFeatureBuild, window datasetWindow, all map[string][]promclient.RangePoint) extractedFeatureRow {
 	row := emptyExtractedFeatureRow(build, window, "")
 	start := window.FeatureCutoffAt.Add(-featureLookback)
-	for _, metric := range canonicalHistoricalMetrics() {
+	for _, metric := range expectedHistoricalMetrics(window.ModelName) {
 		points := pointsInWindow(all[metric], start, window.FeatureCutoffAt)
 		if len(points) == 0 {
 			row.MissingMetrics = append(row.MissingMetrics, metric)
@@ -488,7 +488,7 @@ func summarizeFeatureWindow(build *api.TrainingFeatureBuild, window datasetWindo
 }
 
 func emptyExtractedFeatureRow(build *api.TrainingFeatureBuild, window datasetWindow, extractionError string) extractedFeatureRow {
-	metrics := canonicalHistoricalMetrics()
+	metrics := expectedHistoricalMetrics(window.ModelName)
 	row := extractedFeatureRow{
 		SampleKey: window.SampleKey, FeatureDatasetVersion: featureDatasetVersion,
 		SourceDatasetKey: build.SourceDatasetKey, EpisodeKey: window.EpisodeKey,
@@ -603,7 +603,7 @@ func buildFeatureQualityReport(build api.TrainingFeatureBuild, rows []extractedF
 		}
 		report.AverageCoverage += row.MetricCoverage
 		report.MinimumCoverage = math.Min(report.MinimumCoverage, row.MetricCoverage)
-		for _, metric := range canonicalHistoricalMetrics() {
+		for _, metric := range expectedHistoricalMetrics(row.ModelName) {
 			missing := false
 			for _, missingMetric := range row.MissingMetrics {
 				if metric == missingMetric {
@@ -624,6 +624,22 @@ func buildFeatureQualityReport(build api.TrainingFeatureBuild, rows []extractedF
 	report.FeatureColumns = historicalFeatureColumns()
 	report.FeatureColumnCount = len(report.FeatureColumns)
 	return report
+}
+
+func expectedHistoricalMetrics(modelName string) []string {
+	metrics := canonicalHistoricalMetrics()
+	model := strings.ToUpper(strings.TrimSpace(modelName))
+	if model == "" || strings.Contains(model, "H100") || strings.Contains(model, "H200") {
+		return metrics
+	}
+	result := make([]string, 0, len(metrics)-2)
+	for _, metric := range metrics {
+		if metric == "uncorrected_ecc_aggregate" || metric == "uncorrected_ecc_volatile" {
+			continue
+		}
+		result = append(result, metric)
+	}
+	return result
 }
 
 func historicalFeatureColumns() []string {
