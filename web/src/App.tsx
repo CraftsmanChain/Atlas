@@ -108,6 +108,7 @@ type HistoricalCandidateSummary = { total: number; pending_review: number; by_re
 type HistoricalGPUIdentityInterval = { id: number; interval_key: string; source_key: string; backfill_run_id: number; node_ip: string; host_id?: string; host_serial?: string; hostname?: string; data_center_id?: string; gpu_index: number; gpu_uuid: string; pci_bus_id?: string; model_name?: string; driver_version?: string; first_seen_at: string; last_seen_at: string; observation_count: number; transition_type: string; predecessor_uuid?: string; transition_at?: string; evidence_strength: string };
 type HistoricalIdentitySummary = { total: number; by_transition_type: Record<string, number>; by_evidence_strength: Record<string, number>; candidate_evidence: Record<string, number>; earliest_seen_at?: string; latest_seen_at?: string };
 type TrainingDatasetBuild = { id: number; dataset_key: string; version: string; status: string; source_key: string; horizons: string[]; candidate_count: number; eligible_candidate_count: number; episode_count: number; window_count: number; pending_review_count: number; identity_missing_count: number; context_only_count: number; excluded_count: number; output_dir: string; manifest_path?: string; window_manifest_path?: string; window_manifest_sha256?: string; error_message?: string; started_at: string; finished_at?: string };
+type TrainingFeatureBuild = { id: number; feature_dataset_key: string; version: string; status: string; source_key: string; source_dataset_build_id: number; source_dataset_key: string; feature_contract_version: string; lookback_minutes: number; query_step_seconds: number; episode_count: number; window_count: number; processed_episodes: number; completed_windows: number; failed_windows: number; metric_count: number; feature_column_count: number; average_metric_coverage: number; minimum_metric_coverage: number; output_dir: string; feature_path?: string; feature_sha256?: string; quality_report_path?: string; error_message?: string; started_at: string; finished_at?: string };
 type TrainingCohortPolicy = { version: string; positive_horizons_minutes: number[]; healthy_censor_before_hours: number; healthy_censor_after_hours: number; control_match_dimensions: string[]; normal_range_statistics: string[]; positive_candidate_policy: string; healthy_window_policy: string; replacement_evidence_policy: string };
 type FailureLabel = { id: number; label_key: string; hardware_class: string; entity_type: string; entity_key: string; gpu_asset_id?: number; gpu_uuid?: string; node_ip?: string; model_name?: string; event_type: string; rule_version?: string; label_value: number; quality_tier: string; source_type: string; source_record_id: number; confirmation_resolution_id?: number; label_contract_version: string; occurred_at: string; available_at: string; confirmed_at?: string; excluded: boolean; exclusion_reason?: string };
 type AccuracyMetrics = { tp: number; fp: number; fn: number; tn: number; evaluated: number; precision?: number; recall?: number; specificity?: number; false_positive_rate?: number; false_negative_rate?: number; accuracy?: number };
@@ -882,6 +883,7 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
   const [identityIntervals, setIdentityIntervals] = useState<HistoricalGPUIdentityInterval[]>([]);
   const [identitySummary, setIdentitySummary] = useState<HistoricalIdentitySummary | null>(null);
   const [datasetBuilds, setDatasetBuilds] = useState<TrainingDatasetBuild[]>([]);
+  const [featureBuilds, setFeatureBuilds] = useState<TrainingFeatureBuild[]>([]);
   const [historicalCandidates, setHistoricalCandidates] = useState<HistoricalFaultCandidate[]>([]);
   const [historicalCandidateSummary, setHistoricalCandidateSummary] = useState<HistoricalCandidateSummary | null>(null);
   const [trainingCohortPolicy, setTrainingCohortPolicy] = useState<TrainingCohortPolicy | null>(null);
@@ -889,6 +891,7 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
   const [historyBackfillRunning, setHistoryBackfillRunning] = useState(false);
   const [identityBackfillRunning, setIdentityBackfillRunning] = useState(false);
   const [datasetBuildRunning, setDatasetBuildRunning] = useState(false);
+  const [featureBuildStarting, setFeatureBuildStarting] = useState(false);
   const [reviewingCandidateID, setReviewingCandidateID] = useState<number | null>(null);
   const [predictionError, setPredictionError] = useState('');
   useEffect(() => {
@@ -922,18 +925,20 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
     let cancelled = false;
     const loadIdentityHistory = async () => {
       try {
-        const [runsResponse, identitiesResponse, datasetsResponse] = await Promise.all([
+        const [runsResponse, identitiesResponse, datasetsResponse, featuresResponse] = await Promise.all([
           fetch('/api/v1/prediction/history/identity-backfills'),
           fetch('/api/v1/prediction/history/identities'),
           fetch('/api/v1/prediction/history/datasets'),
+          fetch('/api/v1/prediction/history/feature-datasets'),
         ]);
-        if (!runsResponse.ok || !identitiesResponse.ok || !datasetsResponse.ok) throw new Error(`HTTP ${runsResponse.status}/${identitiesResponse.status}/${datasetsResponse.status}`);
-        const [runsPayload, identitiesPayload, datasetsPayload] = await Promise.all([runsResponse.json(), identitiesResponse.json(), datasetsResponse.json()]);
+        if (!runsResponse.ok || !identitiesResponse.ok || !datasetsResponse.ok || !featuresResponse.ok) throw new Error(`HTTP ${runsResponse.status}/${identitiesResponse.status}/${datasetsResponse.status}/${featuresResponse.status}`);
+        const [runsPayload, identitiesPayload, datasetsPayload, featuresPayload] = await Promise.all([runsResponse.json(), identitiesResponse.json(), datasetsResponse.json(), featuresResponse.json()]);
         if (!cancelled) {
           setIdentityBackfills(Array.isArray(runsPayload.data) ? runsPayload.data : []);
           setIdentityIntervals(Array.isArray(identitiesPayload.data) ? identitiesPayload.data : []);
           setIdentitySummary(identitiesPayload.summary || null);
           setDatasetBuilds(Array.isArray(datasetsPayload.data) ? datasetsPayload.data : []);
+          setFeatureBuilds(Array.isArray(featuresPayload.data) ? featuresPayload.data : []);
         }
       } catch (reason) {
         if (!cancelled) setPredictionError(reason instanceof Error ? reason.message : String(reason));
@@ -942,6 +947,22 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
     void loadIdentityHistory();
     return () => { cancelled = true; };
   }, []);
+  useEffect(() => {
+    if (!featureBuilds.some(build => build.status === 'queued' || build.status === 'running')) return;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const response = await fetch('/api/v1/prediction/history/feature-datasets');
+          if (!response.ok) return;
+          const payload = await response.json();
+          setFeatureBuilds(Array.isArray(payload.data) ? payload.data : []);
+        } catch {
+          // Keep polling while the durable extraction task is active.
+        }
+      })();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [featureBuilds]);
   useEffect(() => {
     if (!identityBackfills.some(run => run.status === 'queued' || run.status === 'running')) return;
     const timer = window.setInterval(() => {
@@ -1022,6 +1043,26 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
       setPredictionError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setDatasetBuildRunning(false);
+    }
+  };
+  const buildHistoricalFeatures = async () => {
+    if (!datasetBuilds[0]) return;
+    setFeatureBuildStarting(true);
+    try {
+      const response = await fetch('/api/v1/prediction/history/feature-datasets', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_dataset_build_id: datasetBuilds[0].id }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const buildsResponse = await fetch('/api/v1/prediction/history/feature-datasets');
+      if (!buildsResponse.ok) throw new Error(`HTTP ${buildsResponse.status}`);
+      const payload = await buildsResponse.json();
+      setFeatureBuilds(Array.isArray(payload.data) ? payload.data : []);
+      setPredictionError('');
+    } catch (reason) {
+      setPredictionError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setFeatureBuildStarting(false);
     }
   };
   const refreshHistoricalCandidates = async () => {
@@ -1114,6 +1155,7 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
     const latestBackfill = historyBackfills[0];
     const latestIdentityBackfill = identityBackfills[0];
     const latestDatasetBuild = datasetBuilds[0];
+    const latestFeatureBuild = featureBuilds[0];
     return <div className="grid prediction-page">
       <Card className="span-12 capability-note"><BrainCircuit size={19} /><div><CardHead code={prediction?.framework_version || 'PREDICTION FRAMEWORK'} title={tx('GPU 故障预测框架', 'GPU Failure Prediction Framework')} /><p>{tx('当前只完成预测契约、标签质量、数据就绪门和模型注册骨架。尚未训练或发布概率模型，不输出伪概率，不触发隔离、重启或任务操作。', 'The current release provides prediction contracts, label quality, data-readiness gates, and a model registry foundation only. No probability model is trained or released, no fake probability is emitted, and no isolation, restart, or workload action is triggered.')}</p></div><Badge value={predictionError ? 'API ERROR' : prediction?.phase?.toUpperCase() || 'LOADING'} kind={predictionError ? 'warning' : 'info'} /></Card>
       {[[tx('当前 GPU', 'Current GPUs'), summary?.total ?? '—', `${summary?.blocked || 0} ${tx('被质量门阻断', 'blocked')}`], [tx('数据集就绪', 'Dataset Ready'), summary?.ready_for_dataset ?? '—', tx('仅代表可构建样本', 'eligible for dataset only')], [tx('确认硬件标签', 'Confirmed Labels'), prediction?.labels.confirmed ?? '—', tx('需人工确认和完整处置', 'requires complete human confirmation')], [tx('代理标签', 'Proxy Labels'), prediction ? prediction.labels.strong_proxy + prediction.labels.weak_proxy : '—', tx('规则事件，不等于确认故障', 'rule events, not confirmed failures')], [tx('在线历史保留', 'Online Retention'), prediction ? `${prediction.retention.online_retention_days}d` : '—', prediction?.retention.training_history_safe ? tx('满足训练历史保护线', 'training history protected') : tx('保留期不足', 'retention insufficient')], [tx('预测概率', 'Probabilities'), prediction?.probability_emitted ? tx('已启用', 'ENABLED') : tx('未启用', 'DISABLED'), tx('模型尚未发布', 'no released model')]].map(([label, value, note]) => <Card className="metric prediction-metric" key={String(label)}><BrainCircuit size={17} /><span>{label}</span><strong>{value}</strong><small>{note}</small></Card>)}
@@ -1162,6 +1204,17 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
         </div>
         {latestDatasetBuild ? <div className="prediction-contract"><span><b>STATUS</b>{latestDatasetBuild.status.toUpperCase()}</span><span><b>VERSION</b>{latestDatasetBuild.version}</span><span><b>OUTPUT</b>{latestDatasetBuild.output_dir}</span><span><b>SHA256</b>{latestDatasetBuild.window_manifest_sha256 || '—'}</span></div> : <Empty tx={tx} title={tx('尚未构建训练样本时间窗清单', 'No training sample-window manifest has been built')} />}
       </Card>
+      <Card className="span-12">
+        <CardHead code="HISTORICAL FEATURE DATASET" title={tx('故障前监控特征提取', 'Pre-fault Monitoring Feature Extraction')} action={<div className="table-actions"><Badge value="DEPLOYMENT NODE / READ-ONLY" kind="healthy" /><button className="link" type="button" disabled={featureBuildStarting || !latestDatasetBuild || latestFeatureBuild?.status === 'queued' || latestFeatureBuild?.status === 'running'} onClick={() => void buildHistoricalFeatures()}>{featureBuildStarting ? tx('启动中…', 'Starting…') : tx('提取历史特征', 'Extract features')}</button></div>} />
+        <p className="node-access-note">{tx('按 GPU episode 批量读取 Prometheus/VM 核心指标，在 Atlas 部署节点内按每个预测截止点计算过去 24 小时的末值、均值、极值、标准差、增量和趋势。所有样本时间必须早于 feature_cutoff_at；原始多年时序不会复制到开发机。', 'Batch core Prometheus/VM metrics by GPU episode, then calculate trailing 24-hour last, mean, extrema, standard deviation, delta, and trend features for every prediction cutoff on the Atlas deployment node. Every sample timestamp must precede feature_cutoff_at; multi-year raw time series are never copied to the development machine.')}</p>
+        <div className="issue-categories quality-ledger">
+          <div><b>{tx('任务状态', 'Build status')}</b><strong>{latestFeatureBuild?.status?.toUpperCase() || 'NOT STARTED'}</strong><small>{latestFeatureBuild?.version || 'gpu-historical-features-v1'}</small></div>
+          <div><b>{tx('Episode 进度', 'Episode progress')}</b><strong>{latestFeatureBuild ? `${latestFeatureBuild.processed_episodes}/${latestFeatureBuild.episode_count}` : '—'}</strong><small>MAX CONCURRENCY · BATCH QUERY</small></div>
+          <div><b>{tx('成功 / 失败窗口', 'Complete / Failed')}</b><strong>{latestFeatureBuild ? `${latestFeatureBuild.completed_windows} / ${latestFeatureBuild.failed_windows}` : '—'}</strong><small>{latestFeatureBuild?.window_count || 0} TOTAL WINDOWS</small></div>
+          <div><b>{tx('平均指标覆盖率', 'Average metric coverage')}</b><strong>{latestFeatureBuild?.finished_at ? `${(latestFeatureBuild.average_metric_coverage * 100).toFixed(1)}%` : '—'}</strong><small>MIN {latestFeatureBuild?.finished_at ? `${(latestFeatureBuild.minimum_metric_coverage * 100).toFixed(1)}%` : '—'} · {latestFeatureBuild?.feature_column_count || 0} COLUMNS</small></div>
+        </div>
+        {latestFeatureBuild ? <div className="prediction-contract"><span><b>FEATURE CONTRACT</b>{latestFeatureBuild.feature_contract_version}</span><span><b>LOOKBACK / STEP</b>{latestFeatureBuild.lookback_minutes}m / {latestFeatureBuild.query_step_seconds}s</span><span><b>OUTPUT</b>{latestFeatureBuild.output_dir}</span><span><b>SHA256</b>{latestFeatureBuild.feature_sha256 || latestFeatureBuild.error_message || 'PENDING'}</span></div> : <Empty tx={tx} title={tx('等待从最新训练窗口清单提取特征', 'Waiting to extract features from the latest cohort manifest')} />}
+      </Card>
       <Card className="span-12"><CardHead code={trainingCohortPolicy?.version || 'GPU TRAINING COHORT'} title={tx('故障前窗口与正常对照规则', 'Pre-fault Windows & Healthy Controls')} /><div className="prediction-contract"><span><b>{tx('预测窗口', 'Positive horizons')}</b>{(trainingCohortPolicy?.positive_horizons_minutes || []).map(value => value >= 1440 ? `${value / 1440}d` : value >= 60 ? `${value / 60}h` : `${value}m`).join(' · ') || '—'}</span><span><b>{tx('匹配正常对照', 'Matched healthy controls')}</b>{(trainingCohortPolicy?.control_match_dimensions || []).join(' · ') || '—'}</span><span><b>{tx('正常区间', 'Normal ranges')}</b>{(trainingCohortPolicy?.normal_range_statistics || []).join(' · ') || '—'}</span><span><b>{tx('排除污染窗口', 'Censor contaminated windows')}</b>{trainingCohortPolicy ? `${trainingCohortPolicy.healthy_censor_before_hours}h BEFORE · ${trainingCohortPolicy.healthy_censor_after_hours}h AFTER · telemetry/restart/maintenance/identity change excluded` : '—'}</span><span><b>{tx('换卡证据边界', 'Replacement evidence boundary')}</b>{trainingCohortPolicy?.replacement_evidence_policy || '—'}</span></div></Card>
       <Card className="span-12"><CardHead code="MODEL REGISTRY" title={tx('预测时间窗与模型契约', 'Prediction Horizons & Model Contracts')} action={<Badge value={`${prediction?.models.length || 0} SPECS`} kind="info" />} /><div className="table-wrap"><table className="prediction-model-table"><thead><tr><th>MODEL KEY</th><th>{tx('对象', 'Entity')}</th><th>{tx('时间窗', 'Horizon')}</th><th>{tx('算法 / 运行时', 'Algorithm / Runtime')}</th><th>{tx('状态', 'Status')}</th><th>{tx('契约', 'Contracts')}</th></tr></thead><tbody>{(prediction?.models || []).map(model => <tr key={model.model_key}><td><b>{model.model_key}</b><small>v{model.version}</small></td><td>{model.hardware_class} / {model.entity_type}</td><td><b>{model.horizon_minutes >= 1440 ? `${model.horizon_minutes / 1440}d` : model.horizon_minutes >= 60 ? `${model.horizon_minutes / 60}h` : `${model.horizon_minutes}m`}</b></td><td><code>{model.algorithm} / {model.runtime}</code></td><td><Badge value={model.status.toUpperCase()} kind="info" /></td><td><small>{model.feature_contract_version}</small><small>{model.label_contract_version}</small></td></tr>)}</tbody></table></div></Card>
       <Card className="span-12"><CardHead code="POINT-IN-TIME READINESS" title={tx('GPU 数据就绪队列', 'GPU Data Readiness Queue')} action={<Badge value={`${readiness.length} GPUS`} kind="info" />} /><div className="table-wrap"><table className="prediction-readiness-table"><thead><tr><th>{tx('节点 / GPU', 'Node / GPU')}</th><th>{tx('型号', 'Model')}</th><th>{tx('状态', 'Status')}</th><th>{tx('数据置信度', 'Data Confidence')}</th><th>{tx('特征覆盖', 'Feature Coverage')}</th><th>{tx('阻断原因', 'Blocking Reasons')}</th><th>{tx('观测时间', 'Observed')}</th></tr></thead><tbody>{readiness.map(item => <tr key={`${item.gpu_asset_id}-${item.feature_snapshot_id}`}><td><b>{item.node_ip} · GPU {item.gpu_index}</b><small>{item.gpu_uuid || item.entity_key}</small></td><td>{item.model_name || '—'}</td><td><Badge value={item.status.toUpperCase()} kind={item.status === 'ready_for_dataset' ? 'healthy' : 'warning'} /></td><td><Badge value={item.data_confidence || 'UNKNOWN'} kind={item.data_confidence === 'A' ? 'healthy' : item.data_confidence === 'B' ? 'info' : 'warning'} /></td><td>{Math.round(item.feature_coverage * 100)}%</td><td><small>{item.blocking_reasons.length ? item.blocking_reasons.join(' · ') : tx('无；仅数据集就绪', 'none; dataset-ready only')}</small></td><td>{time(item.observed_at, lang)}</td></tr>)}</tbody></table>{readiness.length === 0 && <Empty tx={tx} title={predictionError ? tx('预测框架 API 不可用', 'Prediction API unavailable') : tx('等待 GPU 特征快照', 'Waiting for GPU feature snapshots')} />}</div></Card>
@@ -1201,13 +1254,14 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   ];
   const modules = baseModules.map(module => module.id === 'prediction' ? {
     ...module,
-    version: 'v0.11.0',
-    status: tx('预测准确率闭环骨架', 'PREDICTION ACCURACY LOOP'),
+    version: 'v0.12.0',
+    status: tx('历史特征提取任务', 'HISTORICAL FEATURE EXTRACTION'),
     desc: tx(
       '历史候选由版本化规则自动裁决并携带置信度，人工只覆核不确定项、重要故障和抽样结果且可改判；规则正代理和人工接受样本再去重为故障 episode，生成严格早于标签时间的多预测窗口清单。',
       'Versioned rules automatically adjudicate historical candidates with confidence. Humans review uncertainty, important incidents and samples and may override decisions. Rule-positive and human-accepted samples are then deduplicated into fault episodes with multi-horizon cutoffs strictly before label time.',
     ),
     history: [
+      tx('v0.12.0 · 按 GPU episode 批量读取 Prometheus/VM、24 小时统计特征、覆盖率报告和版本化产物', 'v0.12.0 · batched Prometheus/VM reads by GPU episode, trailing 24-hour statistics, coverage report and versioned artifacts'),
       tx('v0.11.0 · 预测窗口成熟判定、规则/人工双结果、TP/FP/FN/TN 与准确率闭环', 'v0.11.0 · horizon maturity, rule/human dual outcomes, TP/FP/FN/TN and accuracy feedback loop'),
       tx('v0.10.0 · 规则正代理/仅上下文/需人工分层、规则置信度、人工覆核优先和可重建加权样本', 'v0.10.0 · rule-positive/context/human-review tiers, rule confidence, human override precedence and rebuildable weighted samples'),
       tx('v0.9.0 · 故障 episode 合并、point-in-time 多窗口清单、样本资格门和部署节点版本化产物', 'v0.9.0 · fault episode merging, point-in-time multi-horizon manifest, sample eligibility gates and deployment-node versioned artifacts'),
@@ -1263,7 +1317,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.37.0" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.38.0" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>

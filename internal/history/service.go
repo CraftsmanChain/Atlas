@@ -63,6 +63,8 @@ type Service struct {
 	backfillMu      sync.Mutex
 	backfillRunning bool
 	datasetMu       sync.Mutex
+	featureMu       sync.Mutex
+	featureRunning  bool
 }
 
 func NewService(db *storage.DB, cfg config.HistoryConfig, timeout time.Duration) *Service {
@@ -73,6 +75,9 @@ func NewService(db *storage.DB, cfg config.HistoryConfig, timeout time.Duration)
 	now := time.Now()
 	_ = db.Model(&api.HistoryBackfillRun{}).Where("status IN ?", []string{"queued", "running"}).Updates(map[string]any{
 		"status": "interrupted", "error_message": "Atlas restarted before the backfill completed", "finished_at": &now,
+	}).Error
+	_ = db.Model(&api.TrainingFeatureBuild{}).Where("status IN ?", []string{"queued", "running"}).Updates(map[string]any{
+		"status": "interrupted", "error_message": "Atlas restarted before feature extraction completed", "finished_at": &now,
 	}).Error
 	return service
 }
