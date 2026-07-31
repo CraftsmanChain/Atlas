@@ -20,6 +20,16 @@ func TestDatasetManifestDeduplicatesReplacementEpisodeAndEnforcesEligibility(t *
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	identity := api.HistoricalGPUIdentityInterval{
+		IntervalKey: "dataset-model-identity", SourceKey: "primary", BackfillRunID: 1,
+		NodeIP: "10.0.0.9", GPUIndex: 0, GPUUUID: "GPU-old",
+		PCIBusID: "0000:01:00.0", ModelName: "NVIDIA H100 80GB HBM3",
+		FirstSeenAt: now.Add(-24 * time.Hour), LastSeenAt: now.Add(24 * time.Hour),
+		ObservationCount: 2, TransitionType: "initial_observation", EvidenceStrength: "strong",
+	}
+	if err := db.Create(&identity).Error; err != nil {
+		t.Fatal(err)
+	}
 	rows := []api.HistoricalFaultCandidate{
 		datasetCandidate("replacement-ecc", "uncorrectable_remapped_rows", now.Add(-2*time.Hour),
 			"replacement_after_event", "proxy_positive_after_review", "pending_review"),
@@ -32,6 +42,8 @@ func TestDatasetManifestDeduplicatesReplacementEpisodeAndEnforcesEligibility(t *
 		datasetCandidate("context", "xid_31", now,
 			"same_gpu_observed_after_event", "context_only", "pending_review"),
 	}
+	rows[0].ModelName, rows[0].IdentityIntervalID = "", identity.ID
+	rows[1].ModelName, rows[1].IdentityIntervalID = "", identity.ID
 	for index := range rows {
 		if err := db.Create(&rows[index]).Error; err != nil {
 			t.Fatal(err)
@@ -77,7 +89,8 @@ func TestDatasetManifestDeduplicatesReplacementEpisodeAndEnforcesEligibility(t *
 		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
 			t.Fatal(err)
 		}
-		if !row.FeatureCutoffAt.Before(row.LabelOnsetAt) || len(row.CandidateIDs) != 2 {
+		if !row.FeatureCutoffAt.Before(row.LabelOnsetAt) || len(row.CandidateIDs) != 2 ||
+			row.ModelName != "NVIDIA H100 80GB HBM3" {
 			t.Fatalf("point-in-time or episode merge mismatch: %+v", row)
 		}
 		count++
