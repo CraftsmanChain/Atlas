@@ -14,7 +14,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const trainingMatrixVersion = "gpu-supervised-training-matrix-v3"
+const trainingMatrixVersion = "gpu-supervised-training-matrix-v4"
 
 type cohortReadinessPolicy struct {
 	MinimumTrainPositiveGPUs      int `json:"minimum_train_positive_gpus"`

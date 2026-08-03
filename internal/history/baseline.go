@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	baselineModelVersion    = "gpu-logistic-baseline-v3"
+	baselineModelVersion    = "gpu-logistic-baseline-v4"
 	cohortReadinessGateName = "fault-model-horizon-readiness-v1"
 )
 
@@ -348,7 +348,7 @@ func safeBaselineColumns(rows []trainingMatrixRow) []string {
 	excluded := []string{"xid_", "correctable_remapped_rows_", "uncorrectable_remapped_rows_", "row_remap_failure_", "uncorrected_ecc_", "gpu_reset_required_"}
 	for _, r := range rows {
 		for c := range r.Features {
-			safe := true
+			safe := !strings.Contains(c, "_sample_count_")
 			for _, p := range excluded {
 				if strings.HasPrefix(c, p) {
 					safe = false
