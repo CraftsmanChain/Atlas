@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,7 +19,7 @@ import (
 )
 
 const (
-	baselineModelVersion        = "gpu-logistic-baseline-v5"
+	baselineModelVersion        = "gpu-logistic-baseline-v6"
 	cohortReadinessGateName     = "fault-model-horizon-readiness-v1"
 	baselineFeatureAuditVersion = "baseline-feature-leakage-audit-v1"
 )
@@ -54,6 +55,7 @@ type baselineHorizonReport struct {
 	Train                   baselineMetrics            `json:"train"`
 	Validation              baselineMetrics            `json:"validation"`
 	Test                    baselineMetrics            `json:"test"`
+	TestUncertainty         baselineUncertainty        `json:"test_uncertainty"`
 	TestByModel             map[string]baselineMetrics `json:"test_by_model"`
 	TestByEventType         map[string]baselineMetrics `json:"test_by_event_type"`
 	TestByDriverVersion     map[string]baselineMetrics `json:"test_by_driver_version"`
@@ -61,6 +63,21 @@ type baselineHorizonReport struct {
 	TestByHardwareCertainty map[string]baselineMetrics `json:"test_by_hardware_certainty"`
 	TestByRuleVersion       map[string]baselineMetrics `json:"test_by_rule_version"`
 	Threshold               float64                    `json:"threshold"`
+}
+
+type baselineUncertainty struct {
+	Version         string  `json:"version"`
+	Method          string  `json:"method"`
+	Resamples       int     `json:"resamples"`
+	ConfidenceLevel float64 `json:"confidence_level"`
+	Seed            int64   `json:"seed"`
+	EntityCount     int     `json:"entity_count"`
+	ROCAUCLower     float64 `json:"roc_auc_lower"`
+	ROCAUCUpper     float64 `json:"roc_auc_upper"`
+	PRAUCLower      float64 `json:"pr_auc_lower"`
+	PRAUCUpper      float64 `json:"pr_auc_upper"`
+	NullPRAUC       float64 `json:"null_pr_auc"`
+	Status          string  `json:"status"`
 }
 type baselineArtifact struct {
 	Version        string               `json:"version"`
@@ -262,7 +279,11 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 			testScores[i].threshold = model.Threshold
 		}
 		artifact.Models = append(artifact.Models, model)
-		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, Train: describeLabels(train), Validation: evaluateScores(validationScores, model.Threshold), Test: evaluateScores(testScores, model.Threshold), TestByModel: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return []string{row.ModelName} }), TestByEventType: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes }), TestByDriverVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.DriverVersions }), TestByLabelSource: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.LabelSources }), TestByHardwareCertainty: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.HardwareCertainties }), TestByRuleVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.RuleDecisionVersions }), Threshold: model.Threshold})
+		uncertainty := bootstrapBaselineUncertainty(test, testScores, h)
+		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, Train: describeLabels(train), Validation: evaluateScores(validationScores, model.Threshold), Test: evaluateScores(testScores, model.Threshold), TestUncertainty: uncertainty, TestByModel: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return []string{row.ModelName} }), TestByEventType: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes }), TestByDriverVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.DriverVersions }), TestByLabelSource: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.LabelSources }), TestByHardwareCertainty: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.HardwareCertainties }), TestByRuleVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.RuleDecisionVersions }), Threshold: model.Threshold})
+		if uncertainty.Status == "candidate_signal" {
+			build.StatisticallyStableCount++
+		}
 		build.TrainCount += len(train)
 		build.ValidationCount += len(val)
 		build.TestCount += len(test)
@@ -296,7 +317,84 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 		return err
 	}
 	finished := s.now()
-	return s.db.Model(build).Updates(map[string]any{"status": "completed", "feature_column_count": build.FeatureColumnCount, "feature_audit_status": build.FeatureAuditStatus, "excluded_feature_count": build.ExcludedFeatureCount, "prohibited_feature_count": build.ProhibitedFeatureCount, "horizon_count": build.HorizonCount, "trained_model_count": build.TrainedModelCount, "train_count": build.TrainCount, "validation_count": build.ValidationCount, "test_count": build.TestCount, "test_macro_roc_auc": build.TestMacroROCAUC, "test_macro_pr_auc": build.TestMacroPRAUC, "test_macro_precision": build.TestMacroPrecision, "test_macro_recall": build.TestMacroRecall, "artifact_path": artifactPath, "artifact_sha256": checksum, "report_path": reportPath, "finished_at": &finished}).Error
+	return s.db.Model(build).Updates(map[string]any{"status": "completed", "feature_column_count": build.FeatureColumnCount, "feature_audit_status": build.FeatureAuditStatus, "excluded_feature_count": build.ExcludedFeatureCount, "prohibited_feature_count": build.ProhibitedFeatureCount, "statistically_stable_count": build.StatisticallyStableCount, "horizon_count": build.HorizonCount, "trained_model_count": build.TrainedModelCount, "train_count": build.TrainCount, "validation_count": build.ValidationCount, "test_count": build.TestCount, "test_macro_roc_auc": build.TestMacroROCAUC, "test_macro_pr_auc": build.TestMacroPRAUC, "test_macro_precision": build.TestMacroPrecision, "test_macro_recall": build.TestMacroRecall, "artifact_path": artifactPath, "artifact_sha256": checksum, "report_path": reportPath, "finished_at": &finished}).Error
+}
+
+func bootstrapBaselineUncertainty(rows []trainingMatrixRow, scores []scoredLabel, horizonMinutes int) baselineUncertainty {
+	const resamples = 1000
+	seed := int64(202608030000 + horizonMinutes)
+	result := baselineUncertainty{Version: "gpu-cluster-bootstrap-v1", Method: "GPU-UUID cluster bootstrap of held-out test scores", ConfidenceLevel: 0.95, Seed: seed, Status: "insufficient_labels"}
+	if len(rows) != len(scores) {
+		return result
+	}
+	clusters := map[string][]scoredLabel{}
+	positiveCount := 0
+	for index, score := range scores {
+		gpu := normalizeHistoricalGPUUUID(rows[index].GPUUUID)
+		if gpu == "" {
+			gpu = "ROW:" + rows[index].RowKey
+		}
+		clusters[gpu] = append(clusters[gpu], score)
+		if score.label == 1 {
+			positiveCount++
+		}
+	}
+	if positiveCount == 0 || positiveCount == len(scores) || len(clusters) < 2 {
+		return result
+	}
+	keys := make([]string, 0, len(clusters))
+	for key := range clusters {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result.EntityCount = len(keys)
+	result.NullPRAUC = float64(positiveCount) / float64(len(scores))
+	rng := rand.New(rand.NewSource(seed))
+	rocValues, prValues := make([]float64, 0, resamples), make([]float64, 0, resamples)
+	resampled := make([]scoredLabel, 0, len(scores))
+	for attempt := 0; len(rocValues) < resamples && attempt < resamples*20; attempt++ {
+		resampled = resampled[:0]
+		for range keys {
+			resampled = append(resampled, clusters[keys[rng.Intn(len(keys))]]...)
+		}
+		metrics := evaluateScores(resampled, 0.5)
+		if metrics.Positive == 0 || metrics.Control == 0 {
+			continue
+		}
+		rocValues = append(rocValues, metrics.ROCAUC)
+		prValues = append(prValues, metrics.PRAUC)
+	}
+	result.Resamples = len(rocValues)
+	if result.Resamples < resamples {
+		return result
+	}
+	result.ROCAUCLower, result.ROCAUCUpper = percentile(rocValues, 0.025), percentile(rocValues, 0.975)
+	result.PRAUCLower, result.PRAUCUpper = percentile(prValues, 0.025), percentile(prValues, 0.975)
+	switch {
+	case result.ROCAUCLower > 0.5 && result.PRAUCLower > result.NullPRAUC:
+		result.Status = "candidate_signal"
+	case result.ROCAUCUpper < 0.5:
+		result.Status = "inverse_signal"
+	default:
+		result.Status = "inconclusive"
+	}
+	return result
+}
+
+func percentile(values []float64, quantile float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sorted := append([]float64(nil), values...)
+	sort.Float64s(sorted)
+	index := int(math.Round(quantile * float64(len(sorted)-1)))
+	if index < 0 {
+		index = 0
+	}
+	if index >= len(sorted) {
+		index = len(sorted) - 1
+	}
+	return sorted[index]
 }
 
 func stratifiedTestMetrics(rows []trainingMatrixRow, scores []scoredLabel, labels func(trainingMatrixRow) []string) map[string]baselineMetrics {
