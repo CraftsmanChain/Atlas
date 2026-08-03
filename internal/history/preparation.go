@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,7 +17,13 @@ import (
 	"atlas/pkg/api"
 )
 
-const preparationDatasetVersion = "gpu-training-preparation-v1"
+const (
+	preparationDatasetVersion   = "gpu-training-preparation-v2"
+	correlatedEventBucket       = 5 * time.Minute
+	correlatedEventMinimumGPUs  = 32
+	correlatedEventMinimumNodes = 10
+	minimumEvaluationSplitRatio = 0.05
+)
 
 type PreparationBuildRequest struct {
 	SourceFeatureBuildID uint    `json:"source_feature_build_id"`
@@ -61,6 +68,7 @@ type preparationManifest struct {
 	SplitPolicy             string    `json:"split_policy"`
 	QualityPolicy           string    `json:"quality_policy"`
 	ControlPolicy           string    `json:"control_policy"`
+	CorrelatedEventPolicy   string    `json:"correlated_event_policy"`
 	PreparedSamples         string    `json:"prepared_samples"`
 	PreparedSamplesSHA256   string    `json:"prepared_samples_sha256"`
 	ControlRequests         string    `json:"control_requests"`
@@ -134,10 +142,16 @@ func (s *Service) BuildTrainingPreparation(request PreparationBuildRequest) (api
 	if err := s.db.Create(&build).Error; err != nil {
 		return build, err
 	}
-	if err := s.buildTrainingPreparation(&build, source, controlsPerPositive); err != nil {
+	if err := s.buildTrainingPreparation(&build, source, cohort, controlsPerPositive); err != nil {
 		finished := s.now()
 		_ = s.db.Model(&build).Updates(map[string]any{
 			"status": "failed", "error_message": err.Error(), "finished_at": &finished,
+			"eligible_positive_count":  build.EligiblePositiveCount,
+			"telemetry_censored_count": build.TelemetryCensoredCount, "low_coverage_count": build.LowCoverageCount,
+			"extraction_failed_count": build.ExtractionFailedCount, "correlated_event_count": build.CorrelatedEventCount,
+			"entity_time_conflict_count": build.EntityTimeConflictCount,
+			"train_count":                build.TrainCount, "validation_count": build.ValidationCount, "test_count": build.TestCount,
+			"train_end_at": build.TrainEndAt, "validation_end_at": build.ValidationEndAt,
 		}).Error
 		build.Status, build.ErrorMessage, build.FinishedAt = "failed", err.Error(), &finished
 		return build, err
@@ -145,14 +159,22 @@ func (s *Service) BuildTrainingPreparation(request PreparationBuildRequest) (api
 	return build, s.db.First(&build, build.ID).Error
 }
 
-func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, source api.TrainingFeatureBuild, controlsPerPositive int) error {
+func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, source api.TrainingFeatureBuild, cohort api.TrainingDatasetBuild, controlsPerPositive int) error {
 	rows, err := readExtractedFeatureRows(source.FeaturePath)
 	if err != nil {
 		return err
 	}
+	if err := verifyFileSHA256(cohort.WindowManifestPath, cohort.WindowManifestSHA256); err != nil {
+		return fmt.Errorf("source cohort checksum: %w", err)
+	}
+	windows, err := readDatasetWindows(cohort.WindowManifestPath)
+	if err != nil {
+		return err
+	}
+	correlatedEpisodes := correlatedFleetEpisodes(windows)
 	eligibleForSplit := make([]extractedFeatureRow, 0, len(rows))
 	for _, row := range rows {
-		if row.ExtractionError == "" && row.MetricCoverage >= build.MinimumMetricCoverage {
+		if row.ExtractionError == "" && row.MetricCoverage >= build.MinimumMetricCoverage && !correlatedEpisodes[row.EpisodeKey] {
 			eligibleForSplit = append(eligibleForSplit, row)
 		}
 	}
@@ -160,6 +182,7 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 	if err != nil {
 		return err
 	}
+	build.TrainEndAt, build.ValidationEndAt = &trainEnd, &validationEnd
 	splits := entityIsolatedSplits(eligibleForSplit, trainEnd, validationEnd)
 	prepared := make([]preparedTrainingSample, 0, len(rows))
 	for _, row := range rows {
@@ -174,6 +197,9 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 		case row.MetricCoverage < build.MinimumMetricCoverage:
 			item.TrainingStatus, item.ExclusionReason = "excluded", "metric_coverage_below_threshold"
 			build.LowCoverageCount++
+		case correlatedEpisodes[row.EpisodeKey]:
+			item.TrainingStatus, item.ExclusionReason = "excluded", "correlated_fleet_event"
+			build.CorrelatedEventCount++
 		case splits[row.GPUUUID] == "":
 			item.TrainingStatus, item.ExclusionReason = "excluded", "entity_crosses_time_split_boundary"
 			build.EntityTimeConflictCount++
@@ -190,6 +216,14 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 			}
 		}
 		prepared = append(prepared, item)
+	}
+	minimumEvaluationCount := int(float64(build.EligiblePositiveCount)*minimumEvaluationSplitRatio + 0.999999)
+	if minimumEvaluationCount < 1 {
+		minimumEvaluationCount = 1
+	}
+	if build.TrainCount == 0 || build.ValidationCount < minimumEvaluationCount || build.TestCount < minimumEvaluationCount {
+		return fmt.Errorf("unsafe training split: train=%d validation=%d test=%d; validation and test each require at least %d eligible windows",
+			build.TrainCount, build.ValidationCount, build.TestCount, minimumEvaluationCount)
 	}
 
 	var intervals []api.HistoricalGPUIdentityInterval
@@ -244,10 +278,11 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 		PreparedDatasetKey: build.PreparedDatasetKey, Version: preparationDatasetVersion,
 		SourceFeatureDatasetKey: source.FeatureDatasetKey, MinimumCoverage: build.MinimumMetricCoverage,
 		ControlsPerPositive: controlsPerPositive, TrainEndAt: trainEnd, ValidationEndAt: validationEnd,
-		SplitPolicy:     "strict time order plus GPU UUID isolation; entities crossing a boundary are excluded",
-		QualityPolicy:   "extraction errors, zero telemetry, and metric coverage below threshold are excluded without zero imputation",
-		ControlPolicy:   "same-GPU stable-identity historical cutoffs; exclude every known fault [-168h,+72h]; telemetry and load validation remains required",
-		PreparedSamples: filepath.Base(preparedPath), PreparedSamplesSHA256: preparedSHA,
+		SplitPolicy:           "strict time order plus GPU UUID isolation; entities crossing a boundary are excluded",
+		QualityPolicy:         "extraction errors, zero telemetry, low coverage, and correlated fleet events are excluded without zero imputation",
+		ControlPolicy:         "same-GPU stable-identity historical cutoffs; exclude every known fault [-168h,+72h]; telemetry and load validation remains required",
+		CorrelatedEventPolicy: "exclude same-event five-minute buckets affecting at least 32 GPUs across at least 10 nodes from GPU hardware training",
+		PreparedSamples:       filepath.Base(preparedPath), PreparedSamplesSHA256: preparedSHA,
 		ControlRequests: filepath.Base(controlPath), ControlRequestsSHA256: controlSHA, CreatedAt: s.now(),
 	}
 	if err := writeJSONAtomic(manifestPath, manifest); err != nil {
@@ -258,7 +293,8 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 		"status": "completed", "eligible_positive_count": build.EligiblePositiveCount,
 		"telemetry_censored_count": build.TelemetryCensoredCount, "low_coverage_count": build.LowCoverageCount,
 		"extraction_failed_count": build.ExtractionFailedCount, "entity_time_conflict_count": build.EntityTimeConflictCount,
-		"train_count": build.TrainCount, "validation_count": build.ValidationCount, "test_count": build.TestCount,
+		"correlated_event_count": build.CorrelatedEventCount,
+		"train_count":            build.TrainCount, "validation_count": build.ValidationCount, "test_count": build.TestCount,
 		"control_request_count": build.ControlRequestCount, "control_shortfall_count": build.ControlShortfallCount,
 		"train_end_at": &trainEnd, "validation_end_at": &validationEnd,
 		"manifest_path": manifestPath, "prepared_samples_path": preparedPath, "prepared_samples_sha256": preparedSHA,
@@ -298,17 +334,76 @@ func splitBoundaries(rows []extractedFeatureRow) (time.Time, time.Time, error) {
 	if len(onsets) < 3 {
 		return time.Time{}, time.Time{}, fmt.Errorf("at least three eligible episodes are required for time splits")
 	}
-	index := func(ratio float64) int {
-		value := int(float64(len(onsets)) * ratio)
-		if value <= 0 {
-			return 0
+	unique := make([]time.Time, 0, len(onsets))
+	cumulative := make([]int, 0, len(onsets))
+	for _, onset := range onsets {
+		if len(unique) == 0 || !onset.Equal(unique[len(unique)-1]) {
+			unique = append(unique, onset)
+			cumulative = append(cumulative, 0)
 		}
-		if value >= len(onsets) {
-			return len(onsets) - 1
-		}
-		return value - 1
+		cumulative[len(cumulative)-1]++
 	}
-	return onsets[index(0.70)], onsets[index(0.85)], nil
+	if len(unique) < 3 {
+		return time.Time{}, time.Time{}, fmt.Errorf("at least three distinct eligible episode onsets are required for time splits")
+	}
+	for index := 1; index < len(cumulative); index++ {
+		cumulative[index] += cumulative[index-1]
+	}
+	closestBoundary := func(target float64, first, last int) int {
+		selected := first
+		selectedDistance := math.Abs(float64(cumulative[first]) - float64(len(onsets))*target)
+		for index := first + 1; index <= last; index++ {
+			distance := math.Abs(float64(cumulative[index]) - float64(len(onsets))*target)
+			if distance < selectedDistance {
+				selected, selectedDistance = index, distance
+			}
+		}
+		return selected
+	}
+	trainIndex := closestBoundary(0.70, 0, len(unique)-3)
+	validationIndex := closestBoundary(0.85, trainIndex+1, len(unique)-2)
+	return unique[trainIndex], unique[validationIndex], nil
+}
+
+type correlatedEventGroup struct {
+	episodes map[string]struct{}
+	gpus     map[string]struct{}
+	nodes    map[string]struct{}
+}
+
+func correlatedFleetEpisodes(windows []datasetWindow) map[string]bool {
+	groups := map[string]*correlatedEventGroup{}
+	seenEpisodes := map[string]bool{}
+	for _, window := range windows {
+		if seenEpisodes[window.EpisodeKey] {
+			continue
+		}
+		seenEpisodes[window.EpisodeKey] = true
+		bucket := window.LabelOnsetAt.Truncate(correlatedEventBucket).UTC().Format(time.RFC3339)
+		for _, eventType := range window.EventTypes {
+			key := bucket + "|" + eventType
+			group := groups[key]
+			if group == nil {
+				group = &correlatedEventGroup{
+					episodes: map[string]struct{}{}, gpus: map[string]struct{}{}, nodes: map[string]struct{}{},
+				}
+				groups[key] = group
+			}
+			group.episodes[window.EpisodeKey] = struct{}{}
+			group.gpus[normalizeHistoricalGPUUUID(window.GPUUUID)] = struct{}{}
+			group.nodes[window.NodeIP] = struct{}{}
+		}
+	}
+	result := map[string]bool{}
+	for _, group := range groups {
+		if len(group.gpus) < correlatedEventMinimumGPUs || len(group.nodes) < correlatedEventMinimumNodes {
+			continue
+		}
+		for episode := range group.episodes {
+			result[episode] = true
+		}
+	}
+	return result
 }
 
 func entityIsolatedSplits(rows []extractedFeatureRow, trainEnd, validationEnd time.Time) map[string]string {
