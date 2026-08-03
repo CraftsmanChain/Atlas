@@ -13,7 +13,8 @@ func TestAssembleTrainingMatrixPreservesMissingValuesAndWeightsClasses(t *testin
 	controlFeature := extractedFeatureRow{SampleKey: "window", GPUUUID: "GPU-A", NodeIP: "10.0.0.1", ModelName: "H100", HorizonMinutes: 60,
 		FeatureCutoffAt: onset.Add(-10 * 24 * time.Hour), FeatureContract: "1.9.0", MetricCoverage: 0.9,
 		Features: map[string]float64{"gpu_util_mean_24h": 75}}
-	positives := []preparedTrainingSample{{Sample: positive, LabelValue: 1, TrainingStatus: "eligible", Split: "train"}}
+	metadata := trainingLabelMetadata{EventTypes: []string{"xid_94_contained_ecc"}, DriverVersions: []string{"560.35.03"}, LabelSources: []string{"versioned_rule"}}
+	positives := []preparedTrainingSample{{Sample: positive, LabelMetadata: metadata, LabelValue: 1, TrainingStatus: "eligible", Split: "train"}}
 	controls := []controlFeatureRow{{Request: healthyControlRequest{ControlKey: "c1", PairedSampleKey: "p1", GPUUUID: "GPU-A", NodeIP: "10.0.0.1", ModelName: "H100", HorizonMinutes: 60, FeatureCutoffAt: controlFeature.FeatureCutoffAt, Split: "train"}, Feature: controlFeature, ControlLoadBucket: "high", TrainingStatus: "eligible"}}
 	rows, columns, audit := assembleTrainingMatrix(positives, controls, "1.9.0")
 	if len(rows) != 2 || len(columns) != 2 || audit != (matrixAudit{}) {
@@ -28,6 +29,9 @@ func TestAssembleTrainingMatrixPreservesMissingValuesAndWeightsClasses(t *testin
 			t.Fatalf("positive evidence weight lost: %+v", row)
 		}
 		if row.SampleKind == "healthy_control" {
+			if len(row.LabelMetadata.EventTypes) != 1 || row.LabelMetadata.EventTypes[0] != "xid_94_contained_ecc" {
+				t.Fatalf("control lost paired fault metadata: %+v", row.LabelMetadata)
+			}
 			if _, exists := row.Features["gpu_temp_mean_24h"]; exists {
 				t.Fatal("missing control feature must stay absent rather than become zero")
 			}

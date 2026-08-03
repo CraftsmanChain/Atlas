@@ -347,6 +347,30 @@ func (h *Handler) HandleBaselineModels(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handler) HandleBaselineModel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		historyJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/prediction/history/baseline-models/"), "/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[1] != "report" {
+		historyJSON(w, http.StatusNotFound, map[string]any{"error": "baseline report not found"})
+		return
+	}
+	id, err := strconv.ParseUint(parts[0], 10, 64)
+	if err != nil || id == 0 {
+		historyJSON(w, http.StatusBadRequest, map[string]any{"error": "valid baseline model id is required"})
+		return
+	}
+	report, err := h.service.BaselineModelReport(uint(id))
+	if err != nil {
+		historyJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	historyJSON(w, http.StatusOK, map[string]any{"data": report})
+}
+
 func (h *Handler) HandleCandidate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPatch {
 		historyJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})

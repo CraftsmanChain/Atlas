@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	preparationDatasetVersion   = "gpu-training-preparation-v3"
+	preparationDatasetVersion   = "gpu-training-preparation-v4"
 	correlatedEventBucket       = 5 * time.Minute
 	correlatedEventMinimumGPUs  = 32
 	correlatedEventMinimumNodes = 10
@@ -32,11 +32,27 @@ type PreparationBuildRequest struct {
 }
 
 type preparedTrainingSample struct {
-	Sample          extractedFeatureRow `json:"sample"`
-	LabelValue      int                 `json:"label_value"`
-	TrainingStatus  string              `json:"training_status"`
-	ExclusionReason string              `json:"exclusion_reason,omitempty"`
-	Split           string              `json:"split,omitempty"`
+	Sample          extractedFeatureRow   `json:"sample"`
+	LabelMetadata   trainingLabelMetadata `json:"label_metadata"`
+	LabelValue      int                   `json:"label_value"`
+	TrainingStatus  string                `json:"training_status"`
+	ExclusionReason string                `json:"exclusion_reason,omitempty"`
+	Split           string                `json:"split,omitempty"`
+}
+
+type trainingLabelMetadata struct {
+	EventTypes           []string `json:"event_types"`
+	EventCodes           []string `json:"event_codes,omitempty"`
+	DriverVersions       []string `json:"driver_versions,omitempty"`
+	RuleDecisionVersions []string `json:"rule_decision_versions,omitempty"`
+	LabelSources         []string `json:"label_sources"`
+	HardwareCertainties  []string `json:"hardware_certainties,omitempty"`
+	IdentityEvidence     []string `json:"identity_evidence,omitempty"`
+}
+
+type currentLabelEpisode struct {
+	Eligible bool
+	Metadata trainingLabelMetadata
 }
 
 type healthyControlRequest struct {
@@ -171,14 +187,14 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 	if err != nil {
 		return err
 	}
-	labelEligibleEpisodes, err := s.currentLabelEligibleEpisodes(windows)
+	labelEpisodes, err := s.currentLabelEpisodes(windows)
 	if err != nil {
 		return err
 	}
 	correlatedEpisodes := correlatedFleetEpisodes(windows)
 	eligibleForSplit := make([]extractedFeatureRow, 0, len(rows))
 	for _, row := range rows {
-		if row.ExtractionError == "" && row.MetricCoverage >= build.MinimumMetricCoverage && labelEligibleEpisodes[row.EpisodeKey] && !correlatedEpisodes[row.EpisodeKey] {
+		if row.ExtractionError == "" && row.MetricCoverage >= build.MinimumMetricCoverage && labelEpisodes[row.EpisodeKey].Eligible && !correlatedEpisodes[row.EpisodeKey] {
 			eligibleForSplit = append(eligibleForSplit, row)
 		}
 	}
@@ -190,7 +206,7 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 	splits := entityIsolatedSplits(eligibleForSplit, trainEnd, validationEnd)
 	prepared := make([]preparedTrainingSample, 0, len(rows))
 	for _, row := range rows {
-		item := preparedTrainingSample{Sample: row, LabelValue: 1}
+		item := preparedTrainingSample{Sample: row, LabelMetadata: labelEpisodes[row.EpisodeKey].Metadata, LabelValue: 1}
 		switch {
 		case row.ExtractionError != "":
 			item.TrainingStatus, item.ExclusionReason = "excluded", "extraction_failed"
@@ -201,7 +217,7 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 		case row.MetricCoverage < build.MinimumMetricCoverage:
 			item.TrainingStatus, item.ExclusionReason = "excluded", "metric_coverage_below_threshold"
 			build.LowCoverageCount++
-		case !labelEligibleEpisodes[row.EpisodeKey]:
+		case !labelEpisodes[row.EpisodeKey].Eligible:
 			item.TrainingStatus, item.ExclusionReason = "excluded", "label_not_currently_eligible"
 			build.LabelIneligibleCount++
 		case correlatedEpisodes[row.EpisodeKey]:
@@ -310,6 +326,18 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 }
 
 func (s *Service) currentLabelEligibleEpisodes(windows []datasetWindow) (map[string]bool, error) {
+	episodes, err := s.currentLabelEpisodes(windows)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]bool, len(episodes))
+	for key, episode := range episodes {
+		result[key] = episode.Eligible
+	}
+	return result, nil
+}
+
+func (s *Service) currentLabelEpisodes(windows []datasetWindow) (map[string]currentLabelEpisode, error) {
 	ids := make([]uint, 0)
 	seen := map[uint]bool{}
 	for _, window := range windows {
@@ -332,22 +360,44 @@ func (s *Service) currentLabelEligibleEpisodes(windows []datasetWindow) (map[str
 			rule := decideHistoricalCandidate(candidate, candidate.IdentityEvidenceStatus)
 			candidate.RuleDecision = rule.Decision
 			candidate.RuleConfidence = rule.Confidence
+			candidate.RuleDecisionVersion = historicalRuleDecisionVersion
 		}
 		byID[candidate.ID] = candidate
 	}
-	result := map[string]bool{}
+	result := map[string]currentLabelEpisode{}
 	for _, window := range windows {
 		if len(window.CandidateIDs) == 0 {
-			result[window.EpisodeKey] = true
+			result[window.EpisodeKey] = currentLabelEpisode{Eligible: true, Metadata: trainingLabelMetadata{
+				EventTypes: append([]string(nil), window.EventTypes...), LabelSources: []string{"legacy_manifest"},
+			}}
 			continue
 		}
+		episode := result[window.EpisodeKey]
 		for _, id := range window.CandidateIDs {
-			eligibility := candidateDatasetEligibility(byID[id])
+			candidate, exists := byID[id]
+			if !exists {
+				continue
+			}
+			eligibility := candidateDatasetEligibility(candidate)
 			if eligibility == "rule_positive_proxy" || eligibility == "operator_accepted_proxy" {
-				result[window.EpisodeKey] = true
-				break
+				episode.Eligible = true
+				episode.Metadata.EventTypes = appendUnique(episode.Metadata.EventTypes, candidate.EventType)
+				episode.Metadata.EventCodes = appendUnique(episode.Metadata.EventCodes, candidate.EventCode)
+				episode.Metadata.DriverVersions = appendUnique(episode.Metadata.DriverVersions, firstNonEmpty(candidate.Labels["DCGM_FI_DRIVER_VERSION"], candidate.Labels["driver_version"]))
+				episode.Metadata.RuleDecisionVersions = appendUnique(episode.Metadata.RuleDecisionVersions, candidate.RuleDecisionVersion)
+				episode.Metadata.LabelSources = appendUnique(episode.Metadata.LabelSources, datasetLabelSource(candidate))
+				episode.Metadata.HardwareCertainties = appendUnique(episode.Metadata.HardwareCertainties, candidate.HardwareCertainty)
+				episode.Metadata.IdentityEvidence = appendUnique(episode.Metadata.IdentityEvidence, candidate.IdentityEvidenceStatus)
 			}
 		}
+		sort.Strings(episode.Metadata.EventTypes)
+		sort.Strings(episode.Metadata.EventCodes)
+		sort.Strings(episode.Metadata.DriverVersions)
+		sort.Strings(episode.Metadata.RuleDecisionVersions)
+		sort.Strings(episode.Metadata.LabelSources)
+		sort.Strings(episode.Metadata.HardwareCertainties)
+		sort.Strings(episode.Metadata.IdentityEvidence)
+		result[window.EpisodeKey] = episode
 	}
 	return result, nil
 }

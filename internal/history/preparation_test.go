@@ -166,8 +166,8 @@ func TestCurrentLabelEligibilitySeparatesXID109OperationsFromTraining(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	xid109 := api.HistoricalFaultCandidate{CandidateKey: "xid109", SourceKey: "primary", BackfillRunID: 1, EntityType: "gpu", EventType: "xid_109_context_switch_timeout", OperationalPriority: "high", TrainingDisposition: "proxy_positive_after_review", ReviewStatus: "available_for_override", IdentityEvidenceStatus: "same_gpu_observed_after_event", OnsetAt: time.Now(), DetectionWindowEndAt: time.Now()}
-	xid94 := api.HistoricalFaultCandidate{CandidateKey: "xid94", SourceKey: "primary", BackfillRunID: 1, EntityType: "gpu", EventType: "xid_94_contained_ecc", OperationalPriority: "high", TrainingDisposition: "proxy_positive_after_review", ReviewStatus: "available_for_override", IdentityEvidenceStatus: "same_gpu_observed_after_event", OnsetAt: time.Now(), DetectionWindowEndAt: time.Now()}
+	xid109 := api.HistoricalFaultCandidate{CandidateKey: "xid109", SourceKey: "primary", BackfillRunID: 1, EntityType: "gpu", EventType: "xid_109_context_switch_timeout", OperationalPriority: "high", TrainingDisposition: "proxy_positive_after_review", ReviewStatus: "available_for_override", IdentityEvidenceStatus: "same_gpu_observed_after_event", RuleDecisionVersion: historicalRuleDecisionVersion, OnsetAt: time.Now(), DetectionWindowEndAt: time.Now()}
+	xid94 := api.HistoricalFaultCandidate{CandidateKey: "xid94", SourceKey: "primary", BackfillRunID: 1, EntityType: "gpu", EventType: "xid_94_contained_ecc", EventCode: "94", OperationalPriority: "high", HardwareCertainty: "investigation_required", TrainingDisposition: "proxy_positive_after_review", ReviewStatus: "available_for_override", IdentityEvidenceStatus: "same_gpu_observed_after_event", RuleDecisionVersion: historicalRuleDecisionVersion, Labels: api.StringMap{"DCGM_FI_DRIVER_VERSION": "560.35.03"}, OnsetAt: time.Now(), DetectionWindowEndAt: time.Now()}
 	if err := db.Create(&xid109).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -181,5 +181,15 @@ func TestCurrentLabelEligibilitySeparatesXID109OperationsFromTraining(t *testing
 	}
 	if eligible["e109"] || !eligible["e94"] {
 		t.Fatalf("unexpected current label eligibility: %+v", eligible)
+	}
+	episodes, err := service.currentLabelEpisodes([]datasetWindow{{EpisodeKey: "e109", CandidateIDs: []uint{xid109.ID}}, {EpisodeKey: "e94", CandidateIDs: []uint{xid94.ID}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := episodes["e94"].Metadata
+	if len(metadata.EventTypes) != 1 || metadata.EventTypes[0] != "xid_94_contained_ecc" ||
+		len(metadata.DriverVersions) != 1 || metadata.DriverVersions[0] != "560.35.03" ||
+		len(metadata.RuleDecisionVersions) != 1 || metadata.RuleDecisionVersions[0] != historicalRuleDecisionVersion {
+		t.Fatalf("eligible label metadata was not preserved: %+v", metadata)
 	}
 }
