@@ -881,6 +881,7 @@ function Quality({ tx, view, targets, summary, issueSummary, inventoryError, syn
   </div>;
 }
 function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
+  const readinessPageSize = 50;
   const [prediction, setPrediction] = useState<PredictionOverview | null>(null);
   const [predictionAccuracy, setPredictionAccuracy] = useState<PredictionAccuracy | null>(null);
   const [predictionOutcomes, setPredictionOutcomes] = useState<PredictionOutcome[]>([]);
@@ -912,8 +913,10 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
   const [trainingMatrixStarting, setTrainingMatrixStarting] = useState(false);
   const [baselineModelStarting, setBaselineModelStarting] = useState(false);
   const [reviewingCandidateID, setReviewingCandidateID] = useState<number | null>(null);
+  const [readinessPage, setReadinessPage] = useState(0);
   const [predictionError, setPredictionError] = useState('');
   useEffect(() => {
+    if (view !== 'prediction') return;
     let cancelled = false;
     const loadPrediction = async () => {
       try {
@@ -939,8 +942,9 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
     };
     void loadPrediction();
     return () => { cancelled = true; };
-  }, []);
+  }, [view]);
   useEffect(() => {
+    if (view !== 'prediction') return;
     let cancelled = false;
     const loadIdentityHistory = async () => {
       try {
@@ -973,7 +977,7 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
     };
     void loadIdentityHistory();
     return () => { cancelled = true; };
-  }, []);
+  }, [view]);
   useEffect(() => {
     if (!featureBuilds.some(build => build.status === 'queued' || build.status === 'running')) return;
     const timer = window.setInterval(() => {
@@ -1091,6 +1095,9 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
       setHistoryAuditRunning(false);
     }
   };
+  const readinessPageCount = Math.max(1, Math.ceil(readiness.length / readinessPageSize));
+  const safeReadinessPage = Math.min(readinessPage, readinessPageCount - 1);
+  const visibleReadiness = readiness.slice(safeReadinessPage * readinessPageSize, (safeReadinessPage + 1) * readinessPageSize);
   const runIdentityBackfill = async () => {
     setIdentityBackfillRunning(true);
     try {
@@ -1431,7 +1438,7 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
       </Card>
       <Card className="span-12"><CardHead code={trainingCohortPolicy?.version || 'GPU TRAINING COHORT'} title={tx('故障前窗口与正常对照规则', 'Pre-fault Windows & Healthy Controls')} /><div className="prediction-contract"><span><b>{tx('预测窗口', 'Positive horizons')}</b>{(trainingCohortPolicy?.positive_horizons_minutes || []).map(value => value >= 1440 ? `${value / 1440}d` : value >= 60 ? `${value / 60}h` : `${value}m`).join(' · ') || '—'}</span><span><b>{tx('匹配正常对照', 'Matched healthy controls')}</b>{(trainingCohortPolicy?.control_match_dimensions || []).join(' · ') || '—'}</span><span><b>{tx('正常区间', 'Normal ranges')}</b>{(trainingCohortPolicy?.normal_range_statistics || []).join(' · ') || '—'}</span><span><b>{tx('排除污染窗口', 'Censor contaminated windows')}</b>{trainingCohortPolicy ? `${trainingCohortPolicy.healthy_censor_before_hours}h BEFORE · ${trainingCohortPolicy.healthy_censor_after_hours}h AFTER · telemetry/restart/maintenance/identity change excluded` : '—'}</span><span><b>{tx('换卡证据边界', 'Replacement evidence boundary')}</b>{trainingCohortPolicy?.replacement_evidence_policy || '—'}</span></div></Card>
       <Card className="span-12"><CardHead code="MODEL REGISTRY" title={tx('预测时间窗与模型契约', 'Prediction Horizons & Model Contracts')} action={<Badge value={`${prediction?.models.length || 0} SPECS`} kind="info" />} /><div className="table-wrap"><table className="prediction-model-table"><thead><tr><th>MODEL KEY</th><th>{tx('对象', 'Entity')}</th><th>{tx('时间窗', 'Horizon')}</th><th>{tx('算法 / 运行时', 'Algorithm / Runtime')}</th><th>{tx('状态', 'Status')}</th><th>{tx('契约', 'Contracts')}</th></tr></thead><tbody>{(prediction?.models || []).map(model => <tr key={model.model_key}><td><b>{model.model_key}</b><small>v{model.version}</small></td><td>{model.hardware_class} / {model.entity_type}</td><td><b>{model.horizon_minutes >= 1440 ? `${model.horizon_minutes / 1440}d` : model.horizon_minutes >= 60 ? `${model.horizon_minutes / 60}h` : `${model.horizon_minutes}m`}</b></td><td><code>{model.algorithm} / {model.runtime}</code></td><td><Badge value={model.status.toUpperCase()} kind="info" /></td><td><small>{model.feature_contract_version}</small><small>{model.label_contract_version}</small></td></tr>)}</tbody></table></div></Card>
-      <Card className="span-12"><CardHead code="POINT-IN-TIME READINESS" title={tx('GPU 数据就绪队列', 'GPU Data Readiness Queue')} action={<Badge value={`${readiness.length} GPUS`} kind="info" />} /><div className="table-wrap"><table className="prediction-readiness-table"><thead><tr><th>{tx('节点 / GPU', 'Node / GPU')}</th><th>{tx('型号', 'Model')}</th><th>{tx('状态', 'Status')}</th><th>{tx('数据置信度', 'Data Confidence')}</th><th>{tx('特征覆盖', 'Feature Coverage')}</th><th>{tx('阻断原因', 'Blocking Reasons')}</th><th>{tx('观测时间', 'Observed')}</th></tr></thead><tbody>{readiness.map(item => <tr key={`${item.gpu_asset_id}-${item.feature_snapshot_id}`}><td><b>{item.node_ip} · GPU {item.gpu_index}</b><small>{item.gpu_uuid || item.entity_key}</small></td><td>{item.model_name || '—'}</td><td><Badge value={item.status.toUpperCase()} kind={item.status === 'ready_for_dataset' ? 'healthy' : 'warning'} /></td><td><Badge value={item.data_confidence || 'UNKNOWN'} kind={item.data_confidence === 'A' ? 'healthy' : item.data_confidence === 'B' ? 'info' : 'warning'} /></td><td>{Math.round(item.feature_coverage * 100)}%</td><td><small>{item.blocking_reasons.length ? item.blocking_reasons.join(' · ') : tx('无；仅数据集就绪', 'none; dataset-ready only')}</small></td><td>{time(item.observed_at, lang)}</td></tr>)}</tbody></table>{readiness.length === 0 && <Empty tx={tx} title={predictionError ? tx('预测框架 API 不可用', 'Prediction API unavailable') : tx('等待 GPU 特征快照', 'Waiting for GPU feature snapshots')} />}</div></Card>
+      <Card className="span-12"><CardHead code="POINT-IN-TIME READINESS" title={tx('GPU 数据就绪队列', 'GPU Data Readiness Queue')} action={<div className="table-actions"><Badge value={`${readiness.length} GPUS`} kind="info" /><button disabled={safeReadinessPage === 0} onClick={() => setReadinessPage(page => Math.max(0, page - 1))} aria-label={tx('上一页', 'Previous page')}><ChevronLeft size={15} /></button><span>{safeReadinessPage + 1} / {readinessPageCount}</span><button disabled={safeReadinessPage + 1 >= readinessPageCount} onClick={() => setReadinessPage(page => Math.min(readinessPageCount - 1, page + 1))} aria-label={tx('下一页', 'Next page')}><ChevronRight size={15} /></button></div>} /><div className="table-wrap"><table className="prediction-readiness-table"><thead><tr><th>{tx('节点 / GPU', 'Node / GPU')}</th><th>{tx('型号', 'Model')}</th><th>{tx('状态', 'Status')}</th><th>{tx('数据置信度', 'Data Confidence')}</th><th>{tx('特征覆盖', 'Feature Coverage')}</th><th>{tx('阻断原因', 'Blocking Reasons')}</th><th>{tx('观测时间', 'Observed')}</th></tr></thead><tbody>{visibleReadiness.map(item => <tr key={`${item.gpu_asset_id}-${item.feature_snapshot_id}`}><td><b>{item.node_ip} · GPU {item.gpu_index}</b><small>{item.gpu_uuid || item.entity_key}</small></td><td>{item.model_name || '—'}</td><td><Badge value={item.status.toUpperCase()} kind={item.status === 'ready_for_dataset' ? 'healthy' : 'warning'} /></td><td><Badge value={item.data_confidence || 'UNKNOWN'} kind={item.data_confidence === 'A' ? 'healthy' : item.data_confidence === 'B' ? 'info' : 'warning'} /></td><td>{Math.round(item.feature_coverage * 100)}%</td><td><small>{item.blocking_reasons.length ? item.blocking_reasons.join(' · ') : tx('无；仅数据集就绪', 'none; dataset-ready only')}</small></td><td>{time(item.observed_at, lang)}</td></tr>)}</tbody></table>{readiness.length === 0 && <Empty tx={tx} title={predictionError ? tx('预测框架 API 不可用', 'Prediction API unavailable') : tx('等待 GPU 特征快照', 'Waiting for GPU feature snapshots')} />}</div></Card>
       <Card className="span-12"><CardHead code="LABEL LEDGER" title={tx('GPU 故障标签台账', 'GPU Failure Label Ledger')} action={<div className="table-actions"><Badge value={`${prediction?.labels.confirmed || 0} CONFIRMED`} kind={(prediction?.labels.confirmed || 0) > 0 ? 'healthy' : 'warning'} /><Badge value={`${(prediction?.labels.strong_proxy || 0) + (prediction?.labels.weak_proxy || 0)} PROXY`} kind="info" /></div>} /><div className="table-wrap"><table className="prediction-label-table"><thead><tr><th>LABEL</th><th>{tx('节点 / GPU', 'Node / GPU')}</th><th>{tx('型号', 'Model')}</th><th>{tx('事件类型', 'Event Type')}</th><th>{tx('质量层级', 'Quality Tier')}</th><th>{tx('来源', 'Provenance')}</th><th>{tx('发生时间', 'Occurred')}</th></tr></thead><tbody>{failureLabels.map(label => <tr key={label.id}><td><code>{label.label_key}</code></td><td><b>{label.node_ip || '—'}</b><small>{label.gpu_uuid || label.entity_key}</small></td><td>{label.model_name || '—'}</td><td><code>{label.event_type}</code><small>{label.rule_version || '—'}</small></td><td><Badge value={label.quality_tier.toUpperCase()} kind={label.quality_tier === 'confirmed' ? 'healthy' : label.quality_tier === 'strong_proxy' ? 'warning' : 'info'} /></td><td><small>{label.source_type} #{label.source_record_id}</small>{label.confirmation_resolution_id ? <small>resolution #{label.confirmation_resolution_id}</small> : null}</td><td>{time(label.occurred_at, lang)}</td></tr>)}</tbody></table>{failureLabels.length === 0 && <Empty tx={tx} title={tx('等待首次标签同步', 'Waiting for first label synchronization')} />}</div></Card>
       <Card className="span-6"><CardHead code="LABEL CONTRACT" title={tx('标签质量分层', 'Label Quality Tiers')} /><div className="prediction-contract"><span><b>{tx('确认正例', 'Confirmed positives')}</b>{(prediction?.label_policy.confirmed_positive || []).join(' · ') || '—'}</span><span><b>{tx('弱标签', 'Weak labels')}</b>{(prediction?.label_policy.weak_positive || []).join(' · ') || '—'}</span><span><b>{tx('禁止作为正例', 'Excluded positives')}</b>{(prediction?.label_policy.excluded_as_positive || []).join(' · ') || '—'}</span></div></Card>
       <Card className="span-6"><CardHead code="RELEASE GATES" title={tx('模型上线门槛', 'Model Release Gates')} /><div className="prediction-contract"><span><b>POINT-IN-TIME</b>{prediction?.label_policy.point_in_time_rule || '—'}</span><span><b>SPLIT</b>{prediction?.label_policy.entity_isolation || '—'}</span><span><b>SHADOW / NO AUTO ACTION</b>{prediction ? `precision ≥ ${prediction.release_gates.minimum_precision} · recall ≥ ${prediction.release_gates.minimum_recall} · calibration required` : '—'}</span></div></Card>
@@ -1468,13 +1475,14 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   ];
   const modules = baseModules.map(module => module.id === 'prediction' ? {
     ...module,
-    version: 'v0.22.0',
+    version: 'v0.22.1',
     status: tx('机器可审计特征门', 'MACHINE-AUDITED FEATURE GATE'),
     desc: tx(
       '历史候选由版本化规则自动裁决并携带置信度，人工只覆核不确定项、重要故障和抽样结果且可改判；规则正代理和人工接受样本再去重为故障 episode，生成严格早于标签时间的多预测窗口清单。',
       'Versioned rules automatically adjudicate historical candidates with confidence. Humans review uncertainty, important incidents and samples and may override decisions. Rule-positive and human-accepted samples are then deduplicated into fault episodes with multi-horizon cutoffs strictly before label time.',
     ),
     history: [
+      tx('v0.22.1 · 预测数据仅在进入故障预测子页时加载，GPU 就绪队列每页仅渲染 50 条', 'v0.22.1 · loads prediction datasets only when the failure-prediction subpage opens and renders the GPU readiness queue in pages of 50'),
       tx('v0.22.0 · 每次训练逐列审计禁用特征并记录排除原因，发现禁用列入模即阻断产物', 'v0.22.0 · audits prohibited features column by column with exclusion reasons and blocks artifacts whenever a prohibited column is selected'),
       tx('v0.21.0 · 采样数仅用于连续性质量门且禁止入模，正样本核心遥测连续性必须达到 70%', 'v0.21.0 · sample counts are quality-gate-only and model-excluded; positive core telemetry continuity must reach 70%'),
       tx('v0.20.0 · 只在通过数据充分性门的故障类型、GPU 型号和预测窗口上训练专用离线基线', 'v0.20.0 · trains scoped offline baselines only for fault type, GPU model and horizons that pass the data-sufficiency gate'),
@@ -1544,7 +1552,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.48.0" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.48.1" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>
