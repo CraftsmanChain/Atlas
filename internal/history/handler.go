@@ -316,6 +316,30 @@ func (h *Handler) HandleTrainingMatrices(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+func (h *Handler) HandleTrainingMatrix(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		historyJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/prediction/history/training-matrices/"), "/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[1] != "readiness" {
+		historyJSON(w, http.StatusNotFound, map[string]any{"error": "training matrix readiness not found"})
+		return
+	}
+	id, err := strconv.ParseUint(parts[0], 10, 64)
+	if err != nil || id == 0 {
+		historyJSON(w, http.StatusBadRequest, map[string]any{"error": "valid training matrix id is required"})
+		return
+	}
+	report, err := h.service.TrainingMatrixReadiness(uint(id))
+	if err != nil {
+		historyJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	historyJSON(w, http.StatusOK, map[string]any{"data": report})
+}
+
 func (h *Handler) HandleBaselineModels(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:

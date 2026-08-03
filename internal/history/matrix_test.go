@@ -1,6 +1,7 @@
 package history
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -47,5 +48,32 @@ func TestAssembleTrainingMatrixRejectsLeakageAndPairMismatch(t *testing.T) {
 	rows, _, audit := assembleTrainingMatrix(positives, []controlFeatureRow{control}, "1.9.0")
 	if len(rows) != 0 || audit.pointInTime != 1 || audit.pairing != 1 {
 		t.Fatalf("audit did not reject leakage: rows=%d audit=%+v", len(rows), audit)
+	}
+}
+
+func TestCohortReadinessGatesEachFaultModelAndHorizon(t *testing.T) {
+	rows := make([]trainingMatrixRow, 0, 150)
+	add := func(eventType, split string, horizon, positives, controls, positiveGPUs int) {
+		metadata := trainingLabelMetadata{EventTypes: []string{eventType}}
+		for index := 0; index < positives; index++ {
+			rows = append(rows, trainingMatrixRow{LabelValue: 1, Split: split, HorizonMinutes: horizon, GPUUUID: fmt.Sprintf("GPU-%s-P-%02d", split, index%positiveGPUs), ModelName: "H100", LabelMetadata: metadata})
+		}
+		for index := 0; index < controls; index++ {
+			rows = append(rows, trainingMatrixRow{LabelValue: 0, Split: split, HorizonMinutes: horizon, GPUUUID: fmt.Sprintf("GPU-%s-C-%02d", split, index), ModelName: "H100", LabelMetadata: metadata})
+		}
+	}
+	add("gpu_dropout", "train", 60, 30, 60, 10)
+	add("gpu_dropout", "validation", 60, 10, 20, 5)
+	add("gpu_dropout", "test", 60, 10, 20, 5)
+	add("xid_94_contained_ecc", "test", 60, 1, 1, 1)
+	report := evaluateCohortReadiness("matrix", rows)
+	if report.ReadyStrata != 1 || report.InsufficientStrata != 1 || len(report.Strata) != 2 {
+		t.Fatalf("unexpected readiness summary: %+v", report)
+	}
+	if report.Strata[0].EventType != "gpu_dropout" || report.Strata[0].Status != "exploratory_ready" {
+		t.Fatalf("expected dropout stratum to pass: %+v", report.Strata[0])
+	}
+	if report.Strata[1].Status != "insufficient_data" || len(report.Strata[1].BlockingReasons) == 0 {
+		t.Fatalf("expected sparse XID stratum to be blocked: %+v", report.Strata[1])
 	}
 }

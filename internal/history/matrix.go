@@ -1,17 +1,53 @@
 package history
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"atlas/pkg/api"
 )
 
-const trainingMatrixVersion = "gpu-supervised-training-matrix-v2"
+const trainingMatrixVersion = "gpu-supervised-training-matrix-v3"
+
+type cohortReadinessPolicy struct {
+	MinimumTrainPositiveGPUs      int `json:"minimum_train_positive_gpus"`
+	MinimumEvaluationPositiveGPUs int `json:"minimum_evaluation_positive_gpus"`
+	MinimumTrainPositives         int `json:"minimum_train_positives"`
+	MinimumTrainControls          int `json:"minimum_train_controls"`
+	MinimumEvaluationPositives    int `json:"minimum_evaluation_positives"`
+	MinimumEvaluationControls     int `json:"minimum_evaluation_controls"`
+}
+
+type cohortSplitReadiness struct {
+	PositiveCount int `json:"positive_count"`
+	ControlCount  int `json:"control_count"`
+	PositiveGPUs  int `json:"positive_gpus"`
+	ControlGPUs   int `json:"control_gpus"`
+}
+
+type cohortStratumReadiness struct {
+	EventType       string                          `json:"event_type"`
+	ModelName       string                          `json:"model_name"`
+	HorizonMinutes  int                             `json:"horizon_minutes"`
+	Status          string                          `json:"status"`
+	BlockingReasons []string                        `json:"blocking_reasons"`
+	Splits          map[string]cohortSplitReadiness `json:"splits"`
+}
+
+type cohortReadinessReport struct {
+	MatrixKey          string                   `json:"matrix_key"`
+	Policy             cohortReadinessPolicy    `json:"policy"`
+	ReadyStrata        int                      `json:"ready_strata"`
+	InsufficientStrata int                      `json:"insufficient_strata"`
+	Strata             []cohortStratumReadiness `json:"strata"`
+}
 
 type TrainingMatrixBuildRequest struct {
 	SourceControlBuildID uint `json:"source_control_build_id"`
@@ -40,20 +76,21 @@ type trainingMatrixRow struct {
 }
 
 type matrixManifest struct {
-	TrainingMatrixKey      string         `json:"training_matrix_key"`
-	Version                string         `json:"version"`
-	SourcePreparedDataset  string         `json:"source_prepared_dataset_key"`
-	SourceControlDataset   string         `json:"source_control_dataset_key"`
-	FeatureContractVersion string         `json:"feature_contract_version"`
-	FeatureColumns         []string       `json:"feature_columns"`
-	Counts                 map[string]int `json:"counts"`
-	PointInTimePolicy      string         `json:"point_in_time_policy"`
-	SplitPolicy            string         `json:"split_policy"`
-	MissingValuePolicy     string         `json:"missing_value_policy"`
-	WeightPolicy           string         `json:"weight_policy"`
-	MatrixFile             string         `json:"matrix_file"`
-	MatrixSHA256           string         `json:"matrix_sha256"`
-	CreatedAt              time.Time      `json:"created_at"`
+	TrainingMatrixKey      string                `json:"training_matrix_key"`
+	Version                string                `json:"version"`
+	SourcePreparedDataset  string                `json:"source_prepared_dataset_key"`
+	SourceControlDataset   string                `json:"source_control_dataset_key"`
+	FeatureContractVersion string                `json:"feature_contract_version"`
+	FeatureColumns         []string              `json:"feature_columns"`
+	Counts                 map[string]int        `json:"counts"`
+	PointInTimePolicy      string                `json:"point_in_time_policy"`
+	SplitPolicy            string                `json:"split_policy"`
+	MissingValuePolicy     string                `json:"missing_value_policy"`
+	WeightPolicy           string                `json:"weight_policy"`
+	CohortReadiness        cohortReadinessReport `json:"cohort_readiness"`
+	MatrixFile             string                `json:"matrix_file"`
+	MatrixSHA256           string                `json:"matrix_sha256"`
+	CreatedAt              time.Time             `json:"created_at"`
 }
 
 func (s *Service) TrainingMatrixBuilds(limit int) ([]api.TrainingMatrixBuild, error) {
@@ -63,6 +100,41 @@ func (s *Service) TrainingMatrixBuilds(limit int) ([]api.TrainingMatrixBuild, er
 	var rows []api.TrainingMatrixBuild
 	err := s.db.Order("created_at DESC, id DESC").Limit(limit).Find(&rows).Error
 	return rows, err
+}
+
+func (s *Service) TrainingMatrixReadiness(id uint) (cohortReadinessReport, error) {
+	var build api.TrainingMatrixBuild
+	if err := s.db.First(&build, id).Error; err != nil {
+		return cohortReadinessReport{}, err
+	}
+	if build.Status != "completed" || build.Version != trainingMatrixVersion || build.ManifestPath == "" {
+		return cohortReadinessReport{}, fmt.Errorf("completed training matrix manifest is required")
+	}
+	base, err := filepath.Abs(s.config.DatasetDir)
+	if err != nil {
+		return cohortReadinessReport{}, err
+	}
+	path, err := filepath.Abs(build.ManifestPath)
+	if err != nil {
+		return cohortReadinessReport{}, err
+	}
+	relative, err := filepath.Rel(base, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return cohortReadinessReport{}, fmt.Errorf("training matrix manifest is outside the configured dataset directory")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return cohortReadinessReport{}, err
+	}
+	defer file.Close()
+	var manifest matrixManifest
+	if err := json.NewDecoder(io.LimitReader(file, 32<<20)).Decode(&manifest); err != nil {
+		return cohortReadinessReport{}, fmt.Errorf("decode training matrix manifest: %w", err)
+	}
+	if manifest.TrainingMatrixKey != build.TrainingMatrixKey {
+		return cohortReadinessReport{}, fmt.Errorf("training matrix manifest key mismatch")
+	}
+	return manifest.CohortReadiness, nil
 }
 
 func (s *Service) StartTrainingMatrixBuild(request TrainingMatrixBuildRequest) (api.TrainingMatrixBuild, error) {
@@ -206,6 +278,7 @@ func (s *Service) buildTrainingMatrix(build *api.TrainingMatrixBuild) error {
 		SplitPolicy:        "time ordered and GPU UUID isolated; paired controls inherit the positive split",
 		MissingValuePolicy: "sparse feature maps preserve missingness; loaders must use null/NaN plus train-only imputation and must never convert absence to zero",
 		WeightPolicy:       "training_weight=evidence_weight*per-split-and-horizon balanced class weight; evaluation must report unweighted metrics",
+		CohortReadiness:    evaluateCohortReadiness(build.TrainingMatrixKey, rows),
 		MatrixFile:         filepath.Base(matrixPath), MatrixSHA256: checksum, CreatedAt: s.now(),
 	}
 	if err := writeJSONAtomic(manifestPath, manifest); err != nil {
@@ -218,6 +291,106 @@ func (s *Service) buildTrainingMatrix(build *api.TrainingMatrixBuild) error {
 		"validation_positive_count": build.ValidationPositiveCount, "validation_control_count": build.ValidationControlCount,
 		"test_positive_count": build.TestPositiveCount, "test_control_count": build.TestControlCount,
 		"matrix_path": matrixPath, "matrix_sha256": checksum, "manifest_path": manifestPath, "finished_at": &finished}).Error
+}
+
+func currentCohortReadinessPolicy() cohortReadinessPolicy {
+	return cohortReadinessPolicy{
+		MinimumTrainPositiveGPUs: 10, MinimumEvaluationPositiveGPUs: 5,
+		MinimumTrainPositives: 30, MinimumTrainControls: 60,
+		MinimumEvaluationPositives: 10, MinimumEvaluationControls: 20,
+	}
+}
+
+type mutableCohortSplit struct {
+	positive, control         int
+	positiveGPUs, controlGPUs map[string]bool
+}
+
+func evaluateCohortReadiness(matrixKey string, rows []trainingMatrixRow) cohortReadinessReport {
+	policy := currentCohortReadinessPolicy()
+	type stratumKey struct {
+		eventType string
+		modelName string
+		horizon   int
+	}
+	grouped := map[stratumKey]map[string]*mutableCohortSplit{}
+	for _, row := range rows {
+		events := row.LabelMetadata.EventTypes
+		if len(events) == 0 {
+			events = []string{"unknown"}
+		}
+		model := strings.TrimSpace(row.ModelName)
+		if model == "" {
+			model = "unknown"
+		}
+		for _, eventType := range events {
+			eventType = strings.TrimSpace(eventType)
+			if eventType == "" {
+				eventType = "unknown"
+			}
+			key := stratumKey{eventType: eventType, modelName: model, horizon: row.HorizonMinutes}
+			if grouped[key] == nil {
+				grouped[key] = map[string]*mutableCohortSplit{}
+			}
+			if grouped[key][row.Split] == nil {
+				grouped[key][row.Split] = &mutableCohortSplit{positiveGPUs: map[string]bool{}, controlGPUs: map[string]bool{}}
+			}
+			split := grouped[key][row.Split]
+			gpu := normalizeHistoricalGPUUUID(row.GPUUUID)
+			if row.LabelValue == 1 {
+				split.positive++
+				if gpu != "" {
+					split.positiveGPUs[gpu] = true
+				}
+			} else {
+				split.control++
+				if gpu != "" {
+					split.controlGPUs[gpu] = true
+				}
+			}
+		}
+	}
+	report := cohortReadinessReport{MatrixKey: matrixKey, Policy: policy}
+	for key, splitRows := range grouped {
+		item := cohortStratumReadiness{EventType: key.eventType, ModelName: key.modelName, HorizonMinutes: key.horizon, Status: "exploratory_ready", Splits: map[string]cohortSplitReadiness{}}
+		for _, splitName := range []string{"train", "validation", "test"} {
+			split := splitRows[splitName]
+			if split == nil {
+				split = &mutableCohortSplit{positiveGPUs: map[string]bool{}, controlGPUs: map[string]bool{}}
+			}
+			item.Splits[splitName] = cohortSplitReadiness{PositiveCount: split.positive, ControlCount: split.control, PositiveGPUs: len(split.positiveGPUs), ControlGPUs: len(split.controlGPUs)}
+			minimumPositives, minimumControls, minimumGPUs := policy.MinimumEvaluationPositives, policy.MinimumEvaluationControls, policy.MinimumEvaluationPositiveGPUs
+			if splitName == "train" {
+				minimumPositives, minimumControls, minimumGPUs = policy.MinimumTrainPositives, policy.MinimumTrainControls, policy.MinimumTrainPositiveGPUs
+			}
+			if split.positive < minimumPositives {
+				item.BlockingReasons = append(item.BlockingReasons, fmt.Sprintf("%s_positive_count_%d_lt_%d", splitName, split.positive, minimumPositives))
+			}
+			if split.control < minimumControls {
+				item.BlockingReasons = append(item.BlockingReasons, fmt.Sprintf("%s_control_count_%d_lt_%d", splitName, split.control, minimumControls))
+			}
+			if len(split.positiveGPUs) < minimumGPUs {
+				item.BlockingReasons = append(item.BlockingReasons, fmt.Sprintf("%s_positive_gpus_%d_lt_%d", splitName, len(split.positiveGPUs), minimumGPUs))
+			}
+		}
+		if len(item.BlockingReasons) > 0 {
+			item.Status = "insufficient_data"
+			report.InsufficientStrata++
+		} else {
+			report.ReadyStrata++
+		}
+		report.Strata = append(report.Strata, item)
+	}
+	sort.Slice(report.Strata, func(i, j int) bool {
+		if report.Strata[i].EventType != report.Strata[j].EventType {
+			return report.Strata[i].EventType < report.Strata[j].EventType
+		}
+		if report.Strata[i].ModelName != report.Strata[j].ModelName {
+			return report.Strata[i].ModelName < report.Strata[j].ModelName
+		}
+		return report.Strata[i].HorizonMinutes < report.Strata[j].HorizonMinutes
+	})
+	return report
 }
 
 type matrixAudit struct{ duplicates, entityConflicts, pointInTime, pairing, contract int }
