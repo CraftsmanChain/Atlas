@@ -217,6 +217,7 @@ type TrainingPreparationBuild struct {
 	TelemetryCensoredCount  int        `json:"telemetry_censored_count"`
 	LowCoverageCount        int        `json:"low_coverage_count"`
 	ExtractionFailedCount   int        `json:"extraction_failed_count"`
+	CorrelatedEventCount    int        `json:"correlated_event_count"`
 	EntityTimeConflictCount int        `json:"entity_time_conflict_count"`
 	TrainCount              int        `json:"train_count"`
 	ValidationCount         int        `json:"validation_count"`

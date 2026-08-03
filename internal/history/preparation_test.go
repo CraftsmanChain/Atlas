@@ -57,11 +57,29 @@ func TestTrainingPreparationGatesTelemetryAndBuildsLeakageSafeSplits(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	cohortDir := filepath.Join(outputRoot, "cohort")
+	if err := os.MkdirAll(cohortDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	windows := make([]datasetWindow, 0, len(rows))
+	for _, row := range rows {
+		windows = append(windows, datasetWindow{
+			SampleKey: row.SampleKey, EpisodeKey: row.EpisodeKey, NodeIP: row.NodeIP,
+			GPUUUID: row.GPUUUID, ModelName: row.ModelName, EventTypes: []string{"xid_79_gpu_fallen_off_bus"},
+			HorizonMinutes: row.HorizonMinutes, FeatureCutoffAt: row.FeatureCutoffAt, LabelOnsetAt: row.LabelOnsetAt,
+		})
+	}
+	windowPath := filepath.Join(cohortDir, "sample_windows.jsonl")
+	windowChecksum, err := writeJSONLines(windowPath, windows)
+	if err != nil {
+		t.Fatal(err)
+	}
 	finished := base
 	cohort := api.TrainingDatasetBuild{
 		DatasetKey: "cohort-v2", Version: datasetBuildVersion, Status: "completed",
 		SourceKey: "primary", EpisodeCount: 11, WindowCount: 11,
-		OutputDir: filepath.Join(outputRoot, "cohort"), StartedAt: base, FinishedAt: &finished,
+		OutputDir: cohortDir, WindowManifestPath: windowPath, WindowManifestSHA256: windowChecksum,
+		StartedAt: base, FinishedAt: &finished,
 	}
 	if err := db.Create(&cohort).Error; err != nil {
 		t.Fatal(err)
@@ -120,5 +138,25 @@ func TestFaultContaminationChecksEntireFeatureWindow(t *testing.T) {
 	}
 	if faultWindowContaminated(windowStart.Add(-14*24*time.Hour), windowEnd.Add(-14*24*time.Hour), []time.Time{fault}) {
 		t.Fatal("feature window outside the fault censor interval must remain eligible")
+	}
+}
+
+func TestCorrelatedFleetEpisodesExcludesOnlyCrossNodeShock(t *testing.T) {
+	base := time.Date(2026, 7, 1, 8, 52, 0, 0, time.UTC)
+	windows := make([]datasetWindow, 0, 41)
+	for index := 0; index < 40; index++ {
+		windows = append(windows, datasetWindow{
+			EpisodeKey: fmt.Sprintf("fleet-%02d", index), GPUUUID: fmt.Sprintf("GPU-%02d", index),
+			NodeIP: fmt.Sprintf("10.0.0.%d", index/4), EventTypes: []string{"gpu_dropout"},
+			LabelOnsetAt: base.Add(time.Duration(index%4) * time.Second),
+		})
+	}
+	windows = append(windows, datasetWindow{
+		EpisodeKey: "single-node", GPUUUID: "GPU-SINGLE", NodeIP: "10.0.1.1",
+		EventTypes: []string{"xid_79_gpu_fallen_off_bus"}, LabelOnsetAt: base,
+	})
+	excluded := correlatedFleetEpisodes(windows)
+	if len(excluded) != 40 || !excluded["fleet-00"] || excluded["single-node"] {
+		t.Fatalf("unexpected correlated fleet exclusions: %d %+v", len(excluded), excluded)
 	}
 }
