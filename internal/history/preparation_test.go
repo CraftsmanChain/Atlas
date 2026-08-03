@@ -27,8 +27,8 @@ func TestTrainingPreparationGatesTelemetryAndBuildsLeakageSafeSplits(t *testing.
 			SampleKey: fmt.Sprintf("sample-%02d", index), EpisodeKey: fmt.Sprintf("episode-%02d", index),
 			GPUUUID: gpu, NodeIP: fmt.Sprintf("10.0.0.%d", index+1), ModelName: "NVIDIA H100 80GB HBM3",
 			HorizonMinutes: 60, FeatureCutoffAt: onset.Add(-time.Hour), LabelOnsetAt: onset,
-			MetricCoverage: 0.8, ExpectedMetrics: 18, AvailableMetrics: 15,
-			Features: map[string]float64{"gpu_temp_mean_24h": 50}, LabelWeight: 0.9,
+			MetricCoverage: 0.8, ExpectedMetrics: 18, AvailableMetrics: 15, LookbackMinutes: 1440, QueryStepSeconds: 300,
+			Features: map[string]float64{"gpu_temp_mean_24h": 50, "gpu_temp_sample_count_24h": 289, "power_usage_sample_count_24h": 289, "gpu_util_sample_count_24h": 289}, LabelWeight: 0.9,
 		})
 		interval := api.HistoricalGPUIdentityInterval{
 			IntervalKey: "identity-" + gpu, SourceKey: "primary", BackfillRunID: 1,
@@ -110,6 +110,13 @@ func TestTrainingPreparationGatesTelemetryAndBuildsLeakageSafeSplits(t *testing.
 	}
 	if build.PreparedSamplesSHA256 == "" || build.ControlRequestsSHA256 == "" {
 		t.Fatalf("preparation artifacts were not checksummed: %+v", build)
+	}
+}
+
+func TestPositiveTelemetryContinuityRejectsSparseCoreSamples(t *testing.T) {
+	row := extractedFeatureRow{LookbackMinutes: 1440, QueryStepSeconds: 300, Features: map[string]float64{"gpu_temp_sample_count_24h": 289, "power_usage_sample_count_24h": 289, "gpu_util_sample_count_24h": 20}}
+	if continuity := positiveTelemetryContinuity(row); continuity >= minimumTelemetryContinuity {
+		t.Fatalf("sparse positive telemetry continuity=%v", continuity)
 	}
 }
 

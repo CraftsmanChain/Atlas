@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	preparationDatasetVersion   = "gpu-training-preparation-v4"
+	preparationDatasetVersion   = "gpu-training-preparation-v5"
 	correlatedEventBucket       = 5 * time.Minute
 	correlatedEventMinimumGPUs  = 32
 	correlatedEventMinimumNodes = 10
@@ -164,7 +164,7 @@ func (s *Service) BuildTrainingPreparation(request PreparationBuildRequest) (api
 			"status": "failed", "error_message": err.Error(), "finished_at": &finished,
 			"eligible_positive_count":  build.EligiblePositiveCount,
 			"telemetry_censored_count": build.TelemetryCensoredCount, "low_coverage_count": build.LowCoverageCount,
-			"extraction_failed_count": build.ExtractionFailedCount, "label_ineligible_count": build.LabelIneligibleCount, "correlated_event_count": build.CorrelatedEventCount,
+			"extraction_failed_count": build.ExtractionFailedCount, "positive_discontinuous_count": build.PositiveDiscontinuousCount, "label_ineligible_count": build.LabelIneligibleCount, "correlated_event_count": build.CorrelatedEventCount,
 			"entity_time_conflict_count": build.EntityTimeConflictCount,
 			"train_count":                build.TrainCount, "validation_count": build.ValidationCount, "test_count": build.TestCount,
 			"train_end_at": build.TrainEndAt, "validation_end_at": build.ValidationEndAt,
@@ -194,7 +194,7 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 	correlatedEpisodes := correlatedFleetEpisodes(windows)
 	eligibleForSplit := make([]extractedFeatureRow, 0, len(rows))
 	for _, row := range rows {
-		if row.ExtractionError == "" && row.MetricCoverage >= build.MinimumMetricCoverage && labelEpisodes[row.EpisodeKey].Eligible && !correlatedEpisodes[row.EpisodeKey] {
+		if row.ExtractionError == "" && row.MetricCoverage >= build.MinimumMetricCoverage && positiveTelemetryContinuity(row) >= minimumTelemetryContinuity && labelEpisodes[row.EpisodeKey].Eligible && !correlatedEpisodes[row.EpisodeKey] {
 			eligibleForSplit = append(eligibleForSplit, row)
 		}
 	}
@@ -217,6 +217,9 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 		case row.MetricCoverage < build.MinimumMetricCoverage:
 			item.TrainingStatus, item.ExclusionReason = "excluded", "metric_coverage_below_threshold"
 			build.LowCoverageCount++
+		case positiveTelemetryContinuity(row) < minimumTelemetryContinuity:
+			item.TrainingStatus, item.ExclusionReason = "excluded", "positive_telemetry_discontinuous"
+			build.PositiveDiscontinuousCount++
 		case !labelEpisodes[row.EpisodeKey].Eligible:
 			item.TrainingStatus, item.ExclusionReason = "excluded", "label_not_currently_eligible"
 			build.LabelIneligibleCount++
@@ -302,7 +305,7 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 		SourceFeatureDatasetKey: source.FeatureDatasetKey, MinimumCoverage: build.MinimumMetricCoverage,
 		ControlsPerPositive: controlsPerPositive, TrainEndAt: trainEnd, ValidationEndAt: validationEnd,
 		SplitPolicy:           "strict time order plus GPU UUID isolation; entities crossing a boundary are excluded",
-		QualityPolicy:         "extraction errors, zero telemetry, low coverage, labels ineligible under " + historicalRuleDecisionVersion + ", and correlated fleet events are excluded without zero imputation",
+		QualityPolicy:         "extraction errors, zero telemetry, core telemetry continuity below 70%, low coverage, labels ineligible under " + historicalRuleDecisionVersion + ", and correlated fleet events are excluded without zero imputation",
 		ControlPolicy:         "same-GPU stable-identity historical cutoffs; exclude every known fault [-168h,+72h]; telemetry and load validation remains required",
 		CorrelatedEventPolicy: "exclude same-event five-minute buckets affecting at least 32 GPUs across at least 10 nodes from GPU hardware training",
 		PreparedSamples:       filepath.Base(preparedPath), PreparedSamplesSHA256: preparedSHA,
@@ -315,7 +318,7 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 	return s.db.Model(build).Updates(map[string]any{
 		"status": "completed", "eligible_positive_count": build.EligiblePositiveCount,
 		"telemetry_censored_count": build.TelemetryCensoredCount, "low_coverage_count": build.LowCoverageCount,
-		"extraction_failed_count": build.ExtractionFailedCount, "label_ineligible_count": build.LabelIneligibleCount, "entity_time_conflict_count": build.EntityTimeConflictCount,
+		"extraction_failed_count": build.ExtractionFailedCount, "positive_discontinuous_count": build.PositiveDiscontinuousCount, "label_ineligible_count": build.LabelIneligibleCount, "entity_time_conflict_count": build.EntityTimeConflictCount,
 		"correlated_event_count": build.CorrelatedEventCount,
 		"train_count":            build.TrainCount, "validation_count": build.ValidationCount, "test_count": build.TestCount,
 		"control_request_count": build.ControlRequestCount, "control_shortfall_count": build.ControlShortfallCount,
@@ -323,6 +326,24 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 		"manifest_path": manifestPath, "prepared_samples_path": preparedPath, "prepared_samples_sha256": preparedSHA,
 		"control_requests_path": controlPath, "control_requests_sha256": controlSHA, "finished_at": &finished,
 	}).Error
+}
+
+func positiveTelemetryContinuity(row extractedFeatureRow) float64 {
+	if row.QueryStepSeconds <= 0 || row.LookbackMinutes <= 0 {
+		return 0
+	}
+	expected := row.LookbackMinutes*60/row.QueryStepSeconds + 1
+	minimum := float64(expected)
+	for _, metric := range []string{"gpu_temp", "power_usage", "gpu_util"} {
+		count, exists := row.Features[metric+"_sample_count_24h"]
+		if !exists {
+			return 0
+		}
+		if count < minimum {
+			minimum = count
+		}
+	}
+	return math.Min(1, minimum/float64(expected))
 }
 
 func (s *Service) currentLabelEligibleEpisodes(windows []datasetWindow) (map[string]bool, error) {

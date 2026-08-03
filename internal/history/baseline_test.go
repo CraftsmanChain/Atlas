@@ -32,7 +32,7 @@ func TestLogisticBaselineSeparatesSignalAndPreservesMissingAsMean(t *testing.T) 
 }
 
 func TestSafeBaselineColumnsExcludeOccurredFaultIndicators(t *testing.T) {
-	rows := []trainingMatrixRow{{Features: map[string]float64{"gpu_temp_mean_24h": 1, "xid_current_delta_24h": 1, "uncorrectable_remapped_rows_delta_24h": 1, "row_remap_failure_last_24h": 1}}}
+	rows := []trainingMatrixRow{{Features: map[string]float64{"gpu_temp_mean_24h": 1, "gpu_temp_sample_count_24h": 289, "xid_current_delta_24h": 1, "uncorrectable_remapped_rows_delta_24h": 1, "row_remap_failure_last_24h": 1}}}
 	columns := safeBaselineColumns(rows)
 	if len(columns) != 1 || columns[0] != "gpu_temp_mean_24h" {
 		t.Fatalf("unsafe feature policy: %v", columns)
