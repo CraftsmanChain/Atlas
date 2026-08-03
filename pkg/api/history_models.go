@@ -322,6 +322,9 @@ type BaselineModelBuild struct {
 	SourceMatrixBuildID     uint       `json:"source_matrix_build_id" gorm:"index;not null"`
 	SourceTrainingMatrixKey string     `json:"source_training_matrix_key" gorm:"index;not null"`
 	FeatureContractVersion  string     `json:"feature_contract_version" gorm:"index;not null"`
+	ScopeEventType          string     `json:"scope_event_type,omitempty" gorm:"index"`
+	ScopeModelName          string     `json:"scope_model_name,omitempty" gorm:"index"`
+	ReadinessGateVersion    string     `json:"readiness_gate_version,omitempty" gorm:"index"`
 	FeatureColumnCount      int        `json:"feature_column_count"`
 	HorizonCount            int        `json:"horizon_count"`
 	TrainedModelCount       int        `json:"trained_model_count"`

@@ -1,6 +1,9 @@
 package history
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestLogisticBaselineSeparatesSignalAndPreservesMissingAsMean(t *testing.T) {
 	rows := make([]trainingMatrixRow, 0, 80)
@@ -64,5 +67,29 @@ func TestMacroStratifiedMetricsAverageHorizonsWithoutPoolingScores(t *testing.T)
 	metrics := macroStratifiedMetrics(horizons, func(row baselineHorizonReport) map[string]baselineMetrics { return row.TestByEventType })["gpu_dropout"]
 	if metrics.Count != 60 || metrics.Positive != 15 || metrics.Control != 45 || metrics.ROCAUC != 0.5 || metrics.PRAUC != 0.5 {
 		t.Fatalf("unexpected horizon-macro metrics: %+v", metrics)
+	}
+}
+
+func TestScopedReadyMatrixRowsRejectsInsufficientFaultTypes(t *testing.T) {
+	rows := make([]trainingMatrixRow, 0, 150)
+	add := func(eventType, split string, positives, controls, positiveGPUs int) {
+		metadata := trainingLabelMetadata{EventTypes: []string{eventType}}
+		for index := 0; index < positives; index++ {
+			rows = append(rows, trainingMatrixRow{LabelValue: 1, Split: split, HorizonMinutes: 60, GPUUUID: fmt.Sprintf("GPU-%s-P-%02d", split, index%positiveGPUs), ModelName: "H100", LabelMetadata: metadata})
+		}
+		for index := 0; index < controls; index++ {
+			rows = append(rows, trainingMatrixRow{LabelValue: 0, Split: split, HorizonMinutes: 60, GPUUUID: fmt.Sprintf("GPU-%s-C-%02d", split, index), ModelName: "H100", LabelMetadata: metadata})
+		}
+	}
+	add("xid_94_contained_ecc", "train", 30, 60, 10)
+	add("xid_94_contained_ecc", "validation", 10, 20, 5)
+	add("xid_94_contained_ecc", "test", 10, 20, 5)
+	add("gpu_dropout", "train", 1, 1, 1)
+	scoped, err := scopedReadyMatrixRows("matrix", rows, "xid_94_contained_ecc", "H100")
+	if err != nil || len(scoped) != 150 {
+		t.Fatalf("unexpected ready scope rows=%d err=%v", len(scoped), err)
+	}
+	if _, err := scopedReadyMatrixRows("matrix", rows, "gpu_dropout", "H100"); err == nil {
+		t.Fatal("insufficient fault type must not train a scoped model")
 	}
 }

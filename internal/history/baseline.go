@@ -17,10 +17,15 @@ import (
 	"atlas/pkg/api"
 )
 
-const baselineModelVersion = "gpu-logistic-baseline-v2"
+const (
+	baselineModelVersion    = "gpu-logistic-baseline-v3"
+	cohortReadinessGateName = "fault-model-horizon-readiness-v1"
+)
 
 type BaselineModelBuildRequest struct {
-	SourceMatrixBuildID uint `json:"source_matrix_build_id"`
+	SourceMatrixBuildID uint   `json:"source_matrix_build_id"`
+	EventType           string `json:"event_type,omitempty"`
+	ModelName           string `json:"model_name,omitempty"`
 }
 
 type logisticModel struct {
@@ -57,17 +62,23 @@ type baselineHorizonReport struct {
 	Threshold               float64                    `json:"threshold"`
 }
 type baselineArtifact struct {
-	Version       string          `json:"version"`
-	Algorithm     string          `json:"algorithm"`
-	MatrixKey     string          `json:"matrix_key"`
-	FeaturePolicy string          `json:"feature_policy"`
-	Models        []logisticModel `json:"models"`
-	CreatedAt     time.Time       `json:"created_at"`
+	Version        string          `json:"version"`
+	Algorithm      string          `json:"algorithm"`
+	MatrixKey      string          `json:"matrix_key"`
+	ScopeEventType string          `json:"scope_event_type,omitempty"`
+	ScopeModelName string          `json:"scope_model_name,omitempty"`
+	ReadinessGate  string          `json:"readiness_gate,omitempty"`
+	FeaturePolicy  string          `json:"feature_policy"`
+	Models         []logisticModel `json:"models"`
+	CreatedAt      time.Time       `json:"created_at"`
 }
 type baselineReport struct {
 	Version                 string                     `json:"version"`
 	Algorithm               string                     `json:"algorithm"`
 	MatrixKey               string                     `json:"matrix_key"`
+	ScopeEventType          string                     `json:"scope_event_type,omitempty"`
+	ScopeModelName          string                     `json:"scope_model_name,omitempty"`
+	ReadinessGate           string                     `json:"readiness_gate,omitempty"`
 	Mode                    string                     `json:"mode"`
 	FeaturePolicy           string                     `json:"feature_policy"`
 	CalibrationPolicy       string                     `json:"calibration_policy"`
@@ -129,6 +140,11 @@ func (s *Service) StartBaselineModelBuild(request BaselineModelBuildRequest) (ap
 	if s.baselineRunning {
 		return api.BaselineModelBuild{}, fmt.Errorf("baseline training is already running")
 	}
+	request.EventType = strings.TrimSpace(request.EventType)
+	request.ModelName = strings.TrimSpace(request.ModelName)
+	if (request.EventType == "") != (request.ModelName == "") {
+		return api.BaselineModelBuild{}, fmt.Errorf("event_type and model_name must be provided together")
+	}
 	var matrix api.TrainingMatrixBuild
 	query := s.db.Where("status = ? AND version = ?", "completed", trainingMatrixVersion)
 	if request.SourceMatrixBuildID > 0 {
@@ -143,8 +159,13 @@ func (s *Service) StartBaselineModelBuild(request BaselineModelBuildRequest) (ap
 	}
 	started := s.now()
 	key := baselineModelVersion + "-" + strconv.FormatInt(started.UTC().UnixNano(), 10)
+	readinessGate := ""
+	if request.EventType != "" {
+		readinessGate = cohortReadinessGateName
+	}
 	build := api.BaselineModelBuild{BaselineModelKey: key, Version: baselineModelVersion, Status: "queued", Algorithm: "logistic_regression",
 		SourceMatrixBuildID: matrix.ID, SourceTrainingMatrixKey: matrix.TrainingMatrixKey, FeatureContractVersion: matrix.FeatureContractVersion,
+		ScopeEventType: request.EventType, ScopeModelName: request.ModelName, ReadinessGateVersion: readinessGate,
 		OutputDir: filepath.Join(s.config.DatasetDir, "baseline-models", key), StartedAt: started}
 	if err := s.db.Create(&build).Error; err != nil {
 		return build, err
@@ -180,6 +201,12 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 	if err != nil {
 		return err
 	}
+	if build.ScopeEventType != "" {
+		rows, err = scopedReadyMatrixRows(matrix.TrainingMatrixKey, rows, build.ScopeEventType, build.ScopeModelName)
+		if err != nil {
+			return err
+		}
+	}
 	columns := safeBaselineColumns(rows)
 	if len(columns) == 0 {
 		return fmt.Errorf("no pre-failure-safe feature columns")
@@ -194,8 +221,8 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 		horizons = append(horizons, h)
 	}
 	sort.Ints(horizons)
-	artifact := baselineArtifact{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, FeaturePolicy: baselineFeaturePolicy(), CreatedAt: s.now()}
-	report := baselineReport{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, Mode: "offline_evaluation_only", FeaturePolicy: baselineFeaturePolicy(), CalibrationPolicy: "uncalibrated baseline; validation selects an F1 threshold and test remains untouched; no online probability release", ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
+	artifact := baselineArtifact{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, FeaturePolicy: baselineFeaturePolicy(), CreatedAt: s.now()}
+	report := baselineReport{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, Mode: "offline_evaluation_only", FeaturePolicy: baselineFeaturePolicy(), CalibrationPolicy: "uncalibrated baseline; validation selects an F1 threshold and test remains untouched; no online probability release", ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
 	for _, h := range horizons {
 		train, val, test := splitMatrixRows(byHorizon[h])
 		if !hasBothLabels(train) || !hasBothLabels(val) || !hasBothLabels(test) {
@@ -339,6 +366,35 @@ func safeBaselineColumns(rows []trainingMatrixRow) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func scopedReadyMatrixRows(matrixKey string, rows []trainingMatrixRow, eventType, modelName string) ([]trainingMatrixRow, error) {
+	readiness := evaluateCohortReadiness(matrixKey, rows)
+	readyHorizons := map[int]bool{}
+	for _, stratum := range readiness.Strata {
+		if stratum.EventType == eventType && stratum.ModelName == modelName && stratum.Status == "exploratory_ready" {
+			readyHorizons[stratum.HorizonMinutes] = true
+		}
+	}
+	if len(readyHorizons) == 0 {
+		return nil, fmt.Errorf("no exploratory-ready horizon for event_type=%q model_name=%q", eventType, modelName)
+	}
+	result := make([]trainingMatrixRow, 0, len(rows))
+	for _, row := range rows {
+		if row.ModelName == modelName && readyHorizons[row.HorizonMinutes] && containsString(row.LabelMetadata.EventTypes, eventType) {
+			result = append(result, row)
+		}
+	}
+	return result, nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 func splitMatrixRows(rows []trainingMatrixRow) (train, val, test []trainingMatrixRow) {
 	for _, r := range rows {
