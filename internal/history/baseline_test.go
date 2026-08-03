@@ -39,6 +39,27 @@ func TestSafeBaselineColumnsExcludeOccurredFaultIndicators(t *testing.T) {
 	}
 }
 
+func TestBaselineFeatureAuditRecordsEveryExcludedColumn(t *testing.T) {
+	rows := []trainingMatrixRow{{Features: map[string]float64{
+		"gpu_temp_mean_24h": 1, "gpu_temp_sample_count_24h": 289,
+		"xid_current_delta_24h": 1, "uncorrected_ecc_delta_24h": 1,
+	}}}
+	audit := auditBaselineFeatures(rows)
+	if audit.Status != "passed" || audit.SourceFeatureCount != 4 || audit.SelectedFeatureCount != 1 || audit.ExcludedFeatureCount != 3 || audit.ProhibitedSelectedCount != 0 {
+		t.Fatalf("unexpected feature audit: %+v", audit)
+	}
+	if audit.SelectedColumns[0] != "gpu_temp_mean_24h" {
+		t.Fatalf("unexpected selected columns: %v", audit.SelectedColumns)
+	}
+	reasons := map[string]string{}
+	for _, exclusion := range audit.Exclusions {
+		reasons[exclusion.Feature] = exclusion.Reason
+	}
+	if reasons["gpu_temp_sample_count_24h"] != "quality_only_sampling_count" || reasons["xid_current_delta_24h"] != "occurred_fault_xid" || reasons["uncorrected_ecc_delta_24h"] != "occurred_fault_ecc" {
+		t.Fatalf("unexpected exclusion reasons: %v", reasons)
+	}
+}
+
 func TestRankAUCTreatsTiesAsHalfCredit(t *testing.T) {
 	scores := []scoredLabel{{score: 0.5, label: 0}, {score: 0.5, label: 1}}
 	if auc := rankAUC(scores); auc != 0.5 {
