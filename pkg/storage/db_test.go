@@ -128,6 +128,21 @@ func TestMigrateSchemaRenamesLegacyGPUIdentityTable(t *testing.T) {
 	}
 }
 
+func TestBaselineMetricColumnsUseStableAUCNames(t *testing.T) {
+	raw, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "baseline.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSchema(raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"test_macro_roc_auc", "test_macro_pr_auc"} {
+		if !raw.Migrator().HasColumn(&api.BaselineModelBuild{}, column) {
+			t.Fatalf("missing stable baseline metric column %s", column)
+		}
+	}
+}
+
 func TestNormalizeSelectedTables(t *testing.T) {
 	selected, err := normalizeSelectedTables([]string{" gpu_nodes ", "gpu_assets"})
 	if err != nil {

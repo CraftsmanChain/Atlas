@@ -327,8 +327,8 @@ type BaselineModelBuild struct {
 	TrainCount              int        `json:"train_count"`
 	ValidationCount         int        `json:"validation_count"`
 	TestCount               int        `json:"test_count"`
-	TestMacroROCAUC         float64    `json:"test_macro_roc_auc"`
-	TestMacroPRAUC          float64    `json:"test_macro_pr_auc"`
+	TestMacroROCAUC         float64    `json:"test_macro_roc_auc" gorm:"column:test_macro_roc_auc"`
+	TestMacroPRAUC          float64    `json:"test_macro_pr_auc" gorm:"column:test_macro_pr_auc"`
 	TestMacroPrecision      float64    `json:"test_macro_precision"`
 	TestMacroRecall         float64    `json:"test_macro_recall"`
 	OutputDir               string     `json:"output_dir" gorm:"type:text"`
