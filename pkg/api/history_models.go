@@ -271,3 +271,41 @@ type TrainingControlFeatureBuild struct {
 	CreatedAt                time.Time  `json:"created_at"`
 	UpdatedAt                time.Time  `json:"updated_at"`
 }
+
+// TrainingMatrixBuild records the immutable, leakage-audited supervised
+// learning matrix assembled from eligible positives and healthy controls.
+type TrainingMatrixBuild struct {
+	ID                        uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	TrainingMatrixKey         string     `json:"training_matrix_key" gorm:"uniqueIndex;not null"`
+	Version                   string     `json:"version" gorm:"index;not null"`
+	Status                    string     `json:"status" gorm:"index;not null"`
+	SourcePreparationBuildID  uint       `json:"source_preparation_build_id" gorm:"index;not null"`
+	SourcePreparedDatasetKey  string     `json:"source_prepared_dataset_key" gorm:"index;not null"`
+	SourceControlBuildID      uint       `json:"source_control_build_id" gorm:"index;not null"`
+	SourceControlDatasetKey   string     `json:"source_control_dataset_key" gorm:"index;not null"`
+	FeatureContractVersion    string     `json:"feature_contract_version" gorm:"index;not null"`
+	FeatureColumnCount        int        `json:"feature_column_count"`
+	PositiveCount             int        `json:"positive_count"`
+	ControlCount              int        `json:"control_count"`
+	SampleCount               int        `json:"sample_count"`
+	TrainPositiveCount        int        `json:"train_positive_count"`
+	TrainControlCount         int        `json:"train_control_count"`
+	ValidationPositiveCount   int        `json:"validation_positive_count"`
+	ValidationControlCount    int        `json:"validation_control_count"`
+	TestPositiveCount         int        `json:"test_positive_count"`
+	TestControlCount          int        `json:"test_control_count"`
+	DuplicateCount            int        `json:"duplicate_count"`
+	EntitySplitConflictCount  int        `json:"entity_split_conflict_count"`
+	PointInTimeViolationCount int        `json:"point_in_time_violation_count"`
+	PairingViolationCount     int        `json:"pairing_violation_count"`
+	ContractViolationCount    int        `json:"contract_violation_count"`
+	OutputDir                 string     `json:"output_dir" gorm:"type:text"`
+	MatrixPath                string     `json:"matrix_path" gorm:"type:text"`
+	MatrixSHA256              string     `json:"matrix_sha256"`
+	ManifestPath              string     `json:"manifest_path" gorm:"type:text"`
+	ErrorMessage              string     `json:"error_message,omitempty" gorm:"type:text"`
+	StartedAt                 time.Time  `json:"started_at" gorm:"index;not null"`
+	FinishedAt                *time.Time `json:"finished_at,omitempty" gorm:"index"`
+	CreatedAt                 time.Time  `json:"created_at"`
+	UpdatedAt                 time.Time  `json:"updated_at"`
+}

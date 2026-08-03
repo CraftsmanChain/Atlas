@@ -168,6 +168,7 @@ func migrateSchema(db *gorm.DB) error {
 		&api.TrainingFeatureBuild{},
 		&api.TrainingPreparationBuild{},
 		&api.TrainingControlFeatureBuild{},
+		&api.TrainingMatrixBuild{},
 	)
 }
 
