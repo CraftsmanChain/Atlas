@@ -327,6 +327,9 @@ type BaselineModelBuild struct {
 	ScopeModelName          string     `json:"scope_model_name,omitempty" gorm:"index"`
 	ReadinessGateVersion    string     `json:"readiness_gate_version,omitempty" gorm:"index"`
 	FeatureColumnCount      int        `json:"feature_column_count"`
+	FeatureAuditStatus      string     `json:"feature_audit_status,omitempty" gorm:"index"`
+	ExcludedFeatureCount    int        `json:"excluded_feature_count"`
+	ProhibitedFeatureCount  int        `json:"prohibited_feature_count"`
 	HorizonCount            int        `json:"horizon_count"`
 	TrainedModelCount       int        `json:"trained_model_count"`
 	TrainCount              int        `json:"train_count"`
