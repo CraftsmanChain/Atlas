@@ -257,6 +257,41 @@ func TestHistoricalRuleDecisionSeparatesAutomaticLabelsFromHumanOverride(t *test
 		missingDecision.DefaultReviewStatus != "needs_human_review" {
 		t.Fatalf("missing-identity decision=%+v", missingDecision)
 	}
+	xid109Decision := decideHistoricalCandidate(api.HistoricalFaultCandidate{
+		EventType: "xid_109_context_switch_timeout", OperationalPriority: "high", TrainingDisposition: "proxy_positive_after_review",
+	}, "same_gpu_observed_after_event")
+	if xid109Decision.Decision != "needs_human_review" || xid109Decision.Confidence != 0 || xid109Decision.DefaultReviewStatus != "needs_human_review" {
+		t.Fatalf("XID 109 must require corroborating hardware evidence: %+v", xid109Decision)
+	}
+	xid94Decision := decideHistoricalCandidate(api.HistoricalFaultCandidate{
+		EventType: "xid_94_contained_ecc", OperationalPriority: "high", TrainingDisposition: "proxy_positive_after_review",
+	}, "same_gpu_observed_after_event")
+	if xid94Decision.Decision != "positive_proxy" || xid94Decision.Confidence != 0.85 {
+		t.Fatalf("XID 94 memory error proxy mismatch: %+v", xid94Decision)
+	}
+}
+
+func TestReapplyHistoricalRulesPreservesHumanReview(t *testing.T) {
+	db, err := storage.InitDB(fmt.Sprintf("file:rule-refresh-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	candidate := api.HistoricalFaultCandidate{CandidateKey: "refresh-109", SourceKey: "primary", BackfillRunID: 1, EntityType: "gpu", EventType: "xid_109_context_switch_timeout", OperationalPriority: "high", TrainingDisposition: "proxy_positive_after_review", ReviewStatus: "accepted_proxy", ReviewedAt: &now, ReviewedBy: "operator", IdentityEvidenceStatus: "same_gpu_observed_after_event", OnsetAt: now, DetectionWindowEndAt: now}
+	if err := db.Create(&candidate).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, config.HistoryConfig{}, time.Second)
+	updated, err := service.ReapplyHistoricalCandidateRules()
+	if err != nil || updated != 1 {
+		t.Fatalf("updated=%d err=%v", updated, err)
+	}
+	if err := db.First(&candidate, candidate.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if candidate.RuleDecision != "needs_human_review" || candidate.RuleDecisionVersion != historicalRuleDecisionVersion || candidate.ReviewStatus != "accepted_proxy" || candidate.ReviewedBy != "operator" {
+		t.Fatalf("manual review was not preserved: %+v", candidate)
+	}
 }
 
 func TestHistoricalGPUUUIDNormalizationAndStableIdentityKey(t *testing.T) {

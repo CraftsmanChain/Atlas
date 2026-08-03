@@ -99,6 +99,19 @@ func (h *Handler) HandleCandidates(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) HandleCandidateRules(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		historyJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	updated, err := h.service.ReapplyHistoricalCandidateRules()
+	if err != nil {
+		historyJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	historyJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"rule_decision_version": historicalRuleDecisionVersion, "updated": updated}})
+}
+
 func (h *Handler) HandleIdentityBackfills(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:

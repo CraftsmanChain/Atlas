@@ -88,7 +88,7 @@ type signalClassification struct {
 
 func CurrentTrainingCohortPolicy() TrainingCohortPolicy {
 	return TrainingCohortPolicy{
-		Version: "gpu-training-cohort-v1",
+		Version: "gpu-training-cohort-v2",
 		PositiveHorizonsMinutes: []int{
 			1, 10, 30, 60, 180, 360, 720, 1440, 2880, 4320, 10080,
 		},
@@ -100,7 +100,7 @@ func CurrentTrainingCohortPolicy() TrainingCohortPolicy {
 		NormalRangeStatistics: []string{
 			"median", "MAD", "p01", "p05", "p95", "p99", "empirical_CDF",
 		},
-		PositiveCandidatePolicy:   "deterministic_hardware signals require identity review; high-risk XIDs remain proxy positives until reviewed",
+		PositiveCandidatePolicy:   "deterministic hardware and contained ECC signals may become proxies after identity review; XID 109 remains operationally high priority but requires corroborating hardware or operator evidence for training",
 		HealthyWindowPolicy:       "exclude windows near high-risk/deterministic faults, telemetry gaps, node restarts, maintenance, and GPU identity changes",
 		ReplacementEvidencePolicy: "same stable node identity and PCI slot changing UUID is supporting evidence only; require non-overlap, persistence, and exclusion of whole-node identity/topology changes",
 	}
