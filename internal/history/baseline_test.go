@@ -67,6 +67,35 @@ func TestRankAUCTreatsTiesAsHalfCredit(t *testing.T) {
 	}
 }
 
+func TestBootstrapBaselineUncertaintySeparatesStableAndInverseSignals(t *testing.T) {
+	stable, inverse := make([]scoredLabel, 0, 80), make([]scoredLabel, 0, 80)
+	rows := make([]trainingMatrixRow, 0, 80)
+	for index := 0; index < 40; index++ {
+		stable = append(stable, scoredLabel{score: 0.1 + float64(index%5)/100, label: 0})
+		stable = append(stable, scoredLabel{score: 0.8 + float64(index%5)/100, label: 1})
+		inverse = append(inverse, scoredLabel{score: 0.8 + float64(index%5)/100, label: 0})
+		inverse = append(inverse, scoredLabel{score: 0.1 + float64(index%5)/100, label: 1})
+		rows = append(rows, trainingMatrixRow{GPUUUID: fmt.Sprintf("GPU-%02d", index), RowKey: fmt.Sprintf("C-%02d", index)}, trainingMatrixRow{GPUUUID: fmt.Sprintf("GPU-%02d", index), RowKey: fmt.Sprintf("P-%02d", index)})
+	}
+	stableResult := bootstrapBaselineUncertainty(rows, stable, 60)
+	if stableResult.Status != "candidate_signal" || stableResult.ROCAUCLower != 1 || stableResult.PRAUCLower <= stableResult.NullPRAUC {
+		t.Fatalf("unexpected stable uncertainty: %+v", stableResult)
+	}
+	inverseResult := bootstrapBaselineUncertainty(rows, inverse, 60)
+	if inverseResult.Status != "inverse_signal" || inverseResult.ROCAUCUpper != 0 {
+		t.Fatalf("unexpected inverse uncertainty: %+v", inverseResult)
+	}
+}
+
+func TestBootstrapBaselineUncertaintyIsDeterministic(t *testing.T) {
+	scores := []scoredLabel{{score: 0.1, label: 0}, {score: 0.2, label: 0}, {score: 0.3, label: 0}, {score: 0.4, label: 1}, {score: 0.5, label: 1}, {score: 0.6, label: 1}}
+	rows := []trainingMatrixRow{{GPUUUID: "GPU-1"}, {GPUUUID: "GPU-2"}, {GPUUUID: "GPU-3"}, {GPUUUID: "GPU-1"}, {GPUUUID: "GPU-2"}, {GPUUUID: "GPU-3"}}
+	first, second := bootstrapBaselineUncertainty(rows, scores, 4320), bootstrapBaselineUncertainty(rows, scores, 4320)
+	if first != second {
+		t.Fatalf("bootstrap must be reproducible: first=%+v second=%+v", first, second)
+	}
+}
+
 func TestStratifiedMetricsUsePairedLabelDimensions(t *testing.T) {
 	rows := []trainingMatrixRow{
 		{LabelMetadata: trainingLabelMetadata{EventTypes: []string{"xid_94_contained_ecc"}}},
