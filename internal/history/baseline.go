@@ -3,6 +3,7 @@ package history
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -16,7 +17,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const baselineModelVersion = "gpu-logistic-baseline-v1"
+const baselineModelVersion = "gpu-logistic-baseline-v2"
 
 type BaselineModelBuildRequest struct {
 	SourceMatrixBuildID uint `json:"source_matrix_build_id"`
@@ -43,11 +44,17 @@ type baselineMetrics struct {
 	Brier     float64 `json:"brier"`
 }
 type baselineHorizonReport struct {
-	HorizonMinutes int             `json:"horizon_minutes"`
-	Train          baselineMetrics `json:"train"`
-	Validation     baselineMetrics `json:"validation"`
-	Test           baselineMetrics `json:"test"`
-	Threshold      float64         `json:"threshold"`
+	HorizonMinutes          int                        `json:"horizon_minutes"`
+	Train                   baselineMetrics            `json:"train"`
+	Validation              baselineMetrics            `json:"validation"`
+	Test                    baselineMetrics            `json:"test"`
+	TestByModel             map[string]baselineMetrics `json:"test_by_model"`
+	TestByEventType         map[string]baselineMetrics `json:"test_by_event_type"`
+	TestByDriverVersion     map[string]baselineMetrics `json:"test_by_driver_version"`
+	TestByLabelSource       map[string]baselineMetrics `json:"test_by_label_source"`
+	TestByHardwareCertainty map[string]baselineMetrics `json:"test_by_hardware_certainty"`
+	TestByRuleVersion       map[string]baselineMetrics `json:"test_by_rule_version"`
+	Threshold               float64                    `json:"threshold"`
 }
 type baselineArtifact struct {
 	Version       string          `json:"version"`
@@ -58,16 +65,21 @@ type baselineArtifact struct {
 	CreatedAt     time.Time       `json:"created_at"`
 }
 type baselineReport struct {
-	Version           string                     `json:"version"`
-	Algorithm         string                     `json:"algorithm"`
-	MatrixKey         string                     `json:"matrix_key"`
-	Mode              string                     `json:"mode"`
-	FeaturePolicy     string                     `json:"feature_policy"`
-	CalibrationPolicy string                     `json:"calibration_policy"`
-	Horizons          []baselineHorizonReport    `json:"horizons"`
-	MacroTest         baselineMetrics            `json:"macro_test"`
-	ByTestModel       map[string]baselineMetrics `json:"by_test_model"`
-	CreatedAt         time.Time                  `json:"created_at"`
+	Version                 string                     `json:"version"`
+	Algorithm               string                     `json:"algorithm"`
+	MatrixKey               string                     `json:"matrix_key"`
+	Mode                    string                     `json:"mode"`
+	FeaturePolicy           string                     `json:"feature_policy"`
+	CalibrationPolicy       string                     `json:"calibration_policy"`
+	Horizons                []baselineHorizonReport    `json:"horizons"`
+	MacroTest               baselineMetrics            `json:"macro_test"`
+	ByTestModel             map[string]baselineMetrics `json:"by_test_model"`
+	ByTestEventType         map[string]baselineMetrics `json:"by_test_event_type"`
+	ByTestDriverVersion     map[string]baselineMetrics `json:"by_test_driver_version"`
+	ByTestLabelSource       map[string]baselineMetrics `json:"by_test_label_source"`
+	ByTestHardwareCertainty map[string]baselineMetrics `json:"by_test_hardware_certainty"`
+	ByTestRuleVersion       map[string]baselineMetrics `json:"by_test_rule_version"`
+	CreatedAt               time.Time                  `json:"created_at"`
 }
 
 func (s *Service) BaselineModelBuilds(limit int) ([]api.BaselineModelBuild, error) {
@@ -77,6 +89,38 @@ func (s *Service) BaselineModelBuilds(limit int) ([]api.BaselineModelBuild, erro
 	var rows []api.BaselineModelBuild
 	err := s.db.Order("created_at DESC, id DESC").Limit(limit).Find(&rows).Error
 	return rows, err
+}
+
+func (s *Service) BaselineModelReport(id uint) (baselineReport, error) {
+	var build api.BaselineModelBuild
+	if err := s.db.First(&build, id).Error; err != nil {
+		return baselineReport{}, err
+	}
+	if build.Status != "completed" || build.ReportPath == "" {
+		return baselineReport{}, fmt.Errorf("completed baseline report is required")
+	}
+	base, err := filepath.Abs(s.config.DatasetDir)
+	if err != nil {
+		return baselineReport{}, err
+	}
+	path, err := filepath.Abs(build.ReportPath)
+	if err != nil {
+		return baselineReport{}, err
+	}
+	relative, err := filepath.Rel(base, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return baselineReport{}, fmt.Errorf("baseline report path is outside the configured dataset directory")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return baselineReport{}, err
+	}
+	defer file.Close()
+	var report baselineReport
+	if err := json.NewDecoder(io.LimitReader(file, 32<<20)).Decode(&report); err != nil {
+		return baselineReport{}, fmt.Errorf("decode baseline report: %w", err)
+	}
+	return report, nil
 }
 
 func (s *Service) StartBaselineModelBuild(request BaselineModelBuildRequest) (api.BaselineModelBuild, error) {
@@ -151,8 +195,7 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 	}
 	sort.Ints(horizons)
 	artifact := baselineArtifact{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, FeaturePolicy: baselineFeaturePolicy(), CreatedAt: s.now()}
-	report := baselineReport{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, Mode: "offline_evaluation_only", FeaturePolicy: baselineFeaturePolicy(), CalibrationPolicy: "uncalibrated baseline; validation selects an F1 threshold and test remains untouched; no online probability release", ByTestModel: map[string]baselineMetrics{}, CreatedAt: s.now()}
-	modelTestRows := map[string][]scoredLabel{}
+	report := baselineReport{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, Mode: "offline_evaluation_only", FeaturePolicy: baselineFeaturePolicy(), CalibrationPolicy: "uncalibrated baseline; validation selects an F1 threshold and test remains untouched; no online probability release", ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
 	for _, h := range horizons {
 		train, val, test := splitMatrixRows(byHorizon[h])
 		if !hasBothLabels(train) || !hasBothLabels(val) || !hasBothLabels(test) {
@@ -162,19 +205,21 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 		validationScores := scoreRows(model, val)
 		model.Threshold = bestF1Threshold(validationScores)
 		testScores := scoreRows(model, test)
+		for i := range testScores {
+			testScores[i].threshold = model.Threshold
+		}
 		artifact.Models = append(artifact.Models, model)
-		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, Train: describeLabels(train), Validation: evaluateScores(validationScores, model.Threshold), Test: evaluateScores(testScores, model.Threshold), Threshold: model.Threshold})
+		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, Train: describeLabels(train), Validation: evaluateScores(validationScores, model.Threshold), Test: evaluateScores(testScores, model.Threshold), TestByModel: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return []string{row.ModelName} }), TestByEventType: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes }), TestByDriverVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.DriverVersions }), TestByLabelSource: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.LabelSources }), TestByHardwareCertainty: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.HardwareCertainties }), TestByRuleVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.RuleDecisionVersions }), Threshold: model.Threshold})
 		build.TrainCount += len(train)
 		build.ValidationCount += len(val)
 		build.TestCount += len(test)
-		for i, score := range testScores {
-			score.threshold = model.Threshold
-			modelTestRows[test[i].ModelName] = append(modelTestRows[test[i].ModelName], score)
-		}
 	}
-	for model, scores := range modelTestRows {
-		report.ByTestModel[model] = evaluateScores(scores, -1)
-	}
+	report.ByTestModel = macroStratifiedMetrics(report.Horizons, func(row baselineHorizonReport) map[string]baselineMetrics { return row.TestByModel })
+	report.ByTestEventType = macroStratifiedMetrics(report.Horizons, func(row baselineHorizonReport) map[string]baselineMetrics { return row.TestByEventType })
+	report.ByTestDriverVersion = macroStratifiedMetrics(report.Horizons, func(row baselineHorizonReport) map[string]baselineMetrics { return row.TestByDriverVersion })
+	report.ByTestLabelSource = macroStratifiedMetrics(report.Horizons, func(row baselineHorizonReport) map[string]baselineMetrics { return row.TestByLabelSource })
+	report.ByTestHardwareCertainty = macroStratifiedMetrics(report.Horizons, func(row baselineHorizonReport) map[string]baselineMetrics { return row.TestByHardwareCertainty })
+	report.ByTestRuleVersion = macroStratifiedMetrics(report.Horizons, func(row baselineHorizonReport) map[string]baselineMetrics { return row.TestByRuleVersion })
 	report.MacroTest = macroTestMetrics(report.Horizons)
 	build.HorizonCount = len(horizons)
 	build.TrainedModelCount = len(artifact.Models)
@@ -199,6 +244,73 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 	}
 	finished := s.now()
 	return s.db.Model(build).Updates(map[string]any{"status": "completed", "feature_column_count": build.FeatureColumnCount, "horizon_count": build.HorizonCount, "trained_model_count": build.TrainedModelCount, "train_count": build.TrainCount, "validation_count": build.ValidationCount, "test_count": build.TestCount, "test_macro_roc_auc": build.TestMacroROCAUC, "test_macro_pr_auc": build.TestMacroPRAUC, "test_macro_precision": build.TestMacroPrecision, "test_macro_recall": build.TestMacroRecall, "artifact_path": artifactPath, "artifact_sha256": checksum, "report_path": reportPath, "finished_at": &finished}).Error
+}
+
+func stratifiedTestMetrics(rows []trainingMatrixRow, scores []scoredLabel, labels func(trainingMatrixRow) []string) map[string]baselineMetrics {
+	grouped := map[string][]scoredLabel{}
+	for index, row := range rows {
+		appendStratifiedScore(grouped, labels(row), scores[index])
+	}
+	return evaluateStratifiedScores(grouped)
+}
+
+func appendStratifiedScore(grouped map[string][]scoredLabel, labels []string, score scoredLabel) {
+	if len(labels) == 0 {
+		grouped["unknown"] = append(grouped["unknown"], score)
+		return
+	}
+	seen := map[string]bool{}
+	for _, label := range labels {
+		label = strings.TrimSpace(label)
+		if label == "" || seen[label] {
+			continue
+		}
+		seen[label] = true
+		grouped[label] = append(grouped[label], score)
+	}
+	if len(seen) == 0 {
+		grouped["unknown"] = append(grouped["unknown"], score)
+	}
+}
+
+func evaluateStratifiedScores(grouped map[string][]scoredLabel) map[string]baselineMetrics {
+	result := make(map[string]baselineMetrics, len(grouped))
+	for label, scores := range grouped {
+		result[label] = evaluateScores(scores, -1)
+	}
+	return result
+}
+
+func macroStratifiedMetrics(horizons []baselineHorizonReport, selectMetrics func(baselineHorizonReport) map[string]baselineMetrics) map[string]baselineMetrics {
+	totals := map[string]baselineMetrics{}
+	counts := map[string]int{}
+	for _, horizon := range horizons {
+		for label, metrics := range selectMetrics(horizon) {
+			total := totals[label]
+			total.Count += metrics.Count
+			total.Positive += metrics.Positive
+			total.Control += metrics.Control
+			total.ROCAUC += metrics.ROCAUC
+			total.PRAUC += metrics.PRAUC
+			total.Precision += metrics.Precision
+			total.Recall += metrics.Recall
+			total.F1 += metrics.F1
+			total.Brier += metrics.Brier
+			totals[label] = total
+			counts[label]++
+		}
+	}
+	for label, total := range totals {
+		count := float64(counts[label])
+		total.ROCAUC /= count
+		total.PRAUC /= count
+		total.Precision /= count
+		total.Recall /= count
+		total.F1 /= count
+		total.Brier /= count
+		totals[label] = total
+	}
+	return totals
 }
 
 func baselineFeaturePolicy() string {

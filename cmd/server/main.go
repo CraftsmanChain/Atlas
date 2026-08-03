@@ -285,6 +285,7 @@ func main() {
 	mux.HandleFunc("/api/v1/prediction/history/control-feature-datasets", historyHandler.HandleControlFeatureDatasets)
 	mux.HandleFunc("/api/v1/prediction/history/training-matrices", historyHandler.HandleTrainingMatrices)
 	mux.HandleFunc("/api/v1/prediction/history/baseline-models", historyHandler.HandleBaselineModels)
+	mux.HandleFunc("/api/v1/prediction/history/baseline-models/", historyHandler.HandleBaselineModel)
 	mux.HandleFunc("/api/v1/prediction/history/candidates", historyHandler.HandleCandidates)
 	mux.HandleFunc("/api/v1/prediction/history/candidate-rules", historyHandler.HandleCandidateRules)
 	mux.HandleFunc("/api/v1/prediction/history/candidates/", historyHandler.HandleCandidate)

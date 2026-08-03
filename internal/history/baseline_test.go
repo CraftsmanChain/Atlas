@@ -42,3 +42,27 @@ func TestRankAUCTreatsTiesAsHalfCredit(t *testing.T) {
 		t.Fatalf("tie AUC=%v", auc)
 	}
 }
+
+func TestStratifiedMetricsUsePairedLabelDimensions(t *testing.T) {
+	rows := []trainingMatrixRow{
+		{LabelMetadata: trainingLabelMetadata{EventTypes: []string{"xid_94_contained_ecc"}}},
+		{LabelMetadata: trainingLabelMetadata{EventTypes: []string{"xid_94_contained_ecc"}}},
+		{LabelMetadata: trainingLabelMetadata{EventTypes: []string{"gpu_dropout"}}},
+	}
+	scores := []scoredLabel{{score: 0.9, label: 1, threshold: 0.5}, {score: 0.1, label: 0, threshold: 0.5}, {score: 0.8, label: 1, threshold: 0.5}}
+	metrics := stratifiedTestMetrics(rows, scores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes })
+	if metrics["xid_94_contained_ecc"].Count != 2 || metrics["xid_94_contained_ecc"].ROCAUC != 1 || metrics["gpu_dropout"].Count != 1 {
+		t.Fatalf("unexpected label-stratified metrics: %+v", metrics)
+	}
+}
+
+func TestMacroStratifiedMetricsAverageHorizonsWithoutPoolingScores(t *testing.T) {
+	horizons := []baselineHorizonReport{
+		{TestByEventType: map[string]baselineMetrics{"gpu_dropout": {Count: 20, Positive: 5, Control: 15, ROCAUC: 0.75, PRAUC: 0.625}}},
+		{TestByEventType: map[string]baselineMetrics{"gpu_dropout": {Count: 40, Positive: 10, Control: 30, ROCAUC: 0.25, PRAUC: 0.375}}},
+	}
+	metrics := macroStratifiedMetrics(horizons, func(row baselineHorizonReport) map[string]baselineMetrics { return row.TestByEventType })["gpu_dropout"]
+	if metrics.Count != 60 || metrics.Positive != 15 || metrics.Control != 45 || metrics.ROCAUC != 0.5 || metrics.PRAUC != 0.5 {
+		t.Fatalf("unexpected horizon-macro metrics: %+v", metrics)
+	}
+}
