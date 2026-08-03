@@ -1,7 +1,9 @@
 package history
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -72,6 +74,16 @@ func TestCohortReadinessGatesEachFaultModelAndHorizon(t *testing.T) {
 	}
 	if report.Strata[0].EventType != "gpu_dropout" || report.Strata[0].Status != "exploratory_ready" {
 		t.Fatalf("expected dropout stratum to pass: %+v", report.Strata[0])
+	}
+	if report.Strata[0].BlockingReasons == nil {
+		t.Fatal("ready stratum blocking_reasons must be an empty array, not null")
+	}
+	payload, err := json.Marshal(report.Strata[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"blocking_reasons":[]`) {
+		t.Fatalf("ready stratum JSON must preserve an empty blocking_reasons array: %s", payload)
 	}
 	if report.Strata[1].Status != "insufficient_data" || len(report.Strata[1].BlockingReasons) == 0 {
 		t.Fatalf("expected sparse XID stratum to be blocked: %+v", report.Strata[1])
