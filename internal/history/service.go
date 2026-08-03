@@ -70,6 +70,8 @@ type Service struct {
 	controlFeatureRunning bool
 	matrixMu              sync.Mutex
 	matrixRunning         bool
+	baselineMu            sync.Mutex
+	baselineRunning       bool
 }
 
 func NewService(db *storage.DB, cfg config.HistoryConfig, timeout time.Duration) *Service {
@@ -92,6 +94,9 @@ func NewService(db *storage.DB, cfg config.HistoryConfig, timeout time.Duration)
 	}).Error
 	_ = db.Model(&api.TrainingMatrixBuild{}).Where("status IN ?", []string{"queued", "running"}).Updates(map[string]any{
 		"status": "interrupted", "error_message": "Atlas restarted before training matrix assembly completed", "finished_at": &now,
+	}).Error
+	_ = db.Model(&api.BaselineModelBuild{}).Where("status IN ?", []string{"queued", "running"}).Updates(map[string]any{
+		"status": "interrupted", "error_message": "Atlas restarted before baseline training completed", "finished_at": &now,
 	}).Error
 	return service
 }
