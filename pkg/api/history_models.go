@@ -309,3 +309,35 @@ type TrainingMatrixBuild struct {
 	CreatedAt                 time.Time  `json:"created_at"`
 	UpdatedAt                 time.Time  `json:"updated_at"`
 }
+
+// BaselineModelBuild records offline-only supervised baseline training from an
+// immutable training matrix. It never enables online probability emission.
+type BaselineModelBuild struct {
+	ID                      uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	BaselineModelKey        string     `json:"baseline_model_key" gorm:"uniqueIndex;not null"`
+	Version                 string     `json:"version" gorm:"index;not null"`
+	Status                  string     `json:"status" gorm:"index;not null"`
+	Algorithm               string     `json:"algorithm" gorm:"index;not null"`
+	SourceMatrixBuildID     uint       `json:"source_matrix_build_id" gorm:"index;not null"`
+	SourceTrainingMatrixKey string     `json:"source_training_matrix_key" gorm:"index;not null"`
+	FeatureContractVersion  string     `json:"feature_contract_version" gorm:"index;not null"`
+	FeatureColumnCount      int        `json:"feature_column_count"`
+	HorizonCount            int        `json:"horizon_count"`
+	TrainedModelCount       int        `json:"trained_model_count"`
+	TrainCount              int        `json:"train_count"`
+	ValidationCount         int        `json:"validation_count"`
+	TestCount               int        `json:"test_count"`
+	TestMacroROCAUC         float64    `json:"test_macro_roc_auc"`
+	TestMacroPRAUC          float64    `json:"test_macro_pr_auc"`
+	TestMacroPrecision      float64    `json:"test_macro_precision"`
+	TestMacroRecall         float64    `json:"test_macro_recall"`
+	OutputDir               string     `json:"output_dir" gorm:"type:text"`
+	ArtifactPath            string     `json:"artifact_path" gorm:"type:text"`
+	ArtifactSHA256          string     `json:"artifact_sha256"`
+	ReportPath              string     `json:"report_path" gorm:"type:text"`
+	ErrorMessage            string     `json:"error_message,omitempty" gorm:"type:text"`
+	StartedAt               time.Time  `json:"started_at" gorm:"index;not null"`
+	FinishedAt              *time.Time `json:"finished_at,omitempty" gorm:"index"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
+}
