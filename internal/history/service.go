@@ -55,17 +55,19 @@ type SourceStatus struct {
 }
 
 type Service struct {
-	db              *storage.DB
-	config          config.HistoryConfig
-	timeout         time.Duration
-	now             func() time.Time
-	mu              sync.Mutex
-	backfillMu      sync.Mutex
-	backfillRunning bool
-	datasetMu       sync.Mutex
-	featureMu       sync.Mutex
-	featureRunning  bool
-	preparationMu   sync.Mutex
+	db                    *storage.DB
+	config                config.HistoryConfig
+	timeout               time.Duration
+	now                   func() time.Time
+	mu                    sync.Mutex
+	backfillMu            sync.Mutex
+	backfillRunning       bool
+	datasetMu             sync.Mutex
+	featureMu             sync.Mutex
+	featureRunning        bool
+	preparationMu         sync.Mutex
+	controlFeatureMu      sync.Mutex
+	controlFeatureRunning bool
 }
 
 func NewService(db *storage.DB, cfg config.HistoryConfig, timeout time.Duration) *Service {
@@ -82,6 +84,9 @@ func NewService(db *storage.DB, cfg config.HistoryConfig, timeout time.Duration)
 	}).Error
 	_ = db.Model(&api.TrainingPreparationBuild{}).Where("status = ?", "running").Updates(map[string]any{
 		"status": "interrupted", "error_message": "Atlas restarted before training preparation completed", "finished_at": &now,
+	}).Error
+	_ = db.Model(&api.TrainingControlFeatureBuild{}).Where("status IN ?", []string{"queued", "running"}).Updates(map[string]any{
+		"status": "interrupted", "error_message": "Atlas restarted before healthy-control extraction completed", "finished_at": &now,
 	}).Error
 	return service
 }

@@ -238,3 +238,36 @@ type TrainingPreparationBuild struct {
 	CreatedAt               time.Time  `json:"created_at"`
 	UpdatedAt               time.Time  `json:"updated_at"`
 }
+
+// TrainingControlFeatureBuild records extraction and eligibility checks for
+// same-GPU historical healthy-control requests.
+type TrainingControlFeatureBuild struct {
+	ID                       uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	ControlFeatureDatasetKey string     `json:"control_feature_dataset_key" gorm:"uniqueIndex;not null"`
+	Version                  string     `json:"version" gorm:"index;not null"`
+	Status                   string     `json:"status" gorm:"index;not null"`
+	SourcePreparationBuildID uint       `json:"source_preparation_build_id" gorm:"index;not null"`
+	SourcePreparedDatasetKey string     `json:"source_prepared_dataset_key" gorm:"index;not null"`
+	SourceKey                string     `json:"source_key" gorm:"index;not null"`
+	FeatureContractVersion   string     `json:"feature_contract_version" gorm:"index;not null"`
+	RequestCount             int        `json:"request_count"`
+	UniqueWindowCount        int        `json:"unique_window_count"`
+	ProcessedUniqueWindows   int        `json:"processed_unique_windows"`
+	CompletedRequestCount    int        `json:"completed_request_count"`
+	EligibleRequestCount     int        `json:"eligible_request_count"`
+	TelemetryCensoredCount   int        `json:"telemetry_censored_count"`
+	LowCoverageCount         int        `json:"low_coverage_count"`
+	DiscontinuousCount       int        `json:"discontinuous_count"`
+	LoadUnknownCount         int        `json:"load_unknown_count"`
+	LoadMismatchCount        int        `json:"load_mismatch_count"`
+	ExtractionFailedCount    int        `json:"extraction_failed_count"`
+	OutputDir                string     `json:"output_dir" gorm:"type:text"`
+	FeaturePath              string     `json:"feature_path" gorm:"type:text"`
+	FeatureSHA256            string     `json:"feature_sha256"`
+	QualityReportPath        string     `json:"quality_report_path" gorm:"type:text"`
+	ErrorMessage             string     `json:"error_message,omitempty" gorm:"type:text"`
+	StartedAt                time.Time  `json:"started_at" gorm:"index;not null"`
+	FinishedAt               *time.Time `json:"finished_at,omitempty" gorm:"index"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
+}
