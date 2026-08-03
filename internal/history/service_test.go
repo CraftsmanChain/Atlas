@@ -83,7 +83,7 @@ func TestHistoryHandlerIsReadOnlyExceptExplicitAudit(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	handler.HandleCandidates(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/history/candidates", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"version":"gpu-training-cohort-v1"`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"version":"gpu-training-cohort-v2"`) {
 		t.Fatalf("GET candidates status=%d body=%s", response.Code, response.Body.String())
 	}
 }

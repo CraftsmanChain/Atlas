@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	preparationDatasetVersion   = "gpu-training-preparation-v2"
+	preparationDatasetVersion   = "gpu-training-preparation-v3"
 	correlatedEventBucket       = 5 * time.Minute
 	correlatedEventMinimumGPUs  = 32
 	correlatedEventMinimumNodes = 10
@@ -148,7 +148,7 @@ func (s *Service) BuildTrainingPreparation(request PreparationBuildRequest) (api
 			"status": "failed", "error_message": err.Error(), "finished_at": &finished,
 			"eligible_positive_count":  build.EligiblePositiveCount,
 			"telemetry_censored_count": build.TelemetryCensoredCount, "low_coverage_count": build.LowCoverageCount,
-			"extraction_failed_count": build.ExtractionFailedCount, "correlated_event_count": build.CorrelatedEventCount,
+			"extraction_failed_count": build.ExtractionFailedCount, "label_ineligible_count": build.LabelIneligibleCount, "correlated_event_count": build.CorrelatedEventCount,
 			"entity_time_conflict_count": build.EntityTimeConflictCount,
 			"train_count":                build.TrainCount, "validation_count": build.ValidationCount, "test_count": build.TestCount,
 			"train_end_at": build.TrainEndAt, "validation_end_at": build.ValidationEndAt,
@@ -171,10 +171,14 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 	if err != nil {
 		return err
 	}
+	labelEligibleEpisodes, err := s.currentLabelEligibleEpisodes(windows)
+	if err != nil {
+		return err
+	}
 	correlatedEpisodes := correlatedFleetEpisodes(windows)
 	eligibleForSplit := make([]extractedFeatureRow, 0, len(rows))
 	for _, row := range rows {
-		if row.ExtractionError == "" && row.MetricCoverage >= build.MinimumMetricCoverage && !correlatedEpisodes[row.EpisodeKey] {
+		if row.ExtractionError == "" && row.MetricCoverage >= build.MinimumMetricCoverage && labelEligibleEpisodes[row.EpisodeKey] && !correlatedEpisodes[row.EpisodeKey] {
 			eligibleForSplit = append(eligibleForSplit, row)
 		}
 	}
@@ -197,6 +201,9 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 		case row.MetricCoverage < build.MinimumMetricCoverage:
 			item.TrainingStatus, item.ExclusionReason = "excluded", "metric_coverage_below_threshold"
 			build.LowCoverageCount++
+		case !labelEligibleEpisodes[row.EpisodeKey]:
+			item.TrainingStatus, item.ExclusionReason = "excluded", "label_not_currently_eligible"
+			build.LabelIneligibleCount++
 		case correlatedEpisodes[row.EpisodeKey]:
 			item.TrainingStatus, item.ExclusionReason = "excluded", "correlated_fleet_event"
 			build.CorrelatedEventCount++
@@ -279,7 +286,7 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 		SourceFeatureDatasetKey: source.FeatureDatasetKey, MinimumCoverage: build.MinimumMetricCoverage,
 		ControlsPerPositive: controlsPerPositive, TrainEndAt: trainEnd, ValidationEndAt: validationEnd,
 		SplitPolicy:           "strict time order plus GPU UUID isolation; entities crossing a boundary are excluded",
-		QualityPolicy:         "extraction errors, zero telemetry, low coverage, and correlated fleet events are excluded without zero imputation",
+		QualityPolicy:         "extraction errors, zero telemetry, low coverage, labels ineligible under " + historicalRuleDecisionVersion + ", and correlated fleet events are excluded without zero imputation",
 		ControlPolicy:         "same-GPU stable-identity historical cutoffs; exclude every known fault [-168h,+72h]; telemetry and load validation remains required",
 		CorrelatedEventPolicy: "exclude same-event five-minute buckets affecting at least 32 GPUs across at least 10 nodes from GPU hardware training",
 		PreparedSamples:       filepath.Base(preparedPath), PreparedSamplesSHA256: preparedSHA,
@@ -292,7 +299,7 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 	return s.db.Model(build).Updates(map[string]any{
 		"status": "completed", "eligible_positive_count": build.EligiblePositiveCount,
 		"telemetry_censored_count": build.TelemetryCensoredCount, "low_coverage_count": build.LowCoverageCount,
-		"extraction_failed_count": build.ExtractionFailedCount, "entity_time_conflict_count": build.EntityTimeConflictCount,
+		"extraction_failed_count": build.ExtractionFailedCount, "label_ineligible_count": build.LabelIneligibleCount, "entity_time_conflict_count": build.EntityTimeConflictCount,
 		"correlated_event_count": build.CorrelatedEventCount,
 		"train_count":            build.TrainCount, "validation_count": build.ValidationCount, "test_count": build.TestCount,
 		"control_request_count": build.ControlRequestCount, "control_shortfall_count": build.ControlShortfallCount,
@@ -300,6 +307,49 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 		"manifest_path": manifestPath, "prepared_samples_path": preparedPath, "prepared_samples_sha256": preparedSHA,
 		"control_requests_path": controlPath, "control_requests_sha256": controlSHA, "finished_at": &finished,
 	}).Error
+}
+
+func (s *Service) currentLabelEligibleEpisodes(windows []datasetWindow) (map[string]bool, error) {
+	ids := make([]uint, 0)
+	seen := map[uint]bool{}
+	for _, window := range windows {
+		for _, id := range window.CandidateIDs {
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	var candidates []api.HistoricalFaultCandidate
+	if len(ids) > 0 {
+		if err := s.db.Where("id IN ?", ids).Find(&candidates).Error; err != nil {
+			return nil, err
+		}
+	}
+	byID := map[uint]api.HistoricalFaultCandidate{}
+	for _, candidate := range candidates {
+		if candidate.ReviewedAt == nil {
+			rule := decideHistoricalCandidate(candidate, candidate.IdentityEvidenceStatus)
+			candidate.RuleDecision = rule.Decision
+			candidate.RuleConfidence = rule.Confidence
+		}
+		byID[candidate.ID] = candidate
+	}
+	result := map[string]bool{}
+	for _, window := range windows {
+		if len(window.CandidateIDs) == 0 {
+			result[window.EpisodeKey] = true
+			continue
+		}
+		for _, id := range window.CandidateIDs {
+			eligibility := candidateDatasetEligibility(byID[id])
+			if eligibility == "rule_positive_proxy" || eligibility == "operator_accepted_proxy" {
+				result[window.EpisodeKey] = true
+				break
+			}
+		}
+	}
+	return result, nil
 }
 
 func readExtractedFeatureRows(path string) ([]extractedFeatureRow, error) {

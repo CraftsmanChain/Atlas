@@ -272,6 +272,9 @@ func candidateDatasetEligibility(candidate api.HistoricalFaultCandidate) string 
 	if candidate.ReviewStatus == "accepted_proxy" {
 		return "operator_accepted_proxy"
 	}
+	if candidate.ReviewStatus == "needs_evidence" {
+		return "pending_review"
+	}
 	if candidate.TrainingDisposition == "context_only" || candidate.RuleDecision == "context_only" {
 		return "context_only"
 	}

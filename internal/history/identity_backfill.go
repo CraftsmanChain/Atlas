@@ -17,7 +17,7 @@ import (
 const (
 	identityBackfillQueryVersion  = "gpu-identity-interval-v3"
 	identityInventoryQuery        = `max_over_time(DCGM_FI_DEV_GPU_UTIL[6h]) >= 0`
-	historicalRuleDecisionVersion = "historical-gpu-label-rule-v1"
+	historicalRuleDecisionVersion = "historical-gpu-label-rule-v2"
 )
 
 type historicalRuleDecision struct {
@@ -452,6 +452,18 @@ func decideHistoricalCandidate(candidate api.HistoricalFaultCandidate, identityS
 			Reason: "the dropout alert is a deterministic device-presence fault and the same GPU was observed after recovery",
 		}
 	}
+	if candidate.EventType == "xid_109_context_switch_timeout" {
+		return historicalRuleDecision{
+			Decision: "needs_human_review", Confidence: 0, DefaultReviewStatus: "needs_human_review",
+			Reason: "XID 109 requires reset and investigation but is not hardware-specific; promote only with recurrence, accompanying hardware signals, replacement, repair, or operator evidence",
+		}
+	}
+	if candidate.EventType == "xid_94_contained_ecc" {
+		return historicalRuleDecision{
+			Decision: "positive_proxy", Confidence: 0.85, DefaultReviewStatus: "available_for_override",
+			Reason: "XID 94 is a contained GPU memory/ECC error with point-in-time identity evidence",
+		}
+	}
 	if candidate.OperationalPriority == "critical" || candidate.OperationalPriority == "high" ||
 		candidate.TrainingDisposition == "proxy_positive_after_review" {
 		return historicalRuleDecision{
@@ -463,6 +475,26 @@ func decideHistoricalCandidate(candidate api.HistoricalFaultCandidate, identityS
 		Decision: "needs_human_review", Confidence: 0, DefaultReviewStatus: "needs_human_review",
 		Reason: "no automatic historical-label rule reached the minimum evidence threshold",
 	}
+}
+
+func (s *Service) ReapplyHistoricalCandidateRules() (int, error) {
+	var candidates []api.HistoricalFaultCandidate
+	if err := s.db.Order("id").Find(&candidates).Error; err != nil {
+		return 0, err
+	}
+	updated := 0
+	for _, candidate := range candidates {
+		rule := decideHistoricalCandidate(candidate, candidate.IdentityEvidenceStatus)
+		values := map[string]any{"rule_decision": rule.Decision, "rule_decision_version": historicalRuleDecisionVersion, "rule_decision_reason": rule.Reason, "rule_confidence": rule.Confidence, "rule_decided_at": s.now()}
+		if candidate.ReviewedAt == nil {
+			values["review_status"] = rule.DefaultReviewStatus
+		}
+		if err := s.db.Model(&candidate).Updates(values).Error; err != nil {
+			return updated, err
+		}
+		updated++
+	}
+	return updated, nil
 }
 
 func replacementAfter(candidate api.HistoricalFaultCandidate, matched api.HistoricalGPUIdentityInterval, intervals []api.HistoricalGPUIdentityInterval) *api.HistoricalGPUIdentityInterval {
