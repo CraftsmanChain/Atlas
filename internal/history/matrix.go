@@ -352,7 +352,7 @@ func evaluateCohortReadiness(matrixKey string, rows []trainingMatrixRow) cohortR
 	}
 	report := cohortReadinessReport{MatrixKey: matrixKey, Policy: policy}
 	for key, splitRows := range grouped {
-		item := cohortStratumReadiness{EventType: key.eventType, ModelName: key.modelName, HorizonMinutes: key.horizon, Status: "exploratory_ready", Splits: map[string]cohortSplitReadiness{}}
+		item := cohortStratumReadiness{EventType: key.eventType, ModelName: key.modelName, HorizonMinutes: key.horizon, Status: "exploratory_ready", BlockingReasons: []string{}, Splits: map[string]cohortSplitReadiness{}}
 		for _, splitName := range []string{"train", "validation", "test"} {
 			split := splitRows[splitName]
 			if split == nil {
