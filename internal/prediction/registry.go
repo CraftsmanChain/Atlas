@@ -57,8 +57,9 @@ type registryArtifact struct {
 	ScopeEventType string `json:"scope_event_type"`
 	ScopeModelName string `json:"scope_model_name"`
 	Models         []struct {
-		HorizonMinutes int     `json:"horizon_minutes"`
-		Threshold      float64 `json:"threshold"`
+		HorizonMinutes int      `json:"horizon_minutes"`
+		FeatureColumns []string `json:"feature_columns"`
+		Threshold      float64  `json:"threshold"`
 		Calibration    struct {
 			Version string  `json:"version"`
 			Status  string  `json:"status"`
@@ -100,6 +101,9 @@ func (s *Service) RunShadowModelRegistrySync(ctx context.Context, interval time.
 		}
 		if summary.BuildsRejected > 0 {
 			log.Printf("prediction shadow registry rejected builds: %s", strings.Join(summary.Errors, "; "))
+		}
+		if err := s.SyncFeatureParityAudits(); err != nil {
+			log.Printf("prediction feature parity audit failed: %v", err)
 		}
 	}
 	run()

@@ -86,6 +86,37 @@ type HardwareRiskPrediction struct {
 	CreatedAt         time.Time  `json:"created_at"`
 }
 
+// PredictionFeatureParityAudit proves that every trained model column maps to
+// an active online source and the exact shared transformation implementation.
+// Contract parity alone never enables scoring; historical replay must verify
+// actual values first.
+type PredictionFeatureParityAudit struct {
+	ID                            uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	ModelSpecID                   uint       `json:"model_spec_id" gorm:"uniqueIndex;not null"`
+	ModelKey                      string     `json:"model_key" gorm:"index;not null"`
+	ModelVersion                  string     `json:"model_version" gorm:"index;not null"`
+	SourceBaselineBuildID         uint       `json:"source_baseline_build_id" gorm:"index;not null"`
+	ArtifactSHA256                string     `json:"artifact_sha256" gorm:"index;not null"`
+	FeatureContractVersion        string     `json:"feature_contract_version" gorm:"index;not null"`
+	TransformationContractVersion string     `json:"transformation_contract_version" gorm:"index;not null"`
+	Status                        string     `json:"status" gorm:"index;not null"`
+	TrainingFeatureCount          int        `json:"training_feature_count"`
+	ContractMatchedCount          int        `json:"contract_matched_count"`
+	SourceMetricCount             int        `json:"source_metric_count"`
+	MissingSourceCount            int        `json:"missing_source_count"`
+	UnsupportedTransformCount     int        `json:"unsupported_transform_count"`
+	ReplayVerifiedCount           int        `json:"replay_verified_count"`
+	SourceMetrics                 StringList `json:"source_metrics" gorm:"type:text"`
+	ContractMatchedColumns        StringList `json:"contract_matched_columns" gorm:"type:text"`
+	MissingSourceColumns          StringList `json:"missing_source_columns" gorm:"type:text"`
+	UnsupportedTransformColumns   StringList `json:"unsupported_transform_columns" gorm:"type:text"`
+	BlockingReasons               StringList `json:"blocking_reasons" gorm:"type:text"`
+	ScoringAllowed                bool       `json:"scoring_allowed" gorm:"index"`
+	AuditedAt                     time.Time  `json:"audited_at" gorm:"index;not null"`
+	CreatedAt                     time.Time  `json:"created_at"`
+	UpdatedAt                     time.Time  `json:"updated_at"`
+}
+
 // PredictionOutcomeEvaluation keeps the rule-derived outcome and any later
 // human correction side by side. Reconciliation may update the rule columns,
 // but must never overwrite the human decision columns.
