@@ -83,6 +83,37 @@ func (h *Handler) HandleBackfills(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handler) HandleFeatureReplays(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		rows, err := h.service.FeatureReplayRuns(limit)
+		if err != nil {
+			historyJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		historyJSON(w, http.StatusOK, map[string]any{"data": rows, "meta": map[string]any{"total": len(rows), "scoring_allowed": false}})
+	case http.MethodPost:
+		var request FeatureReplayRequest
+		if r.Body != nil && r.ContentLength != 0 {
+			decoder := json.NewDecoder(r.Body)
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&request); err != nil {
+				historyJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+				return
+			}
+		}
+		run, err := h.service.StartFeatureReplay(request)
+		if err != nil {
+			historyJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+			return
+		}
+		historyJSON(w, http.StatusAccepted, map[string]any{"data": run})
+	default:
+		historyJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+	}
+}
+
 func (h *Handler) HandleCandidates(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		historyJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})

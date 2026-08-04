@@ -111,6 +111,17 @@ func (s *Service) auditFeatureParity(spec api.PredictionModelSpec) error {
 		audit.Status = "replay_required"
 		audit.BlockingReasons = append(audit.BlockingReasons, "historical_value_replay_not_verified", "live_24h_coverage_not_verified")
 	}
+	var existing api.PredictionFeatureParityAudit
+	result := s.db.Where("model_spec_id = ?", spec.ID).Limit(1).Find(&existing)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected > 0 && audit.Status == "replay_required" && existing.ArtifactSHA256 == audit.ArtifactSHA256 &&
+		(existing.Status == "live_coverage_required" || existing.Status == "blocked_replay") {
+		audit.Status = existing.Status
+		audit.ReplayVerifiedCount = existing.ReplayVerifiedCount
+		audit.BlockingReasons = append(api.StringList(nil), existing.BlockingReasons...)
+	}
 	return s.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "model_spec_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
