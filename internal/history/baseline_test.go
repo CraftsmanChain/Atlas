@@ -96,6 +96,24 @@ func TestBootstrapBaselineUncertaintyIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestCrossSplitStabilityRequiresValidationAndTestAgreement(t *testing.T) {
+	candidate := baselineUncertainty{Status: "candidate_signal"}
+	inverse := baselineUncertainty{Status: "inverse_signal"}
+	inconclusive := baselineUncertainty{Status: "inconclusive"}
+	if status := crossSplitStability(candidate, candidate); status != "robust_candidate" {
+		t.Fatalf("candidate agreement status=%s", status)
+	}
+	if status := crossSplitStability(candidate, inverse); status != "temporal_instability" {
+		t.Fatalf("opposite split status=%s", status)
+	}
+	if status := crossSplitStability(inverse, inverse); status != "consistent_inverse" {
+		t.Fatalf("inverse agreement status=%s", status)
+	}
+	if status := crossSplitStability(candidate, inconclusive); status != "inconclusive" {
+		t.Fatalf("uncertain split status=%s", status)
+	}
+}
+
 func TestStratifiedMetricsUsePairedLabelDimensions(t *testing.T) {
 	rows := []trainingMatrixRow{
 		{LabelMetadata: trainingLabelMetadata{EventTypes: []string{"xid_94_contained_ecc"}}},
