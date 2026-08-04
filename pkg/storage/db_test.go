@@ -136,7 +136,7 @@ func TestBaselineMetricColumnsUseStableAUCNames(t *testing.T) {
 	if err := migrateSchema(raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, column := range []string{"test_macro_roc_auc", "test_macro_pr_auc", "feature_audit_status", "excluded_feature_count", "prohibited_feature_count", "statistically_stable_count"} {
+	for _, column := range []string{"test_macro_roc_auc", "test_macro_pr_auc", "feature_audit_status", "excluded_feature_count", "prohibited_feature_count", "statistically_stable_count", "shadow_candidate_count"} {
 		if !raw.Migrator().HasColumn(&api.BaselineModelBuild{}, column) {
 			t.Fatalf("missing stable baseline metric column %s", column)
 		}

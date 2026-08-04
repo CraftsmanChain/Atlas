@@ -114,6 +114,31 @@ func TestCrossSplitStabilityRequiresValidationAndTestAgreement(t *testing.T) {
 	}
 }
 
+func TestBaselineCalibrationRequiresReliabilityAndPositiveSkill(t *testing.T) {
+	perfect := []scoredLabel{{score: 0, label: 0}, {score: 0, label: 0}, {score: 1, label: 1}, {score: 1, label: 1}}
+	passed := evaluateBaselineCalibration(perfect)
+	if passed.Status != "passed" || passed.ECE != 0 || passed.BrierSkillScore != 1 {
+		t.Fatalf("unexpected perfect calibration: %+v", passed)
+	}
+	wrong := []scoredLabel{{score: 0.9, label: 0}, {score: 0.8, label: 0}, {score: 0.2, label: 1}, {score: 0.1, label: 1}}
+	failed := evaluateBaselineCalibration(wrong)
+	if failed.Status != "calibration_required" || failed.BrierSkillScore >= 0 {
+		t.Fatalf("unexpected failed calibration: %+v", failed)
+	}
+}
+
+func TestBaselineReleaseReadinessRequiresStabilityAndCalibration(t *testing.T) {
+	if status := baselineReleaseReadiness("robust_candidate", "passed"); status != "shadow_candidate" {
+		t.Fatalf("ready status=%s", status)
+	}
+	if status := baselineReleaseReadiness("robust_candidate", "calibration_required"); status != "blocked_calibration" {
+		t.Fatalf("calibration block status=%s", status)
+	}
+	if status := baselineReleaseReadiness("inconclusive", "passed"); status != "blocked_stability" {
+		t.Fatalf("stability block status=%s", status)
+	}
+}
+
 func TestStratifiedMetricsUsePairedLabelDimensions(t *testing.T) {
 	rows := []trainingMatrixRow{
 		{LabelMetadata: trainingLabelMetadata{EventTypes: []string{"xid_94_contained_ecc"}}},

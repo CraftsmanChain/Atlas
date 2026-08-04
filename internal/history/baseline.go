@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	baselineModelVersion        = "gpu-logistic-baseline-v7"
+	baselineModelVersion        = "gpu-logistic-baseline-v8"
 	cohortReadinessGateName     = "fault-model-horizon-readiness-v1"
 	baselineFeatureAuditVersion = "baseline-feature-leakage-audit-v1"
 )
@@ -58,6 +58,8 @@ type baselineHorizonReport struct {
 	Test                    baselineMetrics            `json:"test"`
 	TestUncertainty         baselineUncertainty        `json:"test_uncertainty"`
 	CrossSplitStatus        string                     `json:"cross_split_status"`
+	TestCalibration         baselineCalibration        `json:"test_calibration"`
+	ReleaseReadiness        string                     `json:"release_readiness"`
 	TestByModel             map[string]baselineMetrics `json:"test_by_model"`
 	TestByEventType         map[string]baselineMetrics `json:"test_by_event_type"`
 	TestByDriverVersion     map[string]baselineMetrics `json:"test_by_driver_version"`
@@ -65,6 +67,26 @@ type baselineHorizonReport struct {
 	TestByHardwareCertainty map[string]baselineMetrics `json:"test_by_hardware_certainty"`
 	TestByRuleVersion       map[string]baselineMetrics `json:"test_by_rule_version"`
 	Threshold               float64                    `json:"threshold"`
+}
+
+type baselineCalibrationBin struct {
+	Index           int     `json:"index"`
+	LowerBound      float64 `json:"lower_bound"`
+	UpperBound      float64 `json:"upper_bound"`
+	Count           int     `json:"count"`
+	MeanProbability float64 `json:"mean_probability"`
+	ObservedRate    float64 `json:"observed_rate"`
+}
+
+type baselineCalibration struct {
+	Version         string                   `json:"version"`
+	Status          string                   `json:"status"`
+	BinCount        int                      `json:"bin_count"`
+	ECE             float64                  `json:"ece"`
+	ModelBrier      float64                  `json:"model_brier"`
+	NullBrier       float64                  `json:"null_brier"`
+	BrierSkillScore float64                  `json:"brier_skill_score"`
+	Bins            []baselineCalibrationBin `json:"bins"`
 }
 
 type baselineUncertainty struct {
@@ -284,9 +306,14 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 		validationUncertainty := bootstrapBaselineUncertainty(val, validationScores, h+1_000_000)
 		testUncertainty := bootstrapBaselineUncertainty(test, testScores, h)
 		crossSplitStatus := crossSplitStability(validationUncertainty, testUncertainty)
-		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, Train: describeLabels(train), Validation: evaluateScores(validationScores, model.Threshold), ValidationUncertainty: validationUncertainty, Test: evaluateScores(testScores, model.Threshold), TestUncertainty: testUncertainty, CrossSplitStatus: crossSplitStatus, TestByModel: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return []string{row.ModelName} }), TestByEventType: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes }), TestByDriverVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.DriverVersions }), TestByLabelSource: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.LabelSources }), TestByHardwareCertainty: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.HardwareCertainties }), TestByRuleVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.RuleDecisionVersions }), Threshold: model.Threshold})
+		testCalibration := evaluateBaselineCalibration(testScores)
+		releaseReadiness := baselineReleaseReadiness(crossSplitStatus, testCalibration.Status)
+		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, Train: describeLabels(train), Validation: evaluateScores(validationScores, model.Threshold), ValidationUncertainty: validationUncertainty, Test: evaluateScores(testScores, model.Threshold), TestUncertainty: testUncertainty, CrossSplitStatus: crossSplitStatus, TestCalibration: testCalibration, ReleaseReadiness: releaseReadiness, TestByModel: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return []string{row.ModelName} }), TestByEventType: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes }), TestByDriverVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.DriverVersions }), TestByLabelSource: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.LabelSources }), TestByHardwareCertainty: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.HardwareCertainties }), TestByRuleVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.RuleDecisionVersions }), Threshold: model.Threshold})
 		if crossSplitStatus == "robust_candidate" {
 			build.StatisticallyStableCount++
+		}
+		if releaseReadiness == "shadow_candidate" {
+			build.ShadowCandidateCount++
 		}
 		build.TrainCount += len(train)
 		build.ValidationCount += len(val)
@@ -321,7 +348,66 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 		return err
 	}
 	finished := s.now()
-	return s.db.Model(build).Updates(map[string]any{"status": "completed", "feature_column_count": build.FeatureColumnCount, "feature_audit_status": build.FeatureAuditStatus, "excluded_feature_count": build.ExcludedFeatureCount, "prohibited_feature_count": build.ProhibitedFeatureCount, "statistically_stable_count": build.StatisticallyStableCount, "horizon_count": build.HorizonCount, "trained_model_count": build.TrainedModelCount, "train_count": build.TrainCount, "validation_count": build.ValidationCount, "test_count": build.TestCount, "test_macro_roc_auc": build.TestMacroROCAUC, "test_macro_pr_auc": build.TestMacroPRAUC, "test_macro_precision": build.TestMacroPrecision, "test_macro_recall": build.TestMacroRecall, "artifact_path": artifactPath, "artifact_sha256": checksum, "report_path": reportPath, "finished_at": &finished}).Error
+	return s.db.Model(build).Updates(map[string]any{"status": "completed", "feature_column_count": build.FeatureColumnCount, "feature_audit_status": build.FeatureAuditStatus, "excluded_feature_count": build.ExcludedFeatureCount, "prohibited_feature_count": build.ProhibitedFeatureCount, "statistically_stable_count": build.StatisticallyStableCount, "shadow_candidate_count": build.ShadowCandidateCount, "horizon_count": build.HorizonCount, "trained_model_count": build.TrainedModelCount, "train_count": build.TrainCount, "validation_count": build.ValidationCount, "test_count": build.TestCount, "test_macro_roc_auc": build.TestMacroROCAUC, "test_macro_pr_auc": build.TestMacroPRAUC, "test_macro_precision": build.TestMacroPrecision, "test_macro_recall": build.TestMacroRecall, "artifact_path": artifactPath, "artifact_sha256": checksum, "report_path": reportPath, "finished_at": &finished}).Error
+}
+
+func baselineReleaseReadiness(crossSplitStatus, calibrationStatus string) string {
+	if crossSplitStatus != "robust_candidate" {
+		return "blocked_stability"
+	}
+	if calibrationStatus != "passed" {
+		return "blocked_calibration"
+	}
+	return "shadow_candidate"
+}
+
+func evaluateBaselineCalibration(scores []scoredLabel) baselineCalibration {
+	const binCount = 10
+	result := baselineCalibration{Version: "held-out-calibration-audit-v1", Status: "insufficient_labels", BinCount: binCount, Bins: make([]baselineCalibrationBin, binCount)}
+	if len(scores) == 0 {
+		return result
+	}
+	positiveCount := 0
+	probabilitySums, positiveSums := make([]float64, binCount), make([]int, binCount)
+	for _, score := range scores {
+		probability := math.Max(0, math.Min(1, score.score))
+		index := int(probability * binCount)
+		if index >= binCount {
+			index = binCount - 1
+		}
+		result.Bins[index].Count++
+		probabilitySums[index] += probability
+		if score.label == 1 {
+			positiveCount++
+			positiveSums[index]++
+		}
+		result.ModelBrier += (probability - float64(score.label)) * (probability - float64(score.label))
+	}
+	if positiveCount == 0 || positiveCount == len(scores) {
+		return result
+	}
+	result.ModelBrier /= float64(len(scores))
+	prevalence := float64(positiveCount) / float64(len(scores))
+	result.NullBrier = prevalence * (1 - prevalence)
+	if result.NullBrier > 0 {
+		result.BrierSkillScore = 1 - result.ModelBrier/result.NullBrier
+	}
+	for index := range result.Bins {
+		bin := &result.Bins[index]
+		bin.Index, bin.LowerBound, bin.UpperBound = index, float64(index)/binCount, float64(index+1)/binCount
+		if bin.Count == 0 {
+			continue
+		}
+		bin.MeanProbability = probabilitySums[index] / float64(bin.Count)
+		bin.ObservedRate = float64(positiveSums[index]) / float64(bin.Count)
+		result.ECE += float64(bin.Count) / float64(len(scores)) * math.Abs(bin.MeanProbability-bin.ObservedRate)
+	}
+	if result.ECE <= 0.10 && result.BrierSkillScore > 0 {
+		result.Status = "passed"
+	} else {
+		result.Status = "calibration_required"
+	}
+	return result
 }
 
 func crossSplitStability(validation, test baselineUncertainty) string {
