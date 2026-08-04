@@ -139,6 +139,30 @@ func TestBaselineReleaseReadinessRequiresStabilityAndCalibration(t *testing.T) {
 	}
 }
 
+func TestPlattCalibrationUsesValidationScoresAndPreservesRanking(t *testing.T) {
+	scores := []scoredLabel{
+		{score: 0.05, label: 0}, {score: 0.15, label: 0}, {score: 0.25, label: 0},
+		{score: 0.75, label: 1}, {score: 0.85, label: 1}, {score: 0.95, label: 1},
+	}
+	calibration := fitPlattCalibration(scores)
+	if calibration.Status != "fitted" || calibration.FittedCount != len(scores) || calibration.Slope <= 0 {
+		t.Fatalf("unexpected Platt calibration: %+v", calibration)
+	}
+	calibrated := applyCalibration(scores, calibration)
+	for index := 1; index < len(calibrated); index++ {
+		if calibrated[index].score <= calibrated[index-1].score {
+			t.Fatalf("calibration changed score ordering: %+v", calibrated)
+		}
+	}
+}
+
+func TestPlattCalibrationRejectsSingleClassValidation(t *testing.T) {
+	calibration := fitPlattCalibration([]scoredLabel{{score: 0.1, label: 0}, {score: 0.2, label: 0}})
+	if calibration.Status != "rejected" {
+		t.Fatalf("single-class validation must be rejected: %+v", calibration)
+	}
+}
+
 func TestStratifiedMetricsUsePairedLabelDimensions(t *testing.T) {
 	rows := []trainingMatrixRow{
 		{LabelMetadata: trainingLabelMetadata{EventTypes: []string{"xid_94_contained_ecc"}}},
