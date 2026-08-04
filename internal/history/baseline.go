@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	baselineModelVersion        = "gpu-logistic-baseline-v8"
+	baselineModelVersion        = "gpu-logistic-baseline-v9"
 	cohortReadinessGateName     = "fault-model-horizon-readiness-v1"
 	baselineFeatureAuditVersion = "baseline-feature-leakage-audit-v1"
 )
@@ -31,13 +31,25 @@ type BaselineModelBuildRequest struct {
 }
 
 type logisticModel struct {
-	HorizonMinutes int       `json:"horizon_minutes"`
-	FeatureColumns []string  `json:"feature_columns"`
-	Means          []float64 `json:"means"`
-	Scales         []float64 `json:"scales"`
-	Coefficients   []float64 `json:"coefficients"`
-	Intercept      float64   `json:"intercept"`
-	Threshold      float64   `json:"threshold"`
+	HorizonMinutes int                    `json:"horizon_minutes"`
+	FeatureColumns []string               `json:"feature_columns"`
+	Means          []float64              `json:"means"`
+	Scales         []float64              `json:"scales"`
+	Coefficients   []float64              `json:"coefficients"`
+	Intercept      float64                `json:"intercept"`
+	Threshold      float64                `json:"threshold"`
+	Calibration    probabilityCalibration `json:"calibration"`
+}
+
+type probabilityCalibration struct {
+	Version       string  `json:"version"`
+	Status        string  `json:"status"`
+	Algorithm     string  `json:"algorithm"`
+	Slope         float64 `json:"slope"`
+	Intercept     float64 `json:"intercept"`
+	FittedCount   int     `json:"fitted_count"`
+	PositiveCount int     `json:"positive_count"`
+	ControlCount  int     `json:"control_count"`
 }
 type baselineMetrics struct {
 	Count     int     `json:"count"`
@@ -58,6 +70,7 @@ type baselineHorizonReport struct {
 	Test                    baselineMetrics            `json:"test"`
 	TestUncertainty         baselineUncertainty        `json:"test_uncertainty"`
 	CrossSplitStatus        string                     `json:"cross_split_status"`
+	RawTestCalibration      baselineCalibration        `json:"raw_test_calibration"`
 	TestCalibration         baselineCalibration        `json:"test_calibration"`
 	ReleaseReadiness        string                     `json:"release_readiness"`
 	TestByModel             map[string]baselineMetrics `json:"test_by_model"`
@@ -289,16 +302,19 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 	}
 	sort.Ints(horizons)
 	artifact := baselineArtifact{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, FeaturePolicy: baselineFeaturePolicy(), FeatureAudit: featureAudit, CreatedAt: s.now()}
-	report := baselineReport{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, Mode: "offline_evaluation_only", FeaturePolicy: baselineFeaturePolicy(), FeatureAudit: featureAudit, CalibrationPolicy: "uncalibrated baseline; validation selects an F1 threshold and test remains untouched; no online probability release", ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
+	report := baselineReport{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, Mode: "offline_evaluation_only", FeaturePolicy: baselineFeaturePolicy(), FeatureAudit: featureAudit, CalibrationPolicy: "validation-only Platt scaling fits slope/intercept and selects the F1 threshold; held-out test labels are audit-only; no online probability release", ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
 	for _, h := range horizons {
 		train, val, test := splitMatrixRows(byHorizon[h])
 		if !hasBothLabels(train) || !hasBothLabels(val) || !hasBothLabels(test) {
 			return fmt.Errorf("horizon %d requires both labels in every split", h)
 		}
 		model := fitLogistic(train, columns, h)
-		validationScores := scoreRows(model, val)
+		rawValidationScores := scoreRows(model, val)
+		model.Calibration = fitPlattCalibration(rawValidationScores)
+		validationScores := applyCalibration(rawValidationScores, model.Calibration)
 		model.Threshold = bestF1Threshold(validationScores)
-		testScores := scoreRows(model, test)
+		rawTestScores := scoreRowsWithoutCalibration(model, test)
+		testScores := applyCalibration(rawTestScores, model.Calibration)
 		for i := range testScores {
 			testScores[i].threshold = model.Threshold
 		}
@@ -306,9 +322,10 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 		validationUncertainty := bootstrapBaselineUncertainty(val, validationScores, h+1_000_000)
 		testUncertainty := bootstrapBaselineUncertainty(test, testScores, h)
 		crossSplitStatus := crossSplitStability(validationUncertainty, testUncertainty)
+		rawTestCalibration := evaluateBaselineCalibration(rawTestScores)
 		testCalibration := evaluateBaselineCalibration(testScores)
 		releaseReadiness := baselineReleaseReadiness(crossSplitStatus, testCalibration.Status)
-		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, Train: describeLabels(train), Validation: evaluateScores(validationScores, model.Threshold), ValidationUncertainty: validationUncertainty, Test: evaluateScores(testScores, model.Threshold), TestUncertainty: testUncertainty, CrossSplitStatus: crossSplitStatus, TestCalibration: testCalibration, ReleaseReadiness: releaseReadiness, TestByModel: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return []string{row.ModelName} }), TestByEventType: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes }), TestByDriverVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.DriverVersions }), TestByLabelSource: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.LabelSources }), TestByHardwareCertainty: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.HardwareCertainties }), TestByRuleVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.RuleDecisionVersions }), Threshold: model.Threshold})
+		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, Train: describeLabels(train), Validation: evaluateScores(validationScores, model.Threshold), ValidationUncertainty: validationUncertainty, Test: evaluateScores(testScores, model.Threshold), TestUncertainty: testUncertainty, CrossSplitStatus: crossSplitStatus, RawTestCalibration: rawTestCalibration, TestCalibration: testCalibration, ReleaseReadiness: releaseReadiness, TestByModel: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return []string{row.ModelName} }), TestByEventType: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes }), TestByDriverVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.DriverVersions }), TestByLabelSource: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.LabelSources }), TestByHardwareCertainty: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.HardwareCertainties }), TestByRuleVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.RuleDecisionVersions }), Threshold: model.Threshold})
 		if crossSplitStatus == "robust_candidate" {
 			build.StatisticallyStableCount++
 		}
@@ -406,6 +423,55 @@ func evaluateBaselineCalibration(scores []scoredLabel) baselineCalibration {
 		result.Status = "passed"
 	} else {
 		result.Status = "calibration_required"
+	}
+	return result
+}
+
+func fitPlattCalibration(scores []scoredLabel) probabilityCalibration {
+	calibration := probabilityCalibration{Version: "validation-platt-v1", Status: "rejected", Algorithm: "platt_scaling", Slope: 1, FittedCount: len(scores)}
+	for _, score := range scores {
+		if score.label == 1 {
+			calibration.PositiveCount++
+		} else {
+			calibration.ControlCount++
+		}
+	}
+	if calibration.PositiveCount == 0 || calibration.ControlCount == 0 {
+		return calibration
+	}
+	for epoch := 0; epoch < 1000; epoch++ {
+		gradientSlope, gradientIntercept := 0.0, 0.0
+		for _, score := range scores {
+			x := logitProbability(score.score)
+			probability := sigmoid(calibration.Slope*x + calibration.Intercept)
+			errorValue := probability - float64(score.label)
+			gradientSlope += errorValue * x
+			gradientIntercept += errorValue
+		}
+		rate := 0.05 / math.Sqrt(1+float64(epoch)/100)
+		count := float64(len(scores))
+		calibration.Slope -= rate * (gradientSlope/count + 0.01*(calibration.Slope-1))
+		calibration.Intercept -= rate * gradientIntercept / count
+	}
+	if calibration.Slope <= 0 || math.IsNaN(calibration.Slope) || math.IsInf(calibration.Slope, 0) || math.IsNaN(calibration.Intercept) || math.IsInf(calibration.Intercept, 0) {
+		return calibration
+	}
+	calibration.Status = "fitted"
+	return calibration
+}
+
+func logitProbability(probability float64) float64 {
+	probability = math.Max(1e-6, math.Min(1-1e-6, probability))
+	return math.Log(probability / (1 - probability))
+}
+
+func applyCalibration(scores []scoredLabel, calibration probabilityCalibration) []scoredLabel {
+	result := append([]scoredLabel(nil), scores...)
+	if calibration.Status != "fitted" {
+		return result
+	}
+	for index := range result {
+		result[index].score = sigmoid(calibration.Slope*logitProbability(result[index].score) + calibration.Intercept)
 	}
 	return result
 }
@@ -774,6 +840,10 @@ type scoredLabel struct {
 }
 
 func scoreRows(m logisticModel, rows []trainingMatrixRow) []scoredLabel {
+	return applyCalibration(scoreRowsWithoutCalibration(m, rows), m.Calibration)
+}
+
+func scoreRowsWithoutCalibration(m logisticModel, rows []trainingMatrixRow) []scoredLabel {
 	out := make([]scoredLabel, len(rows))
 	for i, r := range rows {
 		z := m.Intercept
