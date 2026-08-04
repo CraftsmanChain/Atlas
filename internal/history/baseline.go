@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	baselineModelVersion        = "gpu-logistic-baseline-v6"
+	baselineModelVersion        = "gpu-logistic-baseline-v7"
 	cohortReadinessGateName     = "fault-model-horizon-readiness-v1"
 	baselineFeatureAuditVersion = "baseline-feature-leakage-audit-v1"
 )
@@ -54,8 +54,10 @@ type baselineHorizonReport struct {
 	HorizonMinutes          int                        `json:"horizon_minutes"`
 	Train                   baselineMetrics            `json:"train"`
 	Validation              baselineMetrics            `json:"validation"`
+	ValidationUncertainty   baselineUncertainty        `json:"validation_uncertainty"`
 	Test                    baselineMetrics            `json:"test"`
 	TestUncertainty         baselineUncertainty        `json:"test_uncertainty"`
+	CrossSplitStatus        string                     `json:"cross_split_status"`
 	TestByModel             map[string]baselineMetrics `json:"test_by_model"`
 	TestByEventType         map[string]baselineMetrics `json:"test_by_event_type"`
 	TestByDriverVersion     map[string]baselineMetrics `json:"test_by_driver_version"`
@@ -279,9 +281,11 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 			testScores[i].threshold = model.Threshold
 		}
 		artifact.Models = append(artifact.Models, model)
-		uncertainty := bootstrapBaselineUncertainty(test, testScores, h)
-		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, Train: describeLabels(train), Validation: evaluateScores(validationScores, model.Threshold), Test: evaluateScores(testScores, model.Threshold), TestUncertainty: uncertainty, TestByModel: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return []string{row.ModelName} }), TestByEventType: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes }), TestByDriverVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.DriverVersions }), TestByLabelSource: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.LabelSources }), TestByHardwareCertainty: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.HardwareCertainties }), TestByRuleVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.RuleDecisionVersions }), Threshold: model.Threshold})
-		if uncertainty.Status == "candidate_signal" {
+		validationUncertainty := bootstrapBaselineUncertainty(val, validationScores, h+1_000_000)
+		testUncertainty := bootstrapBaselineUncertainty(test, testScores, h)
+		crossSplitStatus := crossSplitStability(validationUncertainty, testUncertainty)
+		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, Train: describeLabels(train), Validation: evaluateScores(validationScores, model.Threshold), ValidationUncertainty: validationUncertainty, Test: evaluateScores(testScores, model.Threshold), TestUncertainty: testUncertainty, CrossSplitStatus: crossSplitStatus, TestByModel: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return []string{row.ModelName} }), TestByEventType: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes }), TestByDriverVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.DriverVersions }), TestByLabelSource: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.LabelSources }), TestByHardwareCertainty: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.HardwareCertainties }), TestByRuleVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.RuleDecisionVersions }), Threshold: model.Threshold})
+		if crossSplitStatus == "robust_candidate" {
 			build.StatisticallyStableCount++
 		}
 		build.TrainCount += len(train)
@@ -318,6 +322,19 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 	}
 	finished := s.now()
 	return s.db.Model(build).Updates(map[string]any{"status": "completed", "feature_column_count": build.FeatureColumnCount, "feature_audit_status": build.FeatureAuditStatus, "excluded_feature_count": build.ExcludedFeatureCount, "prohibited_feature_count": build.ProhibitedFeatureCount, "statistically_stable_count": build.StatisticallyStableCount, "horizon_count": build.HorizonCount, "trained_model_count": build.TrainedModelCount, "train_count": build.TrainCount, "validation_count": build.ValidationCount, "test_count": build.TestCount, "test_macro_roc_auc": build.TestMacroROCAUC, "test_macro_pr_auc": build.TestMacroPRAUC, "test_macro_precision": build.TestMacroPrecision, "test_macro_recall": build.TestMacroRecall, "artifact_path": artifactPath, "artifact_sha256": checksum, "report_path": reportPath, "finished_at": &finished}).Error
+}
+
+func crossSplitStability(validation, test baselineUncertainty) string {
+	if validation.Status == "candidate_signal" && test.Status == "candidate_signal" {
+		return "robust_candidate"
+	}
+	if validation.Status == "inverse_signal" && test.Status == "inverse_signal" {
+		return "consistent_inverse"
+	}
+	if (validation.Status == "candidate_signal" && test.Status == "inverse_signal") || (validation.Status == "inverse_signal" && test.Status == "candidate_signal") {
+		return "temporal_instability"
+	}
+	return "inconclusive"
 }
 
 func bootstrapBaselineUncertainty(rows []trainingMatrixRow, scores []scoredLabel, horizonMinutes int) baselineUncertainty {
