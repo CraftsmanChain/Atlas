@@ -69,6 +69,19 @@ func (h *Handler) HandleResults(w http.ResponseWriter, r *http.Request) {
 	predictionJSON(w, http.StatusOK, map[string]any{"data": rows, "summary": summary})
 }
 
+func (h *Handler) HandleFeatureParity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	rows, err := h.service.FeatureParityAudits(100)
+	if err != nil {
+		predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	predictionJSON(w, http.StatusOK, map[string]any{"data": rows, "meta": map[string]any{"total": len(rows), "scoring_allowed": false}})
+}
+
 func (h *Handler) HandleLabels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})

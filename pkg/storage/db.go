@@ -157,6 +157,7 @@ func migrateSchema(db *gorm.DB) error {
 		&api.NodeEvidenceCollection{},
 		&api.NodeEvidenceRecord{},
 		&api.PredictionModelSpec{},
+		&api.PredictionFeatureParityAudit{},
 		&api.FailureLabel{},
 		&api.HardwareRiskPrediction{},
 		&api.PredictionOutcomeEvaluation{},

@@ -21,7 +21,7 @@ func TestShadowRegistryPromotesOnlyIntegrityCheckedCandidate(t *testing.T) {
 	directory := t.TempDir()
 	artifactPath := filepath.Join(directory, "models.json")
 	reportPath := filepath.Join(directory, "evaluation_report.json")
-	artifact := `{"version":"gpu-logistic-baseline-v9","matrix_key":"matrix-v4","scope_event_type":"xid_94_contained_ecc","scope_model_name":"NVIDIA H100 80GB HBM3","models":[{"horizon_minutes":10080,"threshold":0.35,"calibration":{"version":"validation-platt-v1","status":"fitted","slope":0.4}}]}`
+	artifact := `{"version":"gpu-logistic-baseline-v9","matrix_key":"matrix-v4","scope_event_type":"xid_94_contained_ecc","scope_model_name":"NVIDIA H100 80GB HBM3","models":[{"horizon_minutes":10080,"feature_columns":["gpu_temp_mean_24h","gpu_temp_slope_per_hour_24h"],"threshold":0.35,"calibration":{"version":"validation-platt-v1","status":"fitted","slope":0.4}}]}`
 	report := `{"version":"gpu-logistic-baseline-v9","matrix_key":"matrix-v4","scope_event_type":"xid_94_contained_ecc","scope_model_name":"NVIDIA H100 80GB HBM3","feature_audit":{"status":"passed","prohibited_selected_count":0},"horizons":[{"horizon_minutes":10080,"cross_split_status":"robust_candidate","release_readiness":"shadow_candidate","threshold":0.35,"test_calibration":{"status":"passed"}}]}`
 	if err := os.WriteFile(artifactPath, []byte(artifact), 0o600); err != nil {
 		t.Fatal(err)
@@ -72,6 +72,16 @@ func TestShadowRegistryPromotesOnlyIntegrityCheckedCandidate(t *testing.T) {
 	}
 	if overview.Phase != "gpu_shadow_candidate_registered" || overview.ScoringEnabled || overview.ProbabilityEmitted {
 		t.Fatalf("candidate registration bypassed shadow safety: %+v", overview)
+	}
+	if err := service.SyncFeatureParityAudits(); err != nil {
+		t.Fatal(err)
+	}
+	audits, err := service.FeatureParityAudits(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(audits) != 1 || audits[0].Status != "replay_required" || audits[0].TrainingFeatureCount != 2 || audits[0].ContractMatchedCount != 2 || audits[0].SourceMetricCount != 1 || audits[0].ScoringAllowed {
+		t.Fatalf("unexpected feature parity audit: %+v", audits)
 	}
 }
 
