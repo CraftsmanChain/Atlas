@@ -351,3 +351,43 @@ type BaselineModelBuild struct {
 	CreatedAt                time.Time  `json:"created_at"`
 	UpdatedAt                time.Time  `json:"updated_at"`
 }
+
+// PredictionFeatureReplayRun compares immutable matrix feature values with a
+// fresh read-only Prometheus extraction at the same historical cutoff. Passing
+// this audit verifies extractor parity only; live coverage remains a separate
+// release gate.
+type PredictionFeatureReplayRun struct {
+	ID                            uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	ReplayKey                     string     `json:"replay_key" gorm:"uniqueIndex;not null"`
+	Version                       string     `json:"version" gorm:"index;not null"`
+	Status                        string     `json:"status" gorm:"index;not null"`
+	ModelSpecID                   uint       `json:"model_spec_id" gorm:"index;not null"`
+	ModelKey                      string     `json:"model_key" gorm:"index;not null"`
+	ModelVersion                  string     `json:"model_version" gorm:"index;not null"`
+	SourceBaselineBuildID         uint       `json:"source_baseline_build_id" gorm:"index;not null"`
+	SourceMatrixBuildID           uint       `json:"source_matrix_build_id" gorm:"index;not null"`
+	SourceKey                     string     `json:"source_key" gorm:"index;not null"`
+	TransformationContractVersion string     `json:"transformation_contract_version" gorm:"index;not null"`
+	RequestedSampleCount          int        `json:"requested_sample_count"`
+	SelectedSampleCount           int        `json:"selected_sample_count"`
+	CompletedSampleCount          int        `json:"completed_sample_count"`
+	FailedSampleCount             int        `json:"failed_sample_count"`
+	TrainingFeatureCount          int        `json:"training_feature_count"`
+	ComparedValueCount            int        `json:"compared_value_count"`
+	VerifiedColumnCount           int        `json:"verified_column_count"`
+	MismatchCount                 int        `json:"mismatch_count"`
+	MissingTrainingValueCount     int        `json:"missing_training_value_count"`
+	MissingReplayValueCount       int        `json:"missing_replay_value_count"`
+	MaximumAbsoluteError          float64    `json:"maximum_absolute_error"`
+	MaximumRelativeError          float64    `json:"maximum_relative_error"`
+	FailedColumns                 StringList `json:"failed_columns" gorm:"type:text"`
+	BlockingReasons               StringList `json:"blocking_reasons" gorm:"type:text"`
+	OutputDir                     string     `json:"output_dir" gorm:"type:text"`
+	ReportPath                    string     `json:"report_path" gorm:"type:text"`
+	ReportSHA256                  string     `json:"report_sha256"`
+	ErrorMessage                  string     `json:"error_message,omitempty" gorm:"type:text"`
+	StartedAt                     time.Time  `json:"started_at" gorm:"index;not null"`
+	FinishedAt                    *time.Time `json:"finished_at,omitempty" gorm:"index"`
+	CreatedAt                     time.Time  `json:"created_at"`
+	UpdatedAt                     time.Time  `json:"updated_at"`
+}
