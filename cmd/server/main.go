@@ -280,6 +280,7 @@ func main() {
 	mux.HandleFunc("/api/v1/prediction/history/audits", historyHandler.HandleAudits)
 	mux.HandleFunc("/api/v1/prediction/history/backfills", historyHandler.HandleBackfills)
 	mux.HandleFunc("/api/v1/prediction/history/feature-replays", historyHandler.HandleFeatureReplays)
+	mux.HandleFunc("/api/v1/prediction/history/live-coverage", historyHandler.HandleLiveCoverageAudits)
 	mux.HandleFunc("/api/v1/prediction/history/identity-backfills", historyHandler.HandleIdentityBackfills)
 	mux.HandleFunc("/api/v1/prediction/history/identities", historyHandler.HandleIdentities)
 	mux.HandleFunc("/api/v1/prediction/history/datasets", historyHandler.HandleDatasets)

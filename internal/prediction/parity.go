@@ -117,7 +117,7 @@ func (s *Service) auditFeatureParity(spec api.PredictionModelSpec) error {
 		return result.Error
 	}
 	if result.RowsAffected > 0 && audit.Status == "replay_required" && existing.ArtifactSHA256 == audit.ArtifactSHA256 &&
-		(existing.Status == "live_coverage_required" || existing.Status == "blocked_replay") {
+		(existing.Status == "live_coverage_required" || existing.Status == "blocked_replay" || existing.Status == "shadow_runtime_required" || existing.Status == "blocked_live_coverage") {
 		audit.Status = existing.Status
 		audit.ReplayVerifiedCount = existing.ReplayVerifiedCount
 		audit.BlockingReasons = append(api.StringList(nil), existing.BlockingReasons...)

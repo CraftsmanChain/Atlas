@@ -376,12 +376,23 @@ func (s *Service) extractEpisodeFeatures(client *promclient.Client, build *api.T
 }
 
 func historicalMetricQuery(uuid string) string {
+	return historicalMetricQueryUUIDs([]string{uuid})
+}
+
+func historicalMetricQueryUUIDs(uuids []string) string {
 	names := make([]string, 0, len(historicalFeatureMetrics))
 	for _, metric := range historicalFeatureMetrics {
 		names = append(names, regexp.QuoteMeta(metric.Name))
 	}
 	sort.Strings(names)
-	uuidExpression := "(?i)^" + regexp.QuoteMeta(strings.TrimSpace(uuid)) + "$"
+	uuidParts := make([]string, 0, len(uuids))
+	for _, uuid := range uuids {
+		if value := strings.TrimSpace(uuid); value != "" {
+			uuidParts = append(uuidParts, regexp.QuoteMeta(value))
+		}
+	}
+	sort.Strings(uuidParts)
+	uuidExpression := "(?i)^(" + strings.Join(uuidParts, "|") + ")$"
 	metricExpression := "^(" + strings.Join(names, "|") + ")$"
 	return fmt.Sprintf(`{__name__=~%q,UUID=~%q} or {__name__=~%q,uuid=~%q}`,
 		metricExpression, uuidExpression, metricExpression, uuidExpression)

@@ -391,3 +391,41 @@ type PredictionFeatureReplayRun struct {
 	CreatedAt                     time.Time  `json:"created_at"`
 	UpdatedAt                     time.Time  `json:"updated_at"`
 }
+
+// PredictionLiveCoverageAudit measures whether current in-scope GPUs have a
+// complete, fresh trailing-24h window for every model source metric.
+type PredictionLiveCoverageAudit struct {
+	ID                     uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	AuditKey               string     `json:"audit_key" gorm:"uniqueIndex;not null"`
+	Version                string     `json:"version" gorm:"index;not null"`
+	Status                 string     `json:"status" gorm:"index;not null"`
+	ModelSpecID            uint       `json:"model_spec_id" gorm:"index;not null"`
+	ModelKey               string     `json:"model_key" gorm:"index;not null"`
+	ModelVersion           string     `json:"model_version" gorm:"index;not null"`
+	SourceKey              string     `json:"source_key" gorm:"index;not null"`
+	ScopeModelName         string     `json:"scope_model_name" gorm:"index;not null"`
+	WindowMinutes          int        `json:"window_minutes"`
+	QueryStepSeconds       int        `json:"query_step_seconds"`
+	ExpectedSamples        int        `json:"expected_samples"`
+	MinimumSamples         int        `json:"minimum_samples"`
+	FreshnessSLASeconds    int        `json:"freshness_sla_seconds"`
+	SourceMetricCount      int        `json:"source_metric_count"`
+	TargetGPUCount         int        `json:"target_gpu_count"`
+	EligibleGPUCount       int        `json:"eligible_gpu_count"`
+	BlockedGPUCount        int        `json:"blocked_gpu_count"`
+	MetricPairCount        int        `json:"metric_pair_count"`
+	PassingMetricPairCount int        `json:"passing_metric_pair_count"`
+	MissingMetricPairCount int        `json:"missing_metric_pair_count"`
+	SparseMetricPairCount  int        `json:"sparse_metric_pair_count"`
+	StaleMetricPairCount   int        `json:"stale_metric_pair_count"`
+	EligibleRatio          float64    `json:"eligible_ratio"`
+	BlockingReasons        StringList `json:"blocking_reasons" gorm:"type:text"`
+	OutputDir              string     `json:"output_dir" gorm:"type:text"`
+	ReportPath             string     `json:"report_path" gorm:"type:text"`
+	ReportSHA256           string     `json:"report_sha256"`
+	ErrorMessage           string     `json:"error_message,omitempty" gorm:"type:text"`
+	StartedAt              time.Time  `json:"started_at" gorm:"index;not null"`
+	FinishedAt             *time.Time `json:"finished_at,omitempty" gorm:"index"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+}
