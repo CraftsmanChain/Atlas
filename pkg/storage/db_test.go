@@ -141,6 +141,11 @@ func TestBaselineMetricColumnsUseStableAUCNames(t *testing.T) {
 			t.Fatalf("missing stable baseline metric column %s", column)
 		}
 	}
+	for _, column := range []string{"source_baseline_build_id", "scope_event_type", "scope_model_name", "artifact_sha256", "registry_gate_version"} {
+		if !raw.Migrator().HasColumn(&api.PredictionModelSpec{}, column) {
+			t.Fatalf("missing shadow registry provenance column %s", column)
+		}
+	}
 }
 
 func TestNormalizeSelectedTables(t *testing.T) {

@@ -160,6 +160,7 @@ func main() {
 	go issueService.Run(context.Background(), time.Minute)
 	go predictionService.RunLabelSync(context.Background(), time.Minute)
 	go predictionService.RunOutcomeSync(context.Background(), time.Minute)
+	go predictionService.RunShadowModelRegistrySync(context.Background(), time.Minute)
 	if cfg.History.Enabled {
 		historyAuditInterval := parseDurationOrDefault("monitoring history audit", cfg.History.AuditInterval, 6*time.Hour)
 		go historyService.Run(context.Background(), historyAuditInterval)

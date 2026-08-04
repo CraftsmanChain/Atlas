@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	FrameworkVersion       = "prediction-framework-v0.13.0"
+	FrameworkVersion       = "prediction-framework-v0.14.0"
 	FeatureContractVersion = "atlas-prediction-features-v1"
 	LabelContractVersion   = "atlas-failure-label-v1"
 	readinessFreshnessSLA  = 30 * time.Minute
@@ -309,11 +309,20 @@ func (s *Service) Overview() (Overview, error) {
 	if err != nil {
 		return Overview{}, err
 	}
+	phase := "gpu_data_readiness"
+	horizons := []int{60, 360, 1440}
+	for _, model := range models {
+		if model.Status == "shadow_candidate" {
+			phase = "gpu_shadow_candidate_registered"
+		}
+		horizons = append(horizons, model.HorizonMinutes)
+	}
+	horizons = uniqueSortedHorizons(horizons)
 	return Overview{
-		FrameworkVersion: FrameworkVersion, Phase: "gpu_data_readiness", Mode: "shadow",
+		FrameworkVersion: FrameworkVersion, Phase: phase, Mode: "shadow",
 		ScoringEnabled: false, ProbabilityEmitted: false, NoActionExecuted: true,
 		FeatureContractVersion: FeatureContractVersion, LabelContractVersion: LabelContractVersion,
-		FeatureCatalogVersion: features.CatalogVersion, HorizonsMinutes: []int{60, 360, 1440},
+		FeatureCatalogVersion: features.CatalogVersion, HorizonsMinutes: horizons,
 		EntityContracts: []EntityContract{
 			{HardwareClass: "gpu", EntityType: "gpu", Status: "active", IdentityKey: "gpu_uuid", FeatureSource: "gpu_feature_snapshots", LabelSource: "gpu_fault_events + confirmed resolutions"},
 			{HardwareClass: "server", EntityType: "node", Status: "planned", IdentityKey: "asset_sn", FeatureSource: "node telemetry + BMC", LabelSource: "availability events + maintenance outcomes"},
@@ -344,6 +353,23 @@ func (s *Service) Overview() (Overview, error) {
 		},
 		GeneratedAt: s.now(),
 	}, nil
+}
+
+func uniqueSortedHorizons(values []int) []int {
+	seen := make(map[int]struct{}, len(values))
+	result := make([]int, 0, len(values))
+	for _, value := range values {
+		if value <= 0 {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Ints(result)
+	return result
 }
 
 func stringIndex(index int) string {

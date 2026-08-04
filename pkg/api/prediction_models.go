@@ -20,7 +20,12 @@ type PredictionModelSpec struct {
 	FeatureContractVersion string     `json:"feature_contract_version" gorm:"index;not null"`
 	LabelContractVersion   string     `json:"label_contract_version" gorm:"index;not null"`
 	DatasetVersion         string     `json:"dataset_version,omitempty" gorm:"index"`
+	SourceBaselineBuildID  uint       `json:"source_baseline_build_id,omitempty" gorm:"index"`
+	ScopeEventType         string     `json:"scope_event_type,omitempty" gorm:"index"`
+	ScopeModelName         string     `json:"scope_model_name,omitempty" gorm:"index"`
 	ArtifactURI            string     `json:"artifact_uri,omitempty" gorm:"type:text"`
+	ArtifactSHA256         string     `json:"artifact_sha256,omitempty"`
+	RegistryGateVersion    string     `json:"registry_gate_version,omitempty" gorm:"index"`
 	DecisionThreshold      *float64   `json:"decision_threshold,omitempty"`
 	Current                bool       `json:"current" gorm:"index"`
 	TrainedAt              *time.Time `json:"trained_at,omitempty" gorm:"index"`
