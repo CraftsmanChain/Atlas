@@ -331,6 +331,7 @@ type BaselineModelBuild struct {
 	ExcludedFeatureCount     int        `json:"excluded_feature_count"`
 	ProhibitedFeatureCount   int        `json:"prohibited_feature_count"`
 	StatisticallyStableCount int        `json:"statistically_stable_count"`
+	ShadowCandidateCount     int        `json:"shadow_candidate_count"`
 	HorizonCount             int        `json:"horizon_count"`
 	TrainedModelCount        int        `json:"trained_model_count"`
 	TrainCount               int        `json:"train_count"`
