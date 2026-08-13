@@ -100,6 +100,19 @@ func TestOutcomeReconciliationAndHumanOverride(t *testing.T) {
 	}
 	assertRankingAtK(t, summary.Final.RankingAtK, 3, 4, 3, 3, 1, 1, 1/(3.0/4.0))
 	assertRankingAtK(t, summary.Final.NodeRankingAtK, 3, 3, 2, 2, 2.0/3.0, 1, 1)
+	report, err := service.OutcomeReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Version != "prediction-outcome-report-v1" || !report.Safety.ReadOnlyShadow || !report.Safety.NoActionTaken {
+		t.Fatalf("unexpected report safety envelope: %+v", report)
+	}
+	if report.SampleMaturity.Total != 4 || report.SampleMaturity.Matured != 4 || report.SampleMaturity.NodeEligible != 3 {
+		t.Fatalf("unexpected report maturity: %+v", report.SampleMaturity)
+	}
+	if len(report.Accuracy.Final.NodeRankingAtK) == 0 || len(report.Interpretation) == 0 || len(report.RecommendedNextRun) == 0 {
+		t.Fatalf("report is missing review guidance: %+v", report)
+	}
 }
 
 func TestOutcomeCensoringAndHandlerValidation(t *testing.T) {
@@ -142,6 +155,11 @@ func TestOutcomeCensoringAndHandlerValidation(t *testing.T) {
 	handler.HandleOutcome(response, httptest.NewRequest(http.MethodPatch, "/api/v1/prediction/outcomes/1", bytes.NewReader(body)))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("override without reason must fail: %d %s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler.HandleOutcomeReport(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/outcome-report", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("outcome report failed: %d %s", response.Code, response.Body.String())
 	}
 }
 
