@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	FrameworkVersion       = "prediction-framework-v0.14.0"
+	FrameworkVersion       = "prediction-framework-v0.15.0"
 	FeatureContractVersion = "atlas-prediction-features-v1"
 	LabelContractVersion   = "atlas-failure-label-v1"
 	readinessFreshnessSLA  = 30 * time.Minute
@@ -284,10 +284,14 @@ func (s *Service) Results(limit int) (ResultSummary, []api.HardwareRiskPredictio
 	if err := s.db.Model(&api.HardwareRiskPrediction{}).Where("current = ?", true).Count(&summary.Current).Error; err != nil {
 		return ResultSummary{}, nil, err
 	}
+	var probabilityCount int64
+	if err := s.db.Model(&api.HardwareRiskPrediction{}).Where("current = ? AND probability IS NOT NULL", true).Count(&probabilityCount).Error; err != nil {
+		return ResultSummary{}, nil, err
+	}
+	summary.ProbabilityEmitted = probabilityCount > 0
 	for _, row := range rows {
 		summary.ByRiskLevel[row.RiskLevel]++
 		summary.ByStatus[row.Status]++
-		summary.ProbabilityEmitted = summary.ProbabilityEmitted || row.Probability != nil
 	}
 	return summary, rows, nil
 }
@@ -297,7 +301,7 @@ func (s *Service) Overview() (Overview, error) {
 	if err != nil {
 		return Overview{}, err
 	}
-	results, _, err := s.Results(100)
+	results, _, err := s.Results(500)
 	if err != nil {
 		return Overview{}, err
 	}
@@ -317,10 +321,13 @@ func (s *Service) Overview() (Overview, error) {
 		}
 		horizons = append(horizons, model.HorizonMinutes)
 	}
+	if results.ProbabilityEmitted {
+		phase = "gpu_read_only_shadow_scoring"
+	}
 	horizons = uniqueSortedHorizons(horizons)
 	return Overview{
 		FrameworkVersion: FrameworkVersion, Phase: phase, Mode: "shadow",
-		ScoringEnabled: false, ProbabilityEmitted: false, NoActionExecuted: true,
+		ScoringEnabled: results.ProbabilityEmitted, ProbabilityEmitted: results.ProbabilityEmitted, NoActionExecuted: true,
 		FeatureContractVersion: FeatureContractVersion, LabelContractVersion: LabelContractVersion,
 		FeatureCatalogVersion: features.CatalogVersion, HorizonsMinutes: horizons,
 		EntityContracts: []EntityContract{

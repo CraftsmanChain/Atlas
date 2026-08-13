@@ -76,6 +76,8 @@ type Service struct {
 	replayRunning         bool
 	coverageMu            sync.Mutex
 	coverageRunning       bool
+	shadowMu              sync.Mutex
+	shadowRunning         bool
 }
 
 func NewService(db *storage.DB, cfg config.HistoryConfig, timeout time.Duration) *Service {
@@ -107,6 +109,9 @@ func NewService(db *storage.DB, cfg config.HistoryConfig, timeout time.Duration)
 	}).Error
 	_ = db.Model(&api.PredictionLiveCoverageAudit{}).Where("status IN ?", []string{"queued", "running"}).Updates(map[string]any{
 		"status": "interrupted", "error_message": "Atlas restarted before live coverage audit completed", "finished_at": &now,
+	}).Error
+	_ = db.Model(&api.PredictionShadowScoringRun{}).Where("status IN ?", []string{"queued", "running"}).Updates(map[string]any{
+		"status": "interrupted", "error_message": "Atlas restarted before shadow scoring completed", "finished_at": &now,
 	}).Error
 	return service
 }

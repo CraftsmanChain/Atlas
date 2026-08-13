@@ -61,7 +61,7 @@ func (h *Handler) HandleResults(w http.ResponseWriter, r *http.Request) {
 		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	summary, rows, err := h.service.Results(100)
+	summary, rows, err := h.service.Results(500)
 	if err != nil {
 		predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return

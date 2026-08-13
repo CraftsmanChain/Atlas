@@ -173,6 +173,7 @@ func migrateSchema(db *gorm.DB) error {
 		&api.BaselineModelBuild{},
 		&api.PredictionFeatureReplayRun{},
 		&api.PredictionLiveCoverageAudit{},
+		&api.PredictionShadowScoringRun{},
 	)
 }
 

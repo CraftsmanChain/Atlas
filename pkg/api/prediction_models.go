@@ -63,10 +63,13 @@ type FailureLabel struct {
 }
 
 // HardwareRiskPrediction is an append-only, model-versioned inference result.
-// Probability remains nil until a trained and calibrated model is released.
+// A probability may be persisted only by the gated read-only shadow runtime or
+// a later released runtime; status and provenance keep those modes distinct.
 type HardwareRiskPrediction struct {
 	ID                uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	ShadowRunID       uint       `json:"shadow_run_id,omitempty" gorm:"index"`
 	ModelSpecID       uint       `json:"model_spec_id" gorm:"index;not null"`
+	ModelVersion      string     `json:"model_version,omitempty" gorm:"index"`
 	HardwareClass     string     `json:"hardware_class" gorm:"index;not null"`
 	EntityType        string     `json:"entity_type" gorm:"index;not null"`
 	EntityKey         string     `json:"entity_key" gorm:"index;not null"`
@@ -74,6 +77,8 @@ type HardwareRiskPrediction struct {
 	GPUUUID           string     `json:"gpu_uuid,omitempty" gorm:"column:gpu_uuid;index"`
 	NodeIP            string     `json:"node_ip,omitempty" gorm:"index"`
 	FeatureSnapshotID uint       `json:"feature_snapshot_id" gorm:"index"`
+	FeatureVectorSHA  string     `json:"feature_vector_sha256,omitempty" gorm:"index"`
+	TransformVersion  string     `json:"transformation_contract_version,omitempty" gorm:"index"`
 	HorizonMinutes    int        `json:"horizon_minutes" gorm:"index;not null"`
 	Probability       *float64   `json:"probability,omitempty"`
 	RiskLevel         string     `json:"risk_level" gorm:"index;not null"`
