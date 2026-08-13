@@ -34,6 +34,7 @@ type AccuracyMetrics struct {
 	FalseNegativeRate *float64     `json:"false_negative_rate,omitempty"`
 	Accuracy          *float64     `json:"accuracy,omitempty"`
 	RankingAtK        []RankingAtK `json:"ranking_at_k,omitempty"`
+	NodeRankingAtK    []RankingAtK `json:"node_ranking_at_k,omitempty"`
 }
 
 type RankingAtK struct {
@@ -283,6 +284,8 @@ func (s *Service) Accuracy() (AccuracySummary, error) {
 	finalizeMetrics(&summary.Final)
 	summary.Rule.RankingAtK = rankingAtK(rows, func(row api.PredictionOutcomeEvaluation) *int { return row.RuleActualValue })
 	summary.Final.RankingAtK = rankingAtK(rows, func(row api.PredictionOutcomeEvaluation) *int { return row.FinalActualValue })
+	summary.Rule.NodeRankingAtK = nodeRankingAtK(rows, func(row api.PredictionOutcomeEvaluation) *int { return row.RuleActualValue })
+	summary.Final.NodeRankingAtK = nodeRankingAtK(rows, func(row api.PredictionOutcomeEvaluation) *int { return row.FinalActualValue })
 	for _, item := range byKey {
 		finalizeMetrics(&item.Rule)
 		finalizeMetrics(&item.Final)
@@ -294,6 +297,8 @@ func (s *Service) Accuracy() (AccuracySummary, error) {
 		}
 		item.Rule.RankingAtK = rankingAtK(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.RuleActualValue })
 		item.Final.RankingAtK = rankingAtK(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.FinalActualValue })
+		item.Rule.NodeRankingAtK = nodeRankingAtK(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.RuleActualValue })
+		item.Final.NodeRankingAtK = nodeRankingAtK(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.FinalActualValue })
 		summary.ByModel = append(summary.ByModel, *item)
 	}
 	sort.Slice(summary.ByModel, func(i, j int) bool {
@@ -347,7 +352,6 @@ type rankedOutcome struct {
 
 func rankingAtK(rows []api.PredictionOutcomeEvaluation, actualValue func(api.PredictionOutcomeEvaluation) *int) []RankingAtK {
 	items := make([]rankedOutcome, 0, len(rows))
-	positiveTotal := 0
 	for _, row := range rows {
 		if row.MaturityStatus != "matured" || row.Probability == nil {
 			continue
@@ -356,17 +360,51 @@ func rankingAtK(rows []api.PredictionOutcomeEvaluation, actualValue func(api.Pre
 		if actual == nil || (*actual != 0 && *actual != 1) {
 			continue
 		}
-		if *actual == 1 {
-			positiveTotal++
-		}
 		items = append(items, rankedOutcome{probability: *row.Probability, actual: *actual})
 	}
+	return rankingFromItems(items)
+}
+
+func nodeRankingAtK(rows []api.PredictionOutcomeEvaluation, actualValue func(api.PredictionOutcomeEvaluation) *int) []RankingAtK {
+	byNode := map[string]rankedOutcome{}
+	for _, row := range rows {
+		if row.MaturityStatus != "matured" || row.Probability == nil || strings.TrimSpace(row.NodeIP) == "" {
+			continue
+		}
+		actual := actualValue(row)
+		if actual == nil || (*actual != 0 && *actual != 1) {
+			continue
+		}
+		key := strings.TrimSpace(row.NodeIP)
+		item, exists := byNode[key]
+		if !exists || *row.Probability > item.probability {
+			item.probability = *row.Probability
+		}
+		if *actual == 1 {
+			item.actual = 1
+		}
+		byNode[key] = item
+	}
+	items := make([]rankedOutcome, 0, len(byNode))
+	for _, item := range byNode {
+		items = append(items, item)
+	}
+	return rankingFromItems(items)
+}
+
+func rankingFromItems(items []rankedOutcome) []RankingAtK {
 	if len(items) == 0 {
 		return nil
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].probability > items[j].probability
 	})
+	positiveTotal := 0
+	for _, item := range items {
+		if item.actual == 1 {
+			positiveTotal++
+		}
+	}
 	baseRate := float64(positiveTotal) / float64(len(items))
 	ks := []int{1, 3, 5, 10}
 	out := make([]RankingAtK, 0, len(ks))
