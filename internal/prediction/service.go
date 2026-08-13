@@ -133,6 +133,12 @@ func NewServiceWithRetention(db *storage.DB, retention time.Duration) *Service {
 	if days <= 0 {
 		days = 365
 	}
+	// Early shadow records used a HIGH/LOW display label before prospective
+	// fleet-distribution validation existed. Preserve their probabilities while
+	// removing the unvalidated operational risk semantics.
+	_ = db.Model(&api.HardwareRiskPrediction{}).Where("status = ?", "shadow_scored").Updates(map[string]any{
+		"risk_level": "unvalidated", "status": "shadow_observation",
+	}).Error
 	return &Service{db: db, onlineRetentionDays: days, now: time.Now}
 }
 

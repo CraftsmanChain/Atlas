@@ -30,3 +30,10 @@ func TestShadowFeatureVectorSHAIsStableAndColumnOrdered(t *testing.T) {
 		t.Fatal("feature hash lost model column order")
 	}
 }
+
+func TestShadowQuantileInterpolatesFleetDistribution(t *testing.T) {
+	values := []float64{0.1, 0.2, 0.3, 0.4}
+	if actual := shadowQuantile(values, 0.5); math.Abs(actual-0.25) > 1e-12 {
+		t.Fatalf("median=%v expected=0.25", actual)
+	}
+}

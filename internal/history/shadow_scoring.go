@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
 
@@ -19,7 +20,11 @@ import (
 	"gorm.io/gorm"
 )
 
-const shadowScoringVersion = "gpu-shadow-scoring-v1"
+const (
+	shadowScoringVersion           = "gpu-shadow-scoring-v2"
+	maximumShadowPositiveRatio     = 0.20
+	maximumShadowMedianToThreshold = 1.0
+)
 
 type shadowScoringRequest struct {
 	ModelSpecID uint `json:"model_spec_id,omitempty"`
@@ -45,6 +50,8 @@ type shadowScoringReport struct {
 	ArtifactSHA256        string                   `json:"artifact_sha256"`
 	TransformationVersion string                   `json:"transformation_contract_version"`
 	DecisionThreshold     float64                  `json:"decision_threshold"`
+	DistributionStatus    string                   `json:"distribution_status"`
+	DistributionReasons   []string                 `json:"distribution_reasons"`
 	FeatureColumns        []string                 `json:"feature_columns"`
 	GPUs                  []shadowScoringGPUReport `json:"gpus"`
 	NoAlertEmitted        bool                     `json:"no_alert_emitted"`
@@ -204,6 +211,8 @@ func (s *Service) buildShadowScoring(run *api.PredictionShadowScoringRun) error 
 	report := shadowScoringReport{Version: shadowScoringVersion, RunKey: run.RunKey, ModelKey: spec.ModelKey, ModelVersion: spec.Version, ArtifactSHA256: checksum, TransformationVersion: parity.TransformationContractVersion, DecisionThreshold: *spec.DecisionThreshold, FeatureColumns: append([]string(nil), model.FeatureColumns...), GPUs: make([]shadowScoringGPUReport, 0, len(assets)), NoAlertEmitted: true, NoActionExecuted: true, CreatedAt: s.now()}
 	predictions := make([]api.HardwareRiskPrediction, 0, len(assets))
 	probabilitySum := 0.0
+	probabilities := make([]float64, 0, len(assets))
+	nodeCounts, nodePositiveCounts, nodeProbabilitySums := map[string]int{}, map[string]int{}, map[string]float64{}
 	for _, asset := range assets {
 		item := shadowScoringGPUReport{GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, GPUIndex: asset.GPUIndex, Status: "scored", BlockingReasons: []string{}}
 		features := map[string]float64{}
@@ -239,14 +248,20 @@ func (s *Service) buildShadowScoring(run *api.PredictionShadowScoringRun) error 
 			item.Probability, item.FeatureVectorSHA256 = &probability, vectorSHA
 			item.PredictedPositive = probability >= *spec.DecisionThreshold
 			prediction.Probability, prediction.FeatureVectorSHA = &probability, vectorSHA
-			prediction.Status, prediction.RiskLevel = "shadow_scored", "low"
+			prediction.Status, prediction.RiskLevel = "shadow_below_threshold", "unvalidated"
 			prediction.Explanations = api.StringList{"read_only_shadow_prediction", "no_alert_emitted", "no_action_executed"}
 			if item.PredictedPositive {
-				prediction.RiskLevel = "high"
+				prediction.Status = "shadow_above_threshold"
 				run.PositiveGPUCount++
 			}
 			run.ScoredGPUCount++
 			probabilitySum += probability
+			probabilities = append(probabilities, probability)
+			nodeCounts[asset.NodeIP]++
+			nodeProbabilitySums[asset.NodeIP] += probability
+			if item.PredictedPositive {
+				nodePositiveCounts[asset.NodeIP]++
+			}
 			if run.MinimumProbability == nil || probability < *run.MinimumProbability {
 				value := probability
 				run.MinimumProbability = &value
@@ -263,10 +278,39 @@ func (s *Service) buildShadowScoring(run *api.PredictionShadowScoringRun) error 
 	if run.ScoredGPUCount > 0 {
 		value := probabilitySum / float64(run.ScoredGPUCount)
 		run.MeanProbability = &value
+		run.PositiveRatio = float64(run.PositiveGPUCount) / float64(run.ScoredGPUCount)
+		sort.Float64s(probabilities)
+		median, p90, p95, p99 := shadowQuantile(probabilities, 0.50), shadowQuantile(probabilities, 0.90), shadowQuantile(probabilities, 0.95), shadowQuantile(probabilities, 0.99)
+		run.MedianProbability, run.P90Probability, run.P95Probability, run.P99Probability = &median, &p90, &p95, &p99
 	}
 	if run.ScoredGPUCount == 0 {
 		return fmt.Errorf("all in-scope GPUs were blocked by live feature gates")
 	}
+	for nodeIP, count := range nodeCounts {
+		mean := nodeProbabilitySums[nodeIP] / float64(count)
+		if run.MaximumNodeMean == nil || mean > *run.MaximumNodeMean {
+			value := mean
+			run.MaximumNodeMean = &value
+		}
+		if count >= 4 && nodePositiveCounts[nodeIP] == count {
+			run.AllAboveThresholdNodes++
+		}
+	}
+	run.DistributionStatus = "passed"
+	if run.PositiveRatio > maximumShadowPositiveRatio {
+		run.DistributionStatus = "review_required"
+		run.BlockingReasons = append(run.BlockingReasons, "above_threshold_ratio_exceeds_20_percent")
+	}
+	if run.MedianProbability != nil && *run.MedianProbability >= *spec.DecisionThreshold*maximumShadowMedianToThreshold {
+		run.DistributionStatus = "review_required"
+		run.BlockingReasons = append(run.BlockingReasons, "fleet_median_at_or_above_decision_threshold")
+	}
+	if run.AllAboveThresholdNodes >= 3 {
+		run.DistributionStatus = "review_required"
+		run.BlockingReasons = append(run.BlockingReasons, "threshold_hits_cluster_across_multiple_whole_nodes")
+	}
+	report.DistributionStatus = run.DistributionStatus
+	report.DistributionReasons = append([]string(nil), run.BlockingReasons...)
 	if err := os.MkdirAll(filepath.Join(s.config.DatasetDir, "shadow-scoring", run.RunKey), 0o750); err != nil {
 		return err
 	}
@@ -286,8 +330,29 @@ func (s *Service) buildShadowScoring(run *api.PredictionShadowScoringRun) error 
 		if err := tx.CreateInBatches(&predictions, 100).Error; err != nil {
 			return err
 		}
-		return tx.Model(run).Updates(map[string]any{"status": "completed", "target_gpu_count": run.TargetGPUCount, "scored_gpu_count": run.ScoredGPUCount, "blocked_gpu_count": run.BlockedGPUCount, "positive_gpu_count": run.PositiveGPUCount, "minimum_probability": run.MinimumProbability, "maximum_probability": run.MaximumProbability, "mean_probability": run.MeanProbability, "no_alert_emitted": true, "no_action_executed": true, "report_path": reportPath, "report_sha256": reportSHA, "finished_at": &finished}).Error
+		status := "completed"
+		if run.DistributionStatus == "review_required" {
+			status = "distribution_review_required"
+		}
+		return tx.Model(run).Updates(map[string]any{"status": status, "target_gpu_count": run.TargetGPUCount, "scored_gpu_count": run.ScoredGPUCount, "blocked_gpu_count": run.BlockedGPUCount, "positive_gpu_count": run.PositiveGPUCount, "positive_ratio": run.PositiveRatio, "minimum_probability": run.MinimumProbability, "maximum_probability": run.MaximumProbability, "mean_probability": run.MeanProbability, "median_probability": run.MedianProbability, "p90_probability": run.P90Probability, "p95_probability": run.P95Probability, "p99_probability": run.P99Probability, "maximum_node_mean": run.MaximumNodeMean, "all_above_threshold_nodes": run.AllAboveThresholdNodes, "distribution_status": run.DistributionStatus, "blocking_reasons": run.BlockingReasons, "no_alert_emitted": true, "no_action_executed": true, "report_path": reportPath, "report_sha256": reportSHA, "finished_at": &finished}).Error
 	})
+}
+
+func shadowQuantile(sorted []float64, probability float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if len(sorted) == 1 {
+		return sorted[0]
+	}
+	position := probability * float64(len(sorted)-1)
+	lower := int(math.Floor(position))
+	upper := int(math.Ceil(position))
+	if lower == upper {
+		return sorted[lower]
+	}
+	weight := position - float64(lower)
+	return sorted[lower]*(1-weight) + sorted[upper]*weight
 }
 
 func scoreShadowModel(model logisticModel, features map[string]float64) float64 {
