@@ -429,3 +429,39 @@ type PredictionLiveCoverageAudit struct {
 	CreatedAt              time.Time  `json:"created_at"`
 	UpdatedAt              time.Time  `json:"updated_at"`
 }
+
+// PredictionShadowScoringRun is one manually or periodically triggered,
+// read-only inference batch. It may emit probabilities but never actions.
+type PredictionShadowScoringRun struct {
+	ID                    uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	RunKey                string     `json:"run_key" gorm:"uniqueIndex;not null"`
+	Version               string     `json:"version" gorm:"index;not null"`
+	Status                string     `json:"status" gorm:"index;not null"`
+	Trigger               string     `json:"trigger" gorm:"index;not null"`
+	ModelSpecID           uint       `json:"model_spec_id" gorm:"index;not null"`
+	ModelKey              string     `json:"model_key" gorm:"index;not null"`
+	ModelVersion          string     `json:"model_version" gorm:"index;not null"`
+	ArtifactSHA256        string     `json:"artifact_sha256" gorm:"index;not null"`
+	SourceKey             string     `json:"source_key" gorm:"index;not null"`
+	ScopeModelName        string     `json:"scope_model_name" gorm:"index;not null"`
+	TransformationVersion string     `json:"transformation_contract_version" gorm:"index;not null"`
+	WindowMinutes         int        `json:"window_minutes"`
+	QueryStepSeconds      int        `json:"query_step_seconds"`
+	TargetGPUCount        int        `json:"target_gpu_count"`
+	ScoredGPUCount        int        `json:"scored_gpu_count"`
+	BlockedGPUCount       int        `json:"blocked_gpu_count"`
+	PositiveGPUCount      int        `json:"positive_gpu_count"`
+	MinimumProbability    *float64   `json:"minimum_probability,omitempty"`
+	MaximumProbability    *float64   `json:"maximum_probability,omitempty"`
+	MeanProbability       *float64   `json:"mean_probability,omitempty"`
+	BlockingReasons       StringList `json:"blocking_reasons" gorm:"type:text"`
+	NoAlertEmitted        bool       `json:"no_alert_emitted" gorm:"not null;default:true"`
+	NoActionExecuted      bool       `json:"no_action_executed" gorm:"not null;default:true"`
+	ReportPath            string     `json:"report_path,omitempty" gorm:"type:text"`
+	ReportSHA256          string     `json:"report_sha256,omitempty"`
+	ErrorMessage          string     `json:"error_message,omitempty" gorm:"type:text"`
+	StartedAt             time.Time  `json:"started_at" gorm:"index;not null"`
+	FinishedAt            *time.Time `json:"finished_at,omitempty" gorm:"index"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+}

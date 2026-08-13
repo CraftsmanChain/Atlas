@@ -147,6 +147,37 @@ func (h *Handler) HandleLiveCoverageAudits(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+func (h *Handler) HandleShadowScoringRuns(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		rows, err := h.service.ShadowScoringRuns(limit)
+		if err != nil {
+			historyJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		historyJSON(w, http.StatusOK, map[string]any{"data": rows, "meta": map[string]any{"total": len(rows), "mode": "read_only_shadow", "alerts_emitted": false, "actions_executed": false}})
+	case http.MethodPost:
+		var request shadowScoringRequest
+		if r.Body != nil && r.ContentLength != 0 {
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&request); err != nil {
+				historyJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+				return
+			}
+		}
+		run, err := h.service.StartShadowScoring(request.ModelSpecID)
+		if err != nil {
+			historyJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+			return
+		}
+		historyJSON(w, http.StatusAccepted, map[string]any{"data": run})
+	default:
+		historyJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+	}
+}
+
 func (h *Handler) HandleCandidates(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		historyJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
