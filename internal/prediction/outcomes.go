@@ -67,6 +67,35 @@ type AccuracySummary struct {
 	EvaluatedAt         time.Time       `json:"evaluated_at"`
 }
 
+type OutcomeReport struct {
+	Version            string          `json:"version"`
+	FrameworkVersion   string          `json:"framework_version"`
+	Mode               string          `json:"mode"`
+	Safety             OutcomeSafety   `json:"safety"`
+	SampleMaturity     OutcomeMaturity `json:"sample_maturity"`
+	Accuracy           AccuracySummary `json:"accuracy"`
+	Interpretation     []string        `json:"interpretation"`
+	RecommendedNextRun []string        `json:"recommended_next_run"`
+	GeneratedAt        time.Time       `json:"generated_at"`
+}
+
+type OutcomeSafety struct {
+	ReadOnlyShadow bool   `json:"read_only_shadow"`
+	NoAlertEmitted bool   `json:"no_alert_emitted"`
+	NoActionTaken  bool   `json:"no_action_taken"`
+	ProbabilityUse string `json:"probability_use"`
+}
+
+type OutcomeMaturity struct {
+	Total             int     `json:"total"`
+	Matured           int     `json:"matured"`
+	Pending           int     `json:"pending"`
+	Censored          int     `json:"censored"`
+	MaturedRatio      float64 `json:"matured_ratio"`
+	ProbabilityScored int     `json:"probability_scored"`
+	NodeEligible      int     `json:"node_eligible"`
+}
+
 type OutcomeOverride struct {
 	ActualValue int    `json:"actual_value"`
 	Reason      string `json:"reason"`
@@ -311,6 +340,68 @@ func (s *Service) Accuracy() (AccuracySummary, error) {
 		return summary.ByModel[i].HorizonMinutes < summary.ByModel[j].HorizonMinutes
 	})
 	return summary, nil
+}
+
+func (s *Service) OutcomeReport() (OutcomeReport, error) {
+	var rows []api.PredictionOutcomeEvaluation
+	if err := s.db.Order("model_key, model_version, horizon_minutes").Find(&rows).Error; err != nil {
+		return OutcomeReport{}, err
+	}
+	accuracy, err := s.Accuracy()
+	if err != nil {
+		return OutcomeReport{}, err
+	}
+	maturity := outcomeMaturity(rows)
+	report := OutcomeReport{
+		Version:          "prediction-outcome-report-v1",
+		FrameworkVersion: FrameworkVersion,
+		Mode:             "read_only_shadow",
+		Safety: OutcomeSafety{
+			ReadOnlyShadow: true, NoAlertEmitted: true, NoActionTaken: true,
+			ProbabilityUse: "ranking and retrospective/prospective validation only; not an operational alert or automated action signal",
+		},
+		SampleMaturity: maturity,
+		Accuracy:       accuracy,
+		Interpretation: []string{
+			"rule metrics preserve deterministic label-reconciliation provenance",
+			"final metrics include human overrides backed by repair or replacement evidence",
+			"gpu ranking evaluates per-device probabilities; node ranking aggregates by node for HeaRank-style node-risk validation",
+			"pending and censored predictions are excluded from metric denominators",
+		},
+		RecommendedNextRun: []string{
+			"wait for additional matured shadow windows before changing thresholds",
+			"compare node_ranking_at_k against HeaRank 7d challenger with the same time split",
+			"review false positives and false negatives before promoting any candidate",
+		},
+		GeneratedAt: s.now(),
+	}
+	return report, nil
+}
+
+func outcomeMaturity(rows []api.PredictionOutcomeEvaluation) OutcomeMaturity {
+	maturity := OutcomeMaturity{Total: len(rows)}
+	nodes := map[string]struct{}{}
+	for _, row := range rows {
+		switch row.MaturityStatus {
+		case "matured":
+			maturity.Matured++
+		case "pending":
+			maturity.Pending++
+		case "censored":
+			maturity.Censored++
+		}
+		if row.Probability != nil {
+			maturity.ProbabilityScored++
+		}
+		if row.MaturityStatus == "matured" && row.Probability != nil && strings.TrimSpace(row.NodeIP) != "" {
+			nodes[strings.TrimSpace(row.NodeIP)] = struct{}{}
+		}
+	}
+	if maturity.Total > 0 {
+		maturity.MaturedRatio = float64(maturity.Matured) / float64(maturity.Total)
+	}
+	maturity.NodeEligible = len(nodes)
+	return maturity
 }
 
 func addOutcome(metrics *AccuracyMetrics, outcome string) {
