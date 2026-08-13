@@ -34,11 +34,12 @@ func TestOutcomeReconciliationAndHumanOverride(t *testing.T) {
 	expiresAt := evaluatedAt.Add(time.Hour)
 	probabilities := []float64{0.9, 0.8, 0.2, 0.1}
 	uuids := []string{"GPU-TP", "GPU-FP", "GPU-FN", "GPU-TN"}
+	nodes := []string{"10.0.0.1", "10.0.0.2", "10.0.0.2", "10.0.0.3"}
 	for index := range probabilities {
 		prediction := api.HardwareRiskPrediction{
 			ModelSpecID: spec.ID, HardwareClass: "gpu", EntityType: "gpu", EntityKey: uuids[index],
 			GPUUUID: uuids[index], HorizonMinutes: 60, Probability: &probabilities[index],
-			RiskLevel: "test", Status: "scored", EvaluatedAt: evaluatedAt, ExpiresAt: expiresAt,
+			NodeIP: nodes[index], RiskLevel: "test", Status: "scored", EvaluatedAt: evaluatedAt, ExpiresAt: expiresAt,
 		}
 		if err := db.Create(&prediction).Error; err != nil {
 			t.Fatal(err)
@@ -73,6 +74,7 @@ func TestOutcomeReconciliationAndHumanOverride(t *testing.T) {
 	}
 	assertRankingAtK(t, summary.Rule.RankingAtK, 1, 4, 2, 1, 1, 0.5, 1/(2.0/4.0))
 	assertRankingAtK(t, summary.Rule.RankingAtK, 3, 4, 2, 2, 2.0/3.0, 1, (2.0/3.0)/(2.0/4.0))
+	assertRankingAtK(t, summary.Rule.NodeRankingAtK, 3, 3, 2, 2, 2.0/3.0, 1, 1)
 	var falsePositive api.PredictionOutcomeEvaluation
 	if err := db.Where("gpu_uuid = ?", "GPU-FP").First(&falsePositive).Error; err != nil {
 		t.Fatal(err)
@@ -97,6 +99,7 @@ func TestOutcomeReconciliationAndHumanOverride(t *testing.T) {
 		t.Fatalf("unexpected post-override metrics: %+v", summary)
 	}
 	assertRankingAtK(t, summary.Final.RankingAtK, 3, 4, 3, 3, 1, 1, 1/(3.0/4.0))
+	assertRankingAtK(t, summary.Final.NodeRankingAtK, 3, 3, 2, 2, 2.0/3.0, 1, 1)
 }
 
 func TestOutcomeCensoringAndHandlerValidation(t *testing.T) {
