@@ -3,6 +3,7 @@ package prediction
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -70,6 +71,8 @@ func TestOutcomeReconciliationAndHumanOverride(t *testing.T) {
 	if summary.Rule.Precision == nil || *summary.Rule.Precision != 0.5 || summary.Rule.Recall == nil || *summary.Rule.Recall != 0.5 {
 		t.Fatalf("unexpected rule metrics: %+v", summary.Rule)
 	}
+	assertRankingAtK(t, summary.Rule.RankingAtK, 1, 4, 2, 1, 1, 0.5, 1/(2.0/4.0))
+	assertRankingAtK(t, summary.Rule.RankingAtK, 3, 4, 2, 2, 2.0/3.0, 1, (2.0/3.0)/(2.0/4.0))
 	var falsePositive api.PredictionOutcomeEvaluation
 	if err := db.Where("gpu_uuid = ?", "GPU-FP").First(&falsePositive).Error; err != nil {
 		t.Fatal(err)
@@ -93,6 +96,7 @@ func TestOutcomeReconciliationAndHumanOverride(t *testing.T) {
 	if summary.Rule.FP != 1 || summary.Final.TP != 2 || summary.Final.FP != 0 || summary.HumanOverrides != 1 {
 		t.Fatalf("unexpected post-override metrics: %+v", summary)
 	}
+	assertRankingAtK(t, summary.Final.RankingAtK, 3, 4, 3, 3, 1, 1, 1/(3.0/4.0))
 }
 
 func TestOutcomeCensoringAndHandlerValidation(t *testing.T) {
@@ -135,5 +139,34 @@ func TestOutcomeCensoringAndHandlerValidation(t *testing.T) {
 	handler.HandleOutcome(response, httptest.NewRequest(http.MethodPatch, "/api/v1/prediction/outcomes/1", bytes.NewReader(body)))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("override without reason must fail: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func assertRankingAtK(t *testing.T, rows []RankingAtK, k, eligible, positives, hits int, precision, recall, lift float64) {
+	t.Helper()
+	var found *RankingAtK
+	for index := range rows {
+		if rows[index].K == k {
+			found = &rows[index]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("missing ranking@%d in %+v", k, rows)
+	}
+	if found.Eligible != eligible || found.Positives != positives || found.Hits != hits {
+		t.Fatalf("unexpected ranking@%d counts: %+v", k, *found)
+	}
+	if found.Precision == nil || math.Abs(*found.Precision-precision) > 1e-12 {
+		t.Fatalf("unexpected precision@%d: %+v expected %v", k, found.Precision, precision)
+	}
+	if found.Recall == nil || math.Abs(*found.Recall-recall) > 1e-12 {
+		t.Fatalf("unexpected recall@%d: %+v expected %v", k, found.Recall, recall)
+	}
+	if found.NDCG == nil || *found.NDCG <= 0 || *found.NDCG > 1 {
+		t.Fatalf("unexpected ndcg@%d: %+v", k, found.NDCG)
+	}
+	if found.Lift == nil || math.Abs(*found.Lift-lift) > 1e-12 {
+		t.Fatalf("unexpected lift@%d: %+v expected %v", k, found.Lift, lift)
 	}
 }

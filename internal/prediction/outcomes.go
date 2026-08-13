@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -26,12 +27,24 @@ type ConfusionMatrix struct {
 
 type AccuracyMetrics struct {
 	ConfusionMatrix
-	Precision         *float64 `json:"precision,omitempty"`
-	Recall            *float64 `json:"recall,omitempty"`
-	Specificity       *float64 `json:"specificity,omitempty"`
-	FalsePositiveRate *float64 `json:"false_positive_rate,omitempty"`
-	FalseNegativeRate *float64 `json:"false_negative_rate,omitempty"`
-	Accuracy          *float64 `json:"accuracy,omitempty"`
+	Precision         *float64     `json:"precision,omitempty"`
+	Recall            *float64     `json:"recall,omitempty"`
+	Specificity       *float64     `json:"specificity,omitempty"`
+	FalsePositiveRate *float64     `json:"false_positive_rate,omitempty"`
+	FalseNegativeRate *float64     `json:"false_negative_rate,omitempty"`
+	Accuracy          *float64     `json:"accuracy,omitempty"`
+	RankingAtK        []RankingAtK `json:"ranking_at_k,omitempty"`
+}
+
+type RankingAtK struct {
+	K         int      `json:"k"`
+	Eligible  int      `json:"eligible"`
+	Positives int      `json:"positives"`
+	Hits      int      `json:"hits"`
+	Precision *float64 `json:"precision,omitempty"`
+	Recall    *float64 `json:"recall,omitempty"`
+	NDCG      *float64 `json:"ndcg,omitempty"`
+	Lift      *float64 `json:"lift,omitempty"`
 }
 
 type AccuracySlice struct {
@@ -268,9 +281,19 @@ func (s *Service) Accuracy() (AccuracySummary, error) {
 	}
 	finalizeMetrics(&summary.Rule)
 	finalizeMetrics(&summary.Final)
+	summary.Rule.RankingAtK = rankingAtK(rows, func(row api.PredictionOutcomeEvaluation) *int { return row.RuleActualValue })
+	summary.Final.RankingAtK = rankingAtK(rows, func(row api.PredictionOutcomeEvaluation) *int { return row.FinalActualValue })
 	for _, item := range byKey {
 		finalizeMetrics(&item.Rule)
 		finalizeMetrics(&item.Final)
+		var sliceRows []api.PredictionOutcomeEvaluation
+		for _, row := range rows {
+			if row.ModelKey == item.ModelKey && row.ModelVersion == item.ModelVersion && row.HorizonMinutes == item.HorizonMinutes {
+				sliceRows = append(sliceRows, row)
+			}
+		}
+		item.Rule.RankingAtK = rankingAtK(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.RuleActualValue })
+		item.Final.RankingAtK = rankingAtK(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.FinalActualValue })
 		summary.ByModel = append(summary.ByModel, *item)
 	}
 	sort.Slice(summary.ByModel, func(i, j int) bool {
@@ -315,6 +338,77 @@ func finalizeMetrics(metrics *AccuracyMetrics) {
 	metrics.FalsePositiveRate = ratio(metrics.FP, metrics.FP+metrics.TN)
 	metrics.FalseNegativeRate = ratio(metrics.FN, metrics.FN+metrics.TP)
 	metrics.Accuracy = ratio(metrics.TP+metrics.TN, metrics.Evaluated)
+}
+
+type rankedOutcome struct {
+	probability float64
+	actual      int
+}
+
+func rankingAtK(rows []api.PredictionOutcomeEvaluation, actualValue func(api.PredictionOutcomeEvaluation) *int) []RankingAtK {
+	items := make([]rankedOutcome, 0, len(rows))
+	positiveTotal := 0
+	for _, row := range rows {
+		if row.MaturityStatus != "matured" || row.Probability == nil {
+			continue
+		}
+		actual := actualValue(row)
+		if actual == nil || (*actual != 0 && *actual != 1) {
+			continue
+		}
+		if *actual == 1 {
+			positiveTotal++
+		}
+		items = append(items, rankedOutcome{probability: *row.Probability, actual: *actual})
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].probability > items[j].probability
+	})
+	baseRate := float64(positiveTotal) / float64(len(items))
+	ks := []int{1, 3, 5, 10}
+	out := make([]RankingAtK, 0, len(ks))
+	for _, k := range ks {
+		limit := k
+		if limit > len(items) {
+			limit = len(items)
+		}
+		hits := 0
+		dcg := 0.0
+		for index := 0; index < limit; index++ {
+			if items[index].actual == 1 {
+				hits++
+				dcg += 1 / math.Log2(float64(index+2))
+			}
+		}
+		metric := RankingAtK{K: k, Eligible: len(items), Positives: positiveTotal, Hits: hits}
+		precision := float64(hits) / float64(limit)
+		metric.Precision = &precision
+		if positiveTotal > 0 {
+			recall := float64(hits) / float64(positiveTotal)
+			metric.Recall = &recall
+			idealLimit := positiveTotal
+			if idealLimit > limit {
+				idealLimit = limit
+			}
+			idealDCG := 0.0
+			for index := 0; index < idealLimit; index++ {
+				idealDCG += 1 / math.Log2(float64(index+2))
+			}
+			if idealDCG > 0 {
+				ndcg := dcg / idealDCG
+				metric.NDCG = &ndcg
+			}
+		}
+		if baseRate > 0 {
+			lift := precision / baseRate
+			metric.Lift = &lift
+		}
+		out = append(out, metric)
+	}
+	return out
 }
 
 func (s *Service) OverrideOutcome(id uint, input OutcomeOverride) (api.PredictionOutcomeEvaluation, error) {
