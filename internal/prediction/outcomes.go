@@ -17,6 +17,13 @@ import (
 
 const OutcomeRuleVersion = "prediction-outcome-v1"
 
+const (
+	OutcomeMinimumMaturedSamples      = 30
+	OutcomeMinimumMaturedRatio        = 0.50
+	OutcomeMinimumProbabilityCoverage = 0.80
+	OutcomeMinimumPositiveSamples     = 3
+)
+
 type ConfusionMatrix struct {
 	TP        int `json:"tp"`
 	FP        int `json:"fp"`
@@ -39,6 +46,7 @@ type AccuracyMetrics struct {
 
 type RankingAtK struct {
 	K         int      `json:"k"`
+	Status    string   `json:"status"`
 	Eligible  int      `json:"eligible"`
 	Positives int      `json:"positives"`
 	Hits      int      `json:"hits"`
@@ -73,11 +81,27 @@ type OutcomeReport struct {
 	Mode                string               `json:"mode"`
 	Safety              OutcomeSafety        `json:"safety"`
 	SampleMaturity      OutcomeMaturity      `json:"sample_maturity"`
+	Stability           OutcomeStability     `json:"stability"`
 	Accuracy            AccuracySummary      `json:"accuracy"`
 	BaselineComparisons []BaselineComparison `json:"baseline_comparisons"`
 	Interpretation      []string             `json:"interpretation"`
 	RecommendedNextRun  []string             `json:"recommended_next_run"`
 	GeneratedAt         time.Time            `json:"generated_at"`
+}
+
+type OutcomeStability struct {
+	Status                      string   `json:"status"`
+	MinimumMaturedSamples       int      `json:"minimum_matured_samples"`
+	MinimumMaturedRatio         float64  `json:"minimum_matured_ratio"`
+	MinimumProbabilityCoverage  float64  `json:"minimum_probability_coverage"`
+	MinimumPositiveSamples      int      `json:"minimum_positive_samples"`
+	ProbabilityCoverage         float64  `json:"probability_coverage"`
+	PositiveSamples             int      `json:"positive_samples"`
+	RankingInterpretationStatus string   `json:"ranking_interpretation_status"`
+	FalsePositiveReviewHint     string   `json:"false_positive_review_hint"`
+	FalseNegativeReviewHint     string   `json:"false_negative_review_hint"`
+	BlockingReasons             []string `json:"blocking_reasons"`
+	RecommendedReview           []string `json:"recommended_review"`
 }
 
 type BaselineComparison struct {
@@ -369,6 +393,7 @@ func (s *Service) OutcomeReport() (OutcomeReport, error) {
 			ProbabilityUse: "ranking and retrospective/prospective validation only; not an operational alert or automated action signal",
 		},
 		SampleMaturity:      maturity,
+		Stability:           outcomeStability(maturity, accuracy),
 		Accuracy:            accuracy,
 		BaselineComparisons: baselineComparisons(rows),
 		Interpretation: []string{
@@ -386,6 +411,61 @@ func (s *Service) OutcomeReport() (OutcomeReport, error) {
 		GeneratedAt: s.now(),
 	}
 	return report, nil
+}
+
+func outcomeStability(maturity OutcomeMaturity, accuracy AccuracySummary) OutcomeStability {
+	stability := OutcomeStability{
+		MinimumMaturedSamples:      OutcomeMinimumMaturedSamples,
+		MinimumMaturedRatio:        OutcomeMinimumMaturedRatio,
+		MinimumProbabilityCoverage: OutcomeMinimumProbabilityCoverage,
+		MinimumPositiveSamples:     OutcomeMinimumPositiveSamples,
+		PositiveSamples:            accuracy.Final.TP + accuracy.Final.FN,
+		FalsePositiveReviewHint:    "review false positives for operational-only events, weak labels, and distribution-shifted feature windows",
+		FalseNegativeReviewHint:    "review false negatives for missing source metrics, delayed labels, and hardware events outside the modeled horizon",
+		RecommendedReview: []string{
+			"keep outcome metrics read-only until stability status is comparable",
+			"use the same matured scored denominator when comparing rules, Logistic, and challenger policies",
+		},
+	}
+	if maturity.Total > 0 {
+		stability.ProbabilityCoverage = float64(maturity.ProbabilityScored) / float64(maturity.Total)
+	}
+	switch {
+	case maturity.Matured == 0:
+		stability.BlockingReasons = append(stability.BlockingReasons, "no mature shadow outcomes are available")
+		stability.RankingInterpretationStatus = "no_scored_rows"
+	case maturity.ProbabilityScored == 0:
+		stability.BlockingReasons = append(stability.BlockingReasons, "no probability-scored outcomes are available")
+		stability.RankingInterpretationStatus = "no_scored_rows"
+	case stability.PositiveSamples == 0:
+		stability.BlockingReasons = append(stability.BlockingReasons, "no positive mature outcomes are available")
+		stability.RankingInterpretationStatus = "no_positives"
+	default:
+		stability.RankingInterpretationStatus = "comparable"
+	}
+	if maturity.Matured > 0 && maturity.Matured < OutcomeMinimumMaturedSamples {
+		stability.BlockingReasons = append(stability.BlockingReasons, "mature outcome count below stability gate")
+		stability.RankingInterpretationStatus = "insufficient_matured_samples"
+	}
+	if maturity.Total > 0 && maturity.MaturedRatio < OutcomeMinimumMaturedRatio {
+		stability.BlockingReasons = append(stability.BlockingReasons, "mature outcome ratio below stability gate")
+	}
+	if maturity.Total > 0 && stability.ProbabilityCoverage < OutcomeMinimumProbabilityCoverage {
+		stability.BlockingReasons = append(stability.BlockingReasons, "probability-scored coverage below stability gate")
+	}
+	if stability.PositiveSamples > 0 && stability.PositiveSamples < OutcomeMinimumPositiveSamples {
+		stability.BlockingReasons = append(stability.BlockingReasons, "positive mature outcome count below stability gate")
+	}
+	stability.BlockingReasons = uniqueSorted(stability.BlockingReasons)
+	if len(stability.BlockingReasons) == 0 {
+		stability.Status = "comparable"
+	} else if maturity.Matured == 0 || maturity.ProbabilityScored == 0 || stability.PositiveSamples == 0 {
+		stability.Status = "blocked"
+	} else {
+		stability.Status = "exploratory"
+	}
+	stability.RecommendedReview = uniqueSorted(append(stability.RecommendedReview, stability.BlockingReasons...))
+	return stability
 }
 
 func baselineComparisons(rows []api.PredictionOutcomeEvaluation) []BaselineComparison {
@@ -552,7 +632,7 @@ func rankingFromItems(items []rankedOutcome) []RankingAtK {
 				dcg += 1 / math.Log2(float64(index+2))
 			}
 		}
-		metric := RankingAtK{K: k, Eligible: len(items), Positives: positiveTotal, Hits: hits}
+		metric := RankingAtK{K: k, Eligible: len(items), Positives: positiveTotal, Hits: hits, Status: rankingInterpretationStatus(len(items), positiveTotal)}
 		precision := float64(hits) / float64(limit)
 		metric.Precision = &precision
 		if positiveTotal > 0 {
@@ -578,6 +658,19 @@ func rankingFromItems(items []rankedOutcome) []RankingAtK {
 		out = append(out, metric)
 	}
 	return out
+}
+
+func rankingInterpretationStatus(eligible, positives int) string {
+	if eligible == 0 {
+		return "no_scored_rows"
+	}
+	if positives == 0 {
+		return "no_positives"
+	}
+	if eligible < OutcomeMinimumMaturedSamples {
+		return "insufficient_matured_samples"
+	}
+	return "comparable"
 }
 
 func (s *Service) OverrideOutcome(id uint, input OutcomeOverride) (api.PredictionOutcomeEvaluation, error) {
