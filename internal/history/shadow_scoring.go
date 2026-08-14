@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	shadowScoringVersion           = "gpu-shadow-scoring-v2"
+	shadowScoringVersion           = "gpu-shadow-scoring-v3"
 	maximumShadowPositiveRatio     = 0.20
 	maximumShadowMedianToThreshold = 1.0
 )
@@ -212,6 +212,7 @@ func (s *Service) buildShadowScoring(run *api.PredictionShadowScoringRun) error 
 	predictions := make([]api.HardwareRiskPrediction, 0, len(assets))
 	probabilitySum := 0.0
 	probabilities := make([]float64, 0, len(assets))
+	liveFeatureValues := map[string][]float64{}
 	nodeCounts, nodePositiveCounts, nodeProbabilitySums := map[string]int{}, map[string]int{}, map[string]float64{}
 	for _, asset := range assets {
 		item := shadowScoringGPUReport{GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, GPUIndex: asset.GPUIndex, Status: "scored", BlockingReasons: []string{}}
@@ -255,6 +256,12 @@ func (s *Service) buildShadowScoring(run *api.PredictionShadowScoringRun) error 
 				run.PositiveGPUCount++
 			}
 			run.ScoredGPUCount++
+			for _, column := range model.FeatureColumns {
+				value := features[column]
+				if !math.IsNaN(value) && !math.IsInf(value, 0) {
+					liveFeatureValues[column] = append(liveFeatureValues[column], value)
+				}
+			}
 			probabilitySum += probability
 			probabilities = append(probabilities, probability)
 			nodeCounts[asset.NodeIP]++
@@ -323,12 +330,21 @@ func (s *Service) buildShadowScoring(run *api.PredictionShadowScoringRun) error 
 		return err
 	}
 	finished := s.now()
+	liveSnapshots, err := s.liveShadowFeatureDistributionSnapshots(spec, *run, model.FeatureColumns, liveFeatureValues, finished, reportSHA)
+	if err != nil {
+		return err
+	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&api.HardwareRiskPrediction{}).Where("model_spec_id = ? AND current = ?", spec.ID, true).Update("current", false).Error; err != nil {
 			return err
 		}
 		if err := tx.CreateInBatches(&predictions, 100).Error; err != nil {
 			return err
+		}
+		if len(liveSnapshots) > 0 {
+			if err := tx.CreateInBatches(&liveSnapshots, 100).Error; err != nil {
+				return err
+			}
 		}
 		status := "completed"
 		if run.DistributionStatus == "review_required" {

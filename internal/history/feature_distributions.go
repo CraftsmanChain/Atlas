@@ -239,12 +239,89 @@ func trainingFeatureDistributionSnapshot(baseline api.BaselineModelBuild, matrix
 	return snapshot
 }
 
+func (s *Service) liveShadowFeatureDistributionSnapshots(spec api.PredictionModelSpec, run api.PredictionShadowScoringRun, columns []string, valuesByFeature map[string][]float64, observedAt time.Time, reportSHA string) ([]api.PredictionFeatureDistributionSnapshot, error) {
+	trainingByFeature := map[string]api.PredictionFeatureDistributionSnapshot{}
+	if spec.SourceBaselineBuildID > 0 {
+		var training []api.PredictionFeatureDistributionSnapshot
+		if err := s.db.Where("source_baseline_build_id = ? AND distribution_role = ? AND status IN ?", spec.SourceBaselineBuildID, "training", []string{"completed", "passed"}).Order("observed_at DESC, id DESC").Find(&training).Error; err != nil {
+			return nil, err
+		}
+		for _, snapshot := range training {
+			if _, exists := trainingByFeature[snapshot.FeatureName]; !exists {
+				trainingByFeature[snapshot.FeatureName] = snapshot
+			}
+		}
+	}
+	snapshots := make([]api.PredictionFeatureDistributionSnapshot, 0, len(columns))
+	for _, column := range columns {
+		values := valuesByFeature[column]
+		training := trainingByFeature[column]
+		stats := describeDistributionWithEdges(values, training.BinEdges)
+		blocking := api.StringList{}
+		status := "completed"
+		if len(values) == 0 {
+			status = "blocked_no_values"
+			blocking = append(blocking, "no scored live-shadow values for feature")
+		}
+		if len(training.BinEdges) < 2 {
+			status = "blocked_missing_training_bins"
+			blocking = append(blocking, "matching training histogram bins are required before live-shadow PSI/KS")
+		}
+		missing := run.ScoredGPUCount - len(values)
+		if missing < 0 {
+			missing = 0
+		}
+		missingRatio := 0.0
+		if run.ScoredGPUCount > 0 {
+			missingRatio = float64(missing) / float64(run.ScoredGPUCount)
+		}
+		snapshot := api.PredictionFeatureDistributionSnapshot{
+			SnapshotKey:            "live-shadow-" + strconv.FormatUint(uint64(spec.SourceBaselineBuildID), 10) + "-" + strconv.FormatUint(uint64(run.ID), 10) + "-" + stableKeyPart(column),
+			Version:                featureDistributionSnapshotVersion,
+			Status:                 status,
+			DistributionRole:       "live_shadow",
+			SourceBaselineBuildID:  spec.SourceBaselineBuildID,
+			ModelSpecID:            spec.ID,
+			ModelKey:               spec.ModelKey,
+			ModelVersion:           spec.Version,
+			FeatureContractVersion: spec.FeatureContractVersion,
+			ScopeModelName:         spec.ScopeModelName,
+			SourceKey:              run.RunKey,
+			FeatureName:            column,
+			SampleCount:            len(values),
+			MissingCount:           missing,
+			MissingRatio:           missingRatio,
+			Mean:                   stats.mean,
+			Stddev:                 stats.stddev,
+			Minimum:                stats.minimum,
+			P25:                    stats.p25,
+			P50:                    stats.p50,
+			P75:                    stats.p75,
+			P90:                    stats.p90,
+			P95:                    stats.p95,
+			P99:                    stats.p99,
+			Maximum:                stats.maximum,
+			BinEdges:               stats.binEdges,
+			BinProportions:         stats.binProportions,
+			BlockingReasons:        uniqueSortedStrings(blocking),
+			ObservedAt:             observedAt,
+		}
+		snapshot.ReportSHA256 = liveFeatureDistributionSnapshotSHA(snapshot, run, reportSHA, training.ReportSHA256)
+		snapshots = append(snapshots, snapshot)
+	}
+	return snapshots, nil
+}
+
 type distributionStats struct {
 	mean, stddev, minimum, p25, p50, p75, p90, p95, p99, maximum float64
 	binEdges, binProportions                                     api.FloatList
 }
 
 func describeDistribution(values []float64) distributionStats {
+	return describeDistributionWithEdges(values, nil)
+}
+
+func describeDistributionWithEdges(values []float64, histogramEdges api.FloatList) distributionStats {
 	if len(values) == 0 {
 		return distributionStats{binEdges: api.FloatList{}, binProportions: api.FloatList{}}
 	}
@@ -271,7 +348,11 @@ func describeDistribution(values []float64) distributionStats {
 		}
 		stats.stddev = math.Sqrt(stats.stddev / float64(len(sortedValues)-1))
 	}
-	stats.binEdges, stats.binProportions = distributionHistogram(sortedValues, 10)
+	if len(histogramEdges) >= 2 {
+		stats.binEdges, stats.binProportions = distributionHistogramWithEdges(sortedValues, histogramEdges)
+	} else {
+		stats.binEdges, stats.binProportions = distributionHistogram(sortedValues, 10)
+	}
 	return stats
 }
 
@@ -327,6 +408,28 @@ func distributionHistogram(sortedValues []float64, requestedBins int) (api.Float
 	return edges, proportions
 }
 
+func distributionHistogramWithEdges(sortedValues []float64, edges api.FloatList) (api.FloatList, api.FloatList) {
+	if len(sortedValues) == 0 || len(edges) < 2 {
+		return api.FloatList{}, api.FloatList{}
+	}
+	copiedEdges := append(api.FloatList(nil), edges...)
+	proportions := make(api.FloatList, len(copiedEdges)-1)
+	for _, value := range sortedValues {
+		index := sort.Search(len(copiedEdges)-1, func(i int) bool { return value < copiedEdges[i+1] })
+		if index >= len(proportions) {
+			index = len(proportions) - 1
+		}
+		if index < 0 {
+			index = 0
+		}
+		proportions[index]++
+	}
+	for index := range proportions {
+		proportions[index] /= float64(len(sortedValues))
+	}
+	return copiedEdges, proportions
+}
+
 func stableKeyPart(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	replacer := strings.NewReplacer(" ", "-", "/", "-", "\\", "-", ":", "-", "|", "-", "_", "-")
@@ -346,6 +449,21 @@ func stableKeyPart(value string) string {
 		sum := sha256.Sum256([]byte(value))
 		result = hex.EncodeToString(sum[:])[:24]
 	}
+	return result
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	sort.Strings(result)
 	return result
 }
 
@@ -385,6 +503,54 @@ func featureDistributionSnapshotSHA(snapshot api.PredictionFeatureDistributionSn
 		},
 	}
 	payload, _ := json.Marshal(materialization)
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+func liveFeatureDistributionSnapshotSHA(snapshot api.PredictionFeatureDistributionSnapshot, run api.PredictionShadowScoringRun, runReportSHA, trainingSnapshotSHA string) string {
+	payload, _ := json.Marshal(struct {
+		Version               string         `json:"version"`
+		DistributionRole      string         `json:"distribution_role"`
+		SourceBaselineBuildID uint           `json:"source_baseline_build_id"`
+		ModelSpecID           uint           `json:"model_spec_id"`
+		ModelKey              string         `json:"model_key"`
+		ModelVersion          string         `json:"model_version"`
+		RunID                 uint           `json:"run_id"`
+		RunKey                string         `json:"run_key"`
+		RunReportSHA256       string         `json:"run_report_sha256"`
+		TrainingSnapshotSHA   string         `json:"training_snapshot_sha256"`
+		FeatureName           string         `json:"feature_name"`
+		SampleCount           int            `json:"sample_count"`
+		MissingCount          int            `json:"missing_count"`
+		MissingRatio          float64        `json:"missing_ratio"`
+		Mean                  float64        `json:"mean"`
+		Stddev                float64        `json:"stddev"`
+		Minimum               float64        `json:"minimum"`
+		P25                   float64        `json:"p25"`
+		P50                   float64        `json:"p50"`
+		P75                   float64        `json:"p75"`
+		P90                   float64        `json:"p90"`
+		P95                   float64        `json:"p95"`
+		P99                   float64        `json:"p99"`
+		Maximum               float64        `json:"maximum"`
+		BinEdges              api.FloatList  `json:"bin_edges"`
+		BinProportions        api.FloatList  `json:"bin_proportions"`
+		BlockingReasons       api.StringList `json:"blocking_reasons"`
+		NoRawSamplesStored    bool           `json:"no_raw_samples_stored"`
+		NoAlertEmitted        bool           `json:"no_alert_emitted"`
+		NoActionExecuted      bool           `json:"no_action_executed"`
+	}{
+		Version: snapshot.Version, DistributionRole: snapshot.DistributionRole,
+		SourceBaselineBuildID: snapshot.SourceBaselineBuildID, ModelSpecID: snapshot.ModelSpecID,
+		ModelKey: snapshot.ModelKey, ModelVersion: snapshot.ModelVersion, RunID: run.ID, RunKey: run.RunKey,
+		RunReportSHA256: runReportSHA, TrainingSnapshotSHA: trainingSnapshotSHA, FeatureName: snapshot.FeatureName,
+		SampleCount: snapshot.SampleCount, MissingCount: snapshot.MissingCount, MissingRatio: snapshot.MissingRatio,
+		Mean: snapshot.Mean, Stddev: snapshot.Stddev, Minimum: snapshot.Minimum, P25: snapshot.P25, P50: snapshot.P50,
+		P75: snapshot.P75, P90: snapshot.P90, P95: snapshot.P95, P99: snapshot.P99, Maximum: snapshot.Maximum,
+		BinEdges: append(api.FloatList(nil), snapshot.BinEdges...), BinProportions: append(api.FloatList(nil), snapshot.BinProportions...),
+		BlockingReasons: append(api.StringList(nil), snapshot.BlockingReasons...), NoRawSamplesStored: true,
+		NoAlertEmitted: run.NoAlertEmitted, NoActionExecuted: run.NoActionExecuted,
+	})
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
 }

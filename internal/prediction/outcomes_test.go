@@ -737,6 +737,16 @@ func TestFeatureDriftReportComputesPersistedDistributionMetrics(t *testing.T) {
 	}
 }
 
+func TestFeatureDriftBlocksIncompatibleHistogramBins(t *testing.T) {
+	comparisons := featureDriftComparisons([]string{"temperature"}, []api.PredictionFeatureDistributionSnapshot{
+		{ID: 1, Status: "completed", DistributionRole: "training", FeatureName: "temperature", SampleCount: 100, BinEdges: api.FloatList{0, 1, 2}, BinProportions: api.FloatList{0.5, 0.5}},
+		{ID: 2, Status: "completed", DistributionRole: "live_shadow", FeatureName: "temperature", SampleCount: 100, BinEdges: api.FloatList{0, 2, 4}, BinProportions: api.FloatList{0.5, 0.5}},
+	})
+	if len(comparisons) != 1 || comparisons[0].Status != "blocked_missing_bins" {
+		t.Fatalf("expected incompatible bins to block PSI/KS: %+v", comparisons)
+	}
+}
+
 func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
