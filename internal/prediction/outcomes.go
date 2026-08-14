@@ -68,15 +68,23 @@ type AccuracySummary struct {
 }
 
 type OutcomeReport struct {
-	Version            string          `json:"version"`
-	FrameworkVersion   string          `json:"framework_version"`
-	Mode               string          `json:"mode"`
-	Safety             OutcomeSafety   `json:"safety"`
-	SampleMaturity     OutcomeMaturity `json:"sample_maturity"`
-	Accuracy           AccuracySummary `json:"accuracy"`
-	Interpretation     []string        `json:"interpretation"`
-	RecommendedNextRun []string        `json:"recommended_next_run"`
-	GeneratedAt        time.Time       `json:"generated_at"`
+	Version             string               `json:"version"`
+	FrameworkVersion    string               `json:"framework_version"`
+	Mode                string               `json:"mode"`
+	Safety              OutcomeSafety        `json:"safety"`
+	SampleMaturity      OutcomeMaturity      `json:"sample_maturity"`
+	Accuracy            AccuracySummary      `json:"accuracy"`
+	BaselineComparisons []BaselineComparison `json:"baseline_comparisons"`
+	Interpretation      []string             `json:"interpretation"`
+	RecommendedNextRun  []string             `json:"recommended_next_run"`
+	GeneratedAt         time.Time            `json:"generated_at"`
+}
+
+type BaselineComparison struct {
+	Name             string          `json:"name"`
+	PredictionPolicy string          `json:"prediction_policy"`
+	Rule             AccuracyMetrics `json:"rule"`
+	Final            AccuracyMetrics `json:"final"`
 }
 
 type OutcomeSafety struct {
@@ -360,12 +368,14 @@ func (s *Service) OutcomeReport() (OutcomeReport, error) {
 			ReadOnlyShadow: true, NoAlertEmitted: true, NoActionTaken: true,
 			ProbabilityUse: "ranking and retrospective/prospective validation only; not an operational alert or automated action signal",
 		},
-		SampleMaturity: maturity,
-		Accuracy:       accuracy,
+		SampleMaturity:      maturity,
+		Accuracy:            accuracy,
+		BaselineComparisons: baselineComparisons(rows),
 		Interpretation: []string{
 			"rule metrics preserve deterministic label-reconciliation provenance",
 			"final metrics include human overrides backed by repair or replacement evidence",
 			"gpu ranking evaluates per-device probabilities; node ranking aggregates by node for HeaRank-style node-risk validation",
+			"baseline comparisons use the same matured outcome set as naive all-negative and all-positive references",
 			"pending and censored predictions are excluded from metric denominators",
 		},
 		RecommendedNextRun: []string{
@@ -376,6 +386,36 @@ func (s *Service) OutcomeReport() (OutcomeReport, error) {
 		GeneratedAt: s.now(),
 	}
 	return report, nil
+}
+
+func baselineComparisons(rows []api.PredictionOutcomeEvaluation) []BaselineComparison {
+	policies := []struct {
+		name     string
+		policy   string
+		positive bool
+	}{
+		{name: "all_negative", policy: "predict every matured scored sample as non-failure", positive: false},
+		{name: "all_positive", policy: "predict every matured scored sample as failure", positive: true},
+	}
+	comparisons := make([]BaselineComparison, 0, len(policies))
+	for _, policy := range policies {
+		item := BaselineComparison{Name: policy.name, PredictionPolicy: policy.policy}
+		for _, row := range rows {
+			if row.MaturityStatus != "matured" || row.Probability == nil {
+				continue
+			}
+			if row.RuleActualValue != nil {
+				addOutcome(&item.Rule, classify(policy.positive, *row.RuleActualValue))
+			}
+			if row.FinalActualValue != nil {
+				addOutcome(&item.Final, classify(policy.positive, *row.FinalActualValue))
+			}
+		}
+		finalizeMetrics(&item.Rule)
+		finalizeMetrics(&item.Final)
+		comparisons = append(comparisons, item)
+	}
+	return comparisons
 }
 
 func outcomeMaturity(rows []api.PredictionOutcomeEvaluation) OutcomeMaturity {

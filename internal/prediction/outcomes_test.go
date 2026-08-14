@@ -113,6 +113,17 @@ func TestOutcomeReconciliationAndHumanOverride(t *testing.T) {
 	if len(report.Accuracy.Final.NodeRankingAtK) == 0 || len(report.Interpretation) == 0 || len(report.RecommendedNextRun) == 0 {
 		t.Fatalf("report is missing review guidance: %+v", report)
 	}
+	if len(report.BaselineComparisons) != 2 {
+		t.Fatalf("missing naive baseline comparisons: %+v", report.BaselineComparisons)
+	}
+	for _, baseline := range report.BaselineComparisons {
+		if baseline.Name == "all_negative" && (baseline.Final.TP != 0 || baseline.Final.FN != 3 || baseline.Final.TN != 1 || baseline.Final.Evaluated != 4) {
+			t.Fatalf("unexpected all-negative baseline: %+v", baseline.Final)
+		}
+		if baseline.Name == "all_positive" && (baseline.Final.TP != 3 || baseline.Final.FP != 1 || baseline.Final.TN != 0 || baseline.Final.Evaluated != 4) {
+			t.Fatalf("unexpected all-positive baseline: %+v", baseline.Final)
+		}
+	}
 }
 
 func TestOutcomeCensoringAndHandlerValidation(t *testing.T) {
