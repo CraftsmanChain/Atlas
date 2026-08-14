@@ -639,6 +639,18 @@ func TestFeatureDriftReportRequiresPersistedDistributions(t *testing.T) {
 	if report.FeatureColumnCount != 3 || report.FeatureDistributionCount != 0 || report.PSIStatus != "pending_distribution_store" || report.KSStatus != "pending_distribution_store" || len(report.SampleFeatures) != 3 {
 		t.Fatalf("unexpected feature drift fields: %+v", report)
 	}
+	hasTrainingRecommendation, hasLiveRecommendation := false, false
+	for _, recommendation := range report.RecommendedNextRun {
+		if recommendation == "materialize training feature distributions from the completed baseline-bound training matrix" {
+			hasTrainingRecommendation = true
+		}
+		if recommendation == "run read-only shadow scoring after live coverage passes to materialize live-shadow feature distributions" {
+			hasLiveRecommendation = true
+		}
+	}
+	if !hasTrainingRecommendation || !hasLiveRecommendation {
+		t.Fatalf("expected dynamic feature-drift next-run guidance, got %+v", report.RecommendedNextRun)
+	}
 	if report.LatestReplay == nil || report.LatestReplay.VerifiedColumnCount != 3 || report.ArtifactLocalSHA256 != artifactSHA {
 		t.Fatalf("unexpected artifact/replay binding: %+v", report)
 	}
