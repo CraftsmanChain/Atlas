@@ -787,6 +787,9 @@ func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T)
 	if report.LabelManifestVersion != LabelManifestVersion || report.LabelManifestSHA256 == "" || report.EvidenceBundleVersion != EvidenceBundleVersion || report.EvidenceBundleSHA256 == "" || report.EvidencePositive != 1 || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" || report.DataDriftVersion != DataDriftReportVersion || report.DataDriftSHA256 == "" || report.DataDriftStatus != "blocked_no_shadow_runs" || report.DataDriftCoverage != "exploratory_insufficient_coverage_audits" || report.CalibrationDriftVersion != CalibrationDriftReportVersion || report.CalibrationDriftSHA256 == "" || report.CalibrationDriftStatus != "blocked_no_calibration_reports" || report.FeatureDriftVersion != FeatureDriftReportVersion || report.FeatureDriftSHA256 == "" || report.FeatureDriftStatus != "blocked_no_baseline_artifact" || report.FeatureDriftCompared != 0 || report.FeatureDriftMaxPSI != 0 || report.FeatureDriftMaxKS != 0 || report.FeatureDriftPSIStatus != "pending_distribution_store" || report.FeatureDriftKSStatus != "pending_distribution_store" {
 		t.Fatalf("unexpected readiness bindings: %+v", report)
 	}
+	if len(report.FeatureDriftBlockers) == 0 || report.FeatureDriftBlockers[0] != "no completed baseline model artifact is available" || len(report.FeatureDriftNextRun) == 0 {
+		t.Fatalf("expected feature drift guidance to be bound into readiness: %+v", report)
+	}
 	if len(report.BlockingReasons) == 0 || len(report.RecommendedNextRun) == 0 {
 		t.Fatalf("expected readiness blockers and next steps: %+v", report)
 	}
