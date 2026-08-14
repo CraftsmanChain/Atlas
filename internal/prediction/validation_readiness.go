@@ -52,6 +52,8 @@ type ValidationReadinessReport struct {
 	FeatureDriftMaxKS         float64               `json:"feature_drift_maximum_ks"`
 	FeatureDriftPSIStatus     string                `json:"feature_drift_psi_status"`
 	FeatureDriftKSStatus      string                `json:"feature_drift_ks_status"`
+	FeatureDriftBlockers      []string              `json:"feature_drift_blocking_reasons"`
+	FeatureDriftNextRun       []string              `json:"feature_drift_recommended_next_run"`
 	SevenDayRows              int                   `json:"seven_day_rows"`
 	SevenDayNodes             int                   `json:"seven_day_nodes"`
 	SevenDayPositives         int                   `json:"seven_day_positives"`
@@ -130,6 +132,8 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 		FeatureDriftMaxKS:         featureDriftReport.MaximumKS,
 		FeatureDriftPSIStatus:     featureDriftReport.PSIStatus,
 		FeatureDriftKSStatus:      featureDriftReport.KSStatus,
+		FeatureDriftBlockers:      append([]string(nil), featureDriftReport.BlockingReasons...),
+		FeatureDriftNextRun:       append([]string(nil), featureDriftReport.RecommendedNextRun...),
 		SevenDay:                  challengerReport.SevenDay,
 		GeneratedAt:               s.now(),
 		RecommendedNextRun: []string{
@@ -247,6 +251,8 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		FeatureDriftMaxKS         float64               `json:"feature_drift_maximum_ks"`
 		FeatureDriftPSIStatus     string                `json:"feature_drift_psi_status"`
 		FeatureDriftKSStatus      string                `json:"feature_drift_ks_status"`
+		FeatureDriftBlockers      []string              `json:"feature_drift_blocking_reasons"`
+		FeatureDriftNextRun       []string              `json:"feature_drift_recommended_next_run"`
 		SevenDayRows              int                   `json:"seven_day_rows"`
 		SevenDayNodes             int                   `json:"seven_day_nodes"`
 		SevenDayPositives         int                   `json:"seven_day_positives"`
@@ -274,6 +280,8 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		FeatureDriftMaxPSI: report.FeatureDriftMaxPSI, FeatureDriftMaxKS: report.FeatureDriftMaxKS,
 		FeatureDriftPSIStatus: report.FeatureDriftPSIStatus,
 		FeatureDriftKSStatus:  report.FeatureDriftKSStatus,
+		FeatureDriftBlockers:  report.FeatureDriftBlockers,
+		FeatureDriftNextRun:   report.FeatureDriftNextRun,
 		SevenDayRows:          report.SevenDayRows, SevenDayNodes: report.SevenDayNodes, SevenDayPositives: report.SevenDayPositives,
 		SevenDay: report.SevenDay, BlockingReasons: report.BlockingReasons, RecommendedNextRun: report.RecommendedNextRun,
 	}
