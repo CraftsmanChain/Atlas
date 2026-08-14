@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	FeatureDriftReportVersion = "prediction-feature-drift-report-v1"
+	FeatureDriftReportVersion = "prediction-feature-drift-report-v2"
 	featureDriftSampleLimit   = 8
 	featureDriftMaximumPSI    = 0.20
 	featureDriftMaximumKS     = 0.20
@@ -124,18 +124,12 @@ type featureDriftArtifact struct {
 func (s *Service) FeatureDriftReport() (FeatureDriftReport, error) {
 	report := FeatureDriftReport{
 		Version: FeatureDriftReportVersion, FrameworkVersion: FrameworkVersion, Mode: "read_only_feature_distribution_readiness",
-		Method:       "checks baseline artifact feature columns and latest feature replay parity; feature-level PSI/KS remains pending until per-column training and live distributions are persisted",
+		Method:       "compares baseline training and live-shadow per-feature aggregate histograms when both are available; otherwise reports the exact missing read-only evidence",
 		PSIStatus:    "pending_distribution_store",
 		KSStatus:     "pending_distribution_store",
 		PSIThreshold: featureDriftMaximumPSI,
 		KSThreshold:  featureDriftMaximumKS,
 		GeneratedAt:  s.now(),
-		RecommendedNextRun: []string{
-			"persist training feature quantiles or histograms for each selected model feature",
-			"persist live shadow feature quantiles or histograms from read-only extraction",
-			"compute feature-level PSI and KS only after both training and live per-column distributions are available",
-			"keep this gate read-only; do not tune thresholds or trigger actions from missing distribution evidence",
-		},
 	}
 	var build api.BaselineModelBuild
 	if err := s.db.Where("status = ? AND artifact_path <> ?", "completed", "").Order("finished_at DESC, id DESC").Limit(1).Find(&build).Error; err != nil {
@@ -144,7 +138,7 @@ func (s *Service) FeatureDriftReport() (FeatureDriftReport, error) {
 	if build.ID == 0 {
 		report.Status = "blocked_no_baseline_artifact"
 		report.BlockingReasons = append(report.BlockingReasons, "no completed baseline model artifact is available")
-		report.ReportSHA256 = featureDriftChecksum(report)
+		finalizeFeatureDriftReport(&report)
 		return report, nil
 	}
 	report.SourceBaselineBuildID = build.ID
@@ -162,7 +156,7 @@ func (s *Service) FeatureDriftReport() (FeatureDriftReport, error) {
 		} else {
 			report.Status = "blocked_artifact_unreadable"
 			report.BlockingReasons = append(report.BlockingReasons, "baseline artifact file is not readable")
-			report.ReportSHA256 = featureDriftChecksum(report)
+			finalizeFeatureDriftReport(&report)
 			return report, nil
 		}
 	}
@@ -170,7 +164,7 @@ func (s *Service) FeatureDriftReport() (FeatureDriftReport, error) {
 	if err != nil {
 		report.Status = "blocked_artifact_unreadable"
 		report.BlockingReasons = append(report.BlockingReasons, "baseline artifact file cannot be decoded")
-		report.ReportSHA256 = featureDriftChecksum(report)
+		finalizeFeatureDriftReport(&report)
 		return report, nil
 	}
 	report.FeatureColumnCount = featureDriftColumnCount(artifact)
@@ -202,6 +196,7 @@ func (s *Service) FeatureDriftReport() (FeatureDriftReport, error) {
 		report.BlockingReasons = append(report.BlockingReasons, "baseline artifact has no feature columns")
 	}
 	report.FeatureComparisons = featureDriftComparisons(featureDriftFeatureNames(artifact), distributions)
+	featureDriftApplySampleFeatureStatuses(report.SampleFeatures, report.FeatureComparisons)
 	for _, comparison := range report.FeatureComparisons {
 		if comparison.Status == "passed" {
 			report.PassedFeatureCount++
@@ -248,8 +243,23 @@ func (s *Service) FeatureDriftReport() (FeatureDriftReport, error) {
 		report.PSIStatus = "computed_review_required"
 		report.KSStatus = "computed_review_required"
 	}
-	report.ReportSHA256 = featureDriftChecksum(report)
+	finalizeFeatureDriftReport(&report)
 	return report, nil
+}
+
+func featureDriftApplySampleFeatureStatuses(features []FeatureDriftFeature, comparisons []FeatureDriftComparison) {
+	if len(features) == 0 || len(comparisons) == 0 {
+		return
+	}
+	statusByFeature := map[string]string{}
+	for _, comparison := range comparisons {
+		statusByFeature[comparison.FeatureName] = comparison.Status
+	}
+	for index := range features {
+		if status := statusByFeature[features[index].Name]; status != "" {
+			features[index].DistributionStatus = status
+		}
+	}
 }
 
 func readFeatureDriftArtifact(path string) (featureDriftArtifact, error) {
@@ -470,6 +480,70 @@ func minInt(left, right int) int {
 		return left
 	}
 	return right
+}
+
+func finalizeFeatureDriftReport(report *FeatureDriftReport) {
+	report.RecommendedNextRun = featureDriftRecommendedNextRun(*report)
+	report.ReportSHA256 = featureDriftChecksum(*report)
+}
+
+func featureDriftRecommendedNextRun(report FeatureDriftReport) []string {
+	recommendations := []string{}
+	add := func(value string) {
+		if value == "" {
+			return
+		}
+		for _, existing := range recommendations {
+			if existing == value {
+				return
+			}
+		}
+		recommendations = append(recommendations, value)
+	}
+	switch report.Status {
+	case "blocked_no_baseline_artifact":
+		add("complete a scoped baseline model build before evaluating feature drift")
+	case "blocked_artifact_unreadable":
+		add("verify the baseline artifact path and SHA256 before evaluating feature drift")
+	}
+	if report.LatestReplay == nil {
+		add("run feature replay for the latest baseline before interpreting feature drift")
+	} else if report.LatestReplay.Status != "passed" || (report.LatestReplay.TrainingFeatureCount > 0 && report.LatestReplay.VerifiedColumnCount < report.LatestReplay.TrainingFeatureCount) {
+		add("rerun feature replay until all selected training columns pass")
+	}
+	missingTraining, missingLive, incompatibleBins := 0, 0, 0
+	for _, comparison := range report.FeatureComparisons {
+		for _, reason := range comparison.BlockingReasons {
+			switch reason {
+			case "missing_training_distribution":
+				missingTraining++
+			case "missing_live_shadow_distribution":
+				missingLive++
+			case "training/live histogram bins are unavailable or incompatible":
+				incompatibleBins++
+			}
+		}
+	}
+	if missingTraining > 0 {
+		add("materialize training feature distributions from the completed baseline-bound training matrix")
+	}
+	if missingLive > 0 {
+		add("run read-only shadow scoring after live coverage passes to materialize live-shadow feature distributions")
+	}
+	if incompatibleBins > 0 {
+		add("regenerate live-shadow distributions with the matching training histogram bins before computing PSI/KS")
+	}
+	if report.ReviewRequiredFeatureCount > 0 {
+		add("review the top per-feature PSI/KS rows before changing any threshold or model")
+	}
+	if report.Status == "passed" {
+		add("archive the feature drift report SHA256 with validation readiness")
+	}
+	if report.ComparedFeatureCount > 0 && report.ComparedFeatureCount < report.FeatureColumnCount {
+		add("complete missing per-feature distribution pairs before treating drift status as comparable")
+	}
+	add("keep this gate read-only; do not tune thresholds or trigger actions from feature drift evidence alone")
+	return recommendations
 }
 
 func featureDriftChecksum(report FeatureDriftReport) string {
