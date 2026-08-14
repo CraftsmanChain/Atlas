@@ -168,6 +168,19 @@ func (h *Handler) HandleLabelManifest(w http.ResponseWriter, r *http.Request) {
 	predictionJSON(w, http.StatusOK, map[string]any{"data": manifest})
 }
 
+func (h *Handler) HandleValidationReadiness(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	report, err := h.service.ValidationReadinessReport()
+	if err != nil {
+		predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	predictionJSON(w, http.StatusOK, map[string]any{"data": report})
+}
+
 func (h *Handler) HandleOutcomes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:

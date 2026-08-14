@@ -424,6 +424,42 @@ func TestLabelManifestBlocksWeakOnlyLabels(t *testing.T) {
 	}
 }
 
+func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 14, 16, 0, 0, 0, time.UTC)
+	confirmedAt := now.Add(-time.Hour)
+	label := api.FailureLabel{
+		LabelKey: "confirmed", HardwareClass: "gpu", EntityType: "gpu", EntityKey: "GPU-1", GPUUUID: "GPU-1",
+		ModelName: "H100", EventType: "xid_94", RuleVersion: "rule-v1", LabelValue: 1, QualityTier: "confirmed",
+		SourceType: "human_resolution", SourceRecordID: 1, ConfirmationResolutionID: 7, LabelContractVersion: LabelContractVersion,
+		OccurredAt: now.Add(-2 * time.Hour), AvailableAt: now.Add(-time.Hour), ConfirmedAt: &confirmedAt,
+	}
+	if err := db.Create(&label).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	report, err := service.ValidationReadinessReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Version != ValidationReadinessReportVersion || report.Status != "blocked" || report.LabelGateStatus != "exploratory_ready" || report.LabelManifestSHA256 == "" {
+		t.Fatalf("unexpected validation readiness report: %+v", report)
+	}
+	if len(report.BlockingReasons) == 0 || len(report.RecommendedNextRun) == 0 {
+		t.Fatalf("expected readiness blockers and next steps: %+v", report)
+	}
+	handler := NewHandlerWithService(service)
+	response := httptest.NewRecorder()
+	handler.HandleValidationReadiness(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/validation-readiness", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(ValidationReadinessReportVersion)) {
+		t.Fatalf("validation readiness handler failed: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func assertRankingAtK(t *testing.T, rows []RankingAtK, k, eligible, positives, hits int, precision, recall, lift float64) {
 	t.Helper()
 	var found *RankingAtK
