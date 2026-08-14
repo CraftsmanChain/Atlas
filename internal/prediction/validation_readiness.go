@@ -1,22 +1,34 @@
 package prediction
 
-import "time"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"time"
+)
 
 const ValidationReadinessReportVersion = "prediction-validation-readiness-v1"
 
 type ValidationReadinessReport struct {
-	Version             string                `json:"version"`
-	FrameworkVersion    string                `json:"framework_version"`
-	Mode                string                `json:"mode"`
-	Status              string                `json:"status"`
-	LabelGateStatus     string                `json:"label_gate_status"`
-	LabelManifestSHA256 string                `json:"label_manifest_sha256"`
-	OutcomeMaturity     OutcomeMaturity       `json:"outcome_maturity"`
-	ChallengerStatus    string                `json:"challenger_status"`
-	SevenDay            []ChallengerMetricSet `json:"seven_day"`
-	BlockingReasons     []string              `json:"blocking_reasons"`
-	RecommendedNextRun  []string              `json:"recommended_next_run"`
-	GeneratedAt         time.Time             `json:"generated_at"`
+	Version              string                `json:"version"`
+	FrameworkVersion     string                `json:"framework_version"`
+	Mode                 string                `json:"mode"`
+	Status               string                `json:"status"`
+	ReadinessSHA256      string                `json:"readiness_sha256"`
+	LabelGateStatus      string                `json:"label_gate_status"`
+	LabelManifestVersion string                `json:"label_manifest_version"`
+	LabelManifestSHA256  string                `json:"label_manifest_sha256"`
+	OutcomeReportVersion string                `json:"outcome_report_version"`
+	OutcomeMaturity      OutcomeMaturity       `json:"outcome_maturity"`
+	ChallengerVersion    string                `json:"challenger_version"`
+	ChallengerStatus     string                `json:"challenger_status"`
+	SevenDayRows         int                   `json:"seven_day_rows"`
+	SevenDayNodes        int                   `json:"seven_day_nodes"`
+	SevenDayPositives    int                   `json:"seven_day_positives"`
+	SevenDay             []ChallengerMetricSet `json:"seven_day"`
+	BlockingReasons      []string              `json:"blocking_reasons"`
+	RecommendedNextRun   []string              `json:"recommended_next_run"`
+	GeneratedAt          time.Time             `json:"generated_at"`
 }
 
 func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error) {
@@ -33,21 +45,25 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 		return ValidationReadinessReport{}, err
 	}
 	report := ValidationReadinessReport{
-		Version:             ValidationReadinessReportVersion,
-		FrameworkVersion:    FrameworkVersion,
-		Mode:                "read_only_validation_gate",
-		LabelGateStatus:     labelManifest.QualityGateStatus,
-		LabelManifestSHA256: labelManifest.ManifestSHA256,
-		OutcomeMaturity:     outcomeReport.SampleMaturity,
-		ChallengerStatus:    challengerReport.Status,
-		SevenDay:            challengerReport.SevenDay,
-		GeneratedAt:         s.now(),
+		Version:              ValidationReadinessReportVersion,
+		FrameworkVersion:     FrameworkVersion,
+		Mode:                 "read_only_validation_gate",
+		LabelGateStatus:      labelManifest.QualityGateStatus,
+		LabelManifestVersion: labelManifest.Version,
+		LabelManifestSHA256:  labelManifest.ManifestSHA256,
+		OutcomeReportVersion: outcomeReport.Version,
+		OutcomeMaturity:      outcomeReport.SampleMaturity,
+		ChallengerVersion:    challengerReport.Version,
+		ChallengerStatus:     challengerReport.Status,
+		SevenDay:             challengerReport.SevenDay,
+		GeneratedAt:          s.now(),
 		RecommendedNextRun: []string{
 			"freeze the label manifest SHA256 before comparing challenger metrics",
 			"use the same matured outcome denominator for Logistic, rules, and HeaRank-style policies",
 			"keep all validation read-only until label, outcome, and challenger gates pass together",
 		},
 	}
+	report.SevenDayRows, report.SevenDayNodes, report.SevenDayPositives = validationReadinessSevenDaySummary(report.SevenDay)
 	report.BlockingReasons = validationReadinessBlockers(labelManifest, outcomeReport, challengerReport)
 	if len(report.BlockingReasons) > 0 {
 		report.Status = "blocked"
@@ -59,7 +75,20 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 		report.Status = "ready_for_offline_validation"
 	}
 	report.RecommendedNextRun = uniqueSorted(report.RecommendedNextRun)
+	report.ReadinessSHA256 = validationReadinessChecksum(report)
 	return report, nil
+}
+
+func validationReadinessSevenDaySummary(rows []ChallengerMetricSet) (int, int, int) {
+	for _, row := range rows {
+		if row.Policy == "logistic_probability" {
+			return row.Rows, row.Nodes, row.Positives
+		}
+	}
+	if len(rows) == 0 {
+		return 0, 0, 0
+	}
+	return rows[0].Rows, rows[0].Nodes, rows[0].Positives
 }
 
 func validationReadinessBlockers(labelManifest LabelManifest, outcomeReport OutcomeReport, challengerReport HeaRankChallengerReport) []string {
@@ -77,4 +106,36 @@ func validationReadinessBlockers(labelManifest LabelManifest, outcomeReport Outc
 		blockers = append(blockers, challengerReport.BlockingReasons...)
 	}
 	return uniqueSorted(blockers)
+}
+
+func validationReadinessChecksum(report ValidationReadinessReport) string {
+	fingerprint := struct {
+		Version              string                `json:"version"`
+		FrameworkVersion     string                `json:"framework_version"`
+		Mode                 string                `json:"mode"`
+		Status               string                `json:"status"`
+		LabelGateStatus      string                `json:"label_gate_status"`
+		LabelManifestVersion string                `json:"label_manifest_version"`
+		LabelManifestSHA256  string                `json:"label_manifest_sha256"`
+		OutcomeReportVersion string                `json:"outcome_report_version"`
+		OutcomeMaturity      OutcomeMaturity       `json:"outcome_maturity"`
+		ChallengerVersion    string                `json:"challenger_version"`
+		ChallengerStatus     string                `json:"challenger_status"`
+		SevenDayRows         int                   `json:"seven_day_rows"`
+		SevenDayNodes        int                   `json:"seven_day_nodes"`
+		SevenDayPositives    int                   `json:"seven_day_positives"`
+		SevenDay             []ChallengerMetricSet `json:"seven_day"`
+		BlockingReasons      []string              `json:"blocking_reasons"`
+		RecommendedNextRun   []string              `json:"recommended_next_run"`
+	}{
+		Version: report.Version, FrameworkVersion: report.FrameworkVersion, Mode: report.Mode, Status: report.Status,
+		LabelGateStatus: report.LabelGateStatus, LabelManifestVersion: report.LabelManifestVersion, LabelManifestSHA256: report.LabelManifestSHA256,
+		OutcomeReportVersion: report.OutcomeReportVersion, OutcomeMaturity: report.OutcomeMaturity,
+		ChallengerVersion: report.ChallengerVersion, ChallengerStatus: report.ChallengerStatus,
+		SevenDayRows: report.SevenDayRows, SevenDayNodes: report.SevenDayNodes, SevenDayPositives: report.SevenDayPositives,
+		SevenDay: report.SevenDay, BlockingReasons: report.BlockingReasons, RecommendedNextRun: report.RecommendedNextRun,
+	}
+	payload, _ := json.Marshal(fingerprint)
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
 }
