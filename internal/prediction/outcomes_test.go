@@ -594,6 +594,71 @@ func TestLabelManifestBlocksWeakOnlyLabels(t *testing.T) {
 	}
 }
 
+func TestFeatureDriftReportRequiresPersistedDistributions(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 14, 15, 30, 0, 0, time.UTC)
+	finished := now.Add(-time.Hour)
+	artifactPath := t.TempDir() + "/baseline-artifact.json"
+	artifactJSON := []byte(`{"version":"artifact-v1","models":[{"horizon_minutes":60,"feature_columns":["temperature","power","ecc_delta"],"means":[42.0,230.0,0.1],"scales":[5.0,40.0,1.0]}]}`)
+	if err := os.WriteFile(artifactPath, artifactJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	artifactSHA, err := localFileSHA256(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := api.BaselineModelBuild{
+		BaselineModelKey: "baseline-1", Version: "baseline-v1", Status: "completed", Algorithm: "logistic_regression",
+		SourceMatrixBuildID: 1, SourceTrainingMatrixKey: "matrix-1", FeatureContractVersion: FeatureContractVersion,
+		FeatureColumnCount: 3, HorizonCount: 1, TrainedModelCount: 1, ArtifactPath: artifactPath, ArtifactSHA256: artifactSHA,
+		StartedAt: now.Add(-2 * time.Hour), FinishedAt: &finished,
+	}
+	if err := db.Create(&baseline).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&api.PredictionFeatureReplayRun{
+		ReplayKey: "replay-1", Version: "replay-v1", Status: "passed", ModelSpecID: 1, ModelKey: "gpu.failure.test",
+		ModelVersion: "baseline-v1", SourceBaselineBuildID: baseline.ID, SourceMatrixBuildID: 1, SourceKey: "prometheus-main",
+		TransformationContractVersion: "transform-v1", TrainingFeatureCount: 3, VerifiedColumnCount: 3, ComparedValueCount: 30,
+		ReportSHA256: "replay-sha", StartedAt: now.Add(-45 * time.Minute), FinishedAt: &finished,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	report, err := service.FeatureDriftReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Version != FeatureDriftReportVersion || report.Status != "blocked_feature_distribution_store_required" || report.ReportSHA256 == "" {
+		t.Fatalf("unexpected feature drift report: %+v", report)
+	}
+	if report.FeatureColumnCount != 3 || report.FeatureDistributionCount != 0 || report.PSIStatus != "pending_distribution_store" || report.KSStatus != "pending_distribution_store" || len(report.SampleFeatures) != 3 {
+		t.Fatalf("unexpected feature drift fields: %+v", report)
+	}
+	if report.LatestReplay == nil || report.LatestReplay.VerifiedColumnCount != 3 || report.ArtifactLocalSHA256 != artifactSHA {
+		t.Fatalf("unexpected artifact/replay binding: %+v", report)
+	}
+	later := now.Add(time.Hour)
+	service.now = func() time.Time { return later }
+	laterReport, err := service.FeatureDriftReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ReportSHA256 != laterReport.ReportSHA256 || report.GeneratedAt.Equal(laterReport.GeneratedAt) {
+		t.Fatalf("feature drift checksum should be stable across generated_at changes: before=%+v after=%+v", report, laterReport)
+	}
+	handler := NewHandlerWithService(service)
+	response := httptest.NewRecorder()
+	handler.HandleFeatureDriftReport(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/feature-drift-report?download=1", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(FeatureDriftReportVersion)) || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" {
+		t.Fatalf("feature drift handler failed: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
@@ -619,7 +684,7 @@ func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T)
 	if report.Version != ValidationReadinessReportVersion || report.Status != "blocked" || report.LabelGateStatus != "exploratory_ready" || report.LabelManifestSHA256 == "" || report.ReadinessSHA256 == "" {
 		t.Fatalf("unexpected validation readiness report: %+v", report)
 	}
-	if report.LabelManifestVersion != LabelManifestVersion || report.LabelManifestSHA256 == "" || report.EvidenceBundleVersion != EvidenceBundleVersion || report.EvidenceBundleSHA256 == "" || report.EvidencePositive != 1 || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" || report.DataDriftVersion != DataDriftReportVersion || report.DataDriftSHA256 == "" || report.DataDriftStatus != "blocked_no_shadow_runs" || report.DataDriftCoverage != "exploratory_insufficient_coverage_audits" || report.CalibrationDriftVersion != CalibrationDriftReportVersion || report.CalibrationDriftSHA256 == "" || report.CalibrationDriftStatus != "blocked_no_calibration_reports" {
+	if report.LabelManifestVersion != LabelManifestVersion || report.LabelManifestSHA256 == "" || report.EvidenceBundleVersion != EvidenceBundleVersion || report.EvidenceBundleSHA256 == "" || report.EvidencePositive != 1 || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" || report.DataDriftVersion != DataDriftReportVersion || report.DataDriftSHA256 == "" || report.DataDriftStatus != "blocked_no_shadow_runs" || report.DataDriftCoverage != "exploratory_insufficient_coverage_audits" || report.CalibrationDriftVersion != CalibrationDriftReportVersion || report.CalibrationDriftSHA256 == "" || report.CalibrationDriftStatus != "blocked_no_calibration_reports" || report.FeatureDriftVersion != FeatureDriftReportVersion || report.FeatureDriftSHA256 == "" || report.FeatureDriftStatus != "blocked_no_baseline_artifact" || report.FeatureDriftPSIStatus != "pending_distribution_store" || report.FeatureDriftKSStatus != "pending_distribution_store" {
 		t.Fatalf("unexpected readiness bindings: %+v", report)
 	}
 	if len(report.BlockingReasons) == 0 || len(report.RecommendedNextRun) == 0 {
