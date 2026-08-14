@@ -296,6 +296,57 @@ func TestModelGovernanceReportSummarizesDatasetModelAndGates(t *testing.T) {
 	}
 }
 
+func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	empty, err := service.HeaRankChallengerReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Status != "blocked_no_7d_mature_outcomes" {
+		t.Fatalf("empty challenger should be blocked: %+v", empty)
+	}
+	probabilities := []float64{0.9, 0.7, 0.2, 0.1}
+	actuals := []int{1, 0, 1, 0}
+	nodes := []string{"10.0.0.1", "10.0.0.2", "10.0.0.2", "10.0.0.3"}
+	for index := range probabilities {
+		predicted := probabilities[index] >= 0.5
+		row := api.PredictionOutcomeEvaluation{
+			PredictionID: uint(index + 1), ModelSpecID: 1, ModelKey: "gpu.failure.7d", ModelVersion: "test",
+			EntityType: "gpu", EntityKey: nodes[index], GPUUUID: "GPU-7D", NodeIP: nodes[index], HorizonMinutes: 10080,
+			Probability: &probabilities[index], DecisionThreshold: &probabilities[1], PredictedPositive: predicted,
+			PredictionEvaluatedAt: now.Add(time.Duration(index-10) * time.Hour), WindowStartAt: now.Add(time.Duration(index-10) * time.Hour),
+			WindowEndAt: now.Add(time.Duration(index) * time.Hour), MaturityStatus: "matured", RuleOutcome: classify(predicted, actuals[index]),
+			RuleActualValue: &actuals[index], FinalOutcome: classify(predicted, actuals[index]), FinalActualValue: &actuals[index],
+			FinalSource: "rule", RuleDecisionVersion: OutcomeRuleVersion,
+		}
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := service.HeaRankChallengerReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ready_for_offline_comparison" || len(report.SevenDay) != 3 || report.SevenDay[0].Policy != "logistic_probability" {
+		t.Fatalf("unexpected challenger report: %+v", report)
+	}
+	if report.SevenDay[0].Rows != 4 || report.SevenDay[0].Nodes != 3 || report.SevenDay[0].Positives != 2 || len(report.SevenDay[0].RankingAtK) == 0 {
+		t.Fatalf("unexpected logistic challenger metrics: %+v", report.SevenDay[0])
+	}
+	handler := NewHandlerWithService(service)
+	response := httptest.NewRecorder()
+	handler.HandleHeaRankChallenger(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/hearank-challenger", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(HeaRankChallengerReportVersion)) {
+		t.Fatalf("challenger handler failed: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func assertRankingAtK(t *testing.T, rows []RankingAtK, k, eligible, positives, hits int, precision, recall, lift float64) {
 	t.Helper()
 	var found *RankingAtK
