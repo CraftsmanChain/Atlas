@@ -178,6 +178,13 @@ func (h *Handler) HandleValidationReadiness(w http.ResponseWriter, r *http.Reque
 		predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("ETag", `"`+report.ReadinessSHA256+`"`)
+	w.Header().Set("X-Atlas-Validation-Readiness-Version", report.Version)
+	w.Header().Set("X-Atlas-Validation-Readiness-SHA256", report.ReadinessSHA256)
+	if r.URL.Query().Get("download") == "1" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.json"`, report.Version, report.ReadinessSHA256[:12]))
+	}
 	predictionJSON(w, http.StatusOK, map[string]any{"data": report})
 }
 

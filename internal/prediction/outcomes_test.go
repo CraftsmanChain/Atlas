@@ -446,16 +446,28 @@ func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Version != ValidationReadinessReportVersion || report.Status != "blocked" || report.LabelGateStatus != "exploratory_ready" || report.LabelManifestSHA256 == "" {
+	if report.Version != ValidationReadinessReportVersion || report.Status != "blocked" || report.LabelGateStatus != "exploratory_ready" || report.LabelManifestSHA256 == "" || report.ReadinessSHA256 == "" {
 		t.Fatalf("unexpected validation readiness report: %+v", report)
+	}
+	if report.LabelManifestVersion != LabelManifestVersion || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.ChallengerVersion != HeaRankChallengerReportVersion {
+		t.Fatalf("unexpected readiness bindings: %+v", report)
 	}
 	if len(report.BlockingReasons) == 0 || len(report.RecommendedNextRun) == 0 {
 		t.Fatalf("expected readiness blockers and next steps: %+v", report)
 	}
+	later := now.Add(time.Hour)
+	service.now = func() time.Time { return later }
+	laterReport, err := service.ValidationReadinessReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ReadinessSHA256 != laterReport.ReadinessSHA256 || report.GeneratedAt.Equal(laterReport.GeneratedAt) {
+		t.Fatalf("readiness checksum should be stable across generated_at changes: before=%+v after=%+v", report, laterReport)
+	}
 	handler := NewHandlerWithService(service)
 	response := httptest.NewRecorder()
-	handler.HandleValidationReadiness(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/validation-readiness", nil))
-	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(ValidationReadinessReportVersion)) {
+	handler.HandleValidationReadiness(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/validation-readiness?download=1", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(ValidationReadinessReportVersion)) || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" {
 		t.Fatalf("validation readiness handler failed: %d %s", response.Code, response.Body.String())
 	}
 }
