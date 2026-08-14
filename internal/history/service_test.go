@@ -56,6 +56,45 @@ func TestAuditPersistsBoundedPrometheusCoverage(t *testing.T) {
 	}
 }
 
+func TestFeatureDistributionSnapshotsExposeReadOnlyHistory(t *testing.T) {
+	db, err := storage.InitDB(fmt.Sprintf("file:feature-distributions-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 14, 16, 20, 0, 0, time.UTC)
+	rows := []api.PredictionFeatureDistributionSnapshot{
+		{
+			SnapshotKey: "training-temp", Version: "feature-distribution-v1", Status: "completed", DistributionRole: "training",
+			SourceBaselineBuildID: 1, FeatureContractVersion: "atlas-prediction-features-v1", FeatureName: "temperature",
+			SampleCount: 100, BinEdges: api.FloatList{0, 1, 2}, BinProportions: api.FloatList{0.5, 0.5}, ObservedAt: now.Add(-time.Hour),
+		},
+		{
+			SnapshotKey: "live-temp", Version: "feature-distribution-v1", Status: "completed", DistributionRole: "live_shadow",
+			SourceBaselineBuildID: 1, FeatureContractVersion: "atlas-prediction-features-v1", FeatureName: "temperature",
+			SampleCount: 80, BinEdges: api.FloatList{0, 1, 2}, BinProportions: api.FloatList{0.45, 0.55}, ObservedAt: now,
+		},
+	}
+	for _, row := range rows {
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := NewService(db, config.HistoryConfig{}, time.Second)
+	list, err := service.FeatureDistributionSnapshots(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].SnapshotKey != "live-temp" || len(list[0].BinProportions) != 2 {
+		t.Fatalf("unexpected distribution snapshots: %+v", list)
+	}
+	handler := NewHandler(service)
+	response := httptest.NewRecorder()
+	handler.HandleFeatureDistributions(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/history/feature-distributions?limit=2", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"raw_samples_stored":false`)) || !bytes.Contains(response.Body.Bytes(), []byte("live_shadow")) {
+		t.Fatalf("feature distribution handler failed: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestHistoryHandlerIsReadOnlyExceptExplicitAudit(t *testing.T) {
 	prometheus := newTestPrometheus(t)
 	defer prometheus.Close()

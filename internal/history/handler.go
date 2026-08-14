@@ -147,6 +147,26 @@ func (h *Handler) HandleLiveCoverageAudits(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+func (h *Handler) HandleFeatureDistributions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		historyJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	rows, err := h.service.FeatureDistributionSnapshots(limit)
+	if err != nil {
+		historyJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	historyJSON(w, http.StatusOK, map[string]any{
+		"data": rows,
+		"meta": map[string]any{
+			"total": len(rows), "read_only": true, "raw_samples_stored": false,
+			"roles": []string{"training", "live_shadow"},
+		},
+	})
+}
+
 func (h *Handler) HandleShadowScoringRuns(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
