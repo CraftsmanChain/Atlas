@@ -376,6 +376,9 @@ func TestLabelManifestSummarizesGovernancePolicies(t *testing.T) {
 	if manifest.ByEventType["xid_94"] != 2 || manifest.BySourceType["rule"] != 1 || manifest.ExclusionReasons["legacy lifetime counter"] != 1 || len(manifest.KnownGaps) == 0 || len(manifest.SampleLabelKeys) != 3 {
 		t.Fatalf("unexpected label manifest breakdown: %+v", manifest)
 	}
+	if manifest.QualityGateStatus != "exploratory_ready" || len(manifest.BlockingReasons) != 0 || len(manifest.RecommendedNextRun) == 0 {
+		t.Fatalf("unexpected label manifest gate: %+v", manifest)
+	}
 	later := now.Add(time.Hour)
 	service.now = func() time.Time { return later }
 	laterManifest, err := service.LabelManifest()
@@ -390,6 +393,34 @@ func TestLabelManifestSummarizesGovernancePolicies(t *testing.T) {
 	handler.HandleLabelManifest(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/label-manifest?download=1", nil))
 	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(LabelManifestVersion)) || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" {
 		t.Fatalf("label manifest handler failed: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestLabelManifestBlocksWeakOnlyLabels(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 14, 15, 0, 0, 0, time.UTC)
+	for _, key := range []string{"weak-1", "weak-2"} {
+		label := api.FailureLabel{
+			LabelKey: key, HardwareClass: "gpu", EntityType: "gpu", EntityKey: key, GPUUUID: key,
+			ModelName: "H100", EventType: "operational_only", RuleVersion: "rule-v1", LabelValue: 1,
+			QualityTier: "weak_proxy", SourceType: "rule", SourceRecordID: 1, LabelContractVersion: LabelContractVersion,
+			OccurredAt: now.Add(-2 * time.Hour), AvailableAt: now.Add(-time.Hour),
+		}
+		if err := db.Create(&label).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	manifest, err := service.LabelManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.QualityGateStatus != "blocked" || len(manifest.BlockingReasons) == 0 || manifest.ManifestSHA256 == "" {
+		t.Fatalf("weak-only labels should block validation: %+v", manifest)
 	}
 }
 
