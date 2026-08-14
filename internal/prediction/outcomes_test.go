@@ -317,6 +317,8 @@ func TestDataDriftReportComparesShadowScoreDistributions(t *testing.T) {
 	now := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
 	baselineFinished := now.Add(-2 * time.Hour)
 	latestFinished := now.Add(-time.Hour)
+	coverageBaselineFinished := now.Add(-3 * time.Hour)
+	coverageLatestFinished := now.Add(-30 * time.Minute)
 	baselineMedian, baselineP90, baselineP95, baselineP99 := 0.10, 0.20, 0.25, 0.30
 	latestMedian, latestP90, latestP95, latestP99 := 0.12, 0.23, 0.28, 0.34
 	runs := []api.PredictionShadowScoringRun{
@@ -344,17 +346,41 @@ func TestDataDriftReportComparesShadowScoreDistributions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	coverageAudits := []api.PredictionLiveCoverageAudit{
+		{
+			AuditKey: "coverage-baseline", Version: "coverage-v1", Status: "passed", ModelSpecID: 1,
+			ModelKey: "gpu.failure.test", ModelVersion: "model-v1", SourceKey: "prometheus", ScopeModelName: "H100",
+			TargetGPUCount: 10, EligibleGPUCount: 9, MetricPairCount: 100, PassingMetricPairCount: 90,
+			MissingMetricPairCount: 4, SparseMetricPairCount: 4, StaleMetricPairCount: 2, EligibleRatio: 0.90,
+			ReportSHA256: "coverage-baseline-report", StartedAt: coverageBaselineFinished.Add(-time.Minute), FinishedAt: &coverageBaselineFinished,
+		},
+		{
+			AuditKey: "coverage-latest", Version: "coverage-v1", Status: "passed", ModelSpecID: 1,
+			ModelKey: "gpu.failure.test", ModelVersion: "model-v1", SourceKey: "prometheus", ScopeModelName: "H100",
+			TargetGPUCount: 10, EligibleGPUCount: 9, MetricPairCount: 100, PassingMetricPairCount: 88,
+			MissingMetricPairCount: 5, SparseMetricPairCount: 5, StaleMetricPairCount: 2, EligibleRatio: 0.90,
+			ReportSHA256: "coverage-latest-report", StartedAt: coverageLatestFinished.Add(-time.Minute), FinishedAt: &coverageLatestFinished,
+		},
+	}
+	for index := range coverageAudits {
+		if err := db.Create(&coverageAudits[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 	service := NewService(db)
 	service.now = func() time.Time { return now }
 	report, err := service.DataDriftReport()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Version != DataDriftReportVersion || report.Status != "passed" || report.ReportSHA256 == "" || report.Latest == nil || report.Baseline == nil {
+	if report.Version != DataDriftReportVersion || report.Status != "passed" || report.CoverageQualityStatus != "passed" || report.ReportSHA256 == "" || report.Latest == nil || report.Baseline == nil || report.LatestCoverage == nil || report.BaselineCoverage == nil {
 		t.Fatalf("unexpected data drift report: %+v", report)
 	}
 	if report.Latest.RunKey != "shadow-latest" || report.Baseline.RunKey != "shadow-baseline" || math.Abs(report.PositiveRatioDelta-0.02) > 1e-12 || report.KSProxy <= 0 || report.PSIProxy <= 0 {
 		t.Fatalf("unexpected drift metrics: %+v", report)
+	}
+	if report.LatestCoverage.AuditKey != "coverage-latest" || report.BaselineCoverage.AuditKey != "coverage-baseline" || math.Abs(report.MetricPassRatioDelta-0.02) > 1e-12 {
+		t.Fatalf("unexpected coverage drift metrics: %+v", report)
 	}
 	later := now.Add(time.Hour)
 	service.now = func() time.Time { return later }
@@ -529,7 +555,7 @@ func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T)
 	if report.Version != ValidationReadinessReportVersion || report.Status != "blocked" || report.LabelGateStatus != "exploratory_ready" || report.LabelManifestSHA256 == "" || report.ReadinessSHA256 == "" {
 		t.Fatalf("unexpected validation readiness report: %+v", report)
 	}
-	if report.LabelManifestVersion != LabelManifestVersion || report.LabelManifestSHA256 == "" || report.EvidenceBundleVersion != EvidenceBundleVersion || report.EvidenceBundleSHA256 == "" || report.EvidencePositive != 1 || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" || report.DataDriftVersion != DataDriftReportVersion || report.DataDriftSHA256 == "" || report.DataDriftStatus != "blocked_no_shadow_runs" {
+	if report.LabelManifestVersion != LabelManifestVersion || report.LabelManifestSHA256 == "" || report.EvidenceBundleVersion != EvidenceBundleVersion || report.EvidenceBundleSHA256 == "" || report.EvidencePositive != 1 || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" || report.DataDriftVersion != DataDriftReportVersion || report.DataDriftSHA256 == "" || report.DataDriftStatus != "blocked_no_shadow_runs" || report.DataDriftCoverage != "exploratory_insufficient_coverage_audits" {
 		t.Fatalf("unexpected readiness bindings: %+v", report)
 	}
 	if len(report.BlockingReasons) == 0 || len(report.RecommendedNextRun) == 0 {

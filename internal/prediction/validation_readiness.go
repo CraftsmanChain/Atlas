@@ -31,6 +31,7 @@ type ValidationReadinessReport struct {
 	DataDriftVersion      string                `json:"data_drift_version"`
 	DataDriftSHA256       string                `json:"data_drift_sha256"`
 	DataDriftStatus       string                `json:"data_drift_status"`
+	DataDriftCoverage     string                `json:"data_drift_coverage_quality_status"`
 	DataDriftPSIProxy     float64               `json:"data_drift_psi_proxy"`
 	DataDriftKSProxy      float64               `json:"data_drift_ks_proxy"`
 	SevenDayRows          int                   `json:"seven_day_rows"`
@@ -83,6 +84,7 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 		DataDriftVersion:      driftReport.Version,
 		DataDriftSHA256:       driftReport.ReportSHA256,
 		DataDriftStatus:       driftReport.Status,
+		DataDriftCoverage:     driftReport.CoverageQualityStatus,
 		DataDriftPSIProxy:     driftReport.PSIProxy,
 		DataDriftKSProxy:      driftReport.KSProxy,
 		SevenDay:              challengerReport.SevenDay,
@@ -174,6 +176,7 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		DataDriftVersion      string                `json:"data_drift_version"`
 		DataDriftSHA256       string                `json:"data_drift_sha256"`
 		DataDriftStatus       string                `json:"data_drift_status"`
+		DataDriftCoverage     string                `json:"data_drift_coverage_quality_status"`
 		DataDriftPSIProxy     float64               `json:"data_drift_psi_proxy"`
 		DataDriftKSProxy      float64               `json:"data_drift_ks_proxy"`
 		SevenDayRows          int                   `json:"seven_day_rows"`
@@ -191,7 +194,8 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		ChallengerVersion: report.ChallengerVersion, ChallengerStatus: report.ChallengerStatus,
 		ChallengerConfidence: report.ChallengerConfidence,
 		DataDriftVersion:     report.DataDriftVersion, DataDriftSHA256: report.DataDriftSHA256,
-		DataDriftStatus: report.DataDriftStatus, DataDriftPSIProxy: report.DataDriftPSIProxy, DataDriftKSProxy: report.DataDriftKSProxy,
+		DataDriftStatus: report.DataDriftStatus, DataDriftCoverage: report.DataDriftCoverage,
+		DataDriftPSIProxy: report.DataDriftPSIProxy, DataDriftKSProxy: report.DataDriftKSProxy,
 		SevenDayRows: report.SevenDayRows, SevenDayNodes: report.SevenDayNodes, SevenDayPositives: report.SevenDayPositives,
 		SevenDay: report.SevenDay, BlockingReasons: report.BlockingReasons, RecommendedNextRun: report.RecommendedNextRun,
 	}
