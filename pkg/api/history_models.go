@@ -392,6 +392,45 @@ type PredictionFeatureReplayRun struct {
 	UpdatedAt                     time.Time  `json:"updated_at"`
 }
 
+// PredictionFeatureDistributionSnapshot stores compact per-feature distribution
+// evidence for drift checks. It stores aggregate statistics and histogram bins
+// only; raw training or live telemetry samples remain outside Atlas online DB.
+type PredictionFeatureDistributionSnapshot struct {
+	ID                     uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	SnapshotKey            string     `json:"snapshot_key" gorm:"uniqueIndex;size:96;not null"`
+	Version                string     `json:"version" gorm:"index;not null"`
+	Status                 string     `json:"status" gorm:"index;not null"`
+	DistributionRole       string     `json:"distribution_role" gorm:"index;not null"`
+	SourceBaselineBuildID  uint       `json:"source_baseline_build_id" gorm:"index;not null"`
+	ModelSpecID            uint       `json:"model_spec_id" gorm:"index"`
+	ModelKey               string     `json:"model_key" gorm:"index"`
+	ModelVersion           string     `json:"model_version" gorm:"index"`
+	FeatureContractVersion string     `json:"feature_contract_version" gorm:"index;not null"`
+	ScopeModelName         string     `json:"scope_model_name,omitempty" gorm:"index"`
+	SourceKey              string     `json:"source_key,omitempty" gorm:"index"`
+	FeatureName            string     `json:"feature_name" gorm:"index;not null"`
+	SampleCount            int        `json:"sample_count"`
+	MissingCount           int        `json:"missing_count"`
+	MissingRatio           float64    `json:"missing_ratio"`
+	Mean                   float64    `json:"mean"`
+	Stddev                 float64    `json:"stddev"`
+	Minimum                float64    `json:"minimum"`
+	P25                    float64    `json:"p25"`
+	P50                    float64    `json:"p50"`
+	P75                    float64    `json:"p75"`
+	P90                    float64    `json:"p90"`
+	P95                    float64    `json:"p95"`
+	P99                    float64    `json:"p99"`
+	Maximum                float64    `json:"maximum"`
+	BinEdges               FloatList  `json:"bin_edges" gorm:"type:text"`
+	BinProportions         FloatList  `json:"bin_proportions" gorm:"type:text"`
+	ReportSHA256           string     `json:"report_sha256,omitempty"`
+	BlockingReasons        StringList `json:"blocking_reasons" gorm:"type:text"`
+	ObservedAt             time.Time  `json:"observed_at" gorm:"index;not null"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+}
+
 // PredictionLiveCoverageAudit measures whether current in-scope GPUs have a
 // complete, fresh trailing-24h window for every model source metric.
 type PredictionLiveCoverageAudit struct {

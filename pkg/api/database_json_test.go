@@ -35,6 +35,16 @@ func TestJSONScannersAcceptSQLiteBytesAndPostgresStrings(t *testing.T) {
 			t.Fatalf("unexpected FloatMap from %T: %#v", value, result)
 		}
 	}
+
+	for _, value := range []any{[]byte(`[0.1,0.2,0.7]`), `[0.1,0.2,0.7]`} {
+		var result FloatList
+		if err := result.Scan(value); err != nil {
+			t.Fatalf("scan FloatList from %T: %v", value, err)
+		}
+		if !reflect.DeepEqual(result, FloatList{0.1, 0.2, 0.7}) {
+			t.Fatalf("unexpected FloatList from %T: %#v", value, result)
+		}
+	}
 }
 
 func TestJSONScannersRejectUnsupportedValues(t *testing.T) {

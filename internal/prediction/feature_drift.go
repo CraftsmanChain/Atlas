@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"math"
 	"os"
+	"sort"
 	"time"
 
 	"atlas/pkg/api"
@@ -14,6 +16,8 @@ import (
 const (
 	FeatureDriftReportVersion = "prediction-feature-drift-report-v1"
 	featureDriftSampleLimit   = 8
+	featureDriftMaximumPSI    = 0.20
+	featureDriftMaximumKS     = 0.20
 )
 
 type FeatureDriftFeature struct {
@@ -38,29 +42,73 @@ type FeatureDriftReplaySnapshot struct {
 	FinishedAt                *time.Time `json:"finished_at,omitempty"`
 }
 
+type FeatureDistributionSnapshot struct {
+	SnapshotID       uint      `json:"snapshot_id"`
+	SnapshotKey      string    `json:"snapshot_key"`
+	Version          string    `json:"version"`
+	Status           string    `json:"status"`
+	DistributionRole string    `json:"distribution_role"`
+	FeatureName      string    `json:"feature_name"`
+	SampleCount      int       `json:"sample_count"`
+	MissingRatio     float64   `json:"missing_ratio"`
+	Mean             float64   `json:"mean"`
+	Stddev           float64   `json:"stddev"`
+	Minimum          float64   `json:"minimum"`
+	P50              float64   `json:"p50"`
+	P95              float64   `json:"p95"`
+	Maximum          float64   `json:"maximum"`
+	BinCount         int       `json:"bin_count"`
+	ReportSHA256     string    `json:"report_sha256,omitempty"`
+	ObservedAt       time.Time `json:"observed_at"`
+}
+
+type FeatureDriftComparison struct {
+	FeatureName        string   `json:"feature_name"`
+	Status             string   `json:"status"`
+	TrainingSnapshotID uint     `json:"training_snapshot_id,omitempty"`
+	LiveSnapshotID     uint     `json:"live_snapshot_id,omitempty"`
+	TrainingSamples    int      `json:"training_samples"`
+	LiveSamples        int      `json:"live_samples"`
+	PSI                float64  `json:"psi"`
+	KS                 float64  `json:"ks"`
+	MeanDelta          float64  `json:"mean_delta"`
+	P50Delta           float64  `json:"p50_delta"`
+	P95Delta           float64  `json:"p95_delta"`
+	BlockingReasons    []string `json:"blocking_reasons"`
+}
+
 type FeatureDriftReport struct {
-	Version                  string                      `json:"version"`
-	FrameworkVersion         string                      `json:"framework_version"`
-	Mode                     string                      `json:"mode"`
-	Status                   string                      `json:"status"`
-	ReportSHA256             string                      `json:"report_sha256"`
-	Method                   string                      `json:"method"`
-	SourceBaselineBuildID    uint                        `json:"source_baseline_build_id"`
-	BaselineModelKey         string                      `json:"baseline_model_key,omitempty"`
-	BaselineVersion          string                      `json:"baseline_version,omitempty"`
-	ArtifactPath             string                      `json:"artifact_path,omitempty"`
-	ArtifactSHA256           string                      `json:"artifact_sha256,omitempty"`
-	ArtifactLocalSHA256      string                      `json:"artifact_local_sha256,omitempty"`
-	FeatureContractVersion   string                      `json:"feature_contract_version,omitempty"`
-	FeatureColumnCount       int                         `json:"feature_column_count"`
-	FeatureDistributionCount int                         `json:"feature_distribution_count"`
-	PSIStatus                string                      `json:"psi_status"`
-	KSStatus                 string                      `json:"ks_status"`
-	LatestReplay             *FeatureDriftReplaySnapshot `json:"latest_replay,omitempty"`
-	SampleFeatures           []FeatureDriftFeature       `json:"sample_features"`
-	BlockingReasons          []string                    `json:"blocking_reasons"`
-	RecommendedNextRun       []string                    `json:"recommended_next_run"`
-	GeneratedAt              time.Time                   `json:"generated_at"`
+	Version                    string                        `json:"version"`
+	FrameworkVersion           string                        `json:"framework_version"`
+	Mode                       string                        `json:"mode"`
+	Status                     string                        `json:"status"`
+	ReportSHA256               string                        `json:"report_sha256"`
+	Method                     string                        `json:"method"`
+	SourceBaselineBuildID      uint                          `json:"source_baseline_build_id"`
+	BaselineModelKey           string                        `json:"baseline_model_key,omitempty"`
+	BaselineVersion            string                        `json:"baseline_version,omitempty"`
+	ArtifactPath               string                        `json:"artifact_path,omitempty"`
+	ArtifactSHA256             string                        `json:"artifact_sha256,omitempty"`
+	ArtifactLocalSHA256        string                        `json:"artifact_local_sha256,omitempty"`
+	FeatureContractVersion     string                        `json:"feature_contract_version,omitempty"`
+	FeatureColumnCount         int                           `json:"feature_column_count"`
+	FeatureDistributionCount   int                           `json:"feature_distribution_count"`
+	ComparedFeatureCount       int                           `json:"compared_feature_count"`
+	PassedFeatureCount         int                           `json:"passed_feature_count"`
+	ReviewRequiredFeatureCount int                           `json:"review_required_feature_count"`
+	PSIThreshold               float64                       `json:"psi_threshold"`
+	KSThreshold                float64                       `json:"ks_threshold"`
+	MaximumPSI                 float64                       `json:"maximum_psi"`
+	MaximumKS                  float64                       `json:"maximum_ks"`
+	PSIStatus                  string                        `json:"psi_status"`
+	KSStatus                   string                        `json:"ks_status"`
+	LatestReplay               *FeatureDriftReplaySnapshot   `json:"latest_replay,omitempty"`
+	SampleDistributions        []FeatureDistributionSnapshot `json:"sample_distributions"`
+	FeatureComparisons         []FeatureDriftComparison      `json:"feature_comparisons"`
+	SampleFeatures             []FeatureDriftFeature         `json:"sample_features"`
+	BlockingReasons            []string                      `json:"blocking_reasons"`
+	RecommendedNextRun         []string                      `json:"recommended_next_run"`
+	GeneratedAt                time.Time                     `json:"generated_at"`
 }
 
 type featureDriftArtifact struct {
@@ -76,10 +124,12 @@ type featureDriftArtifact struct {
 func (s *Service) FeatureDriftReport() (FeatureDriftReport, error) {
 	report := FeatureDriftReport{
 		Version: FeatureDriftReportVersion, FrameworkVersion: FrameworkVersion, Mode: "read_only_feature_distribution_readiness",
-		Method:      "checks baseline artifact feature columns and latest feature replay parity; feature-level PSI/KS remains pending until per-column training and live distributions are persisted",
-		PSIStatus:   "pending_distribution_store",
-		KSStatus:    "pending_distribution_store",
-		GeneratedAt: s.now(),
+		Method:       "checks baseline artifact feature columns and latest feature replay parity; feature-level PSI/KS remains pending until per-column training and live distributions are persisted",
+		PSIStatus:    "pending_distribution_store",
+		KSStatus:     "pending_distribution_store",
+		PSIThreshold: featureDriftMaximumPSI,
+		KSThreshold:  featureDriftMaximumKS,
+		GeneratedAt:  s.now(),
 		RecommendedNextRun: []string{
 			"persist training feature quantiles or histograms for each selected model feature",
 			"persist live shadow feature quantiles or histograms from read-only extraction",
@@ -125,6 +175,12 @@ func (s *Service) FeatureDriftReport() (FeatureDriftReport, error) {
 	}
 	report.FeatureColumnCount = featureDriftColumnCount(artifact)
 	report.SampleFeatures = featureDriftSampleFeatures(artifact, featureDriftSampleLimit)
+	distributions, err := s.featureDistributionSnapshots(build.ID)
+	if err != nil {
+		return FeatureDriftReport{}, err
+	}
+	report.FeatureDistributionCount = len(distributions)
+	report.SampleDistributions = featureDriftSampleDistributions(distributions, featureDriftSampleLimit)
 
 	var replay api.PredictionFeatureReplayRun
 	if err := s.db.Where("source_baseline_build_id = ?", build.ID).Order("finished_at DESC, id DESC").Limit(1).Find(&replay).Error; err != nil {
@@ -145,11 +201,52 @@ func (s *Service) FeatureDriftReport() (FeatureDriftReport, error) {
 	if report.FeatureColumnCount == 0 {
 		report.BlockingReasons = append(report.BlockingReasons, "baseline artifact has no feature columns")
 	}
-	report.BlockingReasons = append(report.BlockingReasons, "per-column training/live feature distributions are not persisted")
+	report.FeatureComparisons = featureDriftComparisons(featureDriftFeatureNames(artifact), distributions)
+	for _, comparison := range report.FeatureComparisons {
+		if comparison.Status == "passed" {
+			report.PassedFeatureCount++
+		}
+		if comparison.Status == "review_required" {
+			report.ReviewRequiredFeatureCount++
+		}
+		if comparison.Status == "passed" || comparison.Status == "review_required" {
+			report.ComparedFeatureCount++
+		}
+		report.MaximumPSI = math.Max(report.MaximumPSI, comparison.PSI)
+		report.MaximumKS = math.Max(report.MaximumKS, comparison.KS)
+	}
+	if report.ComparedFeatureCount == 0 {
+		report.BlockingReasons = append(report.BlockingReasons, "per-column training/live feature distributions are not persisted")
+	} else if report.ComparedFeatureCount < report.FeatureColumnCount {
+		report.BlockingReasons = append(report.BlockingReasons, "per-column training/live feature distributions are incomplete")
+	}
+	if report.ReviewRequiredFeatureCount > 0 {
+		report.BlockingReasons = append(report.BlockingReasons, "feature_drift_metric_exceeds_threshold")
+	}
 	report.BlockingReasons = uniqueSorted(report.BlockingReasons)
-	report.Status = "blocked_feature_distributions_unavailable"
-	if len(report.BlockingReasons) == 1 && report.BlockingReasons[0] == "per-column training/live feature distributions are not persisted" && report.LatestReplay != nil && report.LatestReplay.Status == "passed" {
+	switch {
+	case report.ReviewRequiredFeatureCount > 0:
+		report.Status = "review_required"
+	case report.ComparedFeatureCount > 0 && report.ComparedFeatureCount == report.FeatureColumnCount:
+		report.Status = "passed"
+		report.PSIStatus = "computed"
+		report.KSStatus = "computed"
+	case report.ComparedFeatureCount > 0:
+		report.Status = "blocked_feature_distributions_incomplete"
+		report.PSIStatus = "partial"
+		report.KSStatus = "partial"
+	default:
+		report.Status = "blocked_feature_distributions_unavailable"
+	}
+	if report.Status == "passed" && len(report.BlockingReasons) > 0 {
+		report.Status = "blocked_feature_drift_evidence"
+	}
+	if report.Status == "blocked_feature_distributions_unavailable" && len(report.BlockingReasons) == 1 && report.BlockingReasons[0] == "per-column training/live feature distributions are not persisted" && report.LatestReplay != nil && report.LatestReplay.Status == "passed" {
 		report.Status = "blocked_feature_distribution_store_required"
+	}
+	if report.Status == "review_required" {
+		report.PSIStatus = "computed_review_required"
+		report.KSStatus = "computed_review_required"
 	}
 	report.ReportSHA256 = featureDriftChecksum(report)
 	return report, nil
@@ -169,13 +266,23 @@ func readFeatureDriftArtifact(path string) (featureDriftArtifact, error) {
 }
 
 func featureDriftColumnCount(artifact featureDriftArtifact) int {
+	return len(featureDriftFeatureNames(artifact))
+}
+
+func featureDriftFeatureNames(artifact featureDriftArtifact) []string {
 	seen := map[string]struct{}{}
+	names := []string{}
 	for _, model := range artifact.Models {
 		for _, column := range model.FeatureColumns {
+			if _, exists := seen[column]; exists {
+				continue
+			}
 			seen[column] = struct{}{}
+			names = append(names, column)
 		}
 	}
-	return len(seen)
+	sort.Strings(names)
+	return names
 }
 
 func featureDriftSampleFeatures(artifact featureDriftArtifact, limit int) []FeatureDriftFeature {
@@ -216,35 +323,185 @@ func featureDriftReplaySnapshot(replay api.PredictionFeatureReplayRun) FeatureDr
 	}
 }
 
+func (s *Service) featureDistributionSnapshots(baselineBuildID uint) ([]api.PredictionFeatureDistributionSnapshot, error) {
+	if baselineBuildID == 0 {
+		return nil, nil
+	}
+	var rows []api.PredictionFeatureDistributionSnapshot
+	if err := s.db.Where("source_baseline_build_id = ? AND status IN ?", baselineBuildID, []string{"completed", "passed"}).Order("observed_at DESC, id DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	latest := map[string]api.PredictionFeatureDistributionSnapshot{}
+	keys := make([]string, 0, len(rows))
+	for _, row := range rows {
+		key := row.DistributionRole + "\x00" + row.FeatureName
+		if _, exists := latest[key]; exists {
+			continue
+		}
+		latest[key] = row
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]api.PredictionFeatureDistributionSnapshot, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, latest[key])
+	}
+	return result, nil
+}
+
+func featureDriftSampleDistributions(rows []api.PredictionFeatureDistributionSnapshot, limit int) []FeatureDistributionSnapshot {
+	if limit <= 0 {
+		return nil
+	}
+	snapshots := make([]FeatureDistributionSnapshot, 0, minInt(limit, len(rows)))
+	for _, row := range rows {
+		snapshots = append(snapshots, featureDistributionSnapshot(row))
+		if len(snapshots) >= limit {
+			return snapshots
+		}
+	}
+	return snapshots
+}
+
+func featureDistributionSnapshot(row api.PredictionFeatureDistributionSnapshot) FeatureDistributionSnapshot {
+	return FeatureDistributionSnapshot{
+		SnapshotID: row.ID, SnapshotKey: row.SnapshotKey, Version: row.Version, Status: row.Status,
+		DistributionRole: row.DistributionRole, FeatureName: row.FeatureName, SampleCount: row.SampleCount,
+		MissingRatio: row.MissingRatio, Mean: row.Mean, Stddev: row.Stddev, Minimum: row.Minimum,
+		P50: row.P50, P95: row.P95, Maximum: row.Maximum, BinCount: len(row.BinProportions),
+		ReportSHA256: row.ReportSHA256, ObservedAt: row.ObservedAt,
+	}
+}
+
+func featureDriftComparisons(featureNames []string, distributions []api.PredictionFeatureDistributionSnapshot) []FeatureDriftComparison {
+	byRole := map[string]map[string]api.PredictionFeatureDistributionSnapshot{
+		"training":    {},
+		"live_shadow": {},
+	}
+	for _, row := range distributions {
+		if _, ok := byRole[row.DistributionRole]; !ok {
+			continue
+		}
+		byRole[row.DistributionRole][row.FeatureName] = row
+	}
+	comparisons := make([]FeatureDriftComparison, 0, len(featureNames))
+	for _, feature := range featureNames {
+		training, hasTraining := byRole["training"][feature]
+		live, hasLive := byRole["live_shadow"][feature]
+		comparison := FeatureDriftComparison{FeatureName: feature, Status: "blocked_missing_distribution"}
+		if !hasTraining {
+			comparison.BlockingReasons = append(comparison.BlockingReasons, "missing_training_distribution")
+		}
+		if !hasLive {
+			comparison.BlockingReasons = append(comparison.BlockingReasons, "missing_live_shadow_distribution")
+		}
+		if !hasTraining || !hasLive {
+			comparisons = append(comparisons, comparison)
+			continue
+		}
+		comparison.TrainingSnapshotID = training.ID
+		comparison.LiveSnapshotID = live.ID
+		comparison.TrainingSamples = training.SampleCount
+		comparison.LiveSamples = live.SampleCount
+		comparison.MeanDelta = math.Abs(live.Mean - training.Mean)
+		comparison.P50Delta = math.Abs(live.P50 - training.P50)
+		comparison.P95Delta = math.Abs(live.P95 - training.P95)
+		comparison.PSI = featurePSI(training.BinProportions, live.BinProportions)
+		comparison.KS = featureKS(training.BinProportions, live.BinProportions)
+		comparison.Status = "passed"
+		if len(training.BinProportions) == 0 || len(live.BinProportions) == 0 || len(training.BinProportions) != len(live.BinProportions) {
+			comparison.Status = "blocked_missing_bins"
+			comparison.BlockingReasons = append(comparison.BlockingReasons, "training/live histogram bins are unavailable or incompatible")
+		}
+		if comparison.Status == "passed" && comparison.PSI > featureDriftMaximumPSI {
+			comparison.Status = "review_required"
+			comparison.BlockingReasons = append(comparison.BlockingReasons, "psi_exceeds_threshold")
+		}
+		if comparison.Status == "passed" && comparison.KS > featureDriftMaximumKS {
+			comparison.Status = "review_required"
+			comparison.BlockingReasons = append(comparison.BlockingReasons, "ks_exceeds_threshold")
+		}
+		comparison.BlockingReasons = uniqueSorted(comparison.BlockingReasons)
+		comparisons = append(comparisons, comparison)
+	}
+	return comparisons
+}
+
+func featurePSI(training, live api.FloatList) float64 {
+	if len(training) == 0 || len(training) != len(live) {
+		return 0
+	}
+	result := 0.0
+	for index := range training {
+		expected := math.Max(training[index], 1e-9)
+		actual := math.Max(live[index], 1e-9)
+		result += (actual - expected) * math.Log(actual/expected)
+	}
+	return result
+}
+
+func featureKS(training, live api.FloatList) float64 {
+	if len(training) == 0 || len(training) != len(live) {
+		return 0
+	}
+	trainingCumulative, liveCumulative, result := 0.0, 0.0, 0.0
+	for index := range training {
+		trainingCumulative += training[index]
+		liveCumulative += live[index]
+		result = math.Max(result, math.Abs(liveCumulative-trainingCumulative))
+	}
+	return result
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}
+
 func featureDriftChecksum(report FeatureDriftReport) string {
 	fingerprint := struct {
-		Version                  string                      `json:"version"`
-		FrameworkVersion         string                      `json:"framework_version"`
-		Mode                     string                      `json:"mode"`
-		Status                   string                      `json:"status"`
-		Method                   string                      `json:"method"`
-		SourceBaselineBuildID    uint                        `json:"source_baseline_build_id"`
-		BaselineModelKey         string                      `json:"baseline_model_key,omitempty"`
-		BaselineVersion          string                      `json:"baseline_version,omitempty"`
-		ArtifactSHA256           string                      `json:"artifact_sha256,omitempty"`
-		ArtifactLocalSHA256      string                      `json:"artifact_local_sha256,omitempty"`
-		FeatureContractVersion   string                      `json:"feature_contract_version,omitempty"`
-		FeatureColumnCount       int                         `json:"feature_column_count"`
-		FeatureDistributionCount int                         `json:"feature_distribution_count"`
-		PSIStatus                string                      `json:"psi_status"`
-		KSStatus                 string                      `json:"ks_status"`
-		LatestReplay             *FeatureDriftReplaySnapshot `json:"latest_replay,omitempty"`
-		SampleFeatures           []FeatureDriftFeature       `json:"sample_features"`
-		BlockingReasons          []string                    `json:"blocking_reasons"`
-		RecommendedNextRun       []string                    `json:"recommended_next_run"`
+		Version                    string                        `json:"version"`
+		FrameworkVersion           string                        `json:"framework_version"`
+		Mode                       string                        `json:"mode"`
+		Status                     string                        `json:"status"`
+		Method                     string                        `json:"method"`
+		SourceBaselineBuildID      uint                          `json:"source_baseline_build_id"`
+		BaselineModelKey           string                        `json:"baseline_model_key,omitempty"`
+		BaselineVersion            string                        `json:"baseline_version,omitempty"`
+		ArtifactSHA256             string                        `json:"artifact_sha256,omitempty"`
+		ArtifactLocalSHA256        string                        `json:"artifact_local_sha256,omitempty"`
+		FeatureContractVersion     string                        `json:"feature_contract_version,omitempty"`
+		FeatureColumnCount         int                           `json:"feature_column_count"`
+		FeatureDistributionCount   int                           `json:"feature_distribution_count"`
+		ComparedFeatureCount       int                           `json:"compared_feature_count"`
+		PassedFeatureCount         int                           `json:"passed_feature_count"`
+		ReviewRequiredFeatureCount int                           `json:"review_required_feature_count"`
+		PSIThreshold               float64                       `json:"psi_threshold"`
+		KSThreshold                float64                       `json:"ks_threshold"`
+		MaximumPSI                 float64                       `json:"maximum_psi"`
+		MaximumKS                  float64                       `json:"maximum_ks"`
+		PSIStatus                  string                        `json:"psi_status"`
+		KSStatus                   string                        `json:"ks_status"`
+		LatestReplay               *FeatureDriftReplaySnapshot   `json:"latest_replay,omitempty"`
+		SampleDistributions        []FeatureDistributionSnapshot `json:"sample_distributions"`
+		FeatureComparisons         []FeatureDriftComparison      `json:"feature_comparisons"`
+		SampleFeatures             []FeatureDriftFeature         `json:"sample_features"`
+		BlockingReasons            []string                      `json:"blocking_reasons"`
+		RecommendedNextRun         []string                      `json:"recommended_next_run"`
 	}{
 		Version: report.Version, FrameworkVersion: report.FrameworkVersion, Mode: report.Mode, Status: report.Status,
 		Method: report.Method, SourceBaselineBuildID: report.SourceBaselineBuildID,
 		BaselineModelKey: report.BaselineModelKey, BaselineVersion: report.BaselineVersion,
 		ArtifactSHA256: report.ArtifactSHA256, ArtifactLocalSHA256: report.ArtifactLocalSHA256,
 		FeatureContractVersion: report.FeatureContractVersion, FeatureColumnCount: report.FeatureColumnCount,
-		FeatureDistributionCount: report.FeatureDistributionCount, PSIStatus: report.PSIStatus, KSStatus: report.KSStatus,
-		LatestReplay: report.LatestReplay, SampleFeatures: report.SampleFeatures,
+		FeatureDistributionCount: report.FeatureDistributionCount, ComparedFeatureCount: report.ComparedFeatureCount,
+		PassedFeatureCount: report.PassedFeatureCount, ReviewRequiredFeatureCount: report.ReviewRequiredFeatureCount,
+		PSIThreshold: report.PSIThreshold, KSThreshold: report.KSThreshold, MaximumPSI: report.MaximumPSI,
+		MaximumKS: report.MaximumKS, PSIStatus: report.PSIStatus, KSStatus: report.KSStatus,
+		LatestReplay: report.LatestReplay, SampleDistributions: report.SampleDistributions,
+		FeatureComparisons: report.FeatureComparisons, SampleFeatures: report.SampleFeatures,
 		BlockingReasons: report.BlockingReasons, RecommendedNextRun: report.RecommendedNextRun,
 	}
 	payload, _ := json.Marshal(fingerprint)
