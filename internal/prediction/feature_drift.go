@@ -409,7 +409,7 @@ func featureDriftComparisons(featureNames []string, distributions []api.Predicti
 		comparison.PSI = featurePSI(training.BinProportions, live.BinProportions)
 		comparison.KS = featureKS(training.BinProportions, live.BinProportions)
 		comparison.Status = "passed"
-		if len(training.BinProportions) == 0 || len(live.BinProportions) == 0 || len(training.BinProportions) != len(live.BinProportions) {
+		if len(training.BinProportions) == 0 || len(live.BinProportions) == 0 || len(training.BinProportions) != len(live.BinProportions) || !featureBinEdgesCompatible(training.BinEdges, live.BinEdges) {
 			comparison.Status = "blocked_missing_bins"
 			comparison.BlockingReasons = append(comparison.BlockingReasons, "training/live histogram bins are unavailable or incompatible")
 		}
@@ -425,6 +425,18 @@ func featureDriftComparisons(featureNames []string, distributions []api.Predicti
 		comparisons = append(comparisons, comparison)
 	}
 	return comparisons
+}
+
+func featureBinEdgesCompatible(training, live api.FloatList) bool {
+	if len(training) != len(live) || len(training) < 2 {
+		return false
+	}
+	for index := range training {
+		if math.Abs(training[index]-live[index]) > 1e-9 {
+			return false
+		}
+	}
+	return true
 }
 
 func featurePSI(training, live api.FloatList) float64 {

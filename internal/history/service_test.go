@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -183,6 +184,51 @@ func TestMaterializeTrainingFeatureDistributionsFromBaselineMatrix(t *testing.T)
 	}
 	if len(persisted) != 2 {
 		t.Fatalf("persisted=%d", len(persisted))
+	}
+}
+
+func TestLiveShadowFeatureDistributionsReuseTrainingHistogramBins(t *testing.T) {
+	db, err := storage.InitDB(fmt.Sprintf("file:live-feature-distribution-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 14, 18, 40, 0, 0, time.UTC)
+	training := api.PredictionFeatureDistributionSnapshot{
+		SnapshotKey: "training-temp", Version: featureDistributionSnapshotVersion, Status: "completed", DistributionRole: "training",
+		SourceBaselineBuildID: 7, FeatureContractVersion: "atlas-prediction-features-v1", FeatureName: "gpu_temp_mean_24h",
+		SampleCount: 10, BinEdges: api.FloatList{0, 10, 20}, BinProportions: api.FloatList{0.4, 0.6}, ReportSHA256: "training-sha", ObservedAt: now.Add(-time.Hour),
+	}
+	if err := db.Create(&training).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, config.HistoryConfig{}, time.Second)
+	spec := api.PredictionModelSpec{
+		ID: 3, ModelKey: "gpu-xid-h100-7d", Version: "gpu-logistic-baseline-v9.build-7",
+		SourceBaselineBuildID: 7, FeatureContractVersion: "atlas-prediction-features-v1", ScopeModelName: "NVIDIA H100 80GB HBM3",
+	}
+	run := api.PredictionShadowScoringRun{
+		ID: 9, RunKey: "gpu-shadow-scoring-v3-1", ModelSpecID: spec.ID, ModelKey: spec.ModelKey, ModelVersion: spec.Version,
+		ScoredGPUCount: 3, NoAlertEmitted: true, NoActionExecuted: true,
+	}
+	snapshots, err := service.liveShadowFeatureDistributionSnapshots(spec, run, []string{"gpu_temp_mean_24h"}, map[string][]float64{"gpu_temp_mean_24h": []float64{-5, 5, 25}}, now, "run-sha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshots=%d", len(snapshots))
+	}
+	snapshot := snapshots[0]
+	if snapshot.DistributionRole != "live_shadow" || snapshot.Status != "completed" || snapshot.SourceBaselineBuildID != 7 || snapshot.ReportSHA256 == "" {
+		t.Fatalf("unexpected live snapshot metadata: %+v", snapshot)
+	}
+	if fmt.Sprint([]float64(snapshot.BinEdges)) != fmt.Sprint([]float64{0, 10, 20}) {
+		t.Fatalf("live snapshot did not reuse training bins: %+v", snapshot.BinEdges)
+	}
+	if len(snapshot.BinProportions) != 2 || math.Abs(snapshot.BinProportions[0]-(2.0/3.0)) > 1e-12 || math.Abs(snapshot.BinProportions[1]-(1.0/3.0)) > 1e-12 {
+		t.Fatalf("unexpected live proportions: %+v", snapshot.BinProportions)
+	}
+	if snapshot.SampleCount != 3 || snapshot.MissingCount != 0 {
+		t.Fatalf("unexpected sample accounting: %+v", snapshot)
 	}
 }
 
