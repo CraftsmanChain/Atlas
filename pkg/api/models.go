@@ -13,6 +13,10 @@ type StringMap map[string]string
 // StringList 帮助 GORM 处理 JSON 数组
 type StringList []string
 
+// FloatList helps GORM store compact numeric arrays such as quantile bins or
+// histogram proportions without copying raw telemetry samples.
+type FloatList []float64
+
 // Value 将 StringMap 转换为 JSON 字符串存入数据库
 func (m StringMap) Value() (driver.Value, error) {
 	if m == nil {
@@ -46,6 +50,27 @@ func (l StringList) Value() (driver.Value, error) {
 func (l *StringList) Scan(value interface{}) error {
 	if value == nil {
 		*l = StringList{}
+		return nil
+	}
+	bytes, err := databaseJSONBytes(value)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(bytes, l)
+}
+
+// Value converts FloatList to JSON for database storage.
+func (l FloatList) Value() (driver.Value, error) {
+	if l == nil {
+		return nil, nil
+	}
+	return json.Marshal(l)
+}
+
+// Scan decodes FloatList from a JSON database column.
+func (l *FloatList) Scan(value interface{}) error {
+	if value == nil {
+		*l = FloatList{}
 		return nil
 	}
 	bytes, err := databaseJSONBytes(value)

@@ -659,6 +659,84 @@ func TestFeatureDriftReportRequiresPersistedDistributions(t *testing.T) {
 	}
 }
 
+func TestFeatureDriftReportComputesPersistedDistributionMetrics(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 14, 15, 45, 0, 0, time.UTC)
+	finished := now.Add(-time.Hour)
+	artifactPath := t.TempDir() + "/baseline-artifact.json"
+	artifactJSON := []byte(`{"version":"artifact-v1","models":[{"horizon_minutes":60,"feature_columns":["temperature","power","ecc_delta"],"means":[42.0,230.0,0.1],"scales":[5.0,40.0,1.0]}]}`)
+	if err := os.WriteFile(artifactPath, artifactJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	artifactSHA, err := localFileSHA256(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := api.BaselineModelBuild{
+		BaselineModelKey: "baseline-1", Version: "baseline-v1", Status: "completed", Algorithm: "logistic_regression",
+		SourceMatrixBuildID: 1, SourceTrainingMatrixKey: "matrix-1", FeatureContractVersion: FeatureContractVersion,
+		FeatureColumnCount: 3, HorizonCount: 1, TrainedModelCount: 1, ArtifactPath: artifactPath, ArtifactSHA256: artifactSHA,
+		StartedAt: now.Add(-2 * time.Hour), FinishedAt: &finished,
+	}
+	if err := db.Create(&baseline).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&api.PredictionFeatureReplayRun{
+		ReplayKey: "replay-1", Version: "replay-v1", Status: "passed", ModelSpecID: 1, ModelKey: "gpu.failure.test",
+		ModelVersion: "baseline-v1", SourceBaselineBuildID: baseline.ID, SourceMatrixBuildID: 1, SourceKey: "prometheus-main",
+		TransformationContractVersion: "transform-v1", TrainingFeatureCount: 3, VerifiedColumnCount: 3, ComparedValueCount: 30,
+		ReportSHA256: "replay-sha", StartedAt: now.Add(-45 * time.Minute), FinishedAt: &finished,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, feature := range []string{"temperature", "power", "ecc_delta"} {
+		for _, role := range []string{"training", "live_shadow"} {
+			proportions := api.FloatList{0.50, 0.50}
+			mean := 1.0
+			if role == "live_shadow" {
+				proportions = api.FloatList{0.45, 0.55}
+				mean = 1.1
+			}
+			row := api.PredictionFeatureDistributionSnapshot{
+				SnapshotKey:            role + "-" + feature,
+				Version:                "feature-distribution-v1",
+				Status:                 "completed",
+				DistributionRole:       role,
+				SourceBaselineBuildID:  baseline.ID,
+				ModelKey:               "gpu.failure.test",
+				ModelVersion:           "baseline-v1",
+				FeatureContractVersion: FeatureContractVersion,
+				FeatureName:            feature,
+				SampleCount:            100,
+				Mean:                   mean,
+				P50:                    mean,
+				P95:                    mean + 1,
+				BinEdges:               api.FloatList{0, 1, 2},
+				BinProportions:         proportions,
+				ObservedAt:             now.Add(-30 * time.Minute),
+			}
+			if err := db.Create(&row).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	report, err := service.FeatureDriftReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "passed" || report.PSIStatus != "computed" || report.KSStatus != "computed" || report.FeatureDistributionCount != 6 || report.ComparedFeatureCount != 3 || report.PassedFeatureCount != 3 {
+		t.Fatalf("unexpected computed feature drift report: %+v", report)
+	}
+	if report.MaximumPSI <= 0 || report.MaximumKS <= 0 || len(report.FeatureComparisons) != 3 || len(report.SampleDistributions) != 6 || len(report.BlockingReasons) != 0 {
+		t.Fatalf("unexpected feature drift metrics: %+v", report)
+	}
+}
+
 func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
