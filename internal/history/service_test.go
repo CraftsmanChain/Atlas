@@ -3,9 +3,12 @@ package history
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +95,94 @@ func TestFeatureDistributionSnapshotsExposeReadOnlyHistory(t *testing.T) {
 	handler.HandleFeatureDistributions(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/history/feature-distributions?limit=2", nil))
 	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"raw_samples_stored":false`)) || !bytes.Contains(response.Body.Bytes(), []byte("live_shadow")) {
 		t.Fatalf("feature distribution handler failed: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestMaterializeTrainingFeatureDistributionsFromBaselineMatrix(t *testing.T) {
+	db, err := storage.InitDB(fmt.Sprintf("file:feature-distribution-materialize-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	matrixDir := filepath.Join(dir, "matrix")
+	baselineDir := filepath.Join(dir, "baseline")
+	if err := os.MkdirAll(matrixDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(baselineDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	rows := []trainingMatrixRow{
+		{RowKey: "train-1", Split: "train", HorizonMinutes: 10080, ModelName: "NVIDIA H100 80GB HBM3", Features: map[string]float64{"gpu_temp_mean_24h": 40, "power_usage_mean_24h": 200}},
+		{RowKey: "train-2", Split: "train", HorizonMinutes: 10080, ModelName: "NVIDIA H100 80GB HBM3", Features: map[string]float64{"gpu_temp_mean_24h": 50}},
+		{RowKey: "test-1", Split: "test", HorizonMinutes: 10080, ModelName: "NVIDIA H100 80GB HBM3", Features: map[string]float64{"gpu_temp_mean_24h": 100, "power_usage_mean_24h": 260}},
+	}
+	matrixPath := filepath.Join(matrixDir, "training_matrix.jsonl")
+	matrixSHA, err := writeJSONLines(matrixPath, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matrix := api.TrainingMatrixBuild{
+		TrainingMatrixKey: "matrix-v4", Version: trainingMatrixVersion, Status: "completed",
+		FeatureContractVersion: "atlas-prediction-features-v1", MatrixPath: matrixPath, MatrixSHA256: matrixSHA,
+	}
+	if err := db.Create(&matrix).Error; err != nil {
+		t.Fatal(err)
+	}
+	artifact := baselineArtifact{Version: baselineModelVersion, Models: []logisticModel{{HorizonMinutes: 10080, FeatureColumns: []string{"gpu_temp_mean_24h", "power_usage_mean_24h"}}}}
+	artifactPath := filepath.Join(baselineDir, "models.json")
+	if err := writeJSONAtomic(artifactPath, artifact); err != nil {
+		t.Fatal(err)
+	}
+	artifactSHA, err := fileSHA256(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 14, 18, 10, 0, 0, time.UTC)
+	baseline := api.BaselineModelBuild{
+		BaselineModelKey: "baseline-v9", Version: baselineModelVersion, Status: "completed",
+		SourceMatrixBuildID: matrix.ID, SourceTrainingMatrixKey: matrix.TrainingMatrixKey,
+		FeatureContractVersion: matrix.FeatureContractVersion, FeatureColumnCount: 2,
+		TrainCount: 2, TestCount: 1, ArtifactPath: artifactPath, ArtifactSHA256: artifactSHA, FinishedAt: &now,
+	}
+	if err := db.Create(&baseline).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, config.HistoryConfig{DatasetDir: dir}, time.Second)
+	service.now = func() time.Time { return now.Add(time.Minute) }
+	snapshots, err := service.MaterializeTrainingFeatureDistributions(FeatureDistributionSnapshotRequest{SourceBaselineBuildID: baseline.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots) != 2 {
+		t.Fatalf("snapshots=%d", len(snapshots))
+	}
+	byFeature := map[string]api.PredictionFeatureDistributionSnapshot{}
+	for _, snapshot := range snapshots {
+		byFeature[snapshot.FeatureName] = snapshot
+		if snapshot.Version != featureDistributionSnapshotVersion || snapshot.DistributionRole != "training" || snapshot.ReportSHA256 == "" {
+			t.Fatalf("unexpected snapshot metadata: %+v", snapshot)
+		}
+	}
+	if got := byFeature["gpu_temp_mean_24h"]; got.SampleCount != 2 || got.Mean != 45 || got.Maximum != 50 {
+		t.Fatalf("temperature snapshot used wrong row scope: %+v", got)
+	}
+	if got := byFeature["power_usage_mean_24h"]; got.SampleCount != 1 || got.MissingCount != 1 || got.MissingRatio != 0.5 || len(got.BinProportions) != 1 {
+		t.Fatalf("power snapshot missing accounting failed: %+v", got)
+	}
+	response := httptest.NewRecorder()
+	body, _ := json.Marshal(FeatureDistributionSnapshotRequest{SourceBaselineBuildID: baseline.ID})
+	handler := NewHandler(service)
+	handler.HandleFeatureDistributions(response, httptest.NewRequest(http.MethodPost, "/api/v1/prediction/history/feature-distributions", bytes.NewReader(body)))
+	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"raw_samples_stored":false`) || !strings.Contains(response.Body.String(), `"actions_executed":false`) {
+		t.Fatalf("POST materialize status=%d body=%s", response.Code, response.Body.String())
+	}
+	var persisted []api.PredictionFeatureDistributionSnapshot
+	if err := db.Order("feature_name ASC").Find(&persisted).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted) != 2 {
+		t.Fatalf("persisted=%d", len(persisted))
 	}
 }
 

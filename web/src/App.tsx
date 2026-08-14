@@ -972,6 +972,7 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
   const [baselineModelStarting, setBaselineModelStarting] = useState(false);
   const [featureReplayStarting, setFeatureReplayStarting] = useState(false);
   const [liveCoverageStarting, setLiveCoverageStarting] = useState(false);
+  const [featureDistributionStarting, setFeatureDistributionStarting] = useState(false);
   const [shadowScoringStarting, setShadowScoringStarting] = useState(false);
   const [reviewingCandidateID, setReviewingCandidateID] = useState<number | null>(null);
   const [readinessPage, setReadinessPage] = useState(0);
@@ -1387,6 +1388,26 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
       setPredictionError('');
     } catch (reason) { setPredictionError(reason instanceof Error ? reason.message : String(reason)); } finally { setLiveCoverageStarting(false); }
   };
+  const materializeTrainingFeatureDistributions = async () => {
+    const baseline = baselineModelBuilds[0];
+    if (!baseline) return;
+    setFeatureDistributionStarting(true);
+    try {
+      const response = await fetch('/api/v1/prediction/history/feature-distributions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_baseline_build_id: baseline.id }) });
+      if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload.error || `HTTP ${response.status}`); }
+      const [distributionsResponse, featureDriftResponse, readinessResponse] = await Promise.all([
+        fetch('/api/v1/prediction/history/feature-distributions'),
+        fetch('/api/v1/prediction/feature-drift-report'),
+        fetch('/api/v1/prediction/validation-readiness'),
+      ]);
+      if (!distributionsResponse.ok || !featureDriftResponse.ok || !readinessResponse.ok) throw new Error(`HTTP ${distributionsResponse.status}/${featureDriftResponse.status}/${readinessResponse.status}`);
+      const [distributionsPayload, featureDriftPayload, readinessPayload] = await Promise.all([distributionsResponse.json(), featureDriftResponse.json(), readinessResponse.json()]);
+      setFeatureDistributionSnapshots(Array.isArray(distributionsPayload.data) ? distributionsPayload.data : []);
+      setFeatureDriftReport(featureDriftPayload.data || null);
+      setValidationReadiness(readinessPayload.data || null);
+      setPredictionError('');
+    } catch (reason) { setPredictionError(reason instanceof Error ? reason.message : String(reason)); } finally { setFeatureDistributionStarting(false); }
+  };
   const runShadowScoring = async () => {
     const candidate = prediction?.models.find(model => model.status === 'shadow_candidate');
     if (!candidate) return;
@@ -1569,8 +1590,8 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
         </div>
       </Card> : null}
       <Card className="span-12">
-        <CardHead code="FEATURE DISTRIBUTION SNAPSHOTS" title={tx('逐特征分布快照', 'Feature Distribution Snapshots')} action={<div className="table-actions"><Badge value="READ-ONLY / AGGREGATED" kind="info" /><Badge value={`${featureDistributionSnapshots.length} SNAPSHOTS`} kind={featureDistributionSnapshots.length ? 'healthy' : 'warning'} /></div>} />
-        <p className="node-access-note">{tx('展示已持久化的训练分布与 live shadow 分布压缩快照；这里只读聚合统计和 histogram proportions，不展示或保存原始遥测样本。Feature Drift Report 只有在同一 baseline 下训练与线上分布都齐全时才会计算逐特征 PSI/KS。', 'Shows persisted compact training and live-shadow feature distribution snapshots. This view is read-only and exposes aggregate statistics plus histogram proportions only; raw telemetry samples are not stored or shown. Feature Drift Report computes per-feature PSI/KS only when both training and live distributions exist for the same baseline.')}</p>
+        <CardHead code="FEATURE DISTRIBUTION SNAPSHOTS" title={tx('逐特征分布快照', 'Feature Distribution Snapshots')} action={<div className="table-actions"><Badge value="AGGREGATED ONLY" kind="info" /><Badge value={`${featureDistributionSnapshots.length} SNAPSHOTS`} kind={featureDistributionSnapshots.length ? 'healthy' : 'warning'} /><button className="link" type="button" disabled={featureDistributionStarting || latestBaselineModelBuild?.status !== 'completed'} onClick={() => void materializeTrainingFeatureDistributions()}>{featureDistributionStarting ? tx('生成中…', 'Materializing…') : tx('生成训练分布', 'Materialize training')}</button></div>} />
+        <p className="node-access-note">{tx('展示已持久化的训练分布与 live shadow 分布压缩快照；训练分布可从已完成 baseline 绑定的训练矩阵生成，只保存统计量和 histogram proportions，不保存原始遥测样本。Feature Drift Report 只有在同一 baseline 下训练与线上分布都齐全时才会计算逐特征 PSI/KS。', 'Shows persisted compact training and live-shadow feature distribution snapshots. Training distributions can be materialized from the completed baseline-bound training matrix; only aggregate statistics and histogram proportions are stored, never raw telemetry samples. Feature Drift Report computes per-feature PSI/KS only when both training and live distributions exist for the same baseline.')}</p>
         <div className="issue-categories quality-ledger">
           <div><b>{tx('训练 / 线上', 'Training / live')}</b><strong>{distributionTrainingCount} / {distributionLiveCount}</strong><small>{distributionFeatureCount} UNIQUE FEATURES</small></div>
           <div><b>{tx('最近快照', 'Latest snapshot')}</b><strong>{featureDistributionSnapshots[0]?.feature_name || '—'}</strong><small>{featureDistributionSnapshots[0] ? `${featureDistributionSnapshots[0].distribution_role.toUpperCase()} · ${featureDistributionSnapshots[0].sample_count} SAMPLES` : tx('等待分布快照', 'Waiting for distribution snapshots')}</small></div>
@@ -1808,13 +1829,14 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   ];
   const modules = baseModules.map(module => module.id === 'prediction' ? {
     ...module,
-    version: 'v0.17.2',
-    status: tx('特征漂移就绪指标绑定', 'FEATURE DRIFT READINESS METRICS'),
+    version: 'v0.18.0',
+    status: tx('训练分布快照生成', 'TRAINING DISTRIBUTION SNAPSHOTS'),
     desc: tx(
-      '当前预测能力保持 GPU-only、read-only shadow：已具备训练数据、标签 Manifest、训练样本 Evidence Bundle、模型治理卡、影子门禁、成熟 outcome、Ranking@K、naive baseline、HeaRank 7d node-risk challenger、数据/校准漂移和特征分布漂移计算入口，但不触发告警、调度、维修或自动隔离。',
-      'Prediction remains GPU-only and read-only shadow: training data, label manifest, training-sample Evidence Bundle, model governance cards, shadow gates, mature outcomes, Ranking@K, naive baselines, a HeaRank 7d node-risk challenger, data/calibration drift, and feature-distribution drift metrics are available, but no alert, scheduling, repair or automatic isolation is triggered.',
+      '当前预测能力保持 GPU-only、read-only shadow：已具备训练数据、标签 Manifest、训练样本 Evidence Bundle、模型治理卡、影子门禁、成熟 outcome、Ranking@K、naive baseline、HeaRank 7d node-risk challenger、数据/校准漂移和训练侧特征分布快照生成入口，但不触发告警、调度、维修或自动隔离。',
+      'Prediction remains GPU-only and read-only shadow: training data, label manifest, training-sample Evidence Bundle, model governance cards, shadow gates, mature outcomes, Ranking@K, naive baselines, a HeaRank 7d node-risk challenger, data/calibration drift, and training-side feature-distribution materialization are available, but no alert, scheduling, repair or automatic isolation is triggered.',
     ),
     history: [
+      tx('v0.18.0 · 从已完成 baseline 绑定的训练矩阵生成训练侧逐特征分布快照，只保存聚合统计和 histogram proportions，并刷新特征漂移与验证就绪报告', 'v0.18.0 · materializes training-side per-feature distribution snapshots from the completed baseline-bound training matrix, storing only aggregate statistics and histogram proportions while refreshing feature-drift and validation-readiness reports'),
       tx('v0.17.2 · validation readiness 绑定逐特征漂移比较数、最大 PSI/KS 和需复核特征数，离线验证门可直接看到特征漂移指标', 'v0.17.2 · validation readiness binds compared feature count, maximum PSI/KS, and review-required feature count so the offline gate exposes feature-drift metrics directly'),
       tx('v0.17.1 · 增加逐特征分布快照只读列表 API 与前端摘要，便于核对训练/live shadow 分布是否真实落库', 'v0.17.1 · adds read-only per-feature distribution snapshot listing API and UI summary to verify whether training/live-shadow distributions are actually persisted'),
       tx('v0.17.0 · 增加逐特征分布快照数据结构，Feature Drift Report 可在训练/线上分布齐全时计算 per-feature PSI/KS，否则继续阻断缺口', 'v0.17.0 · adds per-feature distribution snapshot storage so Feature Drift Report can compute per-feature PSI/KS when training/live distributions exist, otherwise it continues to block missing evidence'),
@@ -1918,7 +1940,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.78.0" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.79.0" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>
