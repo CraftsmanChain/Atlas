@@ -113,6 +113,12 @@ func TestOutcomeReconciliationAndHumanOverride(t *testing.T) {
 	if len(report.Accuracy.Final.NodeRankingAtK) == 0 || len(report.Interpretation) == 0 || len(report.RecommendedNextRun) == 0 {
 		t.Fatalf("report is missing review guidance: %+v", report)
 	}
+	if report.Stability.Status != "exploratory" || report.Stability.PositiveSamples != 3 || report.Stability.ProbabilityCoverage != 1 || report.Stability.RankingInterpretationStatus != "insufficient_matured_samples" || len(report.Stability.BlockingReasons) == 0 {
+		t.Fatalf("unexpected outcome stability: %+v", report.Stability)
+	}
+	if report.Accuracy.Final.RankingAtK[0].Status != "insufficient_matured_samples" || report.Accuracy.Final.NodeRankingAtK[0].Status != "insufficient_matured_samples" {
+		t.Fatalf("ranking status should explain small samples: %+v / %+v", report.Accuracy.Final.RankingAtK, report.Accuracy.Final.NodeRankingAtK)
+	}
 	if len(report.BaselineComparisons) != 2 {
 		t.Fatalf("missing naive baseline comparisons: %+v", report.BaselineComparisons)
 	}
@@ -171,6 +177,13 @@ func TestOutcomeCensoringAndHandlerValidation(t *testing.T) {
 	handler.HandleOutcomeReport(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/outcome-report", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("outcome report failed: %d %s", response.Code, response.Body.String())
+	}
+	report, err := service.OutcomeReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Stability.Status != "blocked" || report.Stability.RankingInterpretationStatus != "no_scored_rows" || len(report.Stability.BlockingReasons) == 0 {
+		t.Fatalf("censored-only report should be blocked: %+v", report.Stability)
 	}
 }
 
@@ -452,7 +465,7 @@ func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T)
 	if report.Version != ValidationReadinessReportVersion || report.Status != "blocked" || report.LabelGateStatus != "exploratory_ready" || report.LabelManifestSHA256 == "" || report.ReadinessSHA256 == "" {
 		t.Fatalf("unexpected validation readiness report: %+v", report)
 	}
-	if report.LabelManifestVersion != LabelManifestVersion || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" {
+	if report.LabelManifestVersion != LabelManifestVersion || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" {
 		t.Fatalf("unexpected readiness bindings: %+v", report)
 	}
 	if len(report.BlockingReasons) == 0 || len(report.RecommendedNextRun) == 0 {

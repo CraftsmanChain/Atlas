@@ -19,6 +19,7 @@ type ValidationReadinessReport struct {
 	LabelManifestVersion string                `json:"label_manifest_version"`
 	LabelManifestSHA256  string                `json:"label_manifest_sha256"`
 	OutcomeReportVersion string                `json:"outcome_report_version"`
+	OutcomeStability     string                `json:"outcome_stability_status"`
 	OutcomeMaturity      OutcomeMaturity       `json:"outcome_maturity"`
 	ChallengerVersion    string                `json:"challenger_version"`
 	ChallengerStatus     string                `json:"challenger_status"`
@@ -53,6 +54,7 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 		LabelManifestVersion: labelManifest.Version,
 		LabelManifestSHA256:  labelManifest.ManifestSHA256,
 		OutcomeReportVersion: outcomeReport.Version,
+		OutcomeStability:     outcomeReport.Stability.Status,
 		OutcomeMaturity:      outcomeReport.SampleMaturity,
 		ChallengerVersion:    challengerReport.Version,
 		ChallengerStatus:     challengerReport.Status,
@@ -70,7 +72,7 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 	if len(report.BlockingReasons) > 0 {
 		report.Status = "blocked"
 		report.RecommendedNextRun = append(report.RecommendedNextRun, report.BlockingReasons...)
-	} else if labelManifest.QualityGateStatus == "exploratory_ready" || outcomeReport.SampleMaturity.Matured < 30 {
+	} else if labelManifest.QualityGateStatus == "exploratory_ready" || outcomeReport.Stability.Status == "exploratory" || outcomeReport.SampleMaturity.Matured < 30 {
 		report.Status = "exploratory_ready"
 		report.RecommendedNextRun = append(report.RecommendedNextRun, "treat metrics as exploratory until more mature outcomes accumulate")
 	} else {
@@ -104,6 +106,9 @@ func validationReadinessBlockers(labelManifest LabelManifest, outcomeReport Outc
 	if outcomeReport.SampleMaturity.ProbabilityScored == 0 {
 		blockers = append(blockers, "no probability-scored outcomes are available")
 	}
+	if outcomeReport.Stability.Status == "blocked" {
+		blockers = append(blockers, outcomeReport.Stability.BlockingReasons...)
+	}
 	if challengerReport.Status != "ready_for_offline_comparison" {
 		blockers = append(blockers, challengerReport.BlockingReasons...)
 	}
@@ -120,6 +125,7 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		LabelManifestVersion string                `json:"label_manifest_version"`
 		LabelManifestSHA256  string                `json:"label_manifest_sha256"`
 		OutcomeReportVersion string                `json:"outcome_report_version"`
+		OutcomeStability     string                `json:"outcome_stability_status"`
 		OutcomeMaturity      OutcomeMaturity       `json:"outcome_maturity"`
 		ChallengerVersion    string                `json:"challenger_version"`
 		ChallengerStatus     string                `json:"challenger_status"`
@@ -133,7 +139,7 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 	}{
 		Version: report.Version, FrameworkVersion: report.FrameworkVersion, Mode: report.Mode, Status: report.Status,
 		LabelGateStatus: report.LabelGateStatus, LabelManifestVersion: report.LabelManifestVersion, LabelManifestSHA256: report.LabelManifestSHA256,
-		OutcomeReportVersion: report.OutcomeReportVersion, OutcomeMaturity: report.OutcomeMaturity,
+		OutcomeReportVersion: report.OutcomeReportVersion, OutcomeStability: report.OutcomeStability, OutcomeMaturity: report.OutcomeMaturity,
 		ChallengerVersion: report.ChallengerVersion, ChallengerStatus: report.ChallengerStatus,
 		ChallengerConfidence: report.ChallengerConfidence,
 		SevenDayRows:         report.SevenDayRows, SevenDayNodes: report.SevenDayNodes, SevenDayPositives: report.SevenDayPositives,
