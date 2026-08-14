@@ -1649,13 +1649,18 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   ];
   const modules = baseModules.map(module => module.id === 'prediction' ? {
     ...module,
-    version: 'v0.32.0',
-    status: tx('机器可审计特征门', 'MACHINE-AUDITED FEATURE GATE'),
+    version: 'v0.6.1',
+    status: tx('模型、数据治理与 outcome 参照基线', 'MODEL/DATA GOVERNANCE + OUTCOME BASELINES'),
     desc: tx(
-      '历史候选由版本化规则自动裁决并携带置信度，人工只覆核不确定项、重要故障和抽样结果且可改判；规则正代理和人工接受样本再去重为故障 episode，生成严格早于标签时间的多预测窗口清单。',
-      'Versioned rules automatically adjudicate historical candidates with confidence. Humans review uncertainty, important incidents and samples and may override decisions. Rule-positive and human-accepted samples are then deduplicated into fault episodes with multi-horizon cutoffs strictly before label time.',
+      '当前预测能力保持 GPU-only、read-only shadow：已具备训练数据、模型治理卡、影子门禁、成熟 outcome、Ranking@K 和 naive baseline 对比，但不触发告警、调度、维修或自动隔离。',
+      'Prediction remains GPU-only and read-only shadow: training data, model governance cards, shadow gates, mature outcomes, Ranking@K and naive baseline comparisons are available, but no alert, scheduling, repair or automatic isolation is triggered.',
     ),
     history: [
+      tx('v0.6.1 · outcome report 增加 all-negative / all-positive naive baseline 对比，统一成熟样本口径评估真实增益', 'v0.6.1 · outcome report adds all-negative/all-positive naive baselines on the same matured-sample denominator to measure real lift'),
+      tx('v0.6.0 · 增加 model card / dataset card / shadow gate 治理报告 API 与前端摘要，继续保持 read-only shadow', 'v0.6.0 · adds model card, dataset card and shadow-gate governance report API with UI summary while remaining read-only shadow'),
+      tx('v0.5.0 · outcome report API 与前端报告展示，汇总成熟样本、安全边界和下一步建议', 'v0.5.0 · outcome report API and UI summarize maturity, safety envelope and next-run guidance'),
+      tx('v0.4.0 · 增加 GPU / 节点级 Ranking@K outcome 指标，用于 HeaRank 风格验证对齐', 'v0.4.0 · adds GPU/node Ranking@K outcome metrics for HeaRank-style validation alignment'),
+      tx('v0.3.0 · 历史训练数据、基线模型、特征契约与只读 shadow scoring 闭环', 'v0.3.0 · closes historical training data, baseline model, feature contract and read-only shadow scoring loop'),
       tx('v0.32.0 · 首批前瞻评分发现 56% 超阈值和节点聚集，增加分位数与分布偏移门，将 HIGH/LOW 降级为待验证观测并阻断周期调度', 'v0.32.0 · the first prospective run found 56% threshold hits and node clustering; adds quantile/distribution-shift gates, downgrades HIGH/LOW to unvalidated observations, and blocks periodic scheduling'),
       tx('v0.31.0 · 人工触发只读影子评分，每批重新验证模型哈希、数据覆盖和 70 列契约，保存概率与特征指纹但不发告警或执行动作', 'v0.31.0 · adds manually triggered read-only shadow scoring that rechecks artifact hash, live coverage, and all 70 columns, persisting probabilities and feature fingerprints without alerts or actions'),
       tx('v0.30.0 · 逐卡审计当前 24 小时模型源指标的覆盖率与新鲜度，通过后仍保持评分关闭', 'v0.30.0 · audits trailing-24h coverage and freshness of every model source metric per GPU while keeping scoring disabled after a pass'),
@@ -1737,7 +1742,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.58.0" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警与预测、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning and failure prediction, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.61.0" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>
