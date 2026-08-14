@@ -121,6 +121,19 @@ func (h *Handler) HandleOutcomeReport(w http.ResponseWriter, r *http.Request) {
 	predictionJSON(w, http.StatusOK, map[string]any{"data": report})
 }
 
+func (h *Handler) HandleModelGovernance(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	report, err := h.service.ModelGovernanceReport()
+	if err != nil {
+		predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	predictionJSON(w, http.StatusOK, map[string]any{"data": report})
+}
+
 func (h *Handler) HandleOutcomes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:

@@ -275,6 +275,7 @@ func main() {
 	mux.HandleFunc("/api/v1/prediction/labels", predictionHandler.HandleLabels)
 	mux.HandleFunc("/api/v1/prediction/accuracy", predictionHandler.HandleAccuracy)
 	mux.HandleFunc("/api/v1/prediction/outcome-report", predictionHandler.HandleOutcomeReport)
+	mux.HandleFunc("/api/v1/prediction/model-governance", predictionHandler.HandleModelGovernance)
 	mux.HandleFunc("/api/v1/prediction/outcomes", predictionHandler.HandleOutcomes)
 	mux.HandleFunc("/api/v1/prediction/outcomes/", predictionHandler.HandleOutcome)
 	mux.HandleFunc("/api/v1/prediction/history/sources", historyHandler.HandleSources)

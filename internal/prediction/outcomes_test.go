@@ -163,6 +163,128 @@ func TestOutcomeCensoringAndHandlerValidation(t *testing.T) {
 	}
 }
 
+func TestModelGovernanceReportSummarizesDatasetModelAndGates(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
+	finished := now.Add(-time.Hour)
+	dataset := api.TrainingDatasetBuild{
+		DatasetKey: "cohort-1", Version: "dataset-v1", Status: "completed", SourceKey: "prometheus-main",
+		Horizons: api.StringList{"60m", "360m"}, CandidateCount: 10, EligibleCandidateCount: 6,
+		EpisodeCount: 5, WindowCount: 12, PendingReviewCount: 1, IdentityMissingCount: 2,
+		ContextOnlyCount: 1, ExcludedCount: 1, StartedAt: now.Add(-2 * time.Hour), FinishedAt: &finished,
+	}
+	if err := db.Create(&dataset).Error; err != nil {
+		t.Fatal(err)
+	}
+	feature := api.TrainingFeatureBuild{
+		FeatureDatasetKey: "features-1", Version: "features-v1", Status: "completed", SourceKey: "prometheus-main",
+		SourceDatasetBuildID: dataset.ID, SourceDatasetKey: dataset.DatasetKey, FeatureContractVersion: FeatureContractVersion,
+		FeatureColumnCount: 8, AverageMetricCoverage: 0.92, MinimumMetricCoverage: 0.81, StartedAt: now.Add(-90 * time.Minute), FinishedAt: &finished,
+	}
+	if err := db.Create(&feature).Error; err != nil {
+		t.Fatal(err)
+	}
+	prep := api.TrainingPreparationBuild{
+		PreparedDatasetKey: "prepared-1", Version: "prep-v1", Status: "completed", SourceFeatureBuildID: feature.ID,
+		SourceFeatureDatasetKey: feature.FeatureDatasetKey, EligiblePositiveCount: 4, TelemetryCensoredCount: 1,
+		LowCoverageCount: 2, ExtractionFailedCount: 0, PositiveDiscontinuousCount: 1, LabelIneligibleCount: 1,
+		CorrelatedEventCount: 1, EntityTimeConflictCount: 0, TrainCount: 6, ValidationCount: 2, TestCount: 2,
+		StartedAt: now.Add(-80 * time.Minute), FinishedAt: &finished,
+	}
+	if err := db.Create(&prep).Error; err != nil {
+		t.Fatal(err)
+	}
+	matrix := api.TrainingMatrixBuild{
+		TrainingMatrixKey: "matrix-1", Version: "matrix-v1", Status: "completed", SourcePreparationBuildID: prep.ID,
+		SourcePreparedDatasetKey: prep.PreparedDatasetKey, SourceControlBuildID: 7, SourceControlDatasetKey: "control-1",
+		FeatureContractVersion: FeatureContractVersion, FeatureColumnCount: 8, SampleCount: 10, PositiveCount: 4, ControlCount: 6,
+		TrainPositiveCount: 3, TrainControlCount: 3, ValidationPositiveCount: 1, ValidationControlCount: 1,
+		TestPositiveCount: 1, TestControlCount: 1, MatrixSHA256: "sha-matrix", StartedAt: now.Add(-70 * time.Minute), FinishedAt: &finished,
+	}
+	if err := db.Create(&matrix).Error; err != nil {
+		t.Fatal(err)
+	}
+	baseline := api.BaselineModelBuild{
+		BaselineModelKey: "baseline-1", Version: "baseline-v1", Status: "completed", Algorithm: "logistic_regression",
+		SourceMatrixBuildID: matrix.ID, SourceTrainingMatrixKey: matrix.TrainingMatrixKey, FeatureContractVersion: FeatureContractVersion,
+		FeatureAuditStatus: "passed", StatisticallyStableCount: 1, ShadowCandidateCount: 1, TrainCount: 6, ValidationCount: 2,
+		TestCount: 2, TestMacroROCAUC: 0.8, TestMacroPRAUC: 0.7, TestMacroPrecision: 0.6, TestMacroRecall: 0.5,
+		ArtifactSHA256: "sha-model", StartedAt: now.Add(-60 * time.Minute), FinishedAt: &finished,
+	}
+	if err := db.Create(&baseline).Error; err != nil {
+		t.Fatal(err)
+	}
+	threshold := 0.5
+	spec := api.PredictionModelSpec{
+		ModelKey: "gpu.failure.test", Version: "baseline-v1.build-1", HardwareClass: "gpu", EntityType: "gpu",
+		Task: "failure_probability", HorizonMinutes: 60, Algorithm: "logistic_regression", Runtime: "atlas-go",
+		Mode: "shadow", Status: "released", FeatureContractVersion: FeatureContractVersion, LabelContractVersion: LabelContractVersion,
+		DatasetVersion: matrix.Version, SourceBaselineBuildID: baseline.ID, ArtifactSHA256: baseline.ArtifactSHA256,
+		RegistryGateVersion: "gate-v1", DecisionThreshold: &threshold, Current: true,
+	}
+	if err := db.Create(&spec).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&api.PredictionFeatureParityAudit{
+		ModelSpecID: spec.ID, ModelKey: spec.ModelKey, ModelVersion: spec.Version, SourceBaselineBuildID: baseline.ID,
+		ArtifactSHA256: spec.ArtifactSHA256, FeatureContractVersion: FeatureContractVersion, TransformationContractVersion: "transform-v1",
+		Status: "passed", TrainingFeatureCount: 8, ContractMatchedCount: 8, AuditedAt: now.Add(-50 * time.Minute),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&api.PredictionFeatureReplayRun{
+		ReplayKey: "replay-1", Version: "replay-v1", Status: "passed", ModelSpecID: spec.ID, ModelKey: spec.ModelKey,
+		ModelVersion: spec.Version, SourceBaselineBuildID: baseline.ID, SourceMatrixBuildID: matrix.ID, SourceKey: "prometheus-main",
+		TransformationContractVersion: "transform-v1", VerifiedColumnCount: 8, ComparedValueCount: 80, StartedAt: now.Add(-40 * time.Minute),
+		FinishedAt: &finished,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&api.PredictionLiveCoverageAudit{
+		AuditKey: "coverage-1", Version: "coverage-v1", Status: "passed", ModelSpecID: spec.ID, ModelKey: spec.ModelKey,
+		ModelVersion: spec.Version, SourceKey: "prometheus-main", ScopeModelName: "NVIDIA H100", EligibleRatio: 0.95,
+		StartedAt: now.Add(-30 * time.Minute), FinishedAt: &finished,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&api.PredictionShadowScoringRun{
+		RunKey: "shadow-1", Version: "shadow-v1", Status: "completed", Trigger: "manual", ModelSpecID: spec.ID,
+		ModelKey: spec.ModelKey, ModelVersion: spec.Version, ArtifactSHA256: spec.ArtifactSHA256, SourceKey: "prometheus-main",
+		ScopeModelName: "NVIDIA H100", TransformationVersion: "transform-v1", ScoredGPUCount: 10, PositiveGPUCount: 2,
+		PositiveRatio: 0.2, DistributionStatus: "passed", NoAlertEmitted: true, NoActionExecuted: true,
+		StartedAt: now.Add(-20 * time.Minute), FinishedAt: &finished,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	report, err := service.ModelGovernanceReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Version != ModelGovernanceReportVersion || report.Dataset.MatrixKey != "matrix-1" || report.Dataset.MatrixSampleCount != 10 {
+		t.Fatalf("unexpected dataset card: %+v", report.Dataset)
+	}
+	if len(report.Models) != 1 || report.Models[0].FeatureAuditStatus != "passed" || report.Models[0].TestMacroROCAUC != 0.8 {
+		t.Fatalf("unexpected model card: %+v", report.Models)
+	}
+	if report.ShadowGates.FeatureParityStatus != "passed" || report.ShadowGates.ShadowDistributionStatus != "passed" || !report.ShadowGates.NoActionExecuted {
+		t.Fatalf("unexpected shadow gates: %+v", report.ShadowGates)
+	}
+	if report.Outcome.Version != "prediction-outcome-report-v1" || len(report.Limitations) == 0 || len(report.RecommendedNextRun) == 0 {
+		t.Fatalf("governance report missed safety guidance: %+v", report)
+	}
+	handler := NewHandlerWithService(service)
+	response := httptest.NewRecorder()
+	handler.HandleModelGovernance(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/model-governance", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(ModelGovernanceReportVersion)) {
+		t.Fatalf("model governance handler failed: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func assertRankingAtK(t *testing.T, rows []RankingAtK, k, eligible, positives, hits int, precision, recall, lift float64) {
 	t.Helper()
 	var found *RankingAtK
