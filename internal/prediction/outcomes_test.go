@@ -370,16 +370,25 @@ func TestLabelManifestSummarizesGovernancePolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != LabelManifestVersion || manifest.Total != 3 || manifest.Positive != 2 || manifest.Excluded != 1 || manifest.HumanConfirmed != 1 {
+	if manifest.Version != LabelManifestVersion || manifest.Total != 3 || manifest.Positive != 2 || manifest.Excluded != 1 || manifest.HumanConfirmed != 1 || manifest.ManifestSHA256 == "" {
 		t.Fatalf("unexpected label manifest counts: %+v", manifest)
 	}
-	if manifest.ByEventType["xid_94"] != 2 || manifest.BySourceType["rule"] != 1 || manifest.ExclusionReasons["legacy lifetime counter"] != 1 || len(manifest.KnownGaps) == 0 {
+	if manifest.ByEventType["xid_94"] != 2 || manifest.BySourceType["rule"] != 1 || manifest.ExclusionReasons["legacy lifetime counter"] != 1 || len(manifest.KnownGaps) == 0 || len(manifest.SampleLabelKeys) != 3 {
 		t.Fatalf("unexpected label manifest breakdown: %+v", manifest)
+	}
+	later := now.Add(time.Hour)
+	service.now = func() time.Time { return later }
+	laterManifest, err := service.LabelManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.ManifestSHA256 != laterManifest.ManifestSHA256 || manifest.GeneratedAt.Equal(laterManifest.GeneratedAt) {
+		t.Fatalf("manifest checksum should be stable across generated_at changes: before=%+v after=%+v", manifest, laterManifest)
 	}
 	handler := NewHandlerWithService(service)
 	response := httptest.NewRecorder()
-	handler.HandleLabelManifest(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/label-manifest", nil))
-	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(LabelManifestVersion)) {
+	handler.HandleLabelManifest(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/label-manifest?download=1", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(LabelManifestVersion)) || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" {
 		t.Fatalf("label manifest handler failed: %d %s", response.Code, response.Body.String())
 	}
 }
