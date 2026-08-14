@@ -347,6 +347,43 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	}
 }
 
+func TestLabelManifestSummarizesGovernancePolicies(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 14, 14, 0, 0, 0, time.UTC)
+	confirmedAt := now.Add(-time.Hour)
+	labels := []api.FailureLabel{
+		{LabelKey: "confirmed", HardwareClass: "gpu", EntityType: "gpu", EntityKey: "GPU-1", GPUUUID: "GPU-1", ModelName: "H100", EventType: "xid_94", RuleVersion: "rule-v1", LabelValue: 1, QualityTier: "confirmed", SourceType: "human_resolution", SourceRecordID: 1, ConfirmationResolutionID: 7, LabelContractVersion: LabelContractVersion, OccurredAt: now.Add(-2 * time.Hour), AvailableAt: now.Add(-time.Hour), ConfirmedAt: &confirmedAt},
+		{LabelKey: "strong", HardwareClass: "gpu", EntityType: "gpu", EntityKey: "GPU-2", GPUUUID: "GPU-2", ModelName: "H100", EventType: "xid_94", RuleVersion: "rule-v1", LabelValue: 1, QualityTier: "strong_proxy", SourceType: "rule", SourceRecordID: 2, LabelContractVersion: LabelContractVersion, OccurredAt: now.Add(-2 * time.Hour), AvailableAt: now.Add(-time.Hour)},
+		{LabelKey: "excluded", HardwareClass: "gpu", EntityType: "gpu", EntityKey: "GPU-3", GPUUUID: "GPU-3", ModelName: "H100", EventType: "legacy", RuleVersion: "legacy-rule", LabelValue: 1, QualityTier: "weak_proxy", SourceType: "rule", SourceRecordID: 3, LabelContractVersion: LabelContractVersion, Excluded: true, ExclusionReason: "legacy lifetime counter", OccurredAt: now.Add(-2 * time.Hour), AvailableAt: now.Add(-time.Hour)},
+	}
+	for _, label := range labels {
+		if err := db.Create(&label).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	manifest, err := service.LabelManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Version != LabelManifestVersion || manifest.Total != 3 || manifest.Positive != 2 || manifest.Excluded != 1 || manifest.HumanConfirmed != 1 {
+		t.Fatalf("unexpected label manifest counts: %+v", manifest)
+	}
+	if manifest.ByEventType["xid_94"] != 2 || manifest.BySourceType["rule"] != 1 || manifest.ExclusionReasons["legacy lifetime counter"] != 1 || len(manifest.KnownGaps) == 0 {
+		t.Fatalf("unexpected label manifest breakdown: %+v", manifest)
+	}
+	handler := NewHandlerWithService(service)
+	response := httptest.NewRecorder()
+	handler.HandleLabelManifest(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/label-manifest", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(LabelManifestVersion)) {
+		t.Fatalf("label manifest handler failed: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func assertRankingAtK(t *testing.T, rows []RankingAtK, k, eligible, positives, hits int, precision, recall, lift float64) {
 	t.Helper()
 	var found *RankingAtK
