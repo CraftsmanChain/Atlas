@@ -308,7 +308,7 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if empty.Status != "blocked_no_7d_mature_outcomes" {
+	if empty.Status != "blocked_no_7d_mature_outcomes" || empty.ConfidenceStatus != "insufficient_sample" || len(empty.BlockingReasons) == 0 {
 		t.Fatalf("empty challenger should be blocked: %+v", empty)
 	}
 	probabilities := []float64{0.9, 0.7, 0.2, 0.1}
@@ -333,11 +333,14 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "ready_for_offline_comparison" || len(report.SevenDay) != 3 || report.SevenDay[0].Policy != "logistic_probability" {
+	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || len(report.SevenDay) != 3 || report.SevenDay[0].Policy != "logistic_probability" {
 		t.Fatalf("unexpected challenger report: %+v", report)
 	}
 	if report.SevenDay[0].Rows != 4 || report.SevenDay[0].Nodes != 3 || report.SevenDay[0].Positives != 2 || len(report.SevenDay[0].RankingAtK) == 0 {
 		t.Fatalf("unexpected logistic challenger metrics: %+v", report.SevenDay[0])
+	}
+	if report.MinimumSevenDayRows != HeaRankMinimumSevenDayRows || report.MinimumSevenDayNodes != HeaRankMinimumSevenDayNodes || report.MinimumSevenDayPositives != HeaRankMinimumSevenDayPositives {
+		t.Fatalf("unexpected challenger gates: %+v", report)
 	}
 	handler := NewHandlerWithService(service)
 	response := httptest.NewRecorder()
@@ -449,7 +452,7 @@ func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T)
 	if report.Version != ValidationReadinessReportVersion || report.Status != "blocked" || report.LabelGateStatus != "exploratory_ready" || report.LabelManifestSHA256 == "" || report.ReadinessSHA256 == "" {
 		t.Fatalf("unexpected validation readiness report: %+v", report)
 	}
-	if report.LabelManifestVersion != LabelManifestVersion || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.ChallengerVersion != HeaRankChallengerReportVersion {
+	if report.LabelManifestVersion != LabelManifestVersion || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" {
 		t.Fatalf("unexpected readiness bindings: %+v", report)
 	}
 	if len(report.BlockingReasons) == 0 || len(report.RecommendedNextRun) == 0 {
