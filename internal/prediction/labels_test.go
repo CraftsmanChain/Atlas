@@ -1,6 +1,7 @@
 package prediction
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -110,6 +111,74 @@ func TestLegacyAggregateOnlyRemappedRowsLabelIsExcluded(t *testing.T) {
 	quality, excluded, reason := proxyLabelPolicy(event)
 	if quality != "excluded" || !excluded || reason == "" {
 		t.Fatalf("legacy aggregate-only event must not enter training: quality=%q excluded=%v reason=%q", quality, excluded, reason)
+	}
+}
+
+func TestEvidenceBundleReportSummarizesPositiveAndExcludedEvidence(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 14, 18, 0, 0, 0, time.UTC)
+	resolution := api.IssueResolution{
+		IssueID: 91, Status: "resolved", RootCause: "confirmed board failure", Solution: "replaced GPU",
+		ResolutionProcess: "drained and swapped", Result: "diagnostics passed", Operator: "ops",
+		TrainingEligible: true, CreatedAt: now,
+	}
+	if err := db.Create(&resolution).Error; err != nil {
+		t.Fatal(err)
+	}
+	confirmedAt := now.Add(time.Minute)
+	labels := []api.FailureLabel{
+		{
+			LabelKey: "confirmed-1", HardwareClass: "gpu", EntityType: "gpu", EntityKey: "GPU-A",
+			GPUUUID: "GPU-A", NodeIP: "10.1.1.1", ModelName: "H100", EventType: "xid_94",
+			RuleVersion: "gpu-health-v1", LabelValue: 1, QualityTier: "confirmed", SourceType: "gpu_fault_event",
+			SourceRecordID: 11, ConfirmationResolutionID: resolution.ID, LabelContractVersion: LabelContractVersion,
+			OccurredAt: now.Add(-2 * time.Hour), AvailableAt: now.Add(-time.Hour), ConfirmedAt: &confirmedAt,
+		},
+		{
+			LabelKey: "excluded-1", HardwareClass: "gpu", EntityType: "gpu", EntityKey: "GPU-B",
+			GPUUUID: "GPU-B", NodeIP: "10.1.1.2", ModelName: "H100", EventType: "uncorrectable_remapped_rows",
+			RuleVersion: "gpu-health-v1", LabelValue: 1, QualityTier: "excluded", SourceType: "gpu_fault_event",
+			SourceRecordID: 12, LabelContractVersion: LabelContractVersion, OccurredAt: now.Add(-3 * time.Hour),
+			AvailableAt: now.Add(-2 * time.Hour), Excluded: true, ExclusionReason: "legacy lifetime counter",
+		},
+	}
+	for index := range labels {
+		if err := db.Create(&labels[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	report, err := service.EvidenceBundleReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Version != EvidenceBundleVersion || report.BundleSHA256 == "" || report.TotalLabels != 2 || report.PositiveLabels != 1 || report.ExcludedLabels != 1 || report.HumanConfirmationReferences != 1 {
+		t.Fatalf("unexpected evidence bundle report: %+v", report)
+	}
+	if len(report.PositiveEvidence) != 1 || !report.PositiveEvidence[0].IncludedInPositiveDenominator || report.PositiveEvidence[0].HumanConfirmationReference == "" || report.PositiveEvidence[0].HumanConfirmationTrainingUse != "training_eligible" {
+		t.Fatalf("missing positive evidence details: %+v", report.PositiveEvidence)
+	}
+	if len(report.ExcludedEvidence) != 1 || report.ExcludedEvidence[0].IncludedInPositiveDenominator || report.ExclusionReasons["legacy lifetime counter"] != 1 {
+		t.Fatalf("missing excluded evidence details: %+v", report.ExcludedEvidence)
+	}
+	later := now.Add(time.Hour)
+	service.now = func() time.Time { return later }
+	laterReport, err := service.EvidenceBundleReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.BundleSHA256 != laterReport.BundleSHA256 || report.GeneratedAt.Equal(laterReport.GeneratedAt) {
+		t.Fatalf("evidence bundle checksum should be stable across generated_at changes: before=%+v after=%+v", report, laterReport)
+	}
+	handler := NewHandlerWithService(service)
+	response := httptest.NewRecorder()
+	handler.HandleEvidenceBundle(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/evidence-bundle?download=1", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(EvidenceBundleVersion)) || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" {
+		t.Fatalf("evidence bundle handler failed: %d %s", response.Code, response.Body.String())
 	}
 }
 
