@@ -22,6 +22,7 @@ type ValidationReadinessReport struct {
 	OutcomeMaturity      OutcomeMaturity       `json:"outcome_maturity"`
 	ChallengerVersion    string                `json:"challenger_version"`
 	ChallengerStatus     string                `json:"challenger_status"`
+	ChallengerConfidence string                `json:"challenger_confidence_status"`
 	SevenDayRows         int                   `json:"seven_day_rows"`
 	SevenDayNodes        int                   `json:"seven_day_nodes"`
 	SevenDayPositives    int                   `json:"seven_day_positives"`
@@ -55,6 +56,7 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 		OutcomeMaturity:      outcomeReport.SampleMaturity,
 		ChallengerVersion:    challengerReport.Version,
 		ChallengerStatus:     challengerReport.Status,
+		ChallengerConfidence: challengerReport.ConfidenceStatus,
 		SevenDay:             challengerReport.SevenDay,
 		GeneratedAt:          s.now(),
 		RecommendedNextRun: []string{
@@ -121,6 +123,7 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		OutcomeMaturity      OutcomeMaturity       `json:"outcome_maturity"`
 		ChallengerVersion    string                `json:"challenger_version"`
 		ChallengerStatus     string                `json:"challenger_status"`
+		ChallengerConfidence string                `json:"challenger_confidence_status"`
 		SevenDayRows         int                   `json:"seven_day_rows"`
 		SevenDayNodes        int                   `json:"seven_day_nodes"`
 		SevenDayPositives    int                   `json:"seven_day_positives"`
@@ -132,7 +135,8 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		LabelGateStatus: report.LabelGateStatus, LabelManifestVersion: report.LabelManifestVersion, LabelManifestSHA256: report.LabelManifestSHA256,
 		OutcomeReportVersion: report.OutcomeReportVersion, OutcomeMaturity: report.OutcomeMaturity,
 		ChallengerVersion: report.ChallengerVersion, ChallengerStatus: report.ChallengerStatus,
-		SevenDayRows: report.SevenDayRows, SevenDayNodes: report.SevenDayNodes, SevenDayPositives: report.SevenDayPositives,
+		ChallengerConfidence: report.ChallengerConfidence,
+		SevenDayRows:         report.SevenDayRows, SevenDayNodes: report.SevenDayNodes, SevenDayPositives: report.SevenDayPositives,
 		SevenDay: report.SevenDay, BlockingReasons: report.BlockingReasons, RecommendedNextRun: report.RecommendedNextRun,
 	}
 	payload, _ := json.Marshal(fingerprint)

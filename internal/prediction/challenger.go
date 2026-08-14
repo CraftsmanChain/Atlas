@@ -9,6 +9,12 @@ import (
 
 const HeaRankChallengerReportVersion = "hearank-challenger-report-v1"
 
+const (
+	HeaRankMinimumSevenDayRows      = 30
+	HeaRankMinimumSevenDayNodes     = 10
+	HeaRankMinimumSevenDayPositives = 3
+)
+
 type ChallengerMetricSet struct {
 	Policy      string       `json:"policy"`
 	Description string       `json:"description"`
@@ -19,18 +25,22 @@ type ChallengerMetricSet struct {
 }
 
 type HeaRankChallengerReport struct {
-	Version              string                `json:"version"`
-	FrameworkVersion     string                `json:"framework_version"`
-	Mode                 string                `json:"mode"`
-	Status               string                `json:"status"`
-	TargetHorizonMinutes int                   `json:"target_horizon_minutes"`
-	SampleSummary        OutcomeMaturity       `json:"sample_summary"`
-	AllMatured           []ChallengerMetricSet `json:"all_matured"`
-	SevenDay             []ChallengerMetricSet `json:"seven_day"`
-	BlockingReasons      []string              `json:"blocking_reasons"`
-	Interpretation       []string              `json:"interpretation"`
-	RecommendedNextRun   []string              `json:"recommended_next_run"`
-	GeneratedAt          time.Time             `json:"generated_at"`
+	Version                  string                `json:"version"`
+	FrameworkVersion         string                `json:"framework_version"`
+	Mode                     string                `json:"mode"`
+	Status                   string                `json:"status"`
+	ConfidenceStatus         string                `json:"confidence_status"`
+	TargetHorizonMinutes     int                   `json:"target_horizon_minutes"`
+	MinimumSevenDayRows      int                   `json:"minimum_seven_day_rows"`
+	MinimumSevenDayNodes     int                   `json:"minimum_seven_day_nodes"`
+	MinimumSevenDayPositives int                   `json:"minimum_seven_day_positives"`
+	SampleSummary            OutcomeMaturity       `json:"sample_summary"`
+	AllMatured               []ChallengerMetricSet `json:"all_matured"`
+	SevenDay                 []ChallengerMetricSet `json:"seven_day"`
+	BlockingReasons          []string              `json:"blocking_reasons"`
+	Interpretation           []string              `json:"interpretation"`
+	RecommendedNextRun       []string              `json:"recommended_next_run"`
+	GeneratedAt              time.Time             `json:"generated_at"`
 }
 
 func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
@@ -39,12 +49,15 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 		return HeaRankChallengerReport{}, err
 	}
 	report := HeaRankChallengerReport{
-		Version:              HeaRankChallengerReportVersion,
-		FrameworkVersion:     FrameworkVersion,
-		Mode:                 "offline_challenger_read_only",
-		TargetHorizonMinutes: 10080,
-		SampleSummary:        outcomeMaturity(rows),
-		GeneratedAt:          s.now(),
+		Version:                  HeaRankChallengerReportVersion,
+		FrameworkVersion:         FrameworkVersion,
+		Mode:                     "offline_challenger_read_only",
+		TargetHorizonMinutes:     10080,
+		MinimumSevenDayRows:      HeaRankMinimumSevenDayRows,
+		MinimumSevenDayNodes:     HeaRankMinimumSevenDayNodes,
+		MinimumSevenDayPositives: HeaRankMinimumSevenDayPositives,
+		SampleSummary:            outcomeMaturity(rows),
+		GeneratedAt:              s.now(),
 		Interpretation: []string{
 			"This is a node-risk challenger scaffold, not a released HeaRank model.",
 			"All policies are evaluated on mature scored outcomes only; pending and censored rows are excluded.",
@@ -58,13 +71,39 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 	}
 	report.AllMatured = challengerMetricSets(rows, 0)
 	report.SevenDay = challengerMetricSets(rows, report.TargetHorizonMinutes)
-	if matureCount(rows, report.TargetHorizonMinutes) == 0 {
+	rows7d, nodes7d, positives7d := validationReadinessSevenDaySummary(report.SevenDay)
+	report.ConfidenceStatus, report.BlockingReasons = heaRankConfidence(rows7d, nodes7d, positives7d)
+	if rows7d == 0 {
 		report.Status = "blocked_no_7d_mature_outcomes"
-		report.BlockingReasons = append(report.BlockingReasons, "no mature scored 7d node-risk outcomes are available")
+	} else if report.ConfidenceStatus == "insufficient_sample" {
+		report.Status = "blocked_insufficient_7d_sample"
 	} else {
 		report.Status = "ready_for_offline_comparison"
 	}
 	return report, nil
+}
+
+func heaRankConfidence(rows, nodes, positives int) (string, []string) {
+	reasons := []string{}
+	if rows == 0 {
+		reasons = append(reasons, "no mature scored 7d node-risk outcomes are available")
+	}
+	if rows < HeaRankMinimumSevenDayRows {
+		reasons = append(reasons, "7d mature scored rows below comparison gate")
+	}
+	if nodes < HeaRankMinimumSevenDayNodes {
+		reasons = append(reasons, "7d unique node count below comparison gate")
+	}
+	if positives < HeaRankMinimumSevenDayPositives {
+		reasons = append(reasons, "7d positive outcome count below comparison gate")
+	}
+	if len(reasons) > 0 {
+		return "insufficient_sample", uniqueSorted(reasons)
+	}
+	if rows < HeaRankMinimumSevenDayRows*3 || positives < HeaRankMinimumSevenDayPositives*3 {
+		return "exploratory", nil
+	}
+	return "comparable", nil
 }
 
 func challengerMetricSets(rows []api.PredictionOutcomeEvaluation, horizonMinutes int) []ChallengerMetricSet {
