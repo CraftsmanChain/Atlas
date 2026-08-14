@@ -280,6 +280,7 @@ func main() {
 	mux.HandleFunc("/api/v1/prediction/label-manifest", predictionHandler.HandleLabelManifest)
 	mux.HandleFunc("/api/v1/prediction/validation-readiness", predictionHandler.HandleValidationReadiness)
 	mux.HandleFunc("/api/v1/prediction/evidence-bundle", predictionHandler.HandleEvidenceBundle)
+	mux.HandleFunc("/api/v1/prediction/data-drift-report", predictionHandler.HandleDataDriftReport)
 	mux.HandleFunc("/api/v1/prediction/outcomes", predictionHandler.HandleOutcomes)
 	mux.HandleFunc("/api/v1/prediction/outcomes/", predictionHandler.HandleOutcome)
 	mux.HandleFunc("/api/v1/prediction/history/sources", historyHandler.HandleSources)

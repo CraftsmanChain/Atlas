@@ -28,6 +28,11 @@ type ValidationReadinessReport struct {
 	ChallengerVersion     string                `json:"challenger_version"`
 	ChallengerStatus      string                `json:"challenger_status"`
 	ChallengerConfidence  string                `json:"challenger_confidence_status"`
+	DataDriftVersion      string                `json:"data_drift_version"`
+	DataDriftSHA256       string                `json:"data_drift_sha256"`
+	DataDriftStatus       string                `json:"data_drift_status"`
+	DataDriftPSIProxy     float64               `json:"data_drift_psi_proxy"`
+	DataDriftKSProxy      float64               `json:"data_drift_ks_proxy"`
 	SevenDayRows          int                   `json:"seven_day_rows"`
 	SevenDayNodes         int                   `json:"seven_day_nodes"`
 	SevenDayPositives     int                   `json:"seven_day_positives"`
@@ -54,6 +59,10 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 	if err != nil {
 		return ValidationReadinessReport{}, err
 	}
+	driftReport, err := s.DataDriftReport()
+	if err != nil {
+		return ValidationReadinessReport{}, err
+	}
 	report := ValidationReadinessReport{
 		Version:               ValidationReadinessReportVersion,
 		FrameworkVersion:      FrameworkVersion,
@@ -71,21 +80,27 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 		ChallengerVersion:     challengerReport.Version,
 		ChallengerStatus:      challengerReport.Status,
 		ChallengerConfidence:  challengerReport.ConfidenceStatus,
+		DataDriftVersion:      driftReport.Version,
+		DataDriftSHA256:       driftReport.ReportSHA256,
+		DataDriftStatus:       driftReport.Status,
+		DataDriftPSIProxy:     driftReport.PSIProxy,
+		DataDriftKSProxy:      driftReport.KSProxy,
 		SevenDay:              challengerReport.SevenDay,
 		GeneratedAt:           s.now(),
 		RecommendedNextRun: []string{
 			"freeze the label manifest SHA256 before comparing challenger metrics",
 			"archive the evidence bundle SHA256 with every offline validation run",
+			"archive the data drift report SHA256 before comparing shadow candidates",
 			"use the same matured outcome denominator for Logistic, rules, and HeaRank-style policies",
-			"keep all validation read-only until label, evidence, outcome, and challenger gates pass together",
+			"keep all validation read-only until label, evidence, outcome, drift, and challenger gates pass together",
 		},
 	}
 	report.SevenDayRows, report.SevenDayNodes, report.SevenDayPositives = validationReadinessSevenDaySummary(report.SevenDay)
-	report.BlockingReasons = validationReadinessBlockers(labelManifest, evidenceBundle, outcomeReport, challengerReport)
+	report.BlockingReasons = validationReadinessBlockers(labelManifest, evidenceBundle, outcomeReport, challengerReport, driftReport)
 	if len(report.BlockingReasons) > 0 {
 		report.Status = "blocked"
 		report.RecommendedNextRun = append(report.RecommendedNextRun, report.BlockingReasons...)
-	} else if labelManifest.QualityGateStatus == "exploratory_ready" || outcomeReport.Stability.Status == "exploratory" || outcomeReport.SampleMaturity.Matured < 30 {
+	} else if labelManifest.QualityGateStatus == "exploratory_ready" || outcomeReport.Stability.Status == "exploratory" || driftReport.Status == "exploratory_insufficient_shadow_runs" || outcomeReport.SampleMaturity.Matured < 30 {
 		report.Status = "exploratory_ready"
 		report.RecommendedNextRun = append(report.RecommendedNextRun, "treat metrics as exploratory until more mature outcomes accumulate")
 	} else {
@@ -108,7 +123,7 @@ func validationReadinessSevenDaySummary(rows []ChallengerMetricSet) (int, int, i
 	return rows[0].Rows, rows[0].Nodes, rows[0].Positives
 }
 
-func validationReadinessBlockers(labelManifest LabelManifest, evidenceBundle EvidenceBundleReport, outcomeReport OutcomeReport, challengerReport HeaRankChallengerReport) []string {
+func validationReadinessBlockers(labelManifest LabelManifest, evidenceBundle EvidenceBundleReport, outcomeReport OutcomeReport, challengerReport HeaRankChallengerReport, driftReport DataDriftReport) []string {
 	blockers := []string{}
 	if labelManifest.QualityGateStatus == "blocked" {
 		blockers = append(blockers, labelManifest.BlockingReasons...)
@@ -130,6 +145,9 @@ func validationReadinessBlockers(labelManifest LabelManifest, evidenceBundle Evi
 	}
 	if challengerReport.Status != "ready_for_offline_comparison" {
 		blockers = append(blockers, challengerReport.BlockingReasons...)
+	}
+	if driftReport.Status == "blocked_no_shadow_runs" || driftReport.Status == "review_required" {
+		blockers = append(blockers, driftReport.BlockingReasons...)
 	}
 	return uniqueSorted(blockers)
 }
@@ -153,6 +171,11 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		ChallengerVersion     string                `json:"challenger_version"`
 		ChallengerStatus      string                `json:"challenger_status"`
 		ChallengerConfidence  string                `json:"challenger_confidence_status"`
+		DataDriftVersion      string                `json:"data_drift_version"`
+		DataDriftSHA256       string                `json:"data_drift_sha256"`
+		DataDriftStatus       string                `json:"data_drift_status"`
+		DataDriftPSIProxy     float64               `json:"data_drift_psi_proxy"`
+		DataDriftKSProxy      float64               `json:"data_drift_ks_proxy"`
 		SevenDayRows          int                   `json:"seven_day_rows"`
 		SevenDayNodes         int                   `json:"seven_day_nodes"`
 		SevenDayPositives     int                   `json:"seven_day_positives"`
@@ -167,7 +190,9 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		OutcomeReportVersion: report.OutcomeReportVersion, OutcomeStability: report.OutcomeStability, OutcomeMaturity: report.OutcomeMaturity,
 		ChallengerVersion: report.ChallengerVersion, ChallengerStatus: report.ChallengerStatus,
 		ChallengerConfidence: report.ChallengerConfidence,
-		SevenDayRows:         report.SevenDayRows, SevenDayNodes: report.SevenDayNodes, SevenDayPositives: report.SevenDayPositives,
+		DataDriftVersion:     report.DataDriftVersion, DataDriftSHA256: report.DataDriftSHA256,
+		DataDriftStatus: report.DataDriftStatus, DataDriftPSIProxy: report.DataDriftPSIProxy, DataDriftKSProxy: report.DataDriftKSProxy,
+		SevenDayRows: report.SevenDayRows, SevenDayNodes: report.SevenDayNodes, SevenDayPositives: report.SevenDayPositives,
 		SevenDay: report.SevenDay, BlockingReasons: report.BlockingReasons, RecommendedNextRun: report.RecommendedNextRun,
 	}
 	payload, _ := json.Marshal(fingerprint)

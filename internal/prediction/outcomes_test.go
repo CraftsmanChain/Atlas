@@ -309,6 +309,70 @@ func TestModelGovernanceReportSummarizesDatasetModelAndGates(t *testing.T) {
 	}
 }
 
+func TestDataDriftReportComparesShadowScoreDistributions(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	baselineFinished := now.Add(-2 * time.Hour)
+	latestFinished := now.Add(-time.Hour)
+	baselineMedian, baselineP90, baselineP95, baselineP99 := 0.10, 0.20, 0.25, 0.30
+	latestMedian, latestP90, latestP95, latestP99 := 0.12, 0.23, 0.28, 0.34
+	runs := []api.PredictionShadowScoringRun{
+		{
+			RunKey: "shadow-baseline", Version: "shadow-v1", Status: "completed", Trigger: "manual",
+			ModelSpecID: 1, ModelKey: "gpu.failure.test", ModelVersion: "model-v1", ArtifactSHA256: "sha",
+			SourceKey: "prometheus", ScopeModelName: "H100", TransformationVersion: "transform-v1",
+			ScoredGPUCount: 100, PositiveGPUCount: 8, PositiveRatio: 0.08, MedianProbability: &baselineMedian,
+			P90Probability: &baselineP90, P95Probability: &baselineP95, P99Probability: &baselineP99,
+			DistributionStatus: "passed", NoAlertEmitted: true, NoActionExecuted: true,
+			ReportSHA256: "baseline-report", StartedAt: baselineFinished.Add(-time.Minute), FinishedAt: &baselineFinished,
+		},
+		{
+			RunKey: "shadow-latest", Version: "shadow-v1", Status: "completed", Trigger: "manual",
+			ModelSpecID: 1, ModelKey: "gpu.failure.test", ModelVersion: "model-v1", ArtifactSHA256: "sha",
+			SourceKey: "prometheus", ScopeModelName: "H100", TransformationVersion: "transform-v1",
+			ScoredGPUCount: 100, PositiveGPUCount: 10, PositiveRatio: 0.10, MedianProbability: &latestMedian,
+			P90Probability: &latestP90, P95Probability: &latestP95, P99Probability: &latestP99,
+			DistributionStatus: "passed", NoAlertEmitted: true, NoActionExecuted: true,
+			ReportSHA256: "latest-report", StartedAt: latestFinished.Add(-time.Minute), FinishedAt: &latestFinished,
+		},
+	}
+	for index := range runs {
+		if err := db.Create(&runs[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	report, err := service.DataDriftReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Version != DataDriftReportVersion || report.Status != "passed" || report.ReportSHA256 == "" || report.Latest == nil || report.Baseline == nil {
+		t.Fatalf("unexpected data drift report: %+v", report)
+	}
+	if report.Latest.RunKey != "shadow-latest" || report.Baseline.RunKey != "shadow-baseline" || math.Abs(report.PositiveRatioDelta-0.02) > 1e-12 || report.KSProxy <= 0 || report.PSIProxy <= 0 {
+		t.Fatalf("unexpected drift metrics: %+v", report)
+	}
+	later := now.Add(time.Hour)
+	service.now = func() time.Time { return later }
+	laterReport, err := service.DataDriftReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ReportSHA256 != laterReport.ReportSHA256 || report.GeneratedAt.Equal(laterReport.GeneratedAt) {
+		t.Fatalf("data drift checksum should be stable across generated_at changes: before=%+v after=%+v", report, laterReport)
+	}
+	handler := NewHandlerWithService(service)
+	response := httptest.NewRecorder()
+	handler.HandleDataDriftReport(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/data-drift-report?download=1", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(DataDriftReportVersion)) || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" {
+		t.Fatalf("data drift handler failed: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
@@ -465,7 +529,7 @@ func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T)
 	if report.Version != ValidationReadinessReportVersion || report.Status != "blocked" || report.LabelGateStatus != "exploratory_ready" || report.LabelManifestSHA256 == "" || report.ReadinessSHA256 == "" {
 		t.Fatalf("unexpected validation readiness report: %+v", report)
 	}
-	if report.LabelManifestVersion != LabelManifestVersion || report.LabelManifestSHA256 == "" || report.EvidenceBundleVersion != EvidenceBundleVersion || report.EvidenceBundleSHA256 == "" || report.EvidencePositive != 1 || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" {
+	if report.LabelManifestVersion != LabelManifestVersion || report.LabelManifestSHA256 == "" || report.EvidenceBundleVersion != EvidenceBundleVersion || report.EvidenceBundleSHA256 == "" || report.EvidencePositive != 1 || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" || report.DataDriftVersion != DataDriftReportVersion || report.DataDriftSHA256 == "" || report.DataDriftStatus != "blocked_no_shadow_runs" {
 		t.Fatalf("unexpected readiness bindings: %+v", report)
 	}
 	if len(report.BlockingReasons) == 0 || len(report.RecommendedNextRun) == 0 {
