@@ -2,6 +2,7 @@ package prediction
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -156,6 +157,13 @@ func (h *Handler) HandleLabelManifest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("ETag", `"`+manifest.ManifestSHA256+`"`)
+	w.Header().Set("X-Atlas-Label-Manifest-Version", manifest.Version)
+	w.Header().Set("X-Atlas-Label-Manifest-SHA256", manifest.ManifestSHA256)
+	if r.URL.Query().Get("download") == "1" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.json"`, manifest.Version, manifest.ManifestSHA256[:12]))
 	}
 	predictionJSON(w, http.StatusOK, map[string]any{"data": manifest})
 }

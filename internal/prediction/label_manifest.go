@@ -1,6 +1,9 @@
 package prediction
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -21,6 +24,8 @@ type LabelManifest struct {
 	StrongProxy         int            `json:"strong_proxy"`
 	WeakProxy           int            `json:"weak_proxy"`
 	HumanConfirmed      int            `json:"human_confirmed"`
+	ManifestSHA256      string         `json:"manifest_sha256"`
+	SampleLabelKeys     []string       `json:"sample_label_keys"`
 	ByEventType         map[string]int `json:"by_event_type"`
 	ByModel             map[string]int `json:"by_model"`
 	BySourceType        map[string]int `json:"by_source_type"`
@@ -30,6 +35,7 @@ type LabelManifest struct {
 	NegativePolicy      string         `json:"negative_policy"`
 	GraySamplePolicy    []string       `json:"gray_sample_policy"`
 	HumanEvidencePolicy []string       `json:"human_evidence_policy"`
+	EvidenceScope       []string       `json:"evidence_scope"`
 	KnownGaps           []string       `json:"known_gaps"`
 	GeneratedAt         time.Time      `json:"generated_at"`
 }
@@ -58,9 +64,17 @@ func (s *Service) LabelManifest() (LabelManifest, error) {
 			"human overrides must include operator identity, reason, and repair/replacement/diagnostic evidence",
 			"manual decisions override final outcome only; rule-derived provenance remains immutable",
 		},
+		EvidenceScope: []string{
+			"failure_labels table",
+			"label contract and quality-tier policy",
+			"exclusion reasons and human confirmation references",
+		},
 	}
 	for _, label := range labels {
 		manifest.Total++
+		if len(manifest.SampleLabelKeys) < 20 {
+			manifest.SampleLabelKeys = append(manifest.SampleLabelKeys, label.LabelKey)
+		}
 		if label.Excluded {
 			manifest.Excluded++
 			reason := strings.TrimSpace(label.ExclusionReason)
@@ -90,6 +104,7 @@ func (s *Service) LabelManifest() (LabelManifest, error) {
 		increment(manifest.ByRuleVersion, label.RuleVersion)
 	}
 	manifest.KnownGaps = labelManifestGaps(manifest)
+	manifest.ManifestSHA256 = labelManifestChecksum(manifest)
 	return manifest, nil
 }
 
@@ -117,4 +132,44 @@ func labelManifestGaps(manifest LabelManifest) []string {
 	}
 	sort.Strings(gaps)
 	return gaps
+}
+
+func labelManifestChecksum(manifest LabelManifest) string {
+	fingerprint := struct {
+		Version             string         `json:"version"`
+		LabelContract       string         `json:"label_contract_version"`
+		Mode                string         `json:"mode"`
+		Total               int            `json:"total"`
+		Positive            int            `json:"positive"`
+		Excluded            int            `json:"excluded"`
+		Confirmed           int            `json:"confirmed"`
+		StrongProxy         int            `json:"strong_proxy"`
+		WeakProxy           int            `json:"weak_proxy"`
+		HumanConfirmed      int            `json:"human_confirmed"`
+		SampleLabelKeys     []string       `json:"sample_label_keys"`
+		ByEventType         map[string]int `json:"by_event_type"`
+		ByModel             map[string]int `json:"by_model"`
+		BySourceType        map[string]int `json:"by_source_type"`
+		ByRuleVersion       map[string]int `json:"by_rule_version"`
+		ExclusionReasons    map[string]int `json:"exclusion_reasons"`
+		PositivePolicy      []string       `json:"positive_policy"`
+		NegativePolicy      string         `json:"negative_policy"`
+		GraySamplePolicy    []string       `json:"gray_sample_policy"`
+		HumanEvidencePolicy []string       `json:"human_evidence_policy"`
+		EvidenceScope       []string       `json:"evidence_scope"`
+		KnownGaps           []string       `json:"known_gaps"`
+	}{
+		Version: manifest.Version, LabelContract: manifest.LabelContract, Mode: manifest.Mode,
+		Total: manifest.Total, Positive: manifest.Positive, Excluded: manifest.Excluded,
+		Confirmed: manifest.Confirmed, StrongProxy: manifest.StrongProxy, WeakProxy: manifest.WeakProxy,
+		HumanConfirmed: manifest.HumanConfirmed, SampleLabelKeys: manifest.SampleLabelKeys,
+		ByEventType: manifest.ByEventType, ByModel: manifest.ByModel, BySourceType: manifest.BySourceType,
+		ByRuleVersion: manifest.ByRuleVersion, ExclusionReasons: manifest.ExclusionReasons,
+		PositivePolicy: manifest.PositivePolicy, NegativePolicy: manifest.NegativePolicy,
+		GraySamplePolicy: manifest.GraySamplePolicy, HumanEvidencePolicy: manifest.HumanEvidencePolicy,
+		EvidenceScope: manifest.EvidenceScope, KnownGaps: manifest.KnownGaps,
+	}
+	payload, _ := json.Marshal(fingerprint)
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
 }
