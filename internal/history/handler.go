@@ -148,23 +148,46 @@ func (h *Handler) HandleLiveCoverageAudits(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) HandleFeatureDistributions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		rows, err := h.service.FeatureDistributionSnapshots(limit)
+		if err != nil {
+			historyJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		historyJSON(w, http.StatusOK, map[string]any{
+			"data": rows,
+			"meta": map[string]any{
+				"total": len(rows), "read_only": true, "raw_samples_stored": false,
+				"roles": []string{"training", "live_shadow"},
+			},
+		})
+	case http.MethodPost:
+		var request FeatureDistributionSnapshotRequest
+		if r.Body != nil && r.ContentLength != 0 {
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&request); err != nil {
+				historyJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+				return
+			}
+		}
+		rows, err := h.service.MaterializeTrainingFeatureDistributions(request)
+		if err != nil {
+			historyJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+			return
+		}
+		historyJSON(w, http.StatusAccepted, map[string]any{
+			"data": rows,
+			"meta": map[string]any{
+				"total": len(rows), "distribution_role": "training", "raw_samples_stored": false,
+				"scoring_allowed": false, "alerts_emitted": false, "actions_executed": false,
+			},
+		})
+	default:
 		historyJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	rows, err := h.service.FeatureDistributionSnapshots(limit)
-	if err != nil {
-		historyJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	historyJSON(w, http.StatusOK, map[string]any{
-		"data": rows,
-		"meta": map[string]any{
-			"total": len(rows), "read_only": true, "raw_samples_stored": false,
-			"roles": []string{"training", "live_shadow"},
-		},
-	})
 }
 
 func (h *Handler) HandleShadowScoringRuns(w http.ResponseWriter, r *http.Request) {
