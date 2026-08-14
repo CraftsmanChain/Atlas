@@ -45,6 +45,11 @@ type ValidationReadinessReport struct {
 	FeatureDriftStatus        string                `json:"feature_drift_status"`
 	FeatureDriftColumns       int                   `json:"feature_drift_feature_columns"`
 	FeatureDriftDistributions int                   `json:"feature_drift_feature_distributions"`
+	FeatureDriftCompared      int                   `json:"feature_drift_compared_features"`
+	FeatureDriftPassed        int                   `json:"feature_drift_passed_features"`
+	FeatureDriftReview        int                   `json:"feature_drift_review_required_features"`
+	FeatureDriftMaxPSI        float64               `json:"feature_drift_maximum_psi"`
+	FeatureDriftMaxKS         float64               `json:"feature_drift_maximum_ks"`
 	FeatureDriftPSIStatus     string                `json:"feature_drift_psi_status"`
 	FeatureDriftKSStatus      string                `json:"feature_drift_ks_status"`
 	SevenDayRows              int                   `json:"seven_day_rows"`
@@ -118,6 +123,11 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 		FeatureDriftStatus:        featureDriftReport.Status,
 		FeatureDriftColumns:       featureDriftReport.FeatureColumnCount,
 		FeatureDriftDistributions: featureDriftReport.FeatureDistributionCount,
+		FeatureDriftCompared:      featureDriftReport.ComparedFeatureCount,
+		FeatureDriftPassed:        featureDriftReport.PassedFeatureCount,
+		FeatureDriftReview:        featureDriftReport.ReviewRequiredFeatureCount,
+		FeatureDriftMaxPSI:        featureDriftReport.MaximumPSI,
+		FeatureDriftMaxKS:         featureDriftReport.MaximumKS,
 		FeatureDriftPSIStatus:     featureDriftReport.PSIStatus,
 		FeatureDriftKSStatus:      featureDriftReport.KSStatus,
 		SevenDay:                  challengerReport.SevenDay,
@@ -230,6 +240,11 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		FeatureDriftStatus        string                `json:"feature_drift_status"`
 		FeatureDriftColumns       int                   `json:"feature_drift_feature_columns"`
 		FeatureDriftDistributions int                   `json:"feature_drift_feature_distributions"`
+		FeatureDriftCompared      int                   `json:"feature_drift_compared_features"`
+		FeatureDriftPassed        int                   `json:"feature_drift_passed_features"`
+		FeatureDriftReview        int                   `json:"feature_drift_review_required_features"`
+		FeatureDriftMaxPSI        float64               `json:"feature_drift_maximum_psi"`
+		FeatureDriftMaxKS         float64               `json:"feature_drift_maximum_ks"`
 		FeatureDriftPSIStatus     string                `json:"feature_drift_psi_status"`
 		FeatureDriftKSStatus      string                `json:"feature_drift_ks_status"`
 		SevenDayRows              int                   `json:"seven_day_rows"`
@@ -254,9 +269,12 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		CalibrationBSSDelta: report.CalibrationBSSDelta,
 		FeatureDriftVersion: report.FeatureDriftVersion, FeatureDriftSHA256: report.FeatureDriftSHA256,
 		FeatureDriftStatus: report.FeatureDriftStatus, FeatureDriftColumns: report.FeatureDriftColumns,
-		FeatureDriftDistributions: report.FeatureDriftDistributions, FeatureDriftPSIStatus: report.FeatureDriftPSIStatus,
-		FeatureDriftKSStatus: report.FeatureDriftKSStatus,
-		SevenDayRows:         report.SevenDayRows, SevenDayNodes: report.SevenDayNodes, SevenDayPositives: report.SevenDayPositives,
+		FeatureDriftDistributions: report.FeatureDriftDistributions, FeatureDriftCompared: report.FeatureDriftCompared,
+		FeatureDriftPassed: report.FeatureDriftPassed, FeatureDriftReview: report.FeatureDriftReview,
+		FeatureDriftMaxPSI: report.FeatureDriftMaxPSI, FeatureDriftMaxKS: report.FeatureDriftMaxKS,
+		FeatureDriftPSIStatus: report.FeatureDriftPSIStatus,
+		FeatureDriftKSStatus:  report.FeatureDriftKSStatus,
+		SevenDayRows:          report.SevenDayRows, SevenDayNodes: report.SevenDayNodes, SevenDayPositives: report.SevenDayPositives,
 		SevenDay: report.SevenDay, BlockingReasons: report.BlockingReasons, RecommendedNextRun: report.RecommendedNextRun,
 	}
 	payload, _ := json.Marshal(fingerprint)
