@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -399,6 +400,69 @@ func TestDataDriftReportComparesShadowScoreDistributions(t *testing.T) {
 	}
 }
 
+func TestCalibrationDriftReportComparesBaselineCalibration(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 14, 11, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	baselinePath := dir + "/baseline.json"
+	latestPath := dir + "/latest.json"
+	if err := os.WriteFile(baselinePath, []byte(`{"horizons":[{"release_readiness":"shadow_candidate","test_calibration":{"status":"passed","ece":0.040,"model_brier":0.120,"null_brier":0.200,"brier_skill_score":0.400}},{"release_readiness":"shadow_candidate","test_calibration":{"status":"passed","ece":0.060,"model_brier":0.140,"null_brier":0.220,"brier_skill_score":0.360}}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(latestPath, []byte(`{"horizons":[{"release_readiness":"shadow_candidate","test_calibration":{"status":"passed","ece":0.050,"model_brier":0.130,"null_brier":0.200,"brier_skill_score":0.350}},{"release_readiness":"shadow_candidate","test_calibration":{"status":"passed","ece":0.070,"model_brier":0.150,"null_brier":0.220,"brier_skill_score":0.340}}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	baselineFinished := now.Add(-2 * time.Hour)
+	latestFinished := now.Add(-time.Hour)
+	builds := []api.BaselineModelBuild{
+		{
+			BaselineModelKey: "baseline-calibration", Version: "baseline-v1", Status: "completed", Algorithm: "logistic_regression",
+			SourceMatrixBuildID: 1, SourceTrainingMatrixKey: "matrix", FeatureContractVersion: FeatureContractVersion,
+			ReportPath: baselinePath, StartedAt: baselineFinished.Add(-time.Minute), FinishedAt: &baselineFinished,
+		},
+		{
+			BaselineModelKey: "latest-calibration", Version: "baseline-v2", Status: "completed", Algorithm: "logistic_regression",
+			SourceMatrixBuildID: 1, SourceTrainingMatrixKey: "matrix", FeatureContractVersion: FeatureContractVersion,
+			ReportPath: latestPath, StartedAt: latestFinished.Add(-time.Minute), FinishedAt: &latestFinished,
+		},
+	}
+	for index := range builds {
+		if err := db.Create(&builds[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	report, err := service.CalibrationDriftReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Version != CalibrationDriftReportVersion || report.Status != "passed" || report.ReportSHA256 == "" || report.Latest == nil || report.Baseline == nil {
+		t.Fatalf("unexpected calibration drift report: %+v", report)
+	}
+	if report.Latest.BaselineModelKey != "latest-calibration" || report.Baseline.BaselineModelKey != "baseline-calibration" || math.Abs(report.ECEDelta-0.01) > 1e-12 || report.BrierSkillScoreDelta >= 0 {
+		t.Fatalf("unexpected calibration drift metrics: %+v", report)
+	}
+	later := now.Add(time.Hour)
+	service.now = func() time.Time { return later }
+	laterReport, err := service.CalibrationDriftReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ReportSHA256 != laterReport.ReportSHA256 || report.GeneratedAt.Equal(laterReport.GeneratedAt) {
+		t.Fatalf("calibration drift checksum should be stable across generated_at changes: before=%+v after=%+v", report, laterReport)
+	}
+	handler := NewHandlerWithService(service)
+	response := httptest.NewRecorder()
+	handler.HandleCalibrationDriftReport(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/calibration-drift-report?download=1", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(CalibrationDriftReportVersion)) || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" {
+		t.Fatalf("calibration drift handler failed: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
@@ -555,7 +619,7 @@ func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T)
 	if report.Version != ValidationReadinessReportVersion || report.Status != "blocked" || report.LabelGateStatus != "exploratory_ready" || report.LabelManifestSHA256 == "" || report.ReadinessSHA256 == "" {
 		t.Fatalf("unexpected validation readiness report: %+v", report)
 	}
-	if report.LabelManifestVersion != LabelManifestVersion || report.LabelManifestSHA256 == "" || report.EvidenceBundleVersion != EvidenceBundleVersion || report.EvidenceBundleSHA256 == "" || report.EvidencePositive != 1 || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" || report.DataDriftVersion != DataDriftReportVersion || report.DataDriftSHA256 == "" || report.DataDriftStatus != "blocked_no_shadow_runs" || report.DataDriftCoverage != "exploratory_insufficient_coverage_audits" {
+	if report.LabelManifestVersion != LabelManifestVersion || report.LabelManifestSHA256 == "" || report.EvidenceBundleVersion != EvidenceBundleVersion || report.EvidenceBundleSHA256 == "" || report.EvidencePositive != 1 || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" || report.DataDriftVersion != DataDriftReportVersion || report.DataDriftSHA256 == "" || report.DataDriftStatus != "blocked_no_shadow_runs" || report.DataDriftCoverage != "exploratory_insufficient_coverage_audits" || report.CalibrationDriftVersion != CalibrationDriftReportVersion || report.CalibrationDriftSHA256 == "" || report.CalibrationDriftStatus != "blocked_no_calibration_reports" {
 		t.Fatalf("unexpected readiness bindings: %+v", report)
 	}
 	if len(report.BlockingReasons) == 0 || len(report.RecommendedNextRun) == 0 {
