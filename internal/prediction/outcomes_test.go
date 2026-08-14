@@ -465,7 +465,7 @@ func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T)
 	if report.Version != ValidationReadinessReportVersion || report.Status != "blocked" || report.LabelGateStatus != "exploratory_ready" || report.LabelManifestSHA256 == "" || report.ReadinessSHA256 == "" {
 		t.Fatalf("unexpected validation readiness report: %+v", report)
 	}
-	if report.LabelManifestVersion != LabelManifestVersion || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" {
+	if report.LabelManifestVersion != LabelManifestVersion || report.LabelManifestSHA256 == "" || report.EvidenceBundleVersion != EvidenceBundleVersion || report.EvidenceBundleSHA256 == "" || report.EvidencePositive != 1 || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" {
 		t.Fatalf("unexpected readiness bindings: %+v", report)
 	}
 	if len(report.BlockingReasons) == 0 || len(report.RecommendedNextRun) == 0 {
