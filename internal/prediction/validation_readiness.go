@@ -13,6 +13,7 @@ import (
 
 const ValidationReadinessReportVersion = "prediction-validation-readiness-v1"
 const validationFeatureDistributionArchiveVersion = "gpu-feature-distribution-archive-v1"
+const validationFeatureDistributionMinimumPairs = 1
 
 type ValidationFeatureDistributionArchiveScope struct {
 	Name                   string `json:"name"`
@@ -28,83 +29,93 @@ type ValidationFeatureDistributionArchiveScope struct {
 }
 
 type validationFeatureDistributionArchive struct {
-	Version                 string                                      `json:"version"`
-	Mode                    string                                      `json:"mode"`
-	ArchiveSHA256           string                                      `json:"archive_sha256"`
-	Scope                   ValidationFeatureDistributionArchiveScope   `json:"scope"`
-	SnapshotCount           int                                         `json:"snapshot_count"`
-	TrainingSnapshotCount   int                                         `json:"training_snapshot_count"`
-	LiveShadowSnapshotCount int                                         `json:"live_shadow_snapshot_count"`
-	BaselineCount           int                                         `json:"baseline_count"`
-	FeatureCount            int                                         `json:"feature_count"`
-	LatestObservedAt        *time.Time                                  `json:"latest_observed_at,omitempty"`
-	BlockingReasons         []string                                    `json:"blocking_reasons"`
-	RawSamplesStored        bool                                        `json:"raw_samples_stored"`
-	ScoringAllowed          bool                                        `json:"scoring_allowed"`
-	AlertsEmitted           bool                                        `json:"alerts_emitted"`
-	ActionsExecuted         bool                                        `json:"actions_executed"`
-	Snapshots               []api.PredictionFeatureDistributionSnapshot `json:"snapshots"`
+	Version                   string                                      `json:"version"`
+	Mode                      string                                      `json:"mode"`
+	ArchiveSHA256             string                                      `json:"archive_sha256"`
+	Scope                     ValidationFeatureDistributionArchiveScope   `json:"scope"`
+	ComparabilityStatus       string                                      `json:"comparability_status"`
+	MinimumFeaturePairs       int                                         `json:"minimum_feature_pairs"`
+	SnapshotCount             int                                         `json:"snapshot_count"`
+	TrainingSnapshotCount     int                                         `json:"training_snapshot_count"`
+	LiveShadowSnapshotCount   int                                         `json:"live_shadow_snapshot_count"`
+	BaselineCount             int                                         `json:"baseline_count"`
+	FeatureCount              int                                         `json:"feature_count"`
+	PairedFeatureCount        int                                         `json:"paired_feature_count"`
+	MissingTrainingFeatures   []string                                    `json:"missing_training_features"`
+	MissingLiveShadowFeatures []string                                    `json:"missing_live_shadow_features"`
+	LatestObservedAt          *time.Time                                  `json:"latest_observed_at,omitempty"`
+	BlockingReasons           []string                                    `json:"blocking_reasons"`
+	RawSamplesStored          bool                                        `json:"raw_samples_stored"`
+	ScoringAllowed            bool                                        `json:"scoring_allowed"`
+	AlertsEmitted             bool                                        `json:"alerts_emitted"`
+	ActionsExecuted           bool                                        `json:"actions_executed"`
+	Snapshots                 []api.PredictionFeatureDistributionSnapshot `json:"snapshots"`
 }
 
 type ValidationReadinessReport struct {
-	Version                           string                                    `json:"version"`
-	FrameworkVersion                  string                                    `json:"framework_version"`
-	Mode                              string                                    `json:"mode"`
-	Status                            string                                    `json:"status"`
-	ReadinessSHA256                   string                                    `json:"readiness_sha256"`
-	LabelGateStatus                   string                                    `json:"label_gate_status"`
-	LabelManifestVersion              string                                    `json:"label_manifest_version"`
-	LabelManifestSHA256               string                                    `json:"label_manifest_sha256"`
-	EvidenceBundleVersion             string                                    `json:"evidence_bundle_version"`
-	EvidenceBundleSHA256              string                                    `json:"evidence_bundle_sha256"`
-	EvidencePositive                  int                                       `json:"evidence_positive_labels"`
-	EvidenceExcluded                  int                                       `json:"evidence_excluded_labels"`
-	OutcomeReportVersion              string                                    `json:"outcome_report_version"`
-	OutcomeStability                  string                                    `json:"outcome_stability_status"`
-	OutcomeMaturity                   OutcomeMaturity                           `json:"outcome_maturity"`
-	ChallengerVersion                 string                                    `json:"challenger_version"`
-	ChallengerStatus                  string                                    `json:"challenger_status"`
-	ChallengerConfidence              string                                    `json:"challenger_confidence_status"`
-	DataDriftVersion                  string                                    `json:"data_drift_version"`
-	DataDriftSHA256                   string                                    `json:"data_drift_sha256"`
-	DataDriftStatus                   string                                    `json:"data_drift_status"`
-	DataDriftCoverage                 string                                    `json:"data_drift_coverage_quality_status"`
-	DataDriftPSIProxy                 float64                                   `json:"data_drift_psi_proxy"`
-	DataDriftKSProxy                  float64                                   `json:"data_drift_ks_proxy"`
-	CalibrationDriftVersion           string                                    `json:"calibration_drift_version"`
-	CalibrationDriftSHA256            string                                    `json:"calibration_drift_sha256"`
-	CalibrationDriftStatus            string                                    `json:"calibration_drift_status"`
-	CalibrationECEDelta               float64                                   `json:"calibration_ece_delta"`
-	CalibrationBSSDelta               float64                                   `json:"calibration_brier_skill_score_delta"`
-	FeatureDriftVersion               string                                    `json:"feature_drift_version"`
-	FeatureDriftSHA256                string                                    `json:"feature_drift_sha256"`
-	FeatureDriftStatus                string                                    `json:"feature_drift_status"`
-	FeatureDriftColumns               int                                       `json:"feature_drift_feature_columns"`
-	FeatureDriftDistributions         int                                       `json:"feature_drift_feature_distributions"`
-	FeatureDriftCompared              int                                       `json:"feature_drift_compared_features"`
-	FeatureDriftPassed                int                                       `json:"feature_drift_passed_features"`
-	FeatureDriftReview                int                                       `json:"feature_drift_review_required_features"`
-	FeatureDriftMaxPSI                float64                                   `json:"feature_drift_maximum_psi"`
-	FeatureDriftMaxKS                 float64                                   `json:"feature_drift_maximum_ks"`
-	FeatureDriftPSIStatus             string                                    `json:"feature_drift_psi_status"`
-	FeatureDriftKSStatus              string                                    `json:"feature_drift_ks_status"`
-	FeatureDriftBlockers              []string                                  `json:"feature_drift_blocking_reasons"`
-	FeatureDriftNextRun               []string                                  `json:"feature_drift_recommended_next_run"`
-	FeatureDistributionArchiveVersion string                                    `json:"feature_distribution_archive_version"`
-	FeatureDistributionArchiveSHA256  string                                    `json:"feature_distribution_archive_sha256"`
-	FeatureDistributionArchiveScope   ValidationFeatureDistributionArchiveScope `json:"feature_distribution_archive_scope"`
-	FeatureDistributionSnapshots      int                                       `json:"feature_distribution_snapshots"`
-	FeatureDistributionTraining       int                                       `json:"feature_distribution_training_snapshots"`
-	FeatureDistributionLiveShadow     int                                       `json:"feature_distribution_live_shadow_snapshots"`
-	FeatureDistributionFeatures       int                                       `json:"feature_distribution_feature_count"`
-	FeatureDistributionBlockers       []string                                  `json:"feature_distribution_blocking_reasons"`
-	SevenDayRows                      int                                       `json:"seven_day_rows"`
-	SevenDayNodes                     int                                       `json:"seven_day_nodes"`
-	SevenDayPositives                 int                                       `json:"seven_day_positives"`
-	SevenDay                          []ChallengerMetricSet                     `json:"seven_day"`
-	BlockingReasons                   []string                                  `json:"blocking_reasons"`
-	RecommendedNextRun                []string                                  `json:"recommended_next_run"`
-	GeneratedAt                       time.Time                                 `json:"generated_at"`
+	Version                            string                                    `json:"version"`
+	FrameworkVersion                   string                                    `json:"framework_version"`
+	Mode                               string                                    `json:"mode"`
+	Status                             string                                    `json:"status"`
+	ReadinessSHA256                    string                                    `json:"readiness_sha256"`
+	LabelGateStatus                    string                                    `json:"label_gate_status"`
+	LabelManifestVersion               string                                    `json:"label_manifest_version"`
+	LabelManifestSHA256                string                                    `json:"label_manifest_sha256"`
+	EvidenceBundleVersion              string                                    `json:"evidence_bundle_version"`
+	EvidenceBundleSHA256               string                                    `json:"evidence_bundle_sha256"`
+	EvidencePositive                   int                                       `json:"evidence_positive_labels"`
+	EvidenceExcluded                   int                                       `json:"evidence_excluded_labels"`
+	OutcomeReportVersion               string                                    `json:"outcome_report_version"`
+	OutcomeStability                   string                                    `json:"outcome_stability_status"`
+	OutcomeMaturity                    OutcomeMaturity                           `json:"outcome_maturity"`
+	ChallengerVersion                  string                                    `json:"challenger_version"`
+	ChallengerStatus                   string                                    `json:"challenger_status"`
+	ChallengerConfidence               string                                    `json:"challenger_confidence_status"`
+	DataDriftVersion                   string                                    `json:"data_drift_version"`
+	DataDriftSHA256                    string                                    `json:"data_drift_sha256"`
+	DataDriftStatus                    string                                    `json:"data_drift_status"`
+	DataDriftCoverage                  string                                    `json:"data_drift_coverage_quality_status"`
+	DataDriftPSIProxy                  float64                                   `json:"data_drift_psi_proxy"`
+	DataDriftKSProxy                   float64                                   `json:"data_drift_ks_proxy"`
+	CalibrationDriftVersion            string                                    `json:"calibration_drift_version"`
+	CalibrationDriftSHA256             string                                    `json:"calibration_drift_sha256"`
+	CalibrationDriftStatus             string                                    `json:"calibration_drift_status"`
+	CalibrationECEDelta                float64                                   `json:"calibration_ece_delta"`
+	CalibrationBSSDelta                float64                                   `json:"calibration_brier_skill_score_delta"`
+	FeatureDriftVersion                string                                    `json:"feature_drift_version"`
+	FeatureDriftSHA256                 string                                    `json:"feature_drift_sha256"`
+	FeatureDriftStatus                 string                                    `json:"feature_drift_status"`
+	FeatureDriftColumns                int                                       `json:"feature_drift_feature_columns"`
+	FeatureDriftDistributions          int                                       `json:"feature_drift_feature_distributions"`
+	FeatureDriftCompared               int                                       `json:"feature_drift_compared_features"`
+	FeatureDriftPassed                 int                                       `json:"feature_drift_passed_features"`
+	FeatureDriftReview                 int                                       `json:"feature_drift_review_required_features"`
+	FeatureDriftMaxPSI                 float64                                   `json:"feature_drift_maximum_psi"`
+	FeatureDriftMaxKS                  float64                                   `json:"feature_drift_maximum_ks"`
+	FeatureDriftPSIStatus              string                                    `json:"feature_drift_psi_status"`
+	FeatureDriftKSStatus               string                                    `json:"feature_drift_ks_status"`
+	FeatureDriftBlockers               []string                                  `json:"feature_drift_blocking_reasons"`
+	FeatureDriftNextRun                []string                                  `json:"feature_drift_recommended_next_run"`
+	FeatureDistributionArchiveVersion  string                                    `json:"feature_distribution_archive_version"`
+	FeatureDistributionArchiveSHA256   string                                    `json:"feature_distribution_archive_sha256"`
+	FeatureDistributionArchiveScope    ValidationFeatureDistributionArchiveScope `json:"feature_distribution_archive_scope"`
+	FeatureDistributionComparability   string                                    `json:"feature_distribution_comparability_status"`
+	FeatureDistributionMinimumPairs    int                                       `json:"feature_distribution_minimum_feature_pairs"`
+	FeatureDistributionSnapshots       int                                       `json:"feature_distribution_snapshots"`
+	FeatureDistributionTraining        int                                       `json:"feature_distribution_training_snapshots"`
+	FeatureDistributionLiveShadow      int                                       `json:"feature_distribution_live_shadow_snapshots"`
+	FeatureDistributionFeatures        int                                       `json:"feature_distribution_feature_count"`
+	FeatureDistributionPairedFeatures  int                                       `json:"feature_distribution_paired_feature_count"`
+	FeatureDistributionMissingTraining []string                                  `json:"feature_distribution_missing_training_features"`
+	FeatureDistributionMissingLive     []string                                  `json:"feature_distribution_missing_live_shadow_features"`
+	FeatureDistributionBlockers        []string                                  `json:"feature_distribution_blocking_reasons"`
+	SevenDayRows                       int                                       `json:"seven_day_rows"`
+	SevenDayNodes                      int                                       `json:"seven_day_nodes"`
+	SevenDayPositives                  int                                       `json:"seven_day_positives"`
+	SevenDay                           []ChallengerMetricSet                     `json:"seven_day"`
+	BlockingReasons                    []string                                  `json:"blocking_reasons"`
+	RecommendedNextRun                 []string                                  `json:"recommended_next_run"`
+	GeneratedAt                        time.Time                                 `json:"generated_at"`
 }
 
 func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error) {
@@ -185,13 +196,20 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 		FeatureDistributionArchiveVersion: distributionArchive.Version,
 		FeatureDistributionArchiveSHA256:  distributionArchive.ArchiveSHA256,
 		FeatureDistributionArchiveScope:   distributionArchive.Scope,
+		FeatureDistributionComparability:  distributionArchive.ComparabilityStatus,
+		FeatureDistributionMinimumPairs:   distributionArchive.MinimumFeaturePairs,
 		FeatureDistributionSnapshots:      distributionArchive.SnapshotCount,
 		FeatureDistributionTraining:       distributionArchive.TrainingSnapshotCount,
 		FeatureDistributionLiveShadow:     distributionArchive.LiveShadowSnapshotCount,
 		FeatureDistributionFeatures:       distributionArchive.FeatureCount,
-		FeatureDistributionBlockers:       append([]string(nil), distributionArchive.BlockingReasons...),
-		SevenDay:                          challengerReport.SevenDay,
-		GeneratedAt:                       s.now(),
+		FeatureDistributionPairedFeatures: distributionArchive.PairedFeatureCount,
+		FeatureDistributionMissingTraining: append([]string(nil),
+			distributionArchive.MissingTrainingFeatures...),
+		FeatureDistributionMissingLive: append([]string(nil),
+			distributionArchive.MissingLiveShadowFeatures...),
+		FeatureDistributionBlockers: append([]string(nil), distributionArchive.BlockingReasons...),
+		SevenDay:                    challengerReport.SevenDay,
+		GeneratedAt:                 s.now(),
 		RecommendedNextRun: []string{
 			"freeze the label manifest SHA256 before comparing challenger metrics",
 			"archive the evidence bundle SHA256 with every offline validation run",
@@ -271,25 +289,34 @@ func (s *Service) validationFeatureDistributionArchive() (validationFeatureDistr
 
 	baselines := map[uint]bool{}
 	features := map[string]bool{}
+	trainingFeatures := map[string]bool{}
+	liveShadowFeatures := map[string]bool{}
 	var latestObservedAt *time.Time
 	archive := validationFeatureDistributionArchive{
-		Version:          validationFeatureDistributionArchiveVersion,
-		Mode:             "read_only_aggregate_distribution_archive",
-		Scope:            scope,
-		BlockingReasons:  append([]string(nil), blockers...),
-		RawSamplesStored: false,
-		ScoringAllowed:   false,
-		AlertsEmitted:    false,
-		ActionsExecuted:  false,
-		Snapshots:        rows,
+		Version:             validationFeatureDistributionArchiveVersion,
+		Mode:                "read_only_aggregate_distribution_archive",
+		Scope:               scope,
+		MinimumFeaturePairs: validationFeatureDistributionMinimumPairs,
+		BlockingReasons:     append([]string(nil), blockers...),
+		RawSamplesStored:    false,
+		ScoringAllowed:      false,
+		AlertsEmitted:       false,
+		ActionsExecuted:     false,
+		Snapshots:           rows,
 	}
 	for _, row := range rows {
 		archive.SnapshotCount++
 		switch row.DistributionRole {
 		case "training":
 			archive.TrainingSnapshotCount++
+			if row.FeatureName != "" {
+				trainingFeatures[row.FeatureName] = true
+			}
 		case "live_shadow":
 			archive.LiveShadowSnapshotCount++
+			if row.FeatureName != "" {
+				liveShadowFeatures[row.FeatureName] = true
+			}
 		}
 		if row.SourceBaselineBuildID > 0 {
 			baselines[row.SourceBaselineBuildID] = true
@@ -304,9 +331,68 @@ func (s *Service) validationFeatureDistributionArchive() (validationFeatureDistr
 	}
 	archive.BaselineCount = len(baselines)
 	archive.FeatureCount = len(features)
+	archive.PairedFeatureCount, archive.MissingTrainingFeatures, archive.MissingLiveShadowFeatures = validationFeatureDistributionPairSummary(trainingFeatures, liveShadowFeatures)
+	archive.ComparabilityStatus = validationFeatureDistributionComparabilityStatus(archive)
+	archive.BlockingReasons = append(archive.BlockingReasons, validationFeatureDistributionComparabilityBlockers(archive)...)
+	archive.BlockingReasons = uniqueSorted(archive.BlockingReasons)
 	archive.LatestObservedAt = latestObservedAt
 	archive.ArchiveSHA256 = validationFeatureDistributionArchiveSHA(archive)
 	return archive, nil
+}
+
+func validationFeatureDistributionPairSummary(trainingFeatures, liveShadowFeatures map[string]bool) (int, []string, []string) {
+	paired := 0
+	missingTraining := []string{}
+	missingLive := []string{}
+	for feature := range trainingFeatures {
+		if liveShadowFeatures[feature] {
+			paired++
+			continue
+		}
+		missingLive = append(missingLive, feature)
+	}
+	for feature := range liveShadowFeatures {
+		if !trainingFeatures[feature] {
+			missingTraining = append(missingTraining, feature)
+		}
+	}
+	sort.Strings(missingTraining)
+	sort.Strings(missingLive)
+	return paired, missingTraining, missingLive
+}
+
+func validationFeatureDistributionComparabilityStatus(archive validationFeatureDistributionArchive) string {
+	if archive.Scope.Status == "blocked" {
+		return "blocked_no_validation_scope"
+	}
+	if archive.TrainingSnapshotCount == 0 {
+		return "blocked_no_training_snapshots"
+	}
+	if archive.LiveShadowSnapshotCount == 0 {
+		return "blocked_no_live_shadow_snapshots"
+	}
+	if archive.PairedFeatureCount < archive.MinimumFeaturePairs {
+		return "blocked_no_paired_features"
+	}
+	if len(archive.MissingTrainingFeatures) > 0 || len(archive.MissingLiveShadowFeatures) > 0 {
+		return "exploratory_partial_feature_pairs"
+	}
+	return "comparable"
+}
+
+func validationFeatureDistributionComparabilityBlockers(archive validationFeatureDistributionArchive) []string {
+	switch archive.ComparabilityStatus {
+	case "blocked_no_validation_scope":
+		return []string{"feature distribution comparability requires a validation scope"}
+	case "blocked_no_training_snapshots":
+		return []string{"feature distribution comparability requires training snapshots"}
+	case "blocked_no_live_shadow_snapshots":
+		return []string{"feature distribution comparability requires live shadow snapshots"}
+	case "blocked_no_paired_features":
+		return []string{"feature distribution comparability requires at least one paired training/live feature"}
+	default:
+		return nil
+	}
 }
 
 func validationReadinessBlockers(labelManifest LabelManifest, evidenceBundle EvidenceBundleReport, outcomeReport OutcomeReport, challengerReport HeaRankChallengerReport, driftReport DataDriftReport, calibrationReport CalibrationDriftReport, featureDriftReport FeatureDriftReport, distributionArchive validationFeatureDistributionArchive) []string {
@@ -428,37 +514,48 @@ func validationFeatureDistributionArchiveSHA(archive validationFeatureDistributi
 		return snapshots[left].ObservedAt.Before(snapshots[right].ObservedAt)
 	})
 	payload, _ := json.Marshal(struct {
-		Version                 string                                    `json:"version"`
-		Mode                    string                                    `json:"mode"`
-		Scope                   ValidationFeatureDistributionArchiveScope `json:"scope"`
-		SnapshotCount           int                                       `json:"snapshot_count"`
-		TrainingSnapshotCount   int                                       `json:"training_snapshot_count"`
-		LiveShadowSnapshotCount int                                       `json:"live_shadow_snapshot_count"`
-		BaselineCount           int                                       `json:"baseline_count"`
-		FeatureCount            int                                       `json:"feature_count"`
-		LatestObservedAt        *time.Time                                `json:"latest_observed_at,omitempty"`
-		RawSamplesStored        bool                                      `json:"raw_samples_stored"`
-		ScoringAllowed          bool                                      `json:"scoring_allowed"`
-		AlertsEmitted           bool                                      `json:"alerts_emitted"`
-		ActionsExecuted         bool                                      `json:"actions_executed"`
-		BlockingReasons         []string                                  `json:"blocking_reasons"`
-		Snapshots               []stableSnapshot                          `json:"snapshots"`
+		Version                   string                                    `json:"version"`
+		Mode                      string                                    `json:"mode"`
+		Scope                     ValidationFeatureDistributionArchiveScope `json:"scope"`
+		ComparabilityStatus       string                                    `json:"comparability_status"`
+		MinimumFeaturePairs       int                                       `json:"minimum_feature_pairs"`
+		SnapshotCount             int                                       `json:"snapshot_count"`
+		TrainingSnapshotCount     int                                       `json:"training_snapshot_count"`
+		LiveShadowSnapshotCount   int                                       `json:"live_shadow_snapshot_count"`
+		BaselineCount             int                                       `json:"baseline_count"`
+		FeatureCount              int                                       `json:"feature_count"`
+		PairedFeatureCount        int                                       `json:"paired_feature_count"`
+		MissingTrainingFeatures   []string                                  `json:"missing_training_features"`
+		MissingLiveShadowFeatures []string                                  `json:"missing_live_shadow_features"`
+		LatestObservedAt          *time.Time                                `json:"latest_observed_at,omitempty"`
+		RawSamplesStored          bool                                      `json:"raw_samples_stored"`
+		ScoringAllowed            bool                                      `json:"scoring_allowed"`
+		AlertsEmitted             bool                                      `json:"alerts_emitted"`
+		ActionsExecuted           bool                                      `json:"actions_executed"`
+		BlockingReasons           []string                                  `json:"blocking_reasons"`
+		Snapshots                 []stableSnapshot                          `json:"snapshots"`
 	}{
 		Version:                 archive.Version,
 		Mode:                    archive.Mode,
 		Scope:                   archive.Scope,
+		ComparabilityStatus:     archive.ComparabilityStatus,
+		MinimumFeaturePairs:     archive.MinimumFeaturePairs,
 		SnapshotCount:           archive.SnapshotCount,
 		TrainingSnapshotCount:   archive.TrainingSnapshotCount,
 		LiveShadowSnapshotCount: archive.LiveShadowSnapshotCount,
 		BaselineCount:           archive.BaselineCount,
 		FeatureCount:            archive.FeatureCount,
-		LatestObservedAt:        archive.LatestObservedAt,
-		RawSamplesStored:        archive.RawSamplesStored,
-		ScoringAllowed:          archive.ScoringAllowed,
-		AlertsEmitted:           archive.AlertsEmitted,
-		ActionsExecuted:         archive.ActionsExecuted,
-		BlockingReasons:         append([]string(nil), archive.BlockingReasons...),
-		Snapshots:               snapshots,
+		PairedFeatureCount:      archive.PairedFeatureCount,
+		MissingTrainingFeatures: append([]string(nil), archive.MissingTrainingFeatures...),
+		MissingLiveShadowFeatures: append([]string(nil),
+			archive.MissingLiveShadowFeatures...),
+		LatestObservedAt: archive.LatestObservedAt,
+		RawSamplesStored: archive.RawSamplesStored,
+		ScoringAllowed:   archive.ScoringAllowed,
+		AlertsEmitted:    archive.AlertsEmitted,
+		ActionsExecuted:  archive.ActionsExecuted,
+		BlockingReasons:  append([]string(nil), archive.BlockingReasons...),
+		Snapshots:        snapshots,
 	})
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
@@ -466,62 +563,67 @@ func validationFeatureDistributionArchiveSHA(archive validationFeatureDistributi
 
 func validationReadinessChecksum(report ValidationReadinessReport) string {
 	fingerprint := struct {
-		Version                           string                                    `json:"version"`
-		FrameworkVersion                  string                                    `json:"framework_version"`
-		Mode                              string                                    `json:"mode"`
-		Status                            string                                    `json:"status"`
-		LabelGateStatus                   string                                    `json:"label_gate_status"`
-		LabelManifestVersion              string                                    `json:"label_manifest_version"`
-		LabelManifestSHA256               string                                    `json:"label_manifest_sha256"`
-		EvidenceBundleVersion             string                                    `json:"evidence_bundle_version"`
-		EvidenceBundleSHA256              string                                    `json:"evidence_bundle_sha256"`
-		EvidencePositive                  int                                       `json:"evidence_positive_labels"`
-		EvidenceExcluded                  int                                       `json:"evidence_excluded_labels"`
-		OutcomeReportVersion              string                                    `json:"outcome_report_version"`
-		OutcomeStability                  string                                    `json:"outcome_stability_status"`
-		OutcomeMaturity                   OutcomeMaturity                           `json:"outcome_maturity"`
-		ChallengerVersion                 string                                    `json:"challenger_version"`
-		ChallengerStatus                  string                                    `json:"challenger_status"`
-		ChallengerConfidence              string                                    `json:"challenger_confidence_status"`
-		DataDriftVersion                  string                                    `json:"data_drift_version"`
-		DataDriftSHA256                   string                                    `json:"data_drift_sha256"`
-		DataDriftStatus                   string                                    `json:"data_drift_status"`
-		DataDriftCoverage                 string                                    `json:"data_drift_coverage_quality_status"`
-		DataDriftPSIProxy                 float64                                   `json:"data_drift_psi_proxy"`
-		DataDriftKSProxy                  float64                                   `json:"data_drift_ks_proxy"`
-		CalibrationDriftVersion           string                                    `json:"calibration_drift_version"`
-		CalibrationDriftSHA256            string                                    `json:"calibration_drift_sha256"`
-		CalibrationDriftStatus            string                                    `json:"calibration_drift_status"`
-		CalibrationECEDelta               float64                                   `json:"calibration_ece_delta"`
-		CalibrationBSSDelta               float64                                   `json:"calibration_brier_skill_score_delta"`
-		FeatureDriftVersion               string                                    `json:"feature_drift_version"`
-		FeatureDriftSHA256                string                                    `json:"feature_drift_sha256"`
-		FeatureDriftStatus                string                                    `json:"feature_drift_status"`
-		FeatureDriftColumns               int                                       `json:"feature_drift_feature_columns"`
-		FeatureDriftDistributions         int                                       `json:"feature_drift_feature_distributions"`
-		FeatureDriftCompared              int                                       `json:"feature_drift_compared_features"`
-		FeatureDriftPassed                int                                       `json:"feature_drift_passed_features"`
-		FeatureDriftReview                int                                       `json:"feature_drift_review_required_features"`
-		FeatureDriftMaxPSI                float64                                   `json:"feature_drift_maximum_psi"`
-		FeatureDriftMaxKS                 float64                                   `json:"feature_drift_maximum_ks"`
-		FeatureDriftPSIStatus             string                                    `json:"feature_drift_psi_status"`
-		FeatureDriftKSStatus              string                                    `json:"feature_drift_ks_status"`
-		FeatureDriftBlockers              []string                                  `json:"feature_drift_blocking_reasons"`
-		FeatureDriftNextRun               []string                                  `json:"feature_drift_recommended_next_run"`
-		FeatureDistributionArchiveVersion string                                    `json:"feature_distribution_archive_version"`
-		FeatureDistributionArchiveSHA256  string                                    `json:"feature_distribution_archive_sha256"`
-		FeatureDistributionArchiveScope   ValidationFeatureDistributionArchiveScope `json:"feature_distribution_archive_scope"`
-		FeatureDistributionSnapshots      int                                       `json:"feature_distribution_snapshots"`
-		FeatureDistributionTraining       int                                       `json:"feature_distribution_training_snapshots"`
-		FeatureDistributionLiveShadow     int                                       `json:"feature_distribution_live_shadow_snapshots"`
-		FeatureDistributionFeatures       int                                       `json:"feature_distribution_feature_count"`
-		FeatureDistributionBlockers       []string                                  `json:"feature_distribution_blocking_reasons"`
-		SevenDayRows                      int                                       `json:"seven_day_rows"`
-		SevenDayNodes                     int                                       `json:"seven_day_nodes"`
-		SevenDayPositives                 int                                       `json:"seven_day_positives"`
-		SevenDay                          []ChallengerMetricSet                     `json:"seven_day"`
-		BlockingReasons                   []string                                  `json:"blocking_reasons"`
-		RecommendedNextRun                []string                                  `json:"recommended_next_run"`
+		Version                            string                                    `json:"version"`
+		FrameworkVersion                   string                                    `json:"framework_version"`
+		Mode                               string                                    `json:"mode"`
+		Status                             string                                    `json:"status"`
+		LabelGateStatus                    string                                    `json:"label_gate_status"`
+		LabelManifestVersion               string                                    `json:"label_manifest_version"`
+		LabelManifestSHA256                string                                    `json:"label_manifest_sha256"`
+		EvidenceBundleVersion              string                                    `json:"evidence_bundle_version"`
+		EvidenceBundleSHA256               string                                    `json:"evidence_bundle_sha256"`
+		EvidencePositive                   int                                       `json:"evidence_positive_labels"`
+		EvidenceExcluded                   int                                       `json:"evidence_excluded_labels"`
+		OutcomeReportVersion               string                                    `json:"outcome_report_version"`
+		OutcomeStability                   string                                    `json:"outcome_stability_status"`
+		OutcomeMaturity                    OutcomeMaturity                           `json:"outcome_maturity"`
+		ChallengerVersion                  string                                    `json:"challenger_version"`
+		ChallengerStatus                   string                                    `json:"challenger_status"`
+		ChallengerConfidence               string                                    `json:"challenger_confidence_status"`
+		DataDriftVersion                   string                                    `json:"data_drift_version"`
+		DataDriftSHA256                    string                                    `json:"data_drift_sha256"`
+		DataDriftStatus                    string                                    `json:"data_drift_status"`
+		DataDriftCoverage                  string                                    `json:"data_drift_coverage_quality_status"`
+		DataDriftPSIProxy                  float64                                   `json:"data_drift_psi_proxy"`
+		DataDriftKSProxy                   float64                                   `json:"data_drift_ks_proxy"`
+		CalibrationDriftVersion            string                                    `json:"calibration_drift_version"`
+		CalibrationDriftSHA256             string                                    `json:"calibration_drift_sha256"`
+		CalibrationDriftStatus             string                                    `json:"calibration_drift_status"`
+		CalibrationECEDelta                float64                                   `json:"calibration_ece_delta"`
+		CalibrationBSSDelta                float64                                   `json:"calibration_brier_skill_score_delta"`
+		FeatureDriftVersion                string                                    `json:"feature_drift_version"`
+		FeatureDriftSHA256                 string                                    `json:"feature_drift_sha256"`
+		FeatureDriftStatus                 string                                    `json:"feature_drift_status"`
+		FeatureDriftColumns                int                                       `json:"feature_drift_feature_columns"`
+		FeatureDriftDistributions          int                                       `json:"feature_drift_feature_distributions"`
+		FeatureDriftCompared               int                                       `json:"feature_drift_compared_features"`
+		FeatureDriftPassed                 int                                       `json:"feature_drift_passed_features"`
+		FeatureDriftReview                 int                                       `json:"feature_drift_review_required_features"`
+		FeatureDriftMaxPSI                 float64                                   `json:"feature_drift_maximum_psi"`
+		FeatureDriftMaxKS                  float64                                   `json:"feature_drift_maximum_ks"`
+		FeatureDriftPSIStatus              string                                    `json:"feature_drift_psi_status"`
+		FeatureDriftKSStatus               string                                    `json:"feature_drift_ks_status"`
+		FeatureDriftBlockers               []string                                  `json:"feature_drift_blocking_reasons"`
+		FeatureDriftNextRun                []string                                  `json:"feature_drift_recommended_next_run"`
+		FeatureDistributionArchiveVersion  string                                    `json:"feature_distribution_archive_version"`
+		FeatureDistributionArchiveSHA256   string                                    `json:"feature_distribution_archive_sha256"`
+		FeatureDistributionArchiveScope    ValidationFeatureDistributionArchiveScope `json:"feature_distribution_archive_scope"`
+		FeatureDistributionComparability   string                                    `json:"feature_distribution_comparability_status"`
+		FeatureDistributionMinimumPairs    int                                       `json:"feature_distribution_minimum_feature_pairs"`
+		FeatureDistributionSnapshots       int                                       `json:"feature_distribution_snapshots"`
+		FeatureDistributionTraining        int                                       `json:"feature_distribution_training_snapshots"`
+		FeatureDistributionLiveShadow      int                                       `json:"feature_distribution_live_shadow_snapshots"`
+		FeatureDistributionFeatures        int                                       `json:"feature_distribution_feature_count"`
+		FeatureDistributionPairedFeatures  int                                       `json:"feature_distribution_paired_feature_count"`
+		FeatureDistributionMissingTraining []string                                  `json:"feature_distribution_missing_training_features"`
+		FeatureDistributionMissingLive     []string                                  `json:"feature_distribution_missing_live_shadow_features"`
+		FeatureDistributionBlockers        []string                                  `json:"feature_distribution_blocking_reasons"`
+		SevenDayRows                       int                                       `json:"seven_day_rows"`
+		SevenDayNodes                      int                                       `json:"seven_day_nodes"`
+		SevenDayPositives                  int                                       `json:"seven_day_positives"`
+		SevenDay                           []ChallengerMetricSet                     `json:"seven_day"`
+		BlockingReasons                    []string                                  `json:"blocking_reasons"`
+		RecommendedNextRun                 []string                                  `json:"recommended_next_run"`
 	}{
 		Version: report.Version, FrameworkVersion: report.FrameworkVersion, Mode: report.Mode, Status: report.Status,
 		LabelGateStatus: report.LabelGateStatus, LabelManifestVersion: report.LabelManifestVersion, LabelManifestSHA256: report.LabelManifestSHA256,
@@ -548,12 +650,19 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		FeatureDistributionArchiveVersion: report.FeatureDistributionArchiveVersion,
 		FeatureDistributionArchiveSHA256:  report.FeatureDistributionArchiveSHA256,
 		FeatureDistributionArchiveScope:   report.FeatureDistributionArchiveScope,
+		FeatureDistributionComparability:  report.FeatureDistributionComparability,
+		FeatureDistributionMinimumPairs:   report.FeatureDistributionMinimumPairs,
 		FeatureDistributionSnapshots:      report.FeatureDistributionSnapshots,
 		FeatureDistributionTraining:       report.FeatureDistributionTraining,
 		FeatureDistributionLiveShadow:     report.FeatureDistributionLiveShadow,
 		FeatureDistributionFeatures:       report.FeatureDistributionFeatures,
-		FeatureDistributionBlockers:       report.FeatureDistributionBlockers,
-		SevenDayRows:                      report.SevenDayRows, SevenDayNodes: report.SevenDayNodes, SevenDayPositives: report.SevenDayPositives,
+		FeatureDistributionPairedFeatures: report.FeatureDistributionPairedFeatures,
+		FeatureDistributionMissingTraining: append([]string(nil),
+			report.FeatureDistributionMissingTraining...),
+		FeatureDistributionMissingLive: append([]string(nil),
+			report.FeatureDistributionMissingLive...),
+		FeatureDistributionBlockers: report.FeatureDistributionBlockers,
+		SevenDayRows:                report.SevenDayRows, SevenDayNodes: report.SevenDayNodes, SevenDayPositives: report.SevenDayPositives,
 		SevenDay: report.SevenDay, BlockingReasons: report.BlockingReasons, RecommendedNextRun: report.RecommendedNextRun,
 	}
 	payload, _ := json.Marshal(fingerprint)

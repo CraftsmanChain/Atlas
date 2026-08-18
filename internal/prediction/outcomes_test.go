@@ -786,10 +786,10 @@ func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T)
 	if report.Version != ValidationReadinessReportVersion || report.Status != "blocked" || report.LabelGateStatus != "exploratory_ready" || report.LabelManifestSHA256 == "" || report.ReadinessSHA256 == "" {
 		t.Fatalf("unexpected validation readiness report: %+v", report)
 	}
-	if report.LabelManifestVersion != LabelManifestVersion || report.LabelManifestSHA256 == "" || report.EvidenceBundleVersion != EvidenceBundleVersion || report.EvidenceBundleSHA256 == "" || report.EvidencePositive != 1 || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" || report.DataDriftVersion != DataDriftReportVersion || report.DataDriftSHA256 == "" || report.DataDriftStatus != "blocked_no_shadow_runs" || report.DataDriftCoverage != "exploratory_insufficient_coverage_audits" || report.CalibrationDriftVersion != CalibrationDriftReportVersion || report.CalibrationDriftSHA256 == "" || report.CalibrationDriftStatus != "blocked_no_calibration_reports" || report.FeatureDriftVersion != FeatureDriftReportVersion || report.FeatureDriftSHA256 == "" || report.FeatureDriftStatus != "blocked_no_baseline_artifact" || report.FeatureDriftCompared != 0 || report.FeatureDriftMaxPSI != 0 || report.FeatureDriftKSStatus != "pending_distribution_store" || report.FeatureDistributionArchiveVersion != validationFeatureDistributionArchiveVersion || report.FeatureDistributionArchiveSHA256 == "" || report.FeatureDistributionArchiveScope.Status != "blocked" || report.FeatureDistributionSnapshots != 0 {
+	if report.LabelManifestVersion != LabelManifestVersion || report.LabelManifestSHA256 == "" || report.EvidenceBundleVersion != EvidenceBundleVersion || report.EvidenceBundleSHA256 == "" || report.EvidencePositive != 1 || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" || report.DataDriftVersion != DataDriftReportVersion || report.DataDriftSHA256 == "" || report.DataDriftStatus != "blocked_no_shadow_runs" || report.DataDriftCoverage != "exploratory_insufficient_coverage_audits" || report.CalibrationDriftVersion != CalibrationDriftReportVersion || report.CalibrationDriftSHA256 == "" || report.CalibrationDriftStatus != "blocked_no_calibration_reports" || report.FeatureDriftVersion != FeatureDriftReportVersion || report.FeatureDriftSHA256 == "" || report.FeatureDriftStatus != "blocked_no_baseline_artifact" || report.FeatureDriftCompared != 0 || report.FeatureDriftMaxPSI != 0 || report.FeatureDriftKSStatus != "pending_distribution_store" || report.FeatureDistributionArchiveVersion != validationFeatureDistributionArchiveVersion || report.FeatureDistributionArchiveSHA256 == "" || report.FeatureDistributionArchiveScope.Status != "blocked" || report.FeatureDistributionComparability != "blocked_no_validation_scope" || report.FeatureDistributionMinimumPairs != validationFeatureDistributionMinimumPairs || report.FeatureDistributionSnapshots != 0 || report.FeatureDistributionPairedFeatures != 0 {
 		t.Fatalf("unexpected readiness bindings: %+v", report)
 	}
-	if len(report.FeatureDistributionBlockers) == 0 || report.FeatureDistributionBlockers[0] != "validation scope requires a current shadow candidate model spec" {
+	if !testStringContains(report.FeatureDistributionBlockers, "validation scope requires a current shadow candidate model spec") || !testStringContains(report.FeatureDistributionBlockers, "feature distribution comparability requires a validation scope") {
 		t.Fatalf("expected feature distribution archive blockers: %+v", report)
 	}
 	if len(report.FeatureDriftBlockers) == 0 || report.FeatureDriftBlockers[0] != "no completed baseline model artifact is available" || len(report.FeatureDriftNextRun) == 0 {
@@ -876,7 +876,7 @@ func TestValidationReadinessBindsScopedFeatureDistributionArchive(t *testing.T) 
 	if report.FeatureDistributionArchiveScope.Status != "validation_scope" || report.FeatureDistributionArchiveScope.SourceBaselineBuildID != 11 || report.FeatureDistributionArchiveScope.ModelSpecID != spec.ID {
 		t.Fatalf("unexpected readiness archive scope: %+v", report.FeatureDistributionArchiveScope)
 	}
-	if report.FeatureDistributionSnapshots != 2 || report.FeatureDistributionTraining != 1 || report.FeatureDistributionLiveShadow != 1 || report.FeatureDistributionFeatures != 1 {
+	if report.FeatureDistributionSnapshots != 2 || report.FeatureDistributionTraining != 1 || report.FeatureDistributionLiveShadow != 1 || report.FeatureDistributionFeatures != 1 || report.FeatureDistributionPairedFeatures != 1 || report.FeatureDistributionComparability != "comparable" {
 		t.Fatalf("unexpected readiness archive counts: %+v", report)
 	}
 	firstReadinessSHA := report.ReadinessSHA256
@@ -898,6 +898,18 @@ func TestValidationReadinessBindsScopedFeatureDistributionArchive(t *testing.T) 
 	if report.FeatureDistributionArchiveSHA256 == historyServiceArchive.ArchiveSHA256 || report.ReadinessSHA256 == firstReadinessSHA {
 		t.Fatalf("readiness sha should change when scoped distribution archive changes: before=%s/%s after=%s/%s", historyServiceArchive.ArchiveSHA256, firstReadinessSHA, report.FeatureDistributionArchiveSHA256, report.ReadinessSHA256)
 	}
+	if report.FeatureDistributionComparability != "exploratory_partial_feature_pairs" || report.FeatureDistributionPairedFeatures != 1 || !testStringContains(report.FeatureDistributionMissingTraining, "power_usage_mean_24h") {
+		t.Fatalf("expected partial feature-pair comparability after live-only feature: %+v", report)
+	}
+}
+
+func testStringContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func assertRankingAtK(t *testing.T, rows []RankingAtK, k, eligible, positives, hits int, precision, recall, lift float64) {
