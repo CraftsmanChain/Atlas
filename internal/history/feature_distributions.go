@@ -20,6 +20,7 @@ import (
 const (
 	featureDistributionSnapshotVersion = "gpu-feature-distribution-snapshot-v1"
 	featureDistributionArchiveVersion  = "gpu-feature-distribution-archive-v1"
+	featureDistributionMinimumPairs    = 1
 )
 
 type FeatureDistributionSnapshotRequest struct {
@@ -49,23 +50,28 @@ type FeatureDistributionArchiveScope struct {
 }
 
 type FeatureDistributionArchive struct {
-	Version                 string                                      `json:"version"`
-	Mode                    string                                      `json:"mode"`
-	ArchiveSHA256           string                                      `json:"archive_sha256"`
-	Scope                   FeatureDistributionArchiveScope             `json:"scope"`
-	SnapshotCount           int                                         `json:"snapshot_count"`
-	TrainingSnapshotCount   int                                         `json:"training_snapshot_count"`
-	LiveShadowSnapshotCount int                                         `json:"live_shadow_snapshot_count"`
-	BaselineCount           int                                         `json:"baseline_count"`
-	FeatureCount            int                                         `json:"feature_count"`
-	LatestObservedAt        *time.Time                                  `json:"latest_observed_at,omitempty"`
-	BlockingReasons         api.StringList                              `json:"blocking_reasons"`
-	RawSamplesStored        bool                                        `json:"raw_samples_stored"`
-	ScoringAllowed          bool                                        `json:"scoring_allowed"`
-	AlertsEmitted           bool                                        `json:"alerts_emitted"`
-	ActionsExecuted         bool                                        `json:"actions_executed"`
-	Snapshots               []api.PredictionFeatureDistributionSnapshot `json:"snapshots"`
-	GeneratedAt             time.Time                                   `json:"generated_at"`
+	Version                   string                                      `json:"version"`
+	Mode                      string                                      `json:"mode"`
+	ArchiveSHA256             string                                      `json:"archive_sha256"`
+	Scope                     FeatureDistributionArchiveScope             `json:"scope"`
+	ComparabilityStatus       string                                      `json:"comparability_status"`
+	MinimumFeaturePairs       int                                         `json:"minimum_feature_pairs"`
+	SnapshotCount             int                                         `json:"snapshot_count"`
+	TrainingSnapshotCount     int                                         `json:"training_snapshot_count"`
+	LiveShadowSnapshotCount   int                                         `json:"live_shadow_snapshot_count"`
+	BaselineCount             int                                         `json:"baseline_count"`
+	FeatureCount              int                                         `json:"feature_count"`
+	PairedFeatureCount        int                                         `json:"paired_feature_count"`
+	MissingTrainingFeatures   api.StringList                              `json:"missing_training_features"`
+	MissingLiveShadowFeatures api.StringList                              `json:"missing_live_shadow_features"`
+	LatestObservedAt          *time.Time                                  `json:"latest_observed_at,omitempty"`
+	BlockingReasons           api.StringList                              `json:"blocking_reasons"`
+	RawSamplesStored          bool                                        `json:"raw_samples_stored"`
+	ScoringAllowed            bool                                        `json:"scoring_allowed"`
+	AlertsEmitted             bool                                        `json:"alerts_emitted"`
+	ActionsExecuted           bool                                        `json:"actions_executed"`
+	Snapshots                 []api.PredictionFeatureDistributionSnapshot `json:"snapshots"`
+	GeneratedAt               time.Time                                   `json:"generated_at"`
 }
 
 type featureDistributionMaterialization struct {
@@ -158,26 +164,35 @@ func (s *Service) FeatureDistributionArchiveForQuery(query FeatureDistributionSn
 	}
 	baselines := map[uint]bool{}
 	features := map[string]bool{}
+	trainingFeatures := map[string]bool{}
+	liveShadowFeatures := map[string]bool{}
 	var latestObservedAt *time.Time
 	archive := FeatureDistributionArchive{
-		Version:          featureDistributionArchiveVersion,
-		Mode:             "read_only_aggregate_distribution_archive",
-		Scope:            scope,
-		BlockingReasons:  append(api.StringList(nil), blocking...),
-		RawSamplesStored: false,
-		ScoringAllowed:   false,
-		AlertsEmitted:    false,
-		ActionsExecuted:  false,
-		Snapshots:        rows,
-		GeneratedAt:      s.now(),
+		Version:             featureDistributionArchiveVersion,
+		Mode:                "read_only_aggregate_distribution_archive",
+		Scope:               scope,
+		MinimumFeaturePairs: featureDistributionMinimumPairs,
+		BlockingReasons:     append(api.StringList(nil), blocking...),
+		RawSamplesStored:    false,
+		ScoringAllowed:      false,
+		AlertsEmitted:       false,
+		ActionsExecuted:     false,
+		Snapshots:           rows,
+		GeneratedAt:         s.now(),
 	}
 	for _, row := range rows {
 		archive.SnapshotCount++
 		switch row.DistributionRole {
 		case "training":
 			archive.TrainingSnapshotCount++
+			if row.FeatureName != "" {
+				trainingFeatures[row.FeatureName] = true
+			}
 		case "live_shadow":
 			archive.LiveShadowSnapshotCount++
+			if row.FeatureName != "" {
+				liveShadowFeatures[row.FeatureName] = true
+			}
 		}
 		if row.SourceBaselineBuildID > 0 {
 			baselines[row.SourceBaselineBuildID] = true
@@ -192,9 +207,68 @@ func (s *Service) FeatureDistributionArchiveForQuery(query FeatureDistributionSn
 	}
 	archive.BaselineCount = len(baselines)
 	archive.FeatureCount = len(features)
+	archive.PairedFeatureCount, archive.MissingTrainingFeatures, archive.MissingLiveShadowFeatures = featureDistributionPairSummary(trainingFeatures, liveShadowFeatures)
+	archive.ComparabilityStatus = featureDistributionComparabilityStatus(archive)
+	archive.BlockingReasons = append(archive.BlockingReasons, featureDistributionComparabilityBlockers(archive)...)
+	archive.BlockingReasons = api.StringList(uniqueSortedStrings(archive.BlockingReasons))
 	archive.LatestObservedAt = latestObservedAt
 	archive.ArchiveSHA256 = featureDistributionArchiveSHA(archive)
 	return archive, nil
+}
+
+func featureDistributionPairSummary(trainingFeatures, liveShadowFeatures map[string]bool) (int, api.StringList, api.StringList) {
+	paired := 0
+	missingTraining := []string{}
+	missingLive := []string{}
+	for feature := range trainingFeatures {
+		if liveShadowFeatures[feature] {
+			paired++
+			continue
+		}
+		missingLive = append(missingLive, feature)
+	}
+	for feature := range liveShadowFeatures {
+		if !trainingFeatures[feature] {
+			missingTraining = append(missingTraining, feature)
+		}
+	}
+	sort.Strings(missingTraining)
+	sort.Strings(missingLive)
+	return paired, api.StringList(missingTraining), api.StringList(missingLive)
+}
+
+func featureDistributionComparabilityStatus(archive FeatureDistributionArchive) string {
+	if archive.Scope.Status == "blocked" {
+		return "blocked_no_validation_scope"
+	}
+	if archive.TrainingSnapshotCount == 0 {
+		return "blocked_no_training_snapshots"
+	}
+	if archive.LiveShadowSnapshotCount == 0 {
+		return "blocked_no_live_shadow_snapshots"
+	}
+	if archive.PairedFeatureCount < archive.MinimumFeaturePairs {
+		return "blocked_no_paired_features"
+	}
+	if len(archive.MissingTrainingFeatures) > 0 || len(archive.MissingLiveShadowFeatures) > 0 {
+		return "exploratory_partial_feature_pairs"
+	}
+	return "comparable"
+}
+
+func featureDistributionComparabilityBlockers(archive FeatureDistributionArchive) api.StringList {
+	switch archive.ComparabilityStatus {
+	case "blocked_no_validation_scope":
+		return api.StringList{"feature distribution comparability requires a validation scope"}
+	case "blocked_no_training_snapshots":
+		return api.StringList{"feature distribution comparability requires training snapshots"}
+	case "blocked_no_live_shadow_snapshots":
+		return api.StringList{"feature distribution comparability requires live shadow snapshots"}
+	case "blocked_no_paired_features":
+		return api.StringList{"feature distribution comparability requires at least one paired training/live feature"}
+	default:
+		return nil
+	}
 }
 
 func (s *Service) resolveFeatureDistributionQuery(query FeatureDistributionSnapshotQuery) (FeatureDistributionSnapshotQuery, FeatureDistributionArchiveScope, api.StringList, error) {
@@ -852,37 +926,48 @@ func featureDistributionArchiveSHA(archive FeatureDistributionArchive) string {
 		return snapshots[left].ObservedAt.Before(snapshots[right].ObservedAt)
 	})
 	payload, _ := json.Marshal(struct {
-		Version                 string                          `json:"version"`
-		Mode                    string                          `json:"mode"`
-		Scope                   FeatureDistributionArchiveScope `json:"scope"`
-		SnapshotCount           int                             `json:"snapshot_count"`
-		TrainingSnapshotCount   int                             `json:"training_snapshot_count"`
-		LiveShadowSnapshotCount int                             `json:"live_shadow_snapshot_count"`
-		BaselineCount           int                             `json:"baseline_count"`
-		FeatureCount            int                             `json:"feature_count"`
-		LatestObservedAt        *time.Time                      `json:"latest_observed_at,omitempty"`
-		RawSamplesStored        bool                            `json:"raw_samples_stored"`
-		ScoringAllowed          bool                            `json:"scoring_allowed"`
-		AlertsEmitted           bool                            `json:"alerts_emitted"`
-		ActionsExecuted         bool                            `json:"actions_executed"`
-		BlockingReasons         api.StringList                  `json:"blocking_reasons"`
-		Snapshots               []stableSnapshot                `json:"snapshots"`
+		Version                   string                          `json:"version"`
+		Mode                      string                          `json:"mode"`
+		Scope                     FeatureDistributionArchiveScope `json:"scope"`
+		ComparabilityStatus       string                          `json:"comparability_status"`
+		MinimumFeaturePairs       int                             `json:"minimum_feature_pairs"`
+		SnapshotCount             int                             `json:"snapshot_count"`
+		TrainingSnapshotCount     int                             `json:"training_snapshot_count"`
+		LiveShadowSnapshotCount   int                             `json:"live_shadow_snapshot_count"`
+		BaselineCount             int                             `json:"baseline_count"`
+		FeatureCount              int                             `json:"feature_count"`
+		PairedFeatureCount        int                             `json:"paired_feature_count"`
+		MissingTrainingFeatures   api.StringList                  `json:"missing_training_features"`
+		MissingLiveShadowFeatures api.StringList                  `json:"missing_live_shadow_features"`
+		LatestObservedAt          *time.Time                      `json:"latest_observed_at,omitempty"`
+		RawSamplesStored          bool                            `json:"raw_samples_stored"`
+		ScoringAllowed            bool                            `json:"scoring_allowed"`
+		AlertsEmitted             bool                            `json:"alerts_emitted"`
+		ActionsExecuted           bool                            `json:"actions_executed"`
+		BlockingReasons           api.StringList                  `json:"blocking_reasons"`
+		Snapshots                 []stableSnapshot                `json:"snapshots"`
 	}{
 		Version:                 archive.Version,
 		Mode:                    archive.Mode,
 		Scope:                   archive.Scope,
+		ComparabilityStatus:     archive.ComparabilityStatus,
+		MinimumFeaturePairs:     archive.MinimumFeaturePairs,
 		SnapshotCount:           archive.SnapshotCount,
 		TrainingSnapshotCount:   archive.TrainingSnapshotCount,
 		LiveShadowSnapshotCount: archive.LiveShadowSnapshotCount,
 		BaselineCount:           archive.BaselineCount,
 		FeatureCount:            archive.FeatureCount,
-		LatestObservedAt:        archive.LatestObservedAt,
-		RawSamplesStored:        archive.RawSamplesStored,
-		ScoringAllowed:          archive.ScoringAllowed,
-		AlertsEmitted:           archive.AlertsEmitted,
-		ActionsExecuted:         archive.ActionsExecuted,
-		BlockingReasons:         append(api.StringList(nil), archive.BlockingReasons...),
-		Snapshots:               snapshots,
+		PairedFeatureCount:      archive.PairedFeatureCount,
+		MissingTrainingFeatures: append(api.StringList(nil), archive.MissingTrainingFeatures...),
+		MissingLiveShadowFeatures: append(api.StringList(nil),
+			archive.MissingLiveShadowFeatures...),
+		LatestObservedAt: archive.LatestObservedAt,
+		RawSamplesStored: archive.RawSamplesStored,
+		ScoringAllowed:   archive.ScoringAllowed,
+		AlertsEmitted:    archive.AlertsEmitted,
+		ActionsExecuted:  archive.ActionsExecuted,
+		BlockingReasons:  append(api.StringList(nil), archive.BlockingReasons...),
+		Snapshots:        snapshots,
 	})
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])

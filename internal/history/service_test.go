@@ -112,7 +112,7 @@ func TestFeatureDistributionSnapshotsExposeReadOnlyHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if archive.ArchiveSHA256 == "" || archive.SnapshotCount != 2 || archive.TrainingSnapshotCount != 1 || archive.LiveShadowSnapshotCount != 1 || archive.RawSamplesStored || archive.ScoringAllowed || archive.ActionsExecuted {
+	if archive.ArchiveSHA256 == "" || archive.SnapshotCount != 2 || archive.TrainingSnapshotCount != 1 || archive.LiveShadowSnapshotCount != 1 || archive.ComparabilityStatus != "comparable" || archive.MinimumFeaturePairs != featureDistributionMinimumPairs || archive.PairedFeatureCount != 1 || archive.RawSamplesStored || archive.ScoringAllowed || archive.ActionsExecuted {
 		t.Fatalf("unexpected archive summary: %+v", archive)
 	}
 	firstSHA := archive.ArchiveSHA256
@@ -131,7 +131,7 @@ func TestFeatureDistributionSnapshotsExposeReadOnlyHistory(t *testing.T) {
 	if scoped.Scope.Name != "validation" || scoped.Scope.Status != "validation_scope" || scoped.Scope.SourceBaselineBuildID != 1 || scoped.Scope.ModelSpecID != spec.ID || scoped.Scope.FeatureContractVersion != "atlas-prediction-features-v1" {
 		t.Fatalf("unexpected scoped archive scope: %+v", scoped.Scope)
 	}
-	if scoped.SnapshotCount != 2 || scoped.TrainingSnapshotCount != 1 || scoped.LiveShadowSnapshotCount != 1 || scoped.ArchiveSHA256 == "" {
+	if scoped.SnapshotCount != 2 || scoped.TrainingSnapshotCount != 1 || scoped.LiveShadowSnapshotCount != 1 || scoped.ComparabilityStatus != "comparable" || scoped.PairedFeatureCount != 1 || scoped.ArchiveSHA256 == "" {
 		t.Fatalf("unexpected scoped archive summary: %+v", scoped)
 	}
 	if scoped.ArchiveSHA256 == firstSHA {
