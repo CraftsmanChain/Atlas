@@ -17,10 +17,31 @@ import (
 	"atlas/pkg/api"
 )
 
-const featureDistributionSnapshotVersion = "gpu-feature-distribution-snapshot-v1"
+const (
+	featureDistributionSnapshotVersion = "gpu-feature-distribution-snapshot-v1"
+	featureDistributionArchiveVersion  = "gpu-feature-distribution-archive-v1"
+)
 
 type FeatureDistributionSnapshotRequest struct {
 	SourceBaselineBuildID uint `json:"source_baseline_build_id,omitempty"`
+}
+
+type FeatureDistributionArchive struct {
+	Version                 string                                      `json:"version"`
+	Mode                    string                                      `json:"mode"`
+	ArchiveSHA256           string                                      `json:"archive_sha256"`
+	SnapshotCount           int                                         `json:"snapshot_count"`
+	TrainingSnapshotCount   int                                         `json:"training_snapshot_count"`
+	LiveShadowSnapshotCount int                                         `json:"live_shadow_snapshot_count"`
+	BaselineCount           int                                         `json:"baseline_count"`
+	FeatureCount            int                                         `json:"feature_count"`
+	LatestObservedAt        *time.Time                                  `json:"latest_observed_at,omitempty"`
+	RawSamplesStored        bool                                        `json:"raw_samples_stored"`
+	ScoringAllowed          bool                                        `json:"scoring_allowed"`
+	AlertsEmitted           bool                                        `json:"alerts_emitted"`
+	ActionsExecuted         bool                                        `json:"actions_executed"`
+	Snapshots               []api.PredictionFeatureDistributionSnapshot `json:"snapshots"`
+	GeneratedAt             time.Time                                   `json:"generated_at"`
 }
 
 type featureDistributionMaterialization struct {
@@ -67,6 +88,50 @@ func (s *Service) FeatureDistributionSnapshots(limit int) ([]api.PredictionFeatu
 	var rows []api.PredictionFeatureDistributionSnapshot
 	err := s.db.Order("observed_at DESC, id DESC").Limit(limit).Find(&rows).Error
 	return rows, err
+}
+
+func (s *Service) FeatureDistributionArchive(limit int) (FeatureDistributionArchive, error) {
+	rows, err := s.FeatureDistributionSnapshots(limit)
+	if err != nil {
+		return FeatureDistributionArchive{}, err
+	}
+	baselines := map[uint]bool{}
+	features := map[string]bool{}
+	var latestObservedAt *time.Time
+	archive := FeatureDistributionArchive{
+		Version:          featureDistributionArchiveVersion,
+		Mode:             "read_only_aggregate_distribution_archive",
+		RawSamplesStored: false,
+		ScoringAllowed:   false,
+		AlertsEmitted:    false,
+		ActionsExecuted:  false,
+		Snapshots:        rows,
+		GeneratedAt:      s.now(),
+	}
+	for _, row := range rows {
+		archive.SnapshotCount++
+		switch row.DistributionRole {
+		case "training":
+			archive.TrainingSnapshotCount++
+		case "live_shadow":
+			archive.LiveShadowSnapshotCount++
+		}
+		if row.SourceBaselineBuildID > 0 {
+			baselines[row.SourceBaselineBuildID] = true
+		}
+		if row.FeatureName != "" {
+			features[row.FeatureName] = true
+		}
+		observedAt := row.ObservedAt
+		if latestObservedAt == nil || observedAt.After(*latestObservedAt) {
+			latestObservedAt = &observedAt
+		}
+	}
+	archive.BaselineCount = len(baselines)
+	archive.FeatureCount = len(features)
+	archive.LatestObservedAt = latestObservedAt
+	archive.ArchiveSHA256 = featureDistributionArchiveSHA(archive)
+	return archive, nil
 }
 
 func (s *Service) MaterializeTrainingFeatureDistributions(request FeatureDistributionSnapshotRequest) ([]api.PredictionFeatureDistributionSnapshot, error) {
@@ -550,6 +615,113 @@ func liveFeatureDistributionSnapshotSHA(snapshot api.PredictionFeatureDistributi
 		BinEdges: append(api.FloatList(nil), snapshot.BinEdges...), BinProportions: append(api.FloatList(nil), snapshot.BinProportions...),
 		BlockingReasons: append(api.StringList(nil), snapshot.BlockingReasons...), NoRawSamplesStored: true,
 		NoAlertEmitted: run.NoAlertEmitted, NoActionExecuted: run.NoActionExecuted,
+	})
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+func featureDistributionArchiveSHA(archive FeatureDistributionArchive) string {
+	type stableSnapshot struct {
+		SnapshotKey            string         `json:"snapshot_key"`
+		Version                string         `json:"version"`
+		Status                 string         `json:"status"`
+		DistributionRole       string         `json:"distribution_role"`
+		SourceBaselineBuildID  uint           `json:"source_baseline_build_id"`
+		ModelSpecID            uint           `json:"model_spec_id"`
+		ModelKey               string         `json:"model_key"`
+		ModelVersion           string         `json:"model_version"`
+		FeatureContractVersion string         `json:"feature_contract_version"`
+		ScopeModelName         string         `json:"scope_model_name"`
+		SourceKey              string         `json:"source_key"`
+		FeatureName            string         `json:"feature_name"`
+		SampleCount            int            `json:"sample_count"`
+		MissingCount           int            `json:"missing_count"`
+		MissingRatio           float64        `json:"missing_ratio"`
+		Mean                   float64        `json:"mean"`
+		Stddev                 float64        `json:"stddev"`
+		Minimum                float64        `json:"minimum"`
+		P25                    float64        `json:"p25"`
+		P50                    float64        `json:"p50"`
+		P75                    float64        `json:"p75"`
+		P90                    float64        `json:"p90"`
+		P95                    float64        `json:"p95"`
+		P99                    float64        `json:"p99"`
+		Maximum                float64        `json:"maximum"`
+		BinEdges               api.FloatList  `json:"bin_edges"`
+		BinProportions         api.FloatList  `json:"bin_proportions"`
+		ReportSHA256           string         `json:"report_sha256"`
+		BlockingReasons        api.StringList `json:"blocking_reasons"`
+		ObservedAt             time.Time      `json:"observed_at"`
+	}
+	snapshots := make([]stableSnapshot, 0, len(archive.Snapshots))
+	for _, row := range archive.Snapshots {
+		snapshots = append(snapshots, stableSnapshot{
+			SnapshotKey:            row.SnapshotKey,
+			Version:                row.Version,
+			Status:                 row.Status,
+			DistributionRole:       row.DistributionRole,
+			SourceBaselineBuildID:  row.SourceBaselineBuildID,
+			ModelSpecID:            row.ModelSpecID,
+			ModelKey:               row.ModelKey,
+			ModelVersion:           row.ModelVersion,
+			FeatureContractVersion: row.FeatureContractVersion,
+			ScopeModelName:         row.ScopeModelName,
+			SourceKey:              row.SourceKey,
+			FeatureName:            row.FeatureName,
+			SampleCount:            row.SampleCount,
+			MissingCount:           row.MissingCount,
+			MissingRatio:           row.MissingRatio,
+			Mean:                   row.Mean,
+			Stddev:                 row.Stddev,
+			Minimum:                row.Minimum,
+			P25:                    row.P25,
+			P50:                    row.P50,
+			P75:                    row.P75,
+			P90:                    row.P90,
+			P95:                    row.P95,
+			P99:                    row.P99,
+			Maximum:                row.Maximum,
+			BinEdges:               append(api.FloatList(nil), row.BinEdges...),
+			BinProportions:         append(api.FloatList(nil), row.BinProportions...),
+			ReportSHA256:           row.ReportSHA256,
+			BlockingReasons:        append(api.StringList(nil), row.BlockingReasons...),
+			ObservedAt:             row.ObservedAt,
+		})
+	}
+	sort.Slice(snapshots, func(left, right int) bool {
+		if snapshots[left].SnapshotKey != snapshots[right].SnapshotKey {
+			return snapshots[left].SnapshotKey < snapshots[right].SnapshotKey
+		}
+		return snapshots[left].ObservedAt.Before(snapshots[right].ObservedAt)
+	})
+	payload, _ := json.Marshal(struct {
+		Version                 string           `json:"version"`
+		Mode                    string           `json:"mode"`
+		SnapshotCount           int              `json:"snapshot_count"`
+		TrainingSnapshotCount   int              `json:"training_snapshot_count"`
+		LiveShadowSnapshotCount int              `json:"live_shadow_snapshot_count"`
+		BaselineCount           int              `json:"baseline_count"`
+		FeatureCount            int              `json:"feature_count"`
+		LatestObservedAt        *time.Time       `json:"latest_observed_at,omitempty"`
+		RawSamplesStored        bool             `json:"raw_samples_stored"`
+		ScoringAllowed          bool             `json:"scoring_allowed"`
+		AlertsEmitted           bool             `json:"alerts_emitted"`
+		ActionsExecuted         bool             `json:"actions_executed"`
+		Snapshots               []stableSnapshot `json:"snapshots"`
+	}{
+		Version:                 archive.Version,
+		Mode:                    archive.Mode,
+		SnapshotCount:           archive.SnapshotCount,
+		TrainingSnapshotCount:   archive.TrainingSnapshotCount,
+		LiveShadowSnapshotCount: archive.LiveShadowSnapshotCount,
+		BaselineCount:           archive.BaselineCount,
+		FeatureCount:            archive.FeatureCount,
+		LatestObservedAt:        archive.LatestObservedAt,
+		RawSamplesStored:        archive.RawSamplesStored,
+		ScoringAllowed:          archive.ScoringAllowed,
+		AlertsEmitted:           archive.AlertsEmitted,
+		ActionsExecuted:         archive.ActionsExecuted,
+		Snapshots:               snapshots,
 	})
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
