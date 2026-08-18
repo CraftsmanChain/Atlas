@@ -2,6 +2,7 @@ package history
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -151,16 +152,29 @@ func (h *Handler) HandleFeatureDistributions(w http.ResponseWriter, r *http.Requ
 	switch r.Method {
 	case http.MethodGet:
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		rows, err := h.service.FeatureDistributionSnapshots(limit)
+		archive, err := h.service.FeatureDistributionArchive(limit)
 		if err != nil {
 			historyJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("ETag", `"`+archive.ArchiveSHA256+`"`)
+		w.Header().Set("X-Atlas-Feature-Distribution-Archive-Version", archive.Version)
+		w.Header().Set("X-Atlas-Feature-Distribution-Archive-SHA256", archive.ArchiveSHA256)
+		if r.URL.Query().Get("download") == "1" {
+			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.json"`, archive.Version, archive.ArchiveSHA256[:12]))
+			historyJSON(w, http.StatusOK, map[string]any{"data": archive})
+			return
+		}
 		historyJSON(w, http.StatusOK, map[string]any{
-			"data": rows,
+			"data": archive.Snapshots,
 			"meta": map[string]any{
-				"total": len(rows), "read_only": true, "raw_samples_stored": false,
-				"roles": []string{"training", "live_shadow"},
+				"total": archive.SnapshotCount, "read_only": true, "raw_samples_stored": false,
+				"roles":           []string{"training", "live_shadow"},
+				"archive_version": archive.Version, "archive_sha256": archive.ArchiveSHA256,
+				"training_snapshot_count": archive.TrainingSnapshotCount, "live_shadow_snapshot_count": archive.LiveShadowSnapshotCount,
+				"baseline_count": archive.BaselineCount, "feature_count": archive.FeatureCount, "latest_observed_at": archive.LatestObservedAt,
+				"scoring_allowed": archive.ScoringAllowed, "alerts_emitted": archive.AlertsEmitted, "actions_executed": archive.ActionsExecuted,
 			},
 		})
 	case http.MethodPost:

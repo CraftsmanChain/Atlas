@@ -91,11 +91,33 @@ func TestFeatureDistributionSnapshotsExposeReadOnlyHistory(t *testing.T) {
 	if len(list) != 1 || list[0].SnapshotKey != "live-temp" || len(list[0].BinProportions) != 2 {
 		t.Fatalf("unexpected distribution snapshots: %+v", list)
 	}
+	service.now = func() time.Time { return now.Add(time.Minute) }
+	archive, err := service.FeatureDistributionArchive(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archive.ArchiveSHA256 == "" || archive.SnapshotCount != 2 || archive.TrainingSnapshotCount != 1 || archive.LiveShadowSnapshotCount != 1 || archive.RawSamplesStored || archive.ScoringAllowed || archive.ActionsExecuted {
+		t.Fatalf("unexpected archive summary: %+v", archive)
+	}
+	firstSHA := archive.ArchiveSHA256
+	service.now = func() time.Time { return now.Add(2 * time.Minute) }
+	archive, err = service.FeatureDistributionArchive(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archive.ArchiveSHA256 != firstSHA {
+		t.Fatalf("archive sha should not depend on request time: %s != %s", archive.ArchiveSHA256, firstSHA)
+	}
 	handler := NewHandler(service)
 	response := httptest.NewRecorder()
 	handler.HandleFeatureDistributions(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/history/feature-distributions?limit=2", nil))
-	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"raw_samples_stored":false`)) || !bytes.Contains(response.Body.Bytes(), []byte("live_shadow")) {
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"raw_samples_stored":false`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"archive_sha256":"`)) || !bytes.Contains(response.Body.Bytes(), []byte("live_shadow")) {
 		t.Fatalf("feature distribution handler failed: %d %s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler.HandleFeatureDistributions(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/history/feature-distributions?limit=2&download=1", nil))
+	if response.Code != http.StatusOK || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" || !bytes.Contains(response.Body.Bytes(), []byte(featureDistributionArchiveVersion)) || !bytes.Contains(response.Body.Bytes(), []byte(firstSHA)) {
+		t.Fatalf("feature distribution download failed: %d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
 	}
 }
 
