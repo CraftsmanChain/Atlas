@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"atlas/internal/history"
 	"atlas/pkg/api"
+	"atlas/pkg/config"
 	"atlas/pkg/storage"
 )
 
@@ -784,8 +786,11 @@ func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T)
 	if report.Version != ValidationReadinessReportVersion || report.Status != "blocked" || report.LabelGateStatus != "exploratory_ready" || report.LabelManifestSHA256 == "" || report.ReadinessSHA256 == "" {
 		t.Fatalf("unexpected validation readiness report: %+v", report)
 	}
-	if report.LabelManifestVersion != LabelManifestVersion || report.LabelManifestSHA256 == "" || report.EvidenceBundleVersion != EvidenceBundleVersion || report.EvidenceBundleSHA256 == "" || report.EvidencePositive != 1 || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" || report.DataDriftVersion != DataDriftReportVersion || report.DataDriftSHA256 == "" || report.DataDriftStatus != "blocked_no_shadow_runs" || report.DataDriftCoverage != "exploratory_insufficient_coverage_audits" || report.CalibrationDriftVersion != CalibrationDriftReportVersion || report.CalibrationDriftSHA256 == "" || report.CalibrationDriftStatus != "blocked_no_calibration_reports" || report.FeatureDriftVersion != FeatureDriftReportVersion || report.FeatureDriftSHA256 == "" || report.FeatureDriftStatus != "blocked_no_baseline_artifact" || report.FeatureDriftCompared != 0 || report.FeatureDriftMaxPSI != 0 || report.FeatureDriftMaxKS != 0 || report.FeatureDriftPSIStatus != "pending_distribution_store" || report.FeatureDriftKSStatus != "pending_distribution_store" {
+	if report.LabelManifestVersion != LabelManifestVersion || report.LabelManifestSHA256 == "" || report.EvidenceBundleVersion != EvidenceBundleVersion || report.EvidenceBundleSHA256 == "" || report.EvidencePositive != 1 || report.OutcomeReportVersion != "prediction-outcome-report-v1" || report.OutcomeStability != "blocked" || report.ChallengerVersion != HeaRankChallengerReportVersion || report.ChallengerConfidence != "insufficient_sample" || report.DataDriftVersion != DataDriftReportVersion || report.DataDriftSHA256 == "" || report.DataDriftStatus != "blocked_no_shadow_runs" || report.DataDriftCoverage != "exploratory_insufficient_coverage_audits" || report.CalibrationDriftVersion != CalibrationDriftReportVersion || report.CalibrationDriftSHA256 == "" || report.CalibrationDriftStatus != "blocked_no_calibration_reports" || report.FeatureDriftVersion != FeatureDriftReportVersion || report.FeatureDriftSHA256 == "" || report.FeatureDriftStatus != "blocked_no_baseline_artifact" || report.FeatureDriftCompared != 0 || report.FeatureDriftMaxPSI != 0 || report.FeatureDriftKSStatus != "pending_distribution_store" || report.FeatureDistributionArchiveVersion != validationFeatureDistributionArchiveVersion || report.FeatureDistributionArchiveSHA256 == "" || report.FeatureDistributionArchiveScope.Status != "blocked" || report.FeatureDistributionSnapshots != 0 {
 		t.Fatalf("unexpected readiness bindings: %+v", report)
+	}
+	if len(report.FeatureDistributionBlockers) == 0 || report.FeatureDistributionBlockers[0] != "validation scope requires a current shadow candidate model spec" {
+		t.Fatalf("expected feature distribution archive blockers: %+v", report)
 	}
 	if len(report.FeatureDriftBlockers) == 0 || report.FeatureDriftBlockers[0] != "no completed baseline model artifact is available" || len(report.FeatureDriftNextRun) == 0 {
 		t.Fatalf("expected feature drift guidance to be bound into readiness: %+v", report)
@@ -807,6 +812,91 @@ func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T)
 	handler.HandleValidationReadiness(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/validation-readiness?download=1", nil))
 	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(ValidationReadinessReportVersion)) || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" {
 		t.Fatalf("validation readiness handler failed: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestValidationReadinessBindsScopedFeatureDistributionArchive(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
+	trainedAt := now.Add(-2 * time.Hour)
+	spec := api.PredictionModelSpec{
+		ModelKey: "gpu.failure.within_7d", Version: "0.3.0", HardwareClass: "gpu", EntityType: "node",
+		Task: "node_risk_ranking", HorizonMinutes: 10080, Algorithm: "logistic_regression", Runtime: "atlas",
+		Mode: "shadow", Status: "shadow_candidate", FeatureContractVersion: FeatureContractVersion,
+		LabelContractVersion: LabelContractVersion, SourceBaselineBuildID: 11, ScopeModelName: "NVIDIA H100 80GB HBM3",
+		Current: true, TrainedAt: &trainedAt,
+	}
+	if err := db.Create(&spec).Error; err != nil {
+		t.Fatal(err)
+	}
+	rows := []api.PredictionFeatureDistributionSnapshot{
+		{
+			SnapshotKey: "training-11-temp", Version: "feature-distribution-v1", Status: "completed", DistributionRole: "training",
+			SourceBaselineBuildID: 11, FeatureContractVersion: FeatureContractVersion, FeatureName: "gpu_temp_mean_24h",
+			SampleCount: 100, BinEdges: api.FloatList{0, 50, 100}, BinProportions: api.FloatList{0.7, 0.3}, ReportSHA256: "training-sha", ObservedAt: now.Add(-time.Hour),
+		},
+		{
+			SnapshotKey: "live-11-temp", Version: "feature-distribution-v1", Status: "completed", DistributionRole: "live_shadow",
+			SourceBaselineBuildID: 11, ModelSpecID: spec.ID, FeatureContractVersion: FeatureContractVersion, FeatureName: "gpu_temp_mean_24h",
+			SampleCount: 80, BinEdges: api.FloatList{0, 50, 100}, BinProportions: api.FloatList{0.6, 0.4}, ReportSHA256: "live-sha", ObservedAt: now,
+		},
+		{
+			SnapshotKey: "other-baseline-temp", Version: "feature-distribution-v1", Status: "completed", DistributionRole: "training",
+			SourceBaselineBuildID: 12, FeatureContractVersion: FeatureContractVersion, FeatureName: "gpu_temp_mean_24h",
+			SampleCount: 120, BinEdges: api.FloatList{0, 50, 100}, BinProportions: api.FloatList{0.5, 0.5}, ReportSHA256: "other-sha", ObservedAt: now,
+		},
+	}
+	for _, row := range rows {
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	historyService := history.NewService(db, config.HistoryConfig{}, time.Second)
+	historyServiceArchive, err := historyService.FeatureDistributionArchiveForQuery(history.FeatureDistributionSnapshotQuery{Scope: "validation", Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if historyServiceArchive.SnapshotCount != 2 || historyServiceArchive.ArchiveSHA256 == "" {
+		t.Fatalf("unexpected history archive: %+v", historyServiceArchive)
+	}
+
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	report, err := service.ValidationReadinessReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.FeatureDistributionArchiveVersion != historyServiceArchive.Version || report.FeatureDistributionArchiveSHA256 != historyServiceArchive.ArchiveSHA256 {
+		t.Fatalf("readiness archive binding mismatch: readiness=%+v archive=%+v", report, historyServiceArchive)
+	}
+	if report.FeatureDistributionArchiveScope.Status != "validation_scope" || report.FeatureDistributionArchiveScope.SourceBaselineBuildID != 11 || report.FeatureDistributionArchiveScope.ModelSpecID != spec.ID {
+		t.Fatalf("unexpected readiness archive scope: %+v", report.FeatureDistributionArchiveScope)
+	}
+	if report.FeatureDistributionSnapshots != 2 || report.FeatureDistributionTraining != 1 || report.FeatureDistributionLiveShadow != 1 || report.FeatureDistributionFeatures != 1 {
+		t.Fatalf("unexpected readiness archive counts: %+v", report)
+	}
+	firstReadinessSHA := report.ReadinessSHA256
+	if firstReadinessSHA == "" {
+		t.Fatalf("readiness sha is missing: %+v", report)
+	}
+
+	if err := db.Create(&api.PredictionFeatureDistributionSnapshot{
+		SnapshotKey: "live-11-power", Version: "feature-distribution-v1", Status: "completed", DistributionRole: "live_shadow",
+		SourceBaselineBuildID: 11, ModelSpecID: spec.ID, FeatureContractVersion: FeatureContractVersion, FeatureName: "power_usage_mean_24h",
+		SampleCount: 80, BinEdges: api.FloatList{0, 300, 600}, BinProportions: api.FloatList{0.8, 0.2}, ReportSHA256: "live-power-sha", ObservedAt: now.Add(time.Minute),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	report, err = service.ValidationReadinessReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.FeatureDistributionArchiveSHA256 == historyServiceArchive.ArchiveSHA256 || report.ReadinessSHA256 == firstReadinessSHA {
+		t.Fatalf("readiness sha should change when scoped distribution archive changes: before=%s/%s after=%s/%s", historyServiceArchive.ArchiveSHA256, firstReadinessSHA, report.FeatureDistributionArchiveSHA256, report.ReadinessSHA256)
 	}
 }
 
