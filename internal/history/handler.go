@@ -152,7 +152,16 @@ func (h *Handler) HandleFeatureDistributions(w http.ResponseWriter, r *http.Requ
 	switch r.Method {
 	case http.MethodGet:
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		archive, err := h.service.FeatureDistributionArchive(limit)
+		sourceBaselineBuildID, _ := strconv.ParseUint(r.URL.Query().Get("source_baseline_build_id"), 10, 64)
+		modelSpecID, _ := strconv.ParseUint(r.URL.Query().Get("model_spec_id"), 10, 64)
+		archive, err := h.service.FeatureDistributionArchiveForQuery(FeatureDistributionSnapshotQuery{
+			Limit:                  limit,
+			Scope:                  r.URL.Query().Get("scope"),
+			SourceBaselineBuildID:  uint(sourceBaselineBuildID),
+			ModelSpecID:            uint(modelSpecID),
+			DistributionRole:       r.URL.Query().Get("distribution_role"),
+			FeatureContractVersion: r.URL.Query().Get("feature_contract_version"),
+		})
 		if err != nil {
 			historyJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
@@ -172,6 +181,7 @@ func (h *Handler) HandleFeatureDistributions(w http.ResponseWriter, r *http.Requ
 				"total": archive.SnapshotCount, "read_only": true, "raw_samples_stored": false,
 				"roles":           []string{"training", "live_shadow"},
 				"archive_version": archive.Version, "archive_sha256": archive.ArchiveSHA256,
+				"scope": archive.Scope, "blocking_reasons": archive.BlockingReasons,
 				"training_snapshot_count": archive.TrainingSnapshotCount, "live_shadow_snapshot_count": archive.LiveShadowSnapshotCount,
 				"baseline_count": archive.BaselineCount, "feature_count": archive.FeatureCount, "latest_observed_at": archive.LatestObservedAt,
 				"scoring_allowed": archive.ScoringAllowed, "alerts_emitted": archive.AlertsEmitted, "actions_executed": archive.ActionsExecuted,

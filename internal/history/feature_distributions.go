@@ -26,16 +26,40 @@ type FeatureDistributionSnapshotRequest struct {
 	SourceBaselineBuildID uint `json:"source_baseline_build_id,omitempty"`
 }
 
+type FeatureDistributionSnapshotQuery struct {
+	Limit                  int
+	Scope                  string
+	SourceBaselineBuildID  uint
+	ModelSpecID            uint
+	DistributionRole       string
+	FeatureContractVersion string
+}
+
+type FeatureDistributionArchiveScope struct {
+	Name                   string `json:"name"`
+	Status                 string `json:"status"`
+	Limit                  int    `json:"limit"`
+	SourceBaselineBuildID  uint   `json:"source_baseline_build_id,omitempty"`
+	ModelSpecID            uint   `json:"model_spec_id,omitempty"`
+	ModelKey               string `json:"model_key,omitempty"`
+	ModelVersion           string `json:"model_version,omitempty"`
+	DistributionRole       string `json:"distribution_role,omitempty"`
+	FeatureContractVersion string `json:"feature_contract_version,omitempty"`
+	ScopeModelName         string `json:"scope_model_name,omitempty"`
+}
+
 type FeatureDistributionArchive struct {
 	Version                 string                                      `json:"version"`
 	Mode                    string                                      `json:"mode"`
 	ArchiveSHA256           string                                      `json:"archive_sha256"`
+	Scope                   FeatureDistributionArchiveScope             `json:"scope"`
 	SnapshotCount           int                                         `json:"snapshot_count"`
 	TrainingSnapshotCount   int                                         `json:"training_snapshot_count"`
 	LiveShadowSnapshotCount int                                         `json:"live_shadow_snapshot_count"`
 	BaselineCount           int                                         `json:"baseline_count"`
 	FeatureCount            int                                         `json:"feature_count"`
 	LatestObservedAt        *time.Time                                  `json:"latest_observed_at,omitempty"`
+	BlockingReasons         api.StringList                              `json:"blocking_reasons"`
 	RawSamplesStored        bool                                        `json:"raw_samples_stored"`
 	ScoringAllowed          bool                                        `json:"scoring_allowed"`
 	AlertsEmitted           bool                                        `json:"alerts_emitted"`
@@ -82,16 +106,53 @@ type featureDistributionMaterializationInputRefs struct {
 }
 
 func (s *Service) FeatureDistributionSnapshots(limit int) ([]api.PredictionFeatureDistributionSnapshot, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
+	return s.featureDistributionSnapshotsForQuery(FeatureDistributionSnapshotQuery{Limit: limit})
+}
+
+func (s *Service) featureDistributionSnapshotsForQuery(query FeatureDistributionSnapshotQuery) ([]api.PredictionFeatureDistributionSnapshot, error) {
+	resolved, _, _, err := s.resolveFeatureDistributionQuery(query)
+	if err != nil {
+		return nil, err
 	}
+	return s.featureDistributionSnapshotsForResolvedQuery(resolved)
+}
+
+func (s *Service) featureDistributionSnapshotsForResolvedQuery(resolved FeatureDistributionSnapshotQuery) ([]api.PredictionFeatureDistributionSnapshot, error) {
 	var rows []api.PredictionFeatureDistributionSnapshot
-	err := s.db.Order("observed_at DESC, id DESC").Limit(limit).Find(&rows).Error
+	if resolved.Scope == "validation" && resolved.SourceBaselineBuildID == 0 {
+		return rows, nil
+	}
+	db := s.db.Model(&api.PredictionFeatureDistributionSnapshot{})
+	if resolved.SourceBaselineBuildID > 0 {
+		db = db.Where("source_baseline_build_id = ?", resolved.SourceBaselineBuildID)
+	}
+	if resolved.FeatureContractVersion != "" {
+		db = db.Where("feature_contract_version = ?", resolved.FeatureContractVersion)
+	}
+	if resolved.DistributionRole != "" {
+		db = db.Where("distribution_role = ?", resolved.DistributionRole)
+	}
+	if resolved.ModelSpecID > 0 {
+		if resolved.DistributionRole == "live_shadow" {
+			db = db.Where("model_spec_id = ?", resolved.ModelSpecID)
+		} else if resolved.DistributionRole == "" {
+			db = db.Where("(distribution_role = ? OR model_spec_id = ?)", "training", resolved.ModelSpecID)
+		}
+	}
+	err := db.Order("observed_at DESC, id DESC").Limit(resolved.Limit).Find(&rows).Error
 	return rows, err
 }
 
 func (s *Service) FeatureDistributionArchive(limit int) (FeatureDistributionArchive, error) {
-	rows, err := s.FeatureDistributionSnapshots(limit)
+	return s.FeatureDistributionArchiveForQuery(FeatureDistributionSnapshotQuery{Limit: limit})
+}
+
+func (s *Service) FeatureDistributionArchiveForQuery(query FeatureDistributionSnapshotQuery) (FeatureDistributionArchive, error) {
+	resolved, scope, blocking, err := s.resolveFeatureDistributionQuery(query)
+	if err != nil {
+		return FeatureDistributionArchive{}, err
+	}
+	rows, err := s.featureDistributionSnapshotsForResolvedQuery(resolved)
 	if err != nil {
 		return FeatureDistributionArchive{}, err
 	}
@@ -101,6 +162,8 @@ func (s *Service) FeatureDistributionArchive(limit int) (FeatureDistributionArch
 	archive := FeatureDistributionArchive{
 		Version:          featureDistributionArchiveVersion,
 		Mode:             "read_only_aggregate_distribution_archive",
+		Scope:            scope,
+		BlockingReasons:  append(api.StringList(nil), blocking...),
 		RawSamplesStored: false,
 		ScoringAllowed:   false,
 		AlertsEmitted:    false,
@@ -132,6 +195,100 @@ func (s *Service) FeatureDistributionArchive(limit int) (FeatureDistributionArch
 	archive.LatestObservedAt = latestObservedAt
 	archive.ArchiveSHA256 = featureDistributionArchiveSHA(archive)
 	return archive, nil
+}
+
+func (s *Service) resolveFeatureDistributionQuery(query FeatureDistributionSnapshotQuery) (FeatureDistributionSnapshotQuery, FeatureDistributionArchiveScope, api.StringList, error) {
+	if query.Limit <= 0 || query.Limit > 500 {
+		query.Limit = 100
+	}
+	query.Scope = strings.TrimSpace(query.Scope)
+	if query.Scope == "" {
+		query.Scope = "latest"
+	}
+	query.DistributionRole = strings.TrimSpace(query.DistributionRole)
+	query.FeatureContractVersion = strings.TrimSpace(query.FeatureContractVersion)
+	scope := FeatureDistributionArchiveScope{
+		Name:                   query.Scope,
+		Status:                 "scoped",
+		Limit:                  query.Limit,
+		SourceBaselineBuildID:  query.SourceBaselineBuildID,
+		ModelSpecID:            query.ModelSpecID,
+		DistributionRole:       query.DistributionRole,
+		FeatureContractVersion: query.FeatureContractVersion,
+	}
+	blocking := api.StringList{}
+	if query.Scope != "validation" {
+		if query.ModelSpecID > 0 {
+			var spec api.PredictionModelSpec
+			result := s.db.Model(&api.PredictionModelSpec{}).Where("id = ?", query.ModelSpecID).Limit(1).Find(&spec)
+			if result.Error != nil {
+				return FeatureDistributionSnapshotQuery{}, FeatureDistributionArchiveScope{}, nil, result.Error
+			}
+			if result.RowsAffected == 0 {
+				scope.Status = "blocked"
+				blocking = append(blocking, "model spec scope requires an existing model spec")
+				return query, scope, blocking, nil
+			}
+			if query.SourceBaselineBuildID == 0 {
+				query.SourceBaselineBuildID = spec.SourceBaselineBuildID
+			}
+			if query.FeatureContractVersion == "" {
+				query.FeatureContractVersion = spec.FeatureContractVersion
+			}
+			scope.Status = "model_spec_scope"
+			scope.SourceBaselineBuildID = query.SourceBaselineBuildID
+			scope.ModelSpecID = query.ModelSpecID
+			scope.ModelKey = spec.ModelKey
+			scope.ModelVersion = spec.Version
+			scope.FeatureContractVersion = query.FeatureContractVersion
+			scope.ScopeModelName = spec.ScopeModelName
+			if query.SourceBaselineBuildID == 0 {
+				scope.Status = "blocked"
+				blocking = append(blocking, "model spec is missing source baseline build id")
+			}
+		}
+		if query.SourceBaselineBuildID == 0 && query.ModelSpecID == 0 && query.DistributionRole == "" && query.FeatureContractVersion == "" {
+			scope.Status = "unscoped_latest"
+		}
+		return query, scope, blocking, nil
+	}
+
+	var spec api.PredictionModelSpec
+	specQuery := s.db.Model(&api.PredictionModelSpec{})
+	if query.ModelSpecID > 0 {
+		specQuery = specQuery.Where("id = ?", query.ModelSpecID)
+	} else {
+		specQuery = specQuery.Where("current = ? AND status = ? AND source_baseline_build_id <> ?", true, "shadow_candidate", 0).Order("trained_at DESC, id DESC")
+	}
+	result := specQuery.Limit(1).Find(&spec)
+	if result.Error != nil {
+		return FeatureDistributionSnapshotQuery{}, FeatureDistributionArchiveScope{}, nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		scope.Status = "blocked"
+		blocking = append(blocking, "validation scope requires a current shadow candidate model spec")
+		return query, scope, blocking, nil
+	}
+	query.ModelSpecID = spec.ID
+	if query.SourceBaselineBuildID == 0 {
+		query.SourceBaselineBuildID = spec.SourceBaselineBuildID
+	}
+	if query.FeatureContractVersion == "" {
+		query.FeatureContractVersion = spec.FeatureContractVersion
+	}
+	scope.Status = "validation_scope"
+	scope.SourceBaselineBuildID = query.SourceBaselineBuildID
+	scope.ModelSpecID = query.ModelSpecID
+	scope.ModelKey = spec.ModelKey
+	scope.ModelVersion = spec.Version
+	scope.FeatureContractVersion = query.FeatureContractVersion
+	scope.ScopeModelName = spec.ScopeModelName
+	scope.DistributionRole = query.DistributionRole
+	if query.SourceBaselineBuildID == 0 {
+		scope.Status = "blocked"
+		blocking = append(blocking, "validation model spec is missing source baseline build id")
+	}
+	return query, scope, blocking, nil
 }
 
 func (s *Service) MaterializeTrainingFeatureDistributions(request FeatureDistributionSnapshotRequest) ([]api.PredictionFeatureDistributionSnapshot, error) {
@@ -695,22 +852,25 @@ func featureDistributionArchiveSHA(archive FeatureDistributionArchive) string {
 		return snapshots[left].ObservedAt.Before(snapshots[right].ObservedAt)
 	})
 	payload, _ := json.Marshal(struct {
-		Version                 string           `json:"version"`
-		Mode                    string           `json:"mode"`
-		SnapshotCount           int              `json:"snapshot_count"`
-		TrainingSnapshotCount   int              `json:"training_snapshot_count"`
-		LiveShadowSnapshotCount int              `json:"live_shadow_snapshot_count"`
-		BaselineCount           int              `json:"baseline_count"`
-		FeatureCount            int              `json:"feature_count"`
-		LatestObservedAt        *time.Time       `json:"latest_observed_at,omitempty"`
-		RawSamplesStored        bool             `json:"raw_samples_stored"`
-		ScoringAllowed          bool             `json:"scoring_allowed"`
-		AlertsEmitted           bool             `json:"alerts_emitted"`
-		ActionsExecuted         bool             `json:"actions_executed"`
-		Snapshots               []stableSnapshot `json:"snapshots"`
+		Version                 string                          `json:"version"`
+		Mode                    string                          `json:"mode"`
+		Scope                   FeatureDistributionArchiveScope `json:"scope"`
+		SnapshotCount           int                             `json:"snapshot_count"`
+		TrainingSnapshotCount   int                             `json:"training_snapshot_count"`
+		LiveShadowSnapshotCount int                             `json:"live_shadow_snapshot_count"`
+		BaselineCount           int                             `json:"baseline_count"`
+		FeatureCount            int                             `json:"feature_count"`
+		LatestObservedAt        *time.Time                      `json:"latest_observed_at,omitempty"`
+		RawSamplesStored        bool                            `json:"raw_samples_stored"`
+		ScoringAllowed          bool                            `json:"scoring_allowed"`
+		AlertsEmitted           bool                            `json:"alerts_emitted"`
+		ActionsExecuted         bool                            `json:"actions_executed"`
+		BlockingReasons         api.StringList                  `json:"blocking_reasons"`
+		Snapshots               []stableSnapshot                `json:"snapshots"`
 	}{
 		Version:                 archive.Version,
 		Mode:                    archive.Mode,
+		Scope:                   archive.Scope,
 		SnapshotCount:           archive.SnapshotCount,
 		TrainingSnapshotCount:   archive.TrainingSnapshotCount,
 		LiveShadowSnapshotCount: archive.LiveShadowSnapshotCount,
@@ -721,6 +881,7 @@ func featureDistributionArchiveSHA(archive FeatureDistributionArchive) string {
 		ScoringAllowed:          archive.ScoringAllowed,
 		AlertsEmitted:           archive.AlertsEmitted,
 		ActionsExecuted:         archive.ActionsExecuted,
+		BlockingReasons:         append(api.StringList(nil), archive.BlockingReasons...),
 		Snapshots:               snapshots,
 	})
 	sum := sha256.Sum256(payload)

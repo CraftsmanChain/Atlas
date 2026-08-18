@@ -66,6 +66,17 @@ func TestFeatureDistributionSnapshotsExposeReadOnlyHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 14, 16, 20, 0, 0, time.UTC)
+	trainedAt := now.Add(-2 * time.Hour)
+	spec := api.PredictionModelSpec{
+		ModelKey: "gpu.failure.within_7d", Version: "0.2.0", HardwareClass: "gpu", EntityType: "node",
+		Task: "node_risk_ranking", HorizonMinutes: 10080, Algorithm: "logistic_regression", Runtime: "atlas",
+		Mode: "shadow", Status: "shadow_candidate", FeatureContractVersion: "atlas-prediction-features-v1",
+		LabelContractVersion: "atlas-failure-label-v1", SourceBaselineBuildID: 1, ScopeModelName: "NVIDIA H100 80GB HBM3",
+		Current: true, TrainedAt: &trainedAt,
+	}
+	if err := db.Create(&spec).Error; err != nil {
+		t.Fatal(err)
+	}
 	rows := []api.PredictionFeatureDistributionSnapshot{
 		{
 			SnapshotKey: "training-temp", Version: "feature-distribution-v1", Status: "completed", DistributionRole: "training",
@@ -74,8 +85,13 @@ func TestFeatureDistributionSnapshotsExposeReadOnlyHistory(t *testing.T) {
 		},
 		{
 			SnapshotKey: "live-temp", Version: "feature-distribution-v1", Status: "completed", DistributionRole: "live_shadow",
-			SourceBaselineBuildID: 1, FeatureContractVersion: "atlas-prediction-features-v1", FeatureName: "temperature",
+			SourceBaselineBuildID: 1, ModelSpecID: spec.ID, FeatureContractVersion: "atlas-prediction-features-v1", FeatureName: "temperature",
 			SampleCount: 80, BinEdges: api.FloatList{0, 1, 2}, BinProportions: api.FloatList{0.45, 0.55}, ObservedAt: now,
+		},
+		{
+			SnapshotKey: "other-baseline-temp", Version: "feature-distribution-v1", Status: "completed", DistributionRole: "training",
+			SourceBaselineBuildID: 2, FeatureContractVersion: "atlas-prediction-features-v1", FeatureName: "temperature",
+			SampleCount: 70, BinEdges: api.FloatList{0, 1, 2}, BinProportions: api.FloatList{0.4, 0.6}, ObservedAt: now.Add(-2 * time.Hour),
 		},
 	}
 	for _, row := range rows {
@@ -108,6 +124,26 @@ func TestFeatureDistributionSnapshotsExposeReadOnlyHistory(t *testing.T) {
 	if archive.ArchiveSHA256 != firstSHA {
 		t.Fatalf("archive sha should not depend on request time: %s != %s", archive.ArchiveSHA256, firstSHA)
 	}
+	scoped, err := service.FeatureDistributionArchiveForQuery(FeatureDistributionSnapshotQuery{Scope: "validation", Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scoped.Scope.Name != "validation" || scoped.Scope.Status != "validation_scope" || scoped.Scope.SourceBaselineBuildID != 1 || scoped.Scope.ModelSpecID != spec.ID || scoped.Scope.FeatureContractVersion != "atlas-prediction-features-v1" {
+		t.Fatalf("unexpected scoped archive scope: %+v", scoped.Scope)
+	}
+	if scoped.SnapshotCount != 2 || scoped.TrainingSnapshotCount != 1 || scoped.LiveShadowSnapshotCount != 1 || scoped.ArchiveSHA256 == "" {
+		t.Fatalf("unexpected scoped archive summary: %+v", scoped)
+	}
+	if scoped.ArchiveSHA256 == firstSHA {
+		t.Fatalf("scoped archive sha should bind validation scope")
+	}
+	bySpec, err := service.FeatureDistributionArchiveForQuery(FeatureDistributionSnapshotQuery{ModelSpecID: spec.ID, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bySpec.Scope.Status != "model_spec_scope" || bySpec.Scope.SourceBaselineBuildID != 1 || bySpec.SnapshotCount != 2 {
+		t.Fatalf("unexpected model spec scoped archive: %+v", bySpec)
+	}
 	handler := NewHandler(service)
 	response := httptest.NewRecorder()
 	handler.HandleFeatureDistributions(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/history/feature-distributions?limit=2", nil))
@@ -118,6 +154,11 @@ func TestFeatureDistributionSnapshotsExposeReadOnlyHistory(t *testing.T) {
 	handler.HandleFeatureDistributions(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/history/feature-distributions?limit=2&download=1", nil))
 	if response.Code != http.StatusOK || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" || !bytes.Contains(response.Body.Bytes(), []byte(featureDistributionArchiveVersion)) || !bytes.Contains(response.Body.Bytes(), []byte(firstSHA)) {
 		t.Fatalf("feature distribution download failed: %d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler.HandleFeatureDistributions(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/history/feature-distributions?scope=validation&limit=100&download=1", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"name":"validation"`)) || !bytes.Contains(response.Body.Bytes(), []byte(scoped.ArchiveSHA256)) || bytes.Contains(response.Body.Bytes(), []byte("other-baseline-temp")) {
+		t.Fatalf("scoped feature distribution download failed: %d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
 	}
 }
 
