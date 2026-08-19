@@ -18,11 +18,15 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentRuleVersion = "gpu-health-v1.5.0"
+const CurrentRuleVersion = "gpu-health-v1.6.0"
 
 type prometheusReader interface {
 	BaseURL() string
 	Query(context.Context, string) ([]prometheus.Sample, error)
+}
+
+type alertSink interface {
+	Process(*api.AlertEvent) error
 }
 
 type Service struct {
@@ -31,6 +35,7 @@ type Service struct {
 	config           config.HealthConfig
 	historyRetention time.Duration
 	now              func() time.Time
+	alerts           alertSink
 }
 
 type metricSpec struct {
@@ -44,6 +49,13 @@ var metricSpecs = func() []metricSpec {
 	for _, spec := range catalogSpecs {
 		result = append(result, metricSpec{key: spec.Key, query: spec.Query, source: spec.Source, priority: spec.Priority})
 	}
+	// These monitoring-only windows deliberately stay outside the versioned
+	// training feature contract. They drive operational thermal alerts and must
+	// not invalidate an already governed prediction artifact.
+	result = append(result,
+		metricSpec{key: "gpu_temp_min_15m", query: "min_over_time(DCGM_FI_DEV_GPU_TEMP[15m])", source: "dcgm_exporter"},
+		metricSpec{key: "gpu_temp_min_5m", query: "min_over_time(DCGM_FI_DEV_GPU_TEMP[5m])", source: "dcgm_exporter"},
+	)
 	return result
 }()
 
@@ -78,6 +90,14 @@ type scoreResult struct {
 
 func NewService(db *storage.DB, prom prometheusReader, cfg config.HealthConfig) *Service {
 	return &Service{db: db, prom: prom, config: cfg, historyRetention: ParseHistoryRetention(cfg.HistoryRetention), now: time.Now}
+}
+
+// NewServiceWithAlerts preserves health evaluation as the source of truth while
+// emitting notifications only for newly opened sustained-thermal episodes.
+func NewServiceWithAlerts(db *storage.DB, prom prometheusReader, cfg config.HealthConfig, alerts alertSink) *Service {
+	service := NewService(db, prom, cfg)
+	service.alerts = alerts
+	return service
 }
 
 // ParseHistoryRetention accepts Go durations and an operator-friendly integer
@@ -234,7 +254,41 @@ func (s *Service) Evaluate(ctx context.Context) (*api.HealthEvaluationRun, error
 	if _, err := features.RefreshHistoricalBaselines(s.db, finished, false); err != nil {
 		log.Printf("historical feature baseline refresh failed without affecting health scores: %v", err)
 	}
+	s.notifyNewSustainedThermalAlerts(now)
 	return run, nil
+}
+
+func (s *Service) notifyNewSustainedThermalAlerts(observedAt time.Time) {
+	if s.alerts == nil {
+		return
+	}
+	var events []api.GPUFaultEvent
+	if err := s.db.Where("source = ? AND state = ? AND first_observed_at = ? AND rule_code IN ?", healthRuleEventSource, "open", observedAt, []string{"gpu_temp_sustained_15m", "gpu_temp_sustained_5m_critical"}).Find(&events).Error; err != nil {
+		log.Printf("sustained thermal notification lookup failed: %v", err)
+		return
+	}
+	for _, event := range events {
+		var node api.GPUNode
+		_ = s.db.Where("node_ip = ?", event.NodeIP).First(&node).Error
+		duration := "15m"
+		if event.RuleCode == "gpu_temp_sustained_5m_critical" {
+			duration = "5m"
+		}
+		host := firstNonEmpty(node.Hostname, event.NodeIP)
+		alert := &api.AlertEvent{
+			Source: "atlas_thermal_monitor", Host: host, Level: event.Severity,
+			Message: "持续 GPU 高温告警", Timestamp: event.FirstObservedAt,
+			Labels: api.StringMap{
+				"alert_topic": "GPU sustained high temperature", "hostname": host, "host_ip": event.NodeIP,
+				"gpu_index": fmt.Sprintf("%d", event.GPUIndex), "gpu_uuid": event.GPUUUID, "gpu_model": event.ModelName,
+				"temperature_celsius": fmt.Sprintf("%.1f", event.ObservedValue), "threshold": event.Threshold,
+				"sustained_duration": duration, "evidence_collection": "nvidia-smi -q -d PERFORMANCE (read-only follow-up)",
+			},
+		}
+		if err := s.alerts.Process(alert); err != nil {
+			log.Printf("sustained thermal notification failed for %s: %v", event.EpisodeKey, err)
+		}
+	}
 }
 
 func (s *Service) pruneHistory(tx *gorm.DB, now time.Time) error {

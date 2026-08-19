@@ -30,6 +30,7 @@ func commandCatalog() []CommandDefinition {
 		command("gpu.inventory", "gpu", "read_only", "读取 GPU 身份清单", "Read GPU identity inventory", "nvidia-smi -L"),
 		command("gpu.driver", "gpu", "read_only", "读取 NVIDIA 驱动和 CUDA 兼容信息", "Read NVIDIA driver and CUDA compatibility information", "nvidia-smi (registered driver fields)"),
 		command("gpu.snapshot", "gpu", "read_only", "读取固定字段 GPU 状态快照", "Read a fixed-field GPU status snapshot", "nvidia-smi --query-gpu=<registered fields>"),
+		command("gpu.performance_reasons", "gpu", "read_only", "读取 GPU 限频与降频原因", "Read GPU clock-throttle and slowdown reasons", "nvidia-smi -q -d PERFORMANCE"),
 		command("gpu.topology", "gpu", "read_only", "读取 GPU/PCIe/NVLink 拓扑", "Read GPU, PCIe, and NVLink topology", "nvidia-smi topo -m"),
 		command("pcie.inventory", "pcie", "read_only", "读取 PCI 设备身份", "Read PCI device identity", "lspci -Dnn"),
 		command("service.state", "service", "read_only", "读取注册服务状态", "Read registered service state", "systemctl is-active/is-failed/show"),

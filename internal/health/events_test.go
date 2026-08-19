@@ -56,3 +56,29 @@ func TestReconcileFaultEventsDeduplicatesRecoversAndReopens(t *testing.T) {
 		t.Fatalf("expected a new episode after recovery, got %d", count)
 	}
 }
+
+func TestReconcileThermalEventsAccumulatesAcrossRecovery(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := api.GPUAsset{ID: 1, CurrentUUID: "GPU-T", NodeIP: "10.0.0.1", GPUIndex: 2, ModelName: "RTX 4090"}
+	hit := ruleHit{code: "gpu_temp_sustained_15m", domain: "thermal", severity: "warning", deduction: 15, value: 80, threshold: ">= 80C continuously for 15m", evidence: "sustained"}
+	t0 := time.Date(2026, 8, 19, 9, 0, 0, 0, time.UTC)
+	if err := reconcileFaultEvents(db.DB, asset, api.GPUHealthScore{ID: 1}, []ruleHit{hit}, "A", t0, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileFaultEvents(db.DB, asset, api.GPUHealthScore{ID: 2}, nil, "A", t0.Add(10*time.Minute), "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileFaultEvents(db.DB, asset, api.GPUHealthScore{ID: 3}, []ruleHit{hit}, "A", t0.Add(20*time.Minute), "test"); err != nil {
+		t.Fatal(err)
+	}
+	var events []api.GPUFaultEvent
+	if err := db.Where("episode_key = ?", "GPU-T:gpu_temp_sustained_15m").Find(&events).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].State != "open" || events[0].OccurrenceCount != 2 || !events[0].LastObservedAt.Equal(t0.Add(20*time.Minute)) {
+		t.Fatalf("thermal recurrences must reopen and accumulate one event: %+v", events)
+	}
+}

@@ -187,7 +187,7 @@ func main() {
 			go inventoryService.Run(context.Background(), monitoringInterval, fullInterval)
 			if cfg.Health.Enabled {
 				healthInterval := parseDurationOrDefault("GPU health score", cfg.Health.ScoreInterval, 10*time.Minute)
-				healthService := health.NewService(db, prometheusClient, cfg.Health)
+				healthService := health.NewServiceWithAlerts(db, prometheusClient, cfg.Health, alertAnalyzer)
 				go func() {
 					// Let the startup full reconciliation finish before the first
 					// health transaction writes snapshots and scores to SQLite.
