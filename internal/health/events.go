@@ -19,6 +19,20 @@ func reconcileFaultEvents(tx *gorm.DB, asset api.GPUAsset, score api.GPUHealthSc
 
 		var event api.GPUFaultEvent
 		err := tx.Where("episode_key = ? AND state = ?", episodeKey, "open").First(&event).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) && accumulatesAcrossRecoveries(hit.code) {
+			err = tx.Where("episode_key = ?", episodeKey).Order("id DESC").First(&event).Error
+			if err == nil {
+				updates := map[string]any{
+					"state": "open", "recovered_at": nil, "severity": hit.severity, "evidence": hit.evidence,
+					"observed_value": hit.value, "threshold": hit.threshold, "occurrence_count": event.OccurrenceCount + 1,
+					"latest_score_id": score.ID, "rule_version": ruleVersion, "last_observed_at": observedAt,
+				}
+				if updateErr := tx.Model(&event).Updates(updates).Error; updateErr != nil {
+					return updateErr
+				}
+				continue
+			}
+		}
 		switch {
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			event = api.GPUFaultEvent{
@@ -64,4 +78,8 @@ func reconcileFaultEvents(tx *gorm.DB, asset api.GPUAsset, score api.GPUHealthSc
 		}
 	}
 	return nil
+}
+
+func accumulatesAcrossRecoveries(ruleCode string) bool {
+	return ruleCode == "gpu_temp_sustained_15m" || ruleCode == "gpu_temp_sustained_5m_critical"
 }

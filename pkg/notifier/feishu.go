@@ -123,6 +123,9 @@ func (n *FeishuNotifier) sendToBot(bot config.FeishuBotConfig, event *api.AlertE
 }
 
 func formatAlertContent(event *api.AlertEvent) string {
+	if event.Source == "atlas_thermal_monitor" {
+		return formatThermalAlertContent(event)
+	}
 	content := fmt.Sprintf(
 		"**来源**: %s\n**主机**: %s\n**内容**: %s\n**最后发生时间**: %s\n",
 		event.Source,
@@ -143,6 +146,19 @@ func formatAlertContent(event *api.AlertEvent) string {
 		content += fmt.Sprintf("- %s: %s\n", key, event.Labels[key])
 	}
 	return content
+}
+
+func formatThermalAlertContent(event *api.AlertEvent) string {
+	labels := event.Labels
+	return fmt.Sprintf(
+		"**告警主题**: %s\n**级别**: %s\n**主机名**: %s\n**IP**: %s\n**显卡**: GPU %s · %s\n**GPU UUID**: %s\n**告警内容**: %s\n**温度**: %s°C\n**触发条件**: %s\n**持续时间**: %s\n**发生时间**: %s\n**复核证据**: %s\n",
+		firstNonEmpty(labels["alert_topic"], "GPU sustained high temperature"), strings.ToUpper(event.Level),
+		firstNonEmpty(labels["hostname"], event.Host, "—"), firstNonEmpty(labels["host_ip"], "—"),
+		firstNonEmpty(labels["gpu_index"], "—"), firstNonEmpty(labels["gpu_model"], "—"), firstNonEmpty(labels["gpu_uuid"], "—"),
+		firstNonEmpty(event.Message, "—"), firstNonEmpty(labels["temperature_celsius"], "—"),
+		firstNonEmpty(labels["threshold"], "—"), firstNonEmpty(labels["sustained_duration"], "—"),
+		event.LastSeenAt.Format("2006-01-02 15:04:05"), firstNonEmpty(labels["evidence_collection"], "—"),
+	)
 }
 
 func firstNonEmpty(values ...string) string {

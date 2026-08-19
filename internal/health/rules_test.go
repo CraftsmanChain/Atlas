@@ -25,6 +25,21 @@ func TestEvaluateRulesUnknownAndCritical(t *testing.T) {
 	}
 }
 
+func TestEvaluateRulesRequiresSustainedHighTemperature(t *testing.T) {
+	warning := evaluateRules(api.FloatMap{"gpu_temp_min_15m": 80}, "NVIDIA GeForce RTX 4090", "A")
+	if warning.level != "warning" || len(warning.hits) != 1 || warning.hits[0].code != "gpu_temp_sustained_15m" {
+		t.Fatalf("expected 80C sustained for 15m warning: %+v", warning)
+	}
+	critical := evaluateRules(api.FloatMap{"gpu_temp_min_15m": 80, "gpu_temp_min_5m": 85}, "NVIDIA GeForce RTX 4090", "A")
+	if critical.level != "critical" || len(critical.hits) != 1 || critical.hits[0].code != "gpu_temp_sustained_5m_critical" {
+		t.Fatalf("expected 85C sustained for 5m critical: %+v", critical)
+	}
+	notSustained := evaluateRules(api.FloatMap{"gpu_temp": 90, "gpu_temp_max_15m": 90, "gpu_temp_min_15m": 70}, "NVIDIA GeForce RTX 4090", "A")
+	if len(notSustained.hits) != 0 {
+		t.Fatalf("temperature spikes must not become sustained alerts: %+v", notSustained)
+	}
+}
+
 func TestEvaluateRulesUsesCounterDeltaAndLoadGuard(t *testing.T) {
 	result := evaluateRules(api.FloatMap{
 		"pcie_replay_counter":     22000,

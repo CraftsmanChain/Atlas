@@ -87,10 +87,10 @@ func evaluateRules(metrics api.FloatMap, model, confidence string) scoreResult {
 		}
 		add(ruleHit{"recent_xid_change", "stability", severity, deduction, xid, "changes_24h > 0", fmt.Sprintf("XID %.0f changed in last 24h", xid)})
 	}
-	if v := value(metrics, "gpu_temp_max_15m"); v >= 85 {
-		add(ruleHit{"gpu_temp_critical", "thermal", "critical", 25, v, ">= 85C", fmt.Sprintf("GPU temperature max 15m=%.1fC", v)})
-	} else if v >= 80 {
-		add(ruleHit{"gpu_temp_high", "thermal", "warning", 10, v, ">= 80C", fmt.Sprintf("GPU temperature max 15m=%.1fC", v)})
+	if v := value(metrics, "gpu_temp_min_5m"); v >= 85 {
+		add(ruleHit{"gpu_temp_sustained_5m_critical", "thermal", "critical", 25, v, ">= 85C continuously for 5m", fmt.Sprintf("GPU temperature remained at or above 85C for 5m; floor=%.1fC", v)})
+	} else if v := value(metrics, "gpu_temp_min_15m"); v >= 80 {
+		add(ruleHit{"gpu_temp_sustained_15m", "thermal", "warning", 15, v, ">= 80C continuously for 15m", fmt.Sprintf("GPU temperature remained at or above 80C for 15m; floor=%.1fC", v)})
 	}
 	if !strings.Contains(strings.ToLower(model), "4090") {
 		if v := value(metrics, "memory_temp_max_15m"); v >= 90 {

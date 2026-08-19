@@ -33,7 +33,7 @@ inventory:
 health:
   enabled: true
   score_interval: "10m"
-  rule_version: "gpu-health-v1.5.0"
+  rule_version: "gpu-health-v1.6.0"
   # 预测训练需要跨故障周期的历史；在线库先保留一年，后续再增加 Parquet 冷归档。
   history_retention: "365d"
 history:
