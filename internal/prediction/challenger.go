@@ -1,6 +1,7 @@
 package prediction
 
 import (
+	"math"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ const (
 	HeaRankMinimumSevenDayRows      = 30
 	HeaRankMinimumSevenDayNodes     = 10
 	HeaRankMinimumSevenDayPositives = 3
+	HeaRankHistoryHalfLifeDays      = 90
 )
 
 type ChallengerMetricSet struct {
@@ -65,7 +67,7 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 		},
 		RecommendedNextRun: []string{
 			"Accumulate enough mature 7d node outcomes before training a HeaRank-style MLP.",
-			"Use the same node-level Ranking@K denominator when comparing Logistic, failure-count, and future HeaRank scores.",
+			"Use the same node-level Ranking@K denominator when comparing Logistic, historical-risk baselines, and future HeaRank scores.",
 			"Keep the challenger offline until time-split, leakage, and calibration checks pass.",
 		},
 	}
@@ -108,16 +110,19 @@ func heaRankConfidence(rows, nodes, positives int) (string, []string) {
 
 func challengerMetricSets(rows []api.PredictionOutcomeEvaluation, horizonMinutes int) []ChallengerMetricSet {
 	return []ChallengerMetricSet{
-		challengerMetricSet(rows, horizonMinutes, "logistic_probability", "current shadow probability aggregated by node", func(row api.PredictionOutcomeEvaluation, prior map[string]int) float64 {
+		challengerMetricSet(rows, horizonMinutes, "logistic_probability", "current shadow probability aggregated by node", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
 			if row.Probability == nil {
 				return 0
 			}
 			return *row.Probability
 		}),
-		challengerMetricSet(rows, horizonMinutes, "failure_count_prior", "node prior positive outcomes before the prediction cutoff", func(row api.PredictionOutcomeEvaluation, prior map[string]int) float64 {
-			return float64(prior[normalNode(row.NodeIP)])
+		challengerMetricSet(rows, horizonMinutes, "failure_count_prior", "node positive outcomes whose full evaluation window closed before the prediction cutoff", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
+			return float64(prior.PositiveCounts[normalNode(row.NodeIP)])
 		}),
-		challengerMetricSet(rows, horizonMinutes, "threshold_binary", "released decision threshold converted to a node-level binary score", func(row api.PredictionOutcomeEvaluation, prior map[string]int) float64 {
+		challengerMetricSet(rows, horizonMinutes, "recency_weighted_failure_prior", "node prior positive outcomes exponentially decayed by a 90-day half-life; only closed evaluation windows are used", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
+			return prior.RecencyWeighted[normalNode(row.NodeIP)]
+		}),
+		challengerMetricSet(rows, horizonMinutes, "threshold_binary", "released decision threshold converted to a node-level binary score", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
 			if row.PredictedPositive {
 				return 1
 			}
@@ -126,8 +131,12 @@ func challengerMetricSets(rows []api.PredictionOutcomeEvaluation, horizonMinutes
 	}
 }
 
-func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, horizonMinutes int, policy, description string, score func(api.PredictionOutcomeEvaluation, map[string]int) float64) ChallengerMetricSet {
-	prior := map[string]int{}
+type challengerHistory struct {
+	PositiveCounts  map[string]int
+	RecencyWeighted map[string]float64
+}
+
+func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, horizonMinutes int, policy, description string, score func(api.PredictionOutcomeEvaluation, challengerHistory) float64) ChallengerMetricSet {
 	items := make([]rankedOutcome, 0, len(rows))
 	nodes := map[string]struct{}{}
 	for _, row := range rows {
@@ -135,17 +144,11 @@ func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, horizonMinutes 
 			continue
 		}
 		if horizonMinutes > 0 && row.HorizonMinutes != horizonMinutes {
-			if *row.FinalActualValue == 1 {
-				prior[normalNode(row.NodeIP)]++
-			}
 			continue
 		}
 		node := normalNode(row.NodeIP)
 		nodes[node] = struct{}{}
-		items = append(items, rankedOutcome{probability: score(row, prior), actual: *row.FinalActualValue})
-		if *row.FinalActualValue == 1 {
-			prior[node]++
-		}
+		items = append(items, rankedOutcome{probability: score(row, challengerHistoryBefore(rows, row.PredictionEvaluatedAt)), actual: *row.FinalActualValue})
 	}
 	positives := 0
 	for _, item := range items {
@@ -157,6 +160,23 @@ func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, horizonMinutes 
 		Policy: policy, Description: description, Rows: len(items), Nodes: len(nodes), Positives: positives,
 		RankingAtK: rankingFromItems(items),
 	}
+}
+
+func challengerHistoryBefore(rows []api.PredictionOutcomeEvaluation, cutoff time.Time) challengerHistory {
+	history := challengerHistory{PositiveCounts: map[string]int{}, RecencyWeighted: map[string]float64{}}
+	for _, candidate := range rows {
+		if candidate.MaturityStatus != "matured" || candidate.FinalActualValue == nil || *candidate.FinalActualValue != 1 || strings.TrimSpace(candidate.NodeIP) == "" || candidate.WindowEndAt.After(cutoff) {
+			continue
+		}
+		node := normalNode(candidate.NodeIP)
+		history.PositiveCounts[node]++
+		elapsedDays := cutoff.Sub(candidate.WindowEndAt).Hours() / 24
+		if elapsedDays < 0 {
+			continue
+		}
+		history.RecencyWeighted[node] += math.Exp(-math.Ln2 * elapsedDays / HeaRankHistoryHalfLifeDays)
+	}
+	return history
 }
 
 func matureCount(rows []api.PredictionOutcomeEvaluation, horizonMinutes int) int {
