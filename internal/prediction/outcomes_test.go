@@ -502,7 +502,7 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || len(report.SevenDay) != 3 || report.SevenDay[0].Policy != "logistic_probability" {
+	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || len(report.SevenDay) != 4 || report.SevenDay[0].Policy != "logistic_probability" || report.SevenDay[2].Policy != "recency_weighted_failure_prior" {
 		t.Fatalf("unexpected challenger report: %+v", report)
 	}
 	if report.SevenDay[0].Rows != 4 || report.SevenDay[0].Nodes != 3 || report.SevenDay[0].Positives != 2 || len(report.SevenDay[0].RankingAtK) == 0 {
@@ -516,6 +516,23 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	handler.HandleHeaRankChallenger(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/hearank-challenger", nil))
 	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(HeaRankChallengerReportVersion)) {
 		t.Fatalf("challenger handler failed: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestHeaRankHistoricalRiskUsesOnlyClosedOutcomeWindows(t *testing.T) {
+	cutoff := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	positive := 1
+	rows := []api.PredictionOutcomeEvaluation{
+		{NodeIP: "10.0.0.1", MaturityStatus: "matured", FinalActualValue: &positive, WindowEndAt: cutoff.Add(-90 * 24 * time.Hour)},
+		{NodeIP: "10.0.0.1", MaturityStatus: "matured", FinalActualValue: &positive, WindowEndAt: cutoff.Add(time.Hour)},
+		{NodeIP: "10.0.0.2", MaturityStatus: "matured", FinalActualValue: &positive, WindowEndAt: cutoff.Add(-45 * 24 * time.Hour)},
+	}
+	history := challengerHistoryBefore(rows, cutoff)
+	if history.PositiveCounts["10.0.0.1"] != 1 || history.PositiveCounts["10.0.0.2"] != 1 {
+		t.Fatalf("history must exclude outcomes whose window has not closed: %+v", history)
+	}
+	if math.Abs(history.RecencyWeighted["10.0.0.1"]-0.5) > 1e-12 || math.Abs(history.RecencyWeighted["10.0.0.2"]-math.Sqrt(0.5)) > 1e-12 {
+		t.Fatalf("unexpected recency-weighted history: %+v", history)
 	}
 }
 
