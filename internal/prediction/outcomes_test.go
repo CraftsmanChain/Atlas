@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -187,6 +188,48 @@ func TestOutcomeCensoringAndHandlerValidation(t *testing.T) {
 	}
 	if report.Stability.Status != "blocked" || report.Stability.RankingInterpretationStatus != "no_scored_rows" || len(report.Stability.BlockingReasons) == 0 {
 		t.Fatalf("censored-only report should be blocked: %+v", report.Stability)
+	}
+}
+
+func TestOutcomePaginationContract(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 8, 20, 8, 0, 0, 0, time.UTC)
+	for index := 1; index <= 3; index++ {
+		row := api.PredictionOutcomeEvaluation{
+			PredictionID: uint(index), ModelKey: "gpu.pagination.test", ModelVersion: "v1",
+			GPUUUID: "GPU-PAGE-" + strconv.Itoa(index), HorizonMinutes: 60,
+			PredictionEvaluatedAt: base.Add(time.Duration(index) * time.Minute), MaturityStatus: "pending",
+		}
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	response := httptest.NewRecorder()
+	NewHandlerWithService(NewService(db)).HandleOutcomes(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/outcomes?limit=2&offset=1", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("pagination request failed: %d %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Data []api.PredictionOutcomeEvaluation `json:"data"`
+		Meta struct {
+			Total    int64 `json:"total"`
+			Limit    int   `json:"limit"`
+			Offset   int   `json:"offset"`
+			Returned int   `json:"returned"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Meta.Total != 3 || payload.Meta.Limit != 2 || payload.Meta.Offset != 1 || payload.Meta.Returned != 2 || len(payload.Data) != 2 {
+		t.Fatalf("unexpected pagination metadata: %+v rows=%d", payload.Meta, len(payload.Data))
+	}
+	if payload.Data[0].PredictionID != 2 || payload.Data[1].PredictionID != 1 {
+		t.Fatalf("unexpected page order: %+v", payload.Data)
 	}
 }
 
