@@ -509,14 +509,14 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || len(report.SevenDay) != 6 || len(report.PolicyComparisons) != 5 || report.PolicyComparisons[0].Status != "blocked_insufficient_sample" || report.SevenDay[0].Policy != "logistic_probability" || report.SevenDay[1].Policy != "health_score_risk_prior" || report.SevenDay[3].Policy != "recency_weighted_failure_prior" || report.SevenDay[4].Policy != "severity_weighted_label_history" {
+	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || len(report.SevenDay) != 7 || len(report.PolicyComparisons) != 6 || report.PolicyComparisons[0].Status != "blocked_insufficient_sample" || report.SevenDay[0].Policy != "logistic_probability" || report.SevenDay[1].Policy != "health_score_risk_prior" || report.SevenDay[2].Policy != "rule_hit_risk_prior" || report.SevenDay[4].Policy != "recency_weighted_failure_prior" || report.SevenDay[5].Policy != "severity_weighted_label_history" {
 		t.Fatalf("unexpected challenger report: %+v", report)
 	}
 	if report.SevenDay[0].Rows != 4 || report.SevenDay[0].Nodes != 3 || report.SevenDay[0].Positives != 2 || len(report.SevenDay[0].RankingAtK) == 0 {
 		t.Fatalf("unexpected logistic challenger metrics: %+v", report.SevenDay[0])
 	}
-	if report.SevenDay[4].NonZeroScoreRows != 1 || report.SevenDay[4].NonZeroScoreNodes != 1 || report.SevenDay[4].SignalCoverageStatus != "exploratory" {
-		t.Fatalf("severity challenger must expose non-zero history-signal coverage: %+v", report.SevenDay[4])
+	if report.SevenDay[5].NonZeroScoreRows != 1 || report.SevenDay[5].NonZeroScoreNodes != 1 || report.SevenDay[5].SignalCoverageStatus != "exploratory" {
+		t.Fatalf("severity challenger must expose non-zero history-signal coverage: %+v", report.SevenDay[5])
 	}
 	if report.MinimumSevenDayRows != HeaRankMinimumSevenDayRows || report.MinimumSevenDayNodes != HeaRankMinimumSevenDayNodes || report.MinimumSevenDayPositives != HeaRankMinimumSevenDayPositives {
 		t.Fatalf("unexpected challenger gates: %+v", report)
@@ -577,6 +577,24 @@ func TestHeaRankHealthRiskUsesLatestScoreStrictlyBeforeCutoff(t *testing.T) {
 	risk := healthRiskByNodeBefore(scores, cutoff)
 	if risk["10.0.0.1"] != 40 || len(risk) != 1 {
 		t.Fatalf("health risk must use each GPU's latest score strictly before the cutoff: %+v", risk)
+	}
+}
+
+func TestHeaRankRuleHitRiskUsesLatestBatchStrictlyBeforeCutoff(t *testing.T) {
+	cutoff := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	scores := []api.GPUHealthScore{
+		{ID: 1, NodeIP: "10.0.0.1", GPUUUID: "GPU-A"},
+		{ID: 2, NodeIP: "10.0.0.1", GPUUUID: "GPU-B"},
+	}
+	hits := []api.GPUHealthRuleHit{
+		{HealthScoreID: 1, GPUUUID: "GPU-A", Severity: "critical", EvaluatedAt: cutoff.Add(-2 * time.Hour)},
+		{HealthScoreID: 1, GPUUUID: "GPU-A", Severity: "warning", EvaluatedAt: cutoff.Add(-time.Hour)},
+		{HealthScoreID: 1, GPUUUID: "GPU-A", Severity: "attention", EvaluatedAt: cutoff.Add(-time.Hour)},
+		{HealthScoreID: 2, GPUUUID: "GPU-B", Severity: "critical", EvaluatedAt: cutoff},
+	}
+	risk := ruleHitRiskByNodeBefore(hits, scores, cutoff)
+	if risk["10.0.0.1"] != 3 || len(risk) != 1 {
+		t.Fatalf("rule-hit risk must use each GPU's latest batch strictly before the cutoff: %+v", risk)
 	}
 }
 
