@@ -11,7 +11,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const ValidationReadinessReportVersion = "prediction-validation-readiness-v1"
+const ValidationReadinessReportVersion = "prediction-validation-readiness-v2"
 const validationFeatureDistributionArchiveVersion = "gpu-feature-distribution-archive-v1"
 const validationFeatureDistributionMinimumPairs = 1
 
@@ -71,6 +71,7 @@ type ValidationReadinessReport struct {
 	ChallengerVersion                  string                                    `json:"challenger_version"`
 	ChallengerStatus                   string                                    `json:"challenger_status"`
 	ChallengerConfidence               string                                    `json:"challenger_confidence_status"`
+	ChallengerHistoricalSignal         string                                    `json:"challenger_historical_signal_status"`
 	DataDriftVersion                   string                                    `json:"data_drift_version"`
 	DataDriftSHA256                    string                                    `json:"data_drift_sha256"`
 	DataDriftStatus                    string                                    `json:"data_drift_status"`
@@ -168,6 +169,7 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 		ChallengerVersion:                 challengerReport.Version,
 		ChallengerStatus:                  challengerReport.Status,
 		ChallengerConfidence:              challengerReport.ConfidenceStatus,
+		ChallengerHistoricalSignal:        challengerHistoricalSignalStatus(challengerReport.SevenDay),
 		DataDriftVersion:                  driftReport.Version,
 		DataDriftSHA256:                   driftReport.ReportSHA256,
 		DataDriftStatus:                   driftReport.Status,
@@ -222,6 +224,9 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 		},
 	}
 	report.SevenDayRows, report.SevenDayNodes, report.SevenDayPositives = validationReadinessSevenDaySummary(report.SevenDay)
+	if report.ChallengerHistoricalSignal != "covered" {
+		report.RecommendedNextRun = append(report.RecommendedNextRun, "do not interpret historical-risk challenger policies as comparable until their 7d signal coverage is covered")
+	}
 	report.BlockingReasons = validationReadinessBlockers(labelManifest, evidenceBundle, outcomeReport, challengerReport, driftReport, calibrationReport, featureDriftReport, distributionArchive)
 	if len(report.BlockingReasons) > 0 {
 		report.Status = "blocked"
@@ -247,6 +252,27 @@ func validationReadinessSevenDaySummary(rows []ChallengerMetricSet) (int, int, i
 		return 0, 0, 0
 	}
 	return rows[0].Rows, rows[0].Nodes, rows[0].Positives
+}
+
+func challengerHistoricalSignalStatus(rows []ChallengerMetricSet) string {
+	found := false
+	status := "covered"
+	for _, row := range rows {
+		switch row.Policy {
+		case "failure_count_prior", "recency_weighted_failure_prior", "severity_weighted_label_history":
+			found = true
+			switch row.SignalCoverageStatus {
+			case "no_signal", "":
+				return "no_signal"
+			case "exploratory":
+				status = "exploratory"
+			}
+		}
+	}
+	if !found {
+		return "no_signal"
+	}
+	return status
 }
 
 func (s *Service) validationFeatureDistributionArchive() (validationFeatureDistributionArchive, error) {
@@ -580,6 +606,7 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		ChallengerVersion                  string                                    `json:"challenger_version"`
 		ChallengerStatus                   string                                    `json:"challenger_status"`
 		ChallengerConfidence               string                                    `json:"challenger_confidence_status"`
+		ChallengerHistoricalSignal         string                                    `json:"challenger_historical_signal_status"`
 		DataDriftVersion                   string                                    `json:"data_drift_version"`
 		DataDriftSHA256                    string                                    `json:"data_drift_sha256"`
 		DataDriftStatus                    string                                    `json:"data_drift_status"`
@@ -631,8 +658,8 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		EvidencePositive: report.EvidencePositive, EvidenceExcluded: report.EvidenceExcluded,
 		OutcomeReportVersion: report.OutcomeReportVersion, OutcomeStability: report.OutcomeStability, OutcomeMaturity: report.OutcomeMaturity,
 		ChallengerVersion: report.ChallengerVersion, ChallengerStatus: report.ChallengerStatus,
-		ChallengerConfidence: report.ChallengerConfidence,
-		DataDriftVersion:     report.DataDriftVersion, DataDriftSHA256: report.DataDriftSHA256,
+		ChallengerConfidence: report.ChallengerConfidence, ChallengerHistoricalSignal: report.ChallengerHistoricalSignal,
+		DataDriftVersion: report.DataDriftVersion, DataDriftSHA256: report.DataDriftSHA256,
 		DataDriftStatus: report.DataDriftStatus, DataDriftCoverage: report.DataDriftCoverage,
 		DataDriftPSIProxy: report.DataDriftPSIProxy, DataDriftKSProxy: report.DataDriftKSProxy,
 		CalibrationDriftVersion: report.CalibrationDriftVersion, CalibrationDriftSHA256: report.CalibrationDriftSHA256,
