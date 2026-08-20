@@ -17,6 +17,7 @@ const (
 	HeaRankHistoryHalfLifeDays      = 90
 	HeaRankMinimumSignalRows        = 3
 	HeaRankMinimumSignalNodes       = 2
+	HeaRankOperationalSignalMaxAge  = 24 * time.Hour
 )
 
 type ChallengerMetricSet struct {
@@ -288,7 +289,7 @@ func challengerHistoryWithEvidenceBefore(rows []api.PredictionOutcomeEvaluation,
 func healthRiskByNodeBefore(scores []api.GPUHealthScore, cutoff time.Time) map[string]float64 {
 	latestByGPU := map[string]api.GPUHealthScore{}
 	for _, score := range scores {
-		if score.Score == nil || strings.TrimSpace(score.NodeIP) == "" || strings.TrimSpace(score.GPUUUID) == "" || !score.EvaluatedAt.Before(cutoff) {
+		if score.Score == nil || strings.TrimSpace(score.NodeIP) == "" || strings.TrimSpace(score.GPUUUID) == "" || !operationalSignalFresh(score.EvaluatedAt, cutoff) {
 			continue
 		}
 		key := normalNode(score.NodeIP) + "|" + strings.ToLower(strings.TrimSpace(score.GPUUUID))
@@ -321,7 +322,7 @@ func ruleHitRiskByNodeBefore(hits []api.GPUHealthRuleHit, scores []api.GPUHealth
 	latestByGPU := map[string]latestRisk{}
 	for _, hit := range hits {
 		score, found := scoreByID[hit.HealthScoreID]
-		if !found || strings.TrimSpace(score.NodeIP) == "" || strings.TrimSpace(hit.GPUUUID) == "" || !hit.EvaluatedAt.Before(cutoff) {
+		if !found || strings.TrimSpace(score.NodeIP) == "" || strings.TrimSpace(hit.GPUUUID) == "" || !operationalSignalFresh(score.EvaluatedAt, cutoff) || !operationalSignalFresh(hit.EvaluatedAt, cutoff) {
 			continue
 		}
 		key := normalNode(score.NodeIP) + "|" + strings.ToLower(strings.TrimSpace(hit.GPUUUID))
@@ -357,7 +358,7 @@ func ruleHitSeverityWeight(severity string) float64 {
 func modelLabelDensityByNodeBefore(labels []api.FailureLabel, scores []api.GPUHealthScore, cutoff time.Time) map[string]float64 {
 	latestByGPU := map[string]api.GPUHealthScore{}
 	for _, score := range scores {
-		if strings.TrimSpace(score.NodeIP) == "" || strings.TrimSpace(score.GPUUUID) == "" || strings.TrimSpace(score.ModelName) == "" || !score.EvaluatedAt.Before(cutoff) {
+		if strings.TrimSpace(score.NodeIP) == "" || strings.TrimSpace(score.GPUUUID) == "" || strings.TrimSpace(score.ModelName) == "" || !operationalSignalFresh(score.EvaluatedAt, cutoff) {
 			continue
 		}
 		key := strings.ToLower(strings.TrimSpace(score.GPUUUID))
@@ -395,6 +396,10 @@ func modelLabelDensityByNodeBefore(labels []api.FailureLabel, scores []api.GPUHe
 
 func normalModel(model string) string {
 	return strings.ToLower(strings.TrimSpace(model))
+}
+
+func operationalSignalFresh(observedAt, cutoff time.Time) bool {
+	return observedAt.Before(cutoff) && cutoff.Sub(observedAt) <= HeaRankOperationalSignalMaxAge
 }
 
 func eligibleSeverityHistoryLabel(label api.FailureLabel, cutoff time.Time) bool {
