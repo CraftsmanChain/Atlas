@@ -610,6 +610,61 @@ func TestHeaRankHistoryCacheReusesCutoffsWithoutChangingEvidence(t *testing.T) {
 	}
 }
 
+func TestHeaRankEvidenceQueryUsesPredictionCutoffWindow(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	earliest := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	latest := earliest.Add(48 * time.Hour)
+	rows := []api.PredictionOutcomeEvaluation{{PredictionEvaluatedAt: earliest}, {PredictionEvaluatedAt: latest}}
+	windowStart, windowEnd, found := challengerEvidenceQueryWindow(rows)
+	if !found || !windowStart.Equal(earliest.Add(-24*time.Hour)) || !windowEnd.Equal(latest) {
+		t.Fatalf("unexpected challenger evidence window: %v %v found=%v", windowStart, windowEnd, found)
+	}
+	if _, _, found := challengerEvidenceQueryWindow(nil); found {
+		t.Fatal("empty prediction rows must not request evidence")
+	}
+
+	scoreValue := 80
+	scores := []api.GPUHealthScore{
+		{GPUUUID: "GPU-STALE", NodeIP: "10.0.0.1", Score: &scoreValue, EvaluatedAt: windowStart.Add(-time.Second)},
+		{GPUUUID: "GPU-LOWER-BOUND", NodeIP: "10.0.0.2", Score: &scoreValue, EvaluatedAt: windowStart},
+		{GPUUUID: "GPU-MIDDLE", NodeIP: "10.0.0.3", Score: &scoreValue, EvaluatedAt: earliest.Add(time.Hour)},
+		{GPUUUID: "GPU-FUTURE", NodeIP: "10.0.0.4", Score: &scoreValue, EvaluatedAt: windowEnd},
+	}
+	for index := range scores {
+		if err := db.Create(&scores[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+		hit := api.GPUHealthRuleHit{HealthScoreID: scores[index].ID, GPUUUID: scores[index].GPUUUID, RuleCode: "test", Severity: "warning", EvaluatedAt: scores[index].EvaluatedAt}
+		if err := db.Create(&hit).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	labels := []api.FailureLabel{
+		{LabelKey: "old-label", HardwareClass: "gpu", EntityType: "gpu", EntityKey: "GPU-OLD", EventType: "xid_critical", LabelValue: 1, QualityTier: "strong_proxy", SourceType: "test", LabelContractVersion: LabelContractVersion, OccurredAt: windowStart.Add(-30 * 24 * time.Hour), AvailableAt: windowStart.Add(-29 * 24 * time.Hour)},
+		{LabelKey: "middle-label", HardwareClass: "gpu", EntityType: "gpu", EntityKey: "GPU-MIDDLE", EventType: "xid_critical", LabelValue: 1, QualityTier: "strong_proxy", SourceType: "test", LabelContractVersion: LabelContractVersion, OccurredAt: earliest.Add(time.Hour), AvailableAt: earliest.Add(2 * time.Hour)},
+		{LabelKey: "future-label", HardwareClass: "gpu", EntityType: "gpu", EntityKey: "GPU-FUTURE", EventType: "xid_critical", LabelValue: 1, QualityTier: "strong_proxy", SourceType: "test", LabelContractVersion: LabelContractVersion, OccurredAt: windowEnd, AvailableAt: windowEnd},
+	}
+	for index := range labels {
+		if err := db.Create(&labels[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	loadedLabels, loadedScores, loadedHits, err := NewService(db).loadChallengerEvidence(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loadedLabels) != 2 || len(loadedScores) != 2 || len(loadedHits) != 2 {
+		t.Fatalf("evidence query must retain historical labels but bound operational signals: labels=%d scores=%d hits=%d", len(loadedLabels), len(loadedScores), len(loadedHits))
+	}
+	if loadedScores[0].GPUUUID != "GPU-LOWER-BOUND" || loadedScores[1].GPUUUID != "GPU-MIDDLE" {
+		t.Fatalf("unexpected bounded health evidence: %+v", loadedScores)
+	}
+}
+
 func TestHeaRankSeverityWeightedLabelHistoryUsesOnlyAvailableEligibleLabels(t *testing.T) {
 	cutoff := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	labels := []api.FailureLabel{
