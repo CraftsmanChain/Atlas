@@ -278,12 +278,20 @@ func (h *Handler) HandleFeatureDriftReport(w http.ResponseWriter, r *http.Reques
 func (h *Handler) HandleOutcomes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := h.service.Outcomes(100)
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		rows, total, err := h.service.OutcomesPage(limit, offset)
 		if err != nil {
 			predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		predictionJSON(w, http.StatusOK, map[string]any{"data": rows, "meta": map[string]any{"total": len(rows)}})
+		if limit <= 0 || limit > 500 {
+			limit = 100
+		}
+		if offset < 0 {
+			offset = 0
+		}
+		predictionJSON(w, http.StatusOK, map[string]any{"data": rows, "meta": map[string]any{"total": total, "limit": limit, "offset": offset, "returned": len(rows)}})
 	case http.MethodPost:
 		if err := h.service.SyncOutcomes(); err != nil {
 			predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})

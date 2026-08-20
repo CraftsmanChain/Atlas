@@ -302,12 +302,24 @@ func classify(predictedPositive bool, actual int) string {
 }
 
 func (s *Service) Outcomes(limit int) ([]api.PredictionOutcomeEvaluation, error) {
+	rows, _, err := s.OutcomesPage(limit, 0)
+	return rows, err
+}
+
+func (s *Service) OutcomesPage(limit, offset int) ([]api.PredictionOutcomeEvaluation, int64, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	if offset < 0 {
+		offset = 0
+	}
+	var total int64
+	if err := s.db.Model(&api.PredictionOutcomeEvaluation{}).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
 	var rows []api.PredictionOutcomeEvaluation
-	err := s.db.Order("prediction_evaluated_at DESC, id DESC").Limit(limit).Find(&rows).Error
-	return rows, err
+	err := s.db.Order("prediction_evaluated_at DESC, id DESC").Limit(limit).Offset(offset).Find(&rows).Error
+	return rows, total, err
 }
 
 func (s *Service) Accuracy() (AccuracySummary, error) {
@@ -315,12 +327,17 @@ func (s *Service) Accuracy() (AccuracySummary, error) {
 	if err := s.db.Order("model_key, model_version, horizon_minutes").Find(&rows).Error; err != nil {
 		return AccuracySummary{}, err
 	}
-	summary := AccuracySummary{RuleDecisionVersion: OutcomeRuleVersion, EvaluatedAt: s.now()}
+	return accuracyFromRows(rows, s.now()), nil
+}
+
+func accuracyFromRows(rows []api.PredictionOutcomeEvaluation, evaluatedAt time.Time) AccuracySummary {
+	summary := AccuracySummary{RuleDecisionVersion: OutcomeRuleVersion, EvaluatedAt: evaluatedAt}
 	type sliceKey struct {
 		key, version string
 		horizon      int
 	}
 	byKey := map[sliceKey]*AccuracySlice{}
+	rowsByKey := map[sliceKey][]api.PredictionOutcomeEvaluation{}
 	for _, row := range rows {
 		if row.MaturityStatus == "pending" {
 			summary.Pending++
@@ -338,6 +355,7 @@ func (s *Service) Accuracy() (AccuracySummary, error) {
 			item = &AccuracySlice{ModelKey: key.key, ModelVersion: key.version, HorizonMinutes: key.horizon}
 			byKey[key] = item
 		}
+		rowsByKey[key] = append(rowsByKey[key], row)
 		addOutcome(&item.Rule, row.RuleOutcome)
 		addOutcome(&item.Final, row.FinalOutcome)
 	}
@@ -350,12 +368,7 @@ func (s *Service) Accuracy() (AccuracySummary, error) {
 	for _, item := range byKey {
 		finalizeMetrics(&item.Rule)
 		finalizeMetrics(&item.Final)
-		var sliceRows []api.PredictionOutcomeEvaluation
-		for _, row := range rows {
-			if row.ModelKey == item.ModelKey && row.ModelVersion == item.ModelVersion && row.HorizonMinutes == item.HorizonMinutes {
-				sliceRows = append(sliceRows, row)
-			}
-		}
+		sliceRows := rowsByKey[sliceKey{key: item.ModelKey, version: item.ModelVersion, horizon: item.HorizonMinutes}]
 		item.Rule.RankingAtK = rankingAtK(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.RuleActualValue })
 		item.Final.RankingAtK = rankingAtK(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.FinalActualValue })
 		item.Rule.NodeRankingAtK = nodeRankingAtK(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.RuleActualValue })
@@ -371,7 +384,7 @@ func (s *Service) Accuracy() (AccuracySummary, error) {
 		}
 		return summary.ByModel[i].HorizonMinutes < summary.ByModel[j].HorizonMinutes
 	})
-	return summary, nil
+	return summary
 }
 
 func (s *Service) OutcomeReport() (OutcomeReport, error) {
@@ -379,10 +392,8 @@ func (s *Service) OutcomeReport() (OutcomeReport, error) {
 	if err := s.db.Order("model_key, model_version, horizon_minutes").Find(&rows).Error; err != nil {
 		return OutcomeReport{}, err
 	}
-	accuracy, err := s.Accuracy()
-	if err != nil {
-		return OutcomeReport{}, err
-	}
+	generatedAt := s.now()
+	accuracy := accuracyFromRows(rows, generatedAt)
 	maturity := outcomeMaturity(rows)
 	report := OutcomeReport{
 		Version:          "prediction-outcome-report-v1",
@@ -408,7 +419,7 @@ func (s *Service) OutcomeReport() (OutcomeReport, error) {
 			"compare node_ranking_at_k against HeaRank 7d challenger with the same time split",
 			"review false positives and false negatives before promoting any candidate",
 		},
-		GeneratedAt: s.now(),
+		GeneratedAt: generatedAt,
 	}
 	return report, nil
 }
