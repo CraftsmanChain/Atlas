@@ -547,6 +547,20 @@ func TestHeaRankHistoricalRiskUsesOnlyClosedOutcomeWindows(t *testing.T) {
 	}
 }
 
+func TestHeaRankHistoryCacheReusesCutoffsWithoutChangingEvidence(t *testing.T) {
+	cutoff := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	positive := 1
+	rows := []api.PredictionOutcomeEvaluation{
+		{NodeIP: "10.0.0.1", MaturityStatus: "matured", FinalActualValue: &positive, WindowEndAt: cutoff.Add(-time.Hour), PredictionEvaluatedAt: cutoff},
+		{NodeIP: "10.0.0.2", MaturityStatus: "matured", FinalActualValue: &positive, WindowEndAt: cutoff.Add(-time.Hour), PredictionEvaluatedAt: cutoff},
+		{NodeIP: "10.0.0.3", MaturityStatus: "matured", FinalActualValue: &positive, WindowEndAt: cutoff.Add(-time.Hour), PredictionEvaluatedAt: cutoff.Add(time.Hour)},
+	}
+	histories := challengerHistoriesByCutoff(rows, nil, nil, nil)
+	if len(histories) != 2 || histories[cutoff].PositiveCounts["10.0.0.1"] != 1 || histories[cutoff.Add(time.Hour)].PositiveCounts["10.0.0.3"] != 1 {
+		t.Fatalf("history cache must preserve each cutoff's leakage-safe evidence: %+v", histories)
+	}
+}
+
 func TestHeaRankSeverityWeightedLabelHistoryUsesOnlyAvailableEligibleLabels(t *testing.T) {
 	cutoff := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	labels := []api.FailureLabel{
