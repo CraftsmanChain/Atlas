@@ -573,6 +573,7 @@ func TestHeaRankHealthRiskUsesLatestScoreStrictlyBeforeCutoff(t *testing.T) {
 		{ID: 1, NodeIP: "10.0.0.1", GPUUUID: "GPU-A", Score: &low, EvaluatedAt: cutoff.Add(-2 * time.Hour)},
 		{ID: 2, NodeIP: "10.0.0.1", GPUUUID: "GPU-A", Score: &lower, EvaluatedAt: cutoff.Add(-time.Hour)},
 		{ID: 3, NodeIP: "10.0.0.1", GPUUUID: "GPU-B", Score: &equalCutoff, EvaluatedAt: cutoff},
+		{ID: 4, NodeIP: "10.0.0.2", GPUUUID: "GPU-STALE", Score: &equalCutoff, EvaluatedAt: cutoff.Add(-25 * time.Hour)},
 	}
 	risk := healthRiskByNodeBefore(scores, cutoff)
 	if risk["10.0.0.1"] != 40 || len(risk) != 1 {
@@ -583,14 +584,16 @@ func TestHeaRankHealthRiskUsesLatestScoreStrictlyBeforeCutoff(t *testing.T) {
 func TestHeaRankRuleHitRiskUsesLatestBatchStrictlyBeforeCutoff(t *testing.T) {
 	cutoff := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	scores := []api.GPUHealthScore{
-		{ID: 1, NodeIP: "10.0.0.1", GPUUUID: "GPU-A"},
-		{ID: 2, NodeIP: "10.0.0.1", GPUUUID: "GPU-B"},
+		{ID: 1, NodeIP: "10.0.0.1", GPUUUID: "GPU-A", EvaluatedAt: cutoff.Add(-time.Hour)},
+		{ID: 2, NodeIP: "10.0.0.1", GPUUUID: "GPU-B", EvaluatedAt: cutoff.Add(-time.Hour)},
+		{ID: 3, NodeIP: "10.0.0.2", GPUUUID: "GPU-STALE", EvaluatedAt: cutoff.Add(-25 * time.Hour)},
 	}
 	hits := []api.GPUHealthRuleHit{
 		{HealthScoreID: 1, GPUUUID: "GPU-A", Severity: "critical", EvaluatedAt: cutoff.Add(-2 * time.Hour)},
 		{HealthScoreID: 1, GPUUUID: "GPU-A", Severity: "warning", EvaluatedAt: cutoff.Add(-time.Hour)},
 		{HealthScoreID: 1, GPUUUID: "GPU-A", Severity: "attention", EvaluatedAt: cutoff.Add(-time.Hour)},
 		{HealthScoreID: 2, GPUUUID: "GPU-B", Severity: "critical", EvaluatedAt: cutoff},
+		{HealthScoreID: 3, GPUUUID: "GPU-STALE", Severity: "critical", EvaluatedAt: cutoff.Add(-25 * time.Hour)},
 	}
 	risk := ruleHitRiskByNodeBefore(hits, scores, cutoff)
 	if risk["10.0.0.1"] != 3 || len(risk) != 1 {
@@ -605,6 +608,7 @@ func TestHeaRankModelLabelDensityUsesHistoricalCohortOnly(t *testing.T) {
 		{ID: 2, NodeIP: "10.0.0.2", GPUUUID: "GPU-H100-B", ModelName: "H100", EvaluatedAt: cutoff.Add(-time.Hour)},
 		{ID: 3, NodeIP: "10.0.0.3", GPUUUID: "GPU-A100", ModelName: "A100", EvaluatedAt: cutoff.Add(-time.Hour)},
 		{ID: 4, NodeIP: "10.0.0.4", GPUUUID: "GPU-FUTURE", ModelName: "H100", EvaluatedAt: cutoff},
+		{ID: 5, NodeIP: "10.0.0.5", GPUUUID: "GPU-STALE", ModelName: "H100", EvaluatedAt: cutoff.Add(-25 * time.Hour)},
 	}
 	labels := []api.FailureLabel{
 		{NodeIP: "10.0.0.1", ModelName: "H100", EventType: "row_remap_failure", LabelValue: 1, QualityTier: "strong_proxy", OccurredAt: cutoff.Add(-2 * time.Hour), AvailableAt: cutoff.Add(-time.Hour)},
