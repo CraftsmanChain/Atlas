@@ -11,7 +11,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const HeaRankChallengerReportVersion = "hearank-challenger-report-v12"
+const HeaRankChallengerReportVersion = "hearank-challenger-report-v13"
 
 const (
 	HeaRankMinimumSevenDayRows      = 30
@@ -68,7 +68,8 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 	if err := s.db.Order("prediction_evaluated_at ASC, id ASC").Find(&rows).Error; err != nil {
 		return HeaRankChallengerReport{}, err
 	}
-	labels, healthScores, ruleHits, err := s.loadChallengerEvidence(rows)
+	evaluationRows := challengerEvaluationRows(rows, 0)
+	labels, healthScores, ruleHits, err := s.loadChallengerEvidence(evaluationRows)
 	if err != nil {
 		return HeaRankChallengerReport{}, err
 	}
@@ -236,7 +237,7 @@ func heaRankConfidence(rows, nodes, positives int) (string, []string) {
 }
 
 func challengerMetricSets(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit, horizonMinutes int) []ChallengerMetricSet {
-	histories := challengerHistoriesByCutoff(rows, labels, healthScores, ruleHits)
+	histories := challengerHistoriesForCutoffs(rows, challengerEvaluationRows(rows, horizonMinutes), labels, healthScores, ruleHits)
 	return []ChallengerMetricSet{
 		challengerMetricSet(rows, histories, horizonMinutes, "logistic_probability", "current shadow probability aggregated by node", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
 			if row.Probability == nil {
@@ -269,6 +270,20 @@ func challengerMetricSets(rows []api.PredictionOutcomeEvaluation, labels []api.F
 			return 0
 		}),
 	}
+}
+
+func challengerEvaluationRows(rows []api.PredictionOutcomeEvaluation, horizonMinutes int) []api.PredictionOutcomeEvaluation {
+	evaluationRows := make([]api.PredictionOutcomeEvaluation, 0, len(rows))
+	for _, row := range rows {
+		if row.MaturityStatus != "matured" || row.Probability == nil || row.FinalActualValue == nil || strings.TrimSpace(row.NodeIP) == "" {
+			continue
+		}
+		if horizonMinutes > 0 && row.HorizonMinutes != horizonMinutes {
+			continue
+		}
+		evaluationRows = append(evaluationRows, row)
+	}
+	return evaluationRows
 }
 
 type challengerHistory struct {
@@ -315,13 +330,17 @@ func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, histories map[t
 }
 
 func challengerHistoriesByCutoff(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit) map[time.Time]challengerHistory {
-	histories := make(map[time.Time]challengerHistory, len(rows))
-	for _, row := range rows {
+	return challengerHistoriesForCutoffs(rows, rows, labels, healthScores, ruleHits)
+}
+
+func challengerHistoriesForCutoffs(historyRows, cutoffRows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit) map[time.Time]challengerHistory {
+	histories := make(map[time.Time]challengerHistory, len(cutoffRows))
+	for _, row := range cutoffRows {
 		cutoff := row.PredictionEvaluatedAt
 		if _, found := histories[cutoff]; found {
 			continue
 		}
-		histories[cutoff] = challengerHistoryWithEvidenceBefore(rows, labels, healthScores, ruleHits, cutoff)
+		histories[cutoff] = challengerHistoryWithEvidenceBefore(historyRows, labels, healthScores, ruleHits, cutoff)
 	}
 	return histories
 }
