@@ -509,7 +509,7 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || len(report.SevenDay) != 5 || report.SevenDay[0].Policy != "logistic_probability" || report.SevenDay[2].Policy != "recency_weighted_failure_prior" || report.SevenDay[3].Policy != "severity_weighted_label_history" {
+	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || len(report.SevenDay) != 5 || len(report.PolicyComparisons) != 4 || report.PolicyComparisons[0].Status != "blocked_insufficient_sample" || report.SevenDay[0].Policy != "logistic_probability" || report.SevenDay[2].Policy != "recency_weighted_failure_prior" || report.SevenDay[3].Policy != "severity_weighted_label_history" {
 		t.Fatalf("unexpected challenger report: %+v", report)
 	}
 	if report.SevenDay[0].Rows != 4 || report.SevenDay[0].Nodes != 3 || report.SevenDay[0].Positives != 2 || len(report.SevenDay[0].RankingAtK) == 0 {
@@ -567,6 +567,21 @@ func TestHeaRankSeverityWeightedLabelHistoryUsesOnlyAvailableEligibleLabels(t *t
 func TestHeaRankSignalCoverageStatus(t *testing.T) {
 	if challengerSignalCoverageStatus(0, 0) != "no_signal" || challengerSignalCoverageStatus(2, 2) != "exploratory" || challengerSignalCoverageStatus(3, 1) != "exploratory" || challengerSignalCoverageStatus(3, 2) != "covered" {
 		t.Fatalf("unexpected challenger signal coverage statuses")
+	}
+}
+
+func TestHeaRankPolicyComparisonsRequireSignalAndSampleGates(t *testing.T) {
+	rows := []ChallengerMetricSet{
+		{Policy: "logistic_probability", SignalCoverageStatus: "covered"},
+		{Policy: "failure_count_prior", SignalCoverageStatus: "no_signal"},
+		{Policy: "threshold_binary", SignalCoverageStatus: "covered"},
+	}
+	comparisons := challengerPolicyComparisons(rows, "exploratory")
+	if len(comparisons) != 2 || comparisons[0].Status != "blocked_challenger_signal" || comparisons[1].Status != "exploratory" {
+		t.Fatalf("unexpected signal-gated comparisons: %+v", comparisons)
+	}
+	if comparisons = challengerPolicyComparisons(rows, "insufficient_sample"); comparisons[0].Status != "blocked_insufficient_sample" {
+		t.Fatalf("sample gate must take priority: %+v", comparisons)
 	}
 }
 

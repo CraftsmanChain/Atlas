@@ -8,7 +8,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const HeaRankChallengerReportVersion = "hearank-challenger-report-v5"
+const HeaRankChallengerReportVersion = "hearank-challenger-report-v6"
 
 const (
 	HeaRankMinimumSevenDayRows      = 30
@@ -31,23 +31,31 @@ type ChallengerMetricSet struct {
 	RankingAtK           []RankingAtK `json:"ranking_at_k"`
 }
 
+type ChallengerPolicyComparison struct {
+	ReferencePolicy  string `json:"reference_policy"`
+	ChallengerPolicy string `json:"challenger_policy"`
+	Status           string `json:"status"`
+	Reason           string `json:"reason"`
+}
+
 type HeaRankChallengerReport struct {
-	Version                  string                `json:"version"`
-	FrameworkVersion         string                `json:"framework_version"`
-	Mode                     string                `json:"mode"`
-	Status                   string                `json:"status"`
-	ConfidenceStatus         string                `json:"confidence_status"`
-	TargetHorizonMinutes     int                   `json:"target_horizon_minutes"`
-	MinimumSevenDayRows      int                   `json:"minimum_seven_day_rows"`
-	MinimumSevenDayNodes     int                   `json:"minimum_seven_day_nodes"`
-	MinimumSevenDayPositives int                   `json:"minimum_seven_day_positives"`
-	SampleSummary            OutcomeMaturity       `json:"sample_summary"`
-	AllMatured               []ChallengerMetricSet `json:"all_matured"`
-	SevenDay                 []ChallengerMetricSet `json:"seven_day"`
-	BlockingReasons          []string              `json:"blocking_reasons"`
-	Interpretation           []string              `json:"interpretation"`
-	RecommendedNextRun       []string              `json:"recommended_next_run"`
-	GeneratedAt              time.Time             `json:"generated_at"`
+	Version                  string                       `json:"version"`
+	FrameworkVersion         string                       `json:"framework_version"`
+	Mode                     string                       `json:"mode"`
+	Status                   string                       `json:"status"`
+	ConfidenceStatus         string                       `json:"confidence_status"`
+	TargetHorizonMinutes     int                          `json:"target_horizon_minutes"`
+	MinimumSevenDayRows      int                          `json:"minimum_seven_day_rows"`
+	MinimumSevenDayNodes     int                          `json:"minimum_seven_day_nodes"`
+	MinimumSevenDayPositives int                          `json:"minimum_seven_day_positives"`
+	SampleSummary            OutcomeMaturity              `json:"sample_summary"`
+	AllMatured               []ChallengerMetricSet        `json:"all_matured"`
+	SevenDay                 []ChallengerMetricSet        `json:"seven_day"`
+	PolicyComparisons        []ChallengerPolicyComparison `json:"policy_comparisons"`
+	BlockingReasons          []string                     `json:"blocking_reasons"`
+	Interpretation           []string                     `json:"interpretation"`
+	RecommendedNextRun       []string                     `json:"recommended_next_run"`
+	GeneratedAt              time.Time                    `json:"generated_at"`
 }
 
 func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
@@ -94,7 +102,37 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 	} else {
 		report.Status = "ready_for_offline_comparison"
 	}
+	report.PolicyComparisons = challengerPolicyComparisons(report.SevenDay, report.ConfidenceStatus)
 	return report, nil
+}
+
+func challengerPolicyComparisons(rows []ChallengerMetricSet, confidence string) []ChallengerPolicyComparison {
+	byPolicy := map[string]ChallengerMetricSet{}
+	for _, row := range rows {
+		byPolicy[row.Policy] = row
+	}
+	reference, found := byPolicy["logistic_probability"]
+	comparisons := make([]ChallengerPolicyComparison, 0, len(rows))
+	for _, row := range rows {
+		if row.Policy == "logistic_probability" {
+			continue
+		}
+		comparison := ChallengerPolicyComparison{ReferencePolicy: "logistic_probability", ChallengerPolicy: row.Policy}
+		switch {
+		case confidence == "insufficient_sample":
+			comparison.Status, comparison.Reason = "blocked_insufficient_sample", "7d mature outcome sample does not meet comparison gates"
+		case !found || reference.SignalCoverageStatus != "covered":
+			comparison.Status, comparison.Reason = "blocked_reference_signal", "Logistic reference has insufficient non-zero signal coverage"
+		case row.SignalCoverageStatus != "covered":
+			comparison.Status, comparison.Reason = "blocked_challenger_signal", "challenger has insufficient non-zero signal coverage"
+		case confidence == "exploratory":
+			comparison.Status, comparison.Reason = "exploratory", "sample passes minimum gates but remains below comparable-volume guidance"
+		default:
+			comparison.Status, comparison.Reason = "comparable", "same 7d denominator and covered signals"
+		}
+		comparisons = append(comparisons, comparison)
+	}
+	return comparisons
 }
 
 func heaRankConfidence(rows, nodes, positives int) (string, []string) {
