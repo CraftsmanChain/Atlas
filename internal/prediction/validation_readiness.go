@@ -259,7 +259,7 @@ func challengerHistoricalSignalStatus(rows []ChallengerMetricSet) string {
 	status := "covered"
 	for _, row := range rows {
 		switch row.Policy {
-		case "health_score_risk_prior", "rule_hit_risk_prior", "failure_count_prior", "recency_weighted_failure_prior", "severity_weighted_label_history":
+		case "health_score_risk_prior", "rule_hit_risk_prior", "model_label_density_prior", "failure_count_prior", "recency_weighted_failure_prior", "severity_weighted_label_history":
 			found = true
 			switch row.SignalCoverageStatus {
 			case "no_signal", "":

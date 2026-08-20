@@ -509,14 +509,14 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || len(report.SevenDay) != 7 || len(report.PolicyComparisons) != 6 || report.PolicyComparisons[0].Status != "blocked_insufficient_sample" || report.SevenDay[0].Policy != "logistic_probability" || report.SevenDay[1].Policy != "health_score_risk_prior" || report.SevenDay[2].Policy != "rule_hit_risk_prior" || report.SevenDay[4].Policy != "recency_weighted_failure_prior" || report.SevenDay[5].Policy != "severity_weighted_label_history" {
+	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || len(report.SevenDay) != 8 || len(report.PolicyComparisons) != 7 || report.PolicyComparisons[0].Status != "blocked_insufficient_sample" || report.SevenDay[0].Policy != "logistic_probability" || report.SevenDay[1].Policy != "health_score_risk_prior" || report.SevenDay[2].Policy != "rule_hit_risk_prior" || report.SevenDay[3].Policy != "model_label_density_prior" || report.SevenDay[5].Policy != "recency_weighted_failure_prior" || report.SevenDay[6].Policy != "severity_weighted_label_history" {
 		t.Fatalf("unexpected challenger report: %+v", report)
 	}
 	if report.SevenDay[0].Rows != 4 || report.SevenDay[0].Nodes != 3 || report.SevenDay[0].Positives != 2 || len(report.SevenDay[0].RankingAtK) == 0 {
 		t.Fatalf("unexpected logistic challenger metrics: %+v", report.SevenDay[0])
 	}
-	if report.SevenDay[5].NonZeroScoreRows != 1 || report.SevenDay[5].NonZeroScoreNodes != 1 || report.SevenDay[5].SignalCoverageStatus != "exploratory" {
-		t.Fatalf("severity challenger must expose non-zero history-signal coverage: %+v", report.SevenDay[5])
+	if report.SevenDay[6].NonZeroScoreRows != 1 || report.SevenDay[6].NonZeroScoreNodes != 1 || report.SevenDay[6].SignalCoverageStatus != "exploratory" {
+		t.Fatalf("severity challenger must expose non-zero history-signal coverage: %+v", report.SevenDay[6])
 	}
 	if report.MinimumSevenDayRows != HeaRankMinimumSevenDayRows || report.MinimumSevenDayNodes != HeaRankMinimumSevenDayNodes || report.MinimumSevenDayPositives != HeaRankMinimumSevenDayPositives {
 		t.Fatalf("unexpected challenger gates: %+v", report)
@@ -595,6 +595,25 @@ func TestHeaRankRuleHitRiskUsesLatestBatchStrictlyBeforeCutoff(t *testing.T) {
 	risk := ruleHitRiskByNodeBefore(hits, scores, cutoff)
 	if risk["10.0.0.1"] != 3 || len(risk) != 1 {
 		t.Fatalf("rule-hit risk must use each GPU's latest batch strictly before the cutoff: %+v", risk)
+	}
+}
+
+func TestHeaRankModelLabelDensityUsesHistoricalCohortOnly(t *testing.T) {
+	cutoff := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	scores := []api.GPUHealthScore{
+		{ID: 1, NodeIP: "10.0.0.1", GPUUUID: "GPU-H100-A", ModelName: "H100", EvaluatedAt: cutoff.Add(-time.Hour)},
+		{ID: 2, NodeIP: "10.0.0.2", GPUUUID: "GPU-H100-B", ModelName: "H100", EvaluatedAt: cutoff.Add(-time.Hour)},
+		{ID: 3, NodeIP: "10.0.0.3", GPUUUID: "GPU-A100", ModelName: "A100", EvaluatedAt: cutoff.Add(-time.Hour)},
+		{ID: 4, NodeIP: "10.0.0.4", GPUUUID: "GPU-FUTURE", ModelName: "H100", EvaluatedAt: cutoff},
+	}
+	labels := []api.FailureLabel{
+		{NodeIP: "10.0.0.1", ModelName: "H100", EventType: "row_remap_failure", LabelValue: 1, QualityTier: "strong_proxy", OccurredAt: cutoff.Add(-2 * time.Hour), AvailableAt: cutoff.Add(-time.Hour)},
+		{NodeIP: "10.0.0.2", ModelName: "H100", EventType: "row_remap_failure", LabelValue: 1, QualityTier: "confirmed", OccurredAt: cutoff.Add(-2 * time.Hour), AvailableAt: cutoff.Add(-time.Hour)},
+		{NodeIP: "10.0.0.3", ModelName: "A100", EventType: "row_remap_failure", LabelValue: 1, QualityTier: "strong_proxy", OccurredAt: cutoff.Add(-2 * time.Hour), AvailableAt: cutoff},
+	}
+	density := modelLabelDensityByNodeBefore(labels, scores, cutoff)
+	if density["10.0.0.1"] != 1 || density["10.0.0.2"] != 1 || len(density) != 2 {
+		t.Fatalf("model cohort density must use only labels and observed GPUs strictly before the cutoff: %+v", density)
 	}
 }
 
