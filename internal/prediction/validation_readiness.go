@@ -11,7 +11,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const ValidationReadinessReportVersion = "prediction-validation-readiness-v2"
+const ValidationReadinessReportVersion = "prediction-validation-readiness-v3"
 const validationFeatureDistributionArchiveVersion = "gpu-feature-distribution-archive-v1"
 const validationFeatureDistributionMinimumPairs = 1
 
@@ -72,6 +72,18 @@ type ValidationReadinessReport struct {
 	ChallengerStatus                   string                                    `json:"challenger_status"`
 	ChallengerConfidence               string                                    `json:"challenger_confidence_status"`
 	ChallengerHistoricalSignal         string                                    `json:"challenger_historical_signal_status"`
+	RiskRankingVersion                 string                                    `json:"risk_ranking_version"`
+	RiskRankingSHA256                  string                                    `json:"risk_ranking_sha256"`
+	RiskRankingStatus                  string                                    `json:"risk_ranking_status"`
+	RiskRankingPolicy                  string                                    `json:"risk_ranking_policy"`
+	RiskRankingScoreSemantics          string                                    `json:"risk_ranking_score_semantics"`
+	RiskRankingShadowRunID             uint                                      `json:"risk_ranking_shadow_run_id"`
+	RiskRankingShadowRunKey            string                                    `json:"risk_ranking_shadow_run_key,omitempty"`
+	RiskRankingHorizonMinutes          int                                       `json:"risk_ranking_horizon_minutes"`
+	RiskRankingSnapshotCutoffAt        *time.Time                                `json:"risk_ranking_snapshot_cutoff_at,omitempty"`
+	RiskRankingTargetGPUs              int                                       `json:"risk_ranking_target_gpu_count"`
+	RiskRankingScoredGPUs              int                                       `json:"risk_ranking_scored_gpu_count"`
+	RiskRankingNodes                   int                                       `json:"risk_ranking_node_count"`
 	DataDriftVersion                   string                                    `json:"data_drift_version"`
 	DataDriftSHA256                    string                                    `json:"data_drift_sha256"`
 	DataDriftStatus                    string                                    `json:"data_drift_status"`
@@ -136,6 +148,10 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 	if err != nil {
 		return ValidationReadinessReport{}, err
 	}
+	riskRankingReport, err := s.RiskRankingSnapshotReport()
+	if err != nil {
+		return ValidationReadinessReport{}, err
+	}
 	driftReport, err := s.DataDriftReport()
 	if err != nil {
 		return ValidationReadinessReport{}, err
@@ -170,6 +186,18 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 		ChallengerStatus:                  challengerReport.Status,
 		ChallengerConfidence:              challengerReport.ConfidenceStatus,
 		ChallengerHistoricalSignal:        challengerHistoricalSignalStatus(challengerReport.SevenDay),
+		RiskRankingVersion:                riskRankingReport.Version,
+		RiskRankingSHA256:                 riskRankingReport.ReportSHA256,
+		RiskRankingStatus:                 riskRankingReport.Status,
+		RiskRankingPolicy:                 riskRankingReport.Policy,
+		RiskRankingScoreSemantics:         riskRankingReport.ScoreSemantics,
+		RiskRankingShadowRunID:            riskRankingReport.ShadowRunID,
+		RiskRankingShadowRunKey:           riskRankingReport.ShadowRunKey,
+		RiskRankingHorizonMinutes:         riskRankingReport.HorizonMinutes,
+		RiskRankingSnapshotCutoffAt:       riskRankingReport.SnapshotCutoffAt,
+		RiskRankingTargetGPUs:             riskRankingReport.TargetGPUCount,
+		RiskRankingScoredGPUs:             riskRankingReport.ScoredGPUCount,
+		RiskRankingNodes:                  riskRankingReport.NodeCount,
 		DataDriftVersion:                  driftReport.Version,
 		DataDriftSHA256:                   driftReport.ReportSHA256,
 		DataDriftStatus:                   driftReport.Status,
@@ -214,6 +242,7 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 		GeneratedAt:                 s.now(),
 		RecommendedNextRun: []string{
 			"freeze the label manifest SHA256 before comparing challenger metrics",
+			"archive the risk ranking snapshot SHA256 with every dual-track validation run",
 			"archive the evidence bundle SHA256 with every offline validation run",
 			"archive the data drift report SHA256 before comparing shadow candidates",
 			"archive the calibration drift report SHA256 before comparing shadow candidates",
@@ -227,7 +256,7 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 	if report.ChallengerHistoricalSignal != "covered" {
 		report.RecommendedNextRun = append(report.RecommendedNextRun, "do not interpret historical-risk challenger policies as comparable until their 7d signal coverage is covered")
 	}
-	report.BlockingReasons = validationReadinessBlockers(labelManifest, evidenceBundle, outcomeReport, challengerReport, driftReport, calibrationReport, featureDriftReport, distributionArchive)
+	report.BlockingReasons = validationReadinessBlockers(labelManifest, evidenceBundle, outcomeReport, challengerReport, riskRankingReport, driftReport, calibrationReport, featureDriftReport, distributionArchive)
 	if len(report.BlockingReasons) > 0 {
 		report.Status = "blocked"
 		report.RecommendedNextRun = append(report.RecommendedNextRun, report.BlockingReasons...)
@@ -421,7 +450,7 @@ func validationFeatureDistributionComparabilityBlockers(archive validationFeatur
 	}
 }
 
-func validationReadinessBlockers(labelManifest LabelManifest, evidenceBundle EvidenceBundleReport, outcomeReport OutcomeReport, challengerReport HeaRankChallengerReport, driftReport DataDriftReport, calibrationReport CalibrationDriftReport, featureDriftReport FeatureDriftReport, distributionArchive validationFeatureDistributionArchive) []string {
+func validationReadinessBlockers(labelManifest LabelManifest, evidenceBundle EvidenceBundleReport, outcomeReport OutcomeReport, challengerReport HeaRankChallengerReport, riskRankingReport RiskRankingSnapshotReport, driftReport DataDriftReport, calibrationReport CalibrationDriftReport, featureDriftReport FeatureDriftReport, distributionArchive validationFeatureDistributionArchive) []string {
 	blockers := []string{}
 	if labelManifest.QualityGateStatus == "blocked" {
 		blockers = append(blockers, labelManifest.BlockingReasons...)
@@ -443,6 +472,12 @@ func validationReadinessBlockers(labelManifest LabelManifest, evidenceBundle Evi
 	}
 	if challengerReport.Status != "ready_for_offline_comparison" {
 		blockers = append(blockers, challengerReport.BlockingReasons...)
+	}
+	if riskRankingReport.Status != "shadow_snapshot_available" {
+		blockers = append(blockers, riskRankingReport.BlockingReasons...)
+	}
+	if riskRankingReport.ReportSHA256 == "" {
+		blockers = append(blockers, "risk ranking snapshot SHA256 is unavailable")
 	}
 	if driftReport.Status == "blocked_no_shadow_runs" || driftReport.Status == "review_required" {
 		blockers = append(blockers, driftReport.BlockingReasons...)
@@ -607,6 +642,18 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		ChallengerStatus                   string                                    `json:"challenger_status"`
 		ChallengerConfidence               string                                    `json:"challenger_confidence_status"`
 		ChallengerHistoricalSignal         string                                    `json:"challenger_historical_signal_status"`
+		RiskRankingVersion                 string                                    `json:"risk_ranking_version"`
+		RiskRankingSHA256                  string                                    `json:"risk_ranking_sha256"`
+		RiskRankingStatus                  string                                    `json:"risk_ranking_status"`
+		RiskRankingPolicy                  string                                    `json:"risk_ranking_policy"`
+		RiskRankingScoreSemantics          string                                    `json:"risk_ranking_score_semantics"`
+		RiskRankingShadowRunID             uint                                      `json:"risk_ranking_shadow_run_id"`
+		RiskRankingShadowRunKey            string                                    `json:"risk_ranking_shadow_run_key"`
+		RiskRankingHorizonMinutes          int                                       `json:"risk_ranking_horizon_minutes"`
+		RiskRankingSnapshotCutoffAt        *time.Time                                `json:"risk_ranking_snapshot_cutoff_at"`
+		RiskRankingTargetGPUs              int                                       `json:"risk_ranking_target_gpu_count"`
+		RiskRankingScoredGPUs              int                                       `json:"risk_ranking_scored_gpu_count"`
+		RiskRankingNodes                   int                                       `json:"risk_ranking_node_count"`
 		DataDriftVersion                   string                                    `json:"data_drift_version"`
 		DataDriftSHA256                    string                                    `json:"data_drift_sha256"`
 		DataDriftStatus                    string                                    `json:"data_drift_status"`
@@ -659,6 +706,12 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		OutcomeReportVersion: report.OutcomeReportVersion, OutcomeStability: report.OutcomeStability, OutcomeMaturity: report.OutcomeMaturity,
 		ChallengerVersion: report.ChallengerVersion, ChallengerStatus: report.ChallengerStatus,
 		ChallengerConfidence: report.ChallengerConfidence, ChallengerHistoricalSignal: report.ChallengerHistoricalSignal,
+		RiskRankingVersion: report.RiskRankingVersion, RiskRankingSHA256: report.RiskRankingSHA256,
+		RiskRankingStatus: report.RiskRankingStatus, RiskRankingPolicy: report.RiskRankingPolicy,
+		RiskRankingScoreSemantics: report.RiskRankingScoreSemantics, RiskRankingShadowRunID: report.RiskRankingShadowRunID,
+		RiskRankingShadowRunKey: report.RiskRankingShadowRunKey, RiskRankingHorizonMinutes: report.RiskRankingHorizonMinutes,
+		RiskRankingSnapshotCutoffAt: report.RiskRankingSnapshotCutoffAt, RiskRankingTargetGPUs: report.RiskRankingTargetGPUs,
+		RiskRankingScoredGPUs: report.RiskRankingScoredGPUs, RiskRankingNodes: report.RiskRankingNodes,
 		DataDriftVersion: report.DataDriftVersion, DataDriftSHA256: report.DataDriftSHA256,
 		DataDriftStatus: report.DataDriftStatus, DataDriftCoverage: report.DataDriftCoverage,
 		DataDriftPSIProxy: report.DataDriftPSIProxy, DataDriftKSProxy: report.DataDriftKSProxy,
