@@ -8,7 +8,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const HeaRankChallengerReportVersion = "hearank-challenger-report-v8"
+const HeaRankChallengerReportVersion = "hearank-challenger-report-v9"
 
 const (
 	HeaRankMinimumSevenDayRows      = 30
@@ -180,6 +180,9 @@ func challengerMetricSets(rows []api.PredictionOutcomeEvaluation, labels []api.F
 		challengerMetricSet(rows, labels, healthScores, ruleHits, horizonMinutes, "rule_hit_risk_prior", "node maximum severity-weighted risk from each GPU's latest health-rule-hit batch strictly before the prediction cutoff", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
 			return prior.RuleHitRiskByNode[normalNode(row.NodeIP)]
 		}),
+		challengerMetricSet(rows, labels, healthScores, ruleHits, horizonMinutes, "model_label_density_prior", "node maximum eligible historical label-event density for its GPU model cohort strictly before the prediction cutoff", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
+			return prior.ModelLabelDensityByNode[normalNode(row.NodeIP)]
+		}),
 		challengerMetricSet(rows, labels, healthScores, ruleHits, horizonMinutes, "failure_count_prior", "node positive outcomes whose full evaluation window closed before the prediction cutoff", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
 			return float64(prior.PositiveCounts[normalNode(row.NodeIP)])
 		}),
@@ -199,11 +202,12 @@ func challengerMetricSets(rows []api.PredictionOutcomeEvaluation, labels []api.F
 }
 
 type challengerHistory struct {
-	PositiveCounts         map[string]int
-	RecencyWeighted        map[string]float64
-	SeverityWeightedLabels map[string]float64
-	HealthRiskByNode       map[string]float64
-	RuleHitRiskByNode      map[string]float64
+	PositiveCounts          map[string]int
+	RecencyWeighted         map[string]float64
+	SeverityWeightedLabels  map[string]float64
+	HealthRiskByNode        map[string]float64
+	RuleHitRiskByNode       map[string]float64
+	ModelLabelDensityByNode map[string]float64
 }
 
 func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit, horizonMinutes int, policy, description string, score func(api.PredictionOutcomeEvaluation, challengerHistory) float64) ChallengerMetricSet {
@@ -259,7 +263,7 @@ func challengerHistoryWithLabelsBefore(rows []api.PredictionOutcomeEvaluation, l
 }
 
 func challengerHistoryWithEvidenceBefore(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit, cutoff time.Time) challengerHistory {
-	history := challengerHistory{PositiveCounts: map[string]int{}, RecencyWeighted: map[string]float64{}, SeverityWeightedLabels: map[string]float64{}, HealthRiskByNode: healthRiskByNodeBefore(healthScores, cutoff), RuleHitRiskByNode: ruleHitRiskByNodeBefore(ruleHits, healthScores, cutoff)}
+	history := challengerHistory{PositiveCounts: map[string]int{}, RecencyWeighted: map[string]float64{}, SeverityWeightedLabels: map[string]float64{}, HealthRiskByNode: healthRiskByNodeBefore(healthScores, cutoff), RuleHitRiskByNode: ruleHitRiskByNodeBefore(ruleHits, healthScores, cutoff), ModelLabelDensityByNode: modelLabelDensityByNodeBefore(labels, healthScores, cutoff)}
 	for _, candidate := range rows {
 		if candidate.MaturityStatus != "matured" || candidate.FinalActualValue == nil || *candidate.FinalActualValue != 1 || strings.TrimSpace(candidate.NodeIP) == "" || !candidate.WindowEndAt.Before(cutoff) {
 			continue
@@ -348,6 +352,49 @@ func ruleHitSeverityWeight(severity string) float64 {
 	default:
 		return 1
 	}
+}
+
+func modelLabelDensityByNodeBefore(labels []api.FailureLabel, scores []api.GPUHealthScore, cutoff time.Time) map[string]float64 {
+	latestByGPU := map[string]api.GPUHealthScore{}
+	for _, score := range scores {
+		if strings.TrimSpace(score.NodeIP) == "" || strings.TrimSpace(score.GPUUUID) == "" || strings.TrimSpace(score.ModelName) == "" || !score.EvaluatedAt.Before(cutoff) {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(score.GPUUUID))
+		previous, found := latestByGPU[key]
+		if !found || score.EvaluatedAt.After(previous.EvaluatedAt) || (score.EvaluatedAt.Equal(previous.EvaluatedAt) && score.ID > previous.ID) {
+			latestByGPU[key] = score
+		}
+	}
+	observedGPUsByModel := map[string]int{}
+	for _, score := range latestByGPU {
+		observedGPUsByModel[normalModel(score.ModelName)]++
+	}
+	labelsByModel := map[string]int{}
+	for _, label := range labels {
+		if !eligibleSeverityHistoryLabel(label, cutoff) || strings.TrimSpace(label.ModelName) == "" {
+			continue
+		}
+		labelsByModel[normalModel(label.ModelName)]++
+	}
+	densityByModel := map[string]float64{}
+	for model, labels := range labelsByModel {
+		if observed := observedGPUsByModel[model]; observed > 0 {
+			densityByModel[model] = float64(labels) / float64(observed)
+		}
+	}
+	densityByNode := map[string]float64{}
+	for _, score := range latestByGPU {
+		node := normalNode(score.NodeIP)
+		if density := densityByModel[normalModel(score.ModelName)]; density > densityByNode[node] {
+			densityByNode[node] = density
+		}
+	}
+	return densityByNode
+}
+
+func normalModel(model string) string {
+	return strings.ToLower(strings.TrimSpace(model))
 }
 
 func eligibleSeverityHistoryLabel(label api.FailureLabel, cutoff time.Time) bool {
