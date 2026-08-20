@@ -509,14 +509,14 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || len(report.SevenDay) != 5 || len(report.PolicyComparisons) != 4 || report.PolicyComparisons[0].Status != "blocked_insufficient_sample" || report.SevenDay[0].Policy != "logistic_probability" || report.SevenDay[2].Policy != "recency_weighted_failure_prior" || report.SevenDay[3].Policy != "severity_weighted_label_history" {
+	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || len(report.SevenDay) != 6 || len(report.PolicyComparisons) != 5 || report.PolicyComparisons[0].Status != "blocked_insufficient_sample" || report.SevenDay[0].Policy != "logistic_probability" || report.SevenDay[1].Policy != "health_score_risk_prior" || report.SevenDay[3].Policy != "recency_weighted_failure_prior" || report.SevenDay[4].Policy != "severity_weighted_label_history" {
 		t.Fatalf("unexpected challenger report: %+v", report)
 	}
 	if report.SevenDay[0].Rows != 4 || report.SevenDay[0].Nodes != 3 || report.SevenDay[0].Positives != 2 || len(report.SevenDay[0].RankingAtK) == 0 {
 		t.Fatalf("unexpected logistic challenger metrics: %+v", report.SevenDay[0])
 	}
-	if report.SevenDay[3].NonZeroScoreRows != 1 || report.SevenDay[3].NonZeroScoreNodes != 1 || report.SevenDay[3].SignalCoverageStatus != "exploratory" {
-		t.Fatalf("severity challenger must expose non-zero history-signal coverage: %+v", report.SevenDay[3])
+	if report.SevenDay[4].NonZeroScoreRows != 1 || report.SevenDay[4].NonZeroScoreNodes != 1 || report.SevenDay[4].SignalCoverageStatus != "exploratory" {
+		t.Fatalf("severity challenger must expose non-zero history-signal coverage: %+v", report.SevenDay[4])
 	}
 	if report.MinimumSevenDayRows != HeaRankMinimumSevenDayRows || report.MinimumSevenDayNodes != HeaRankMinimumSevenDayNodes || report.MinimumSevenDayPositives != HeaRankMinimumSevenDayPositives {
 		t.Fatalf("unexpected challenger gates: %+v", report)
@@ -561,6 +561,22 @@ func TestHeaRankSeverityWeightedLabelHistoryUsesOnlyAvailableEligibleLabels(t *t
 	history := challengerHistoryWithLabelsBefore(nil, labels, cutoff)
 	if history.SeverityWeightedLabels["10.0.0.1"] != 5 || len(history.SeverityWeightedLabels) != 1 {
 		t.Fatalf("severity history must use only labels available at the cutoff and eligible for validation: %+v", history)
+	}
+}
+
+func TestHeaRankHealthRiskUsesLatestScoreStrictlyBeforeCutoff(t *testing.T) {
+	cutoff := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	low := 80
+	lower := 60
+	equalCutoff := 10
+	scores := []api.GPUHealthScore{
+		{ID: 1, NodeIP: "10.0.0.1", GPUUUID: "GPU-A", Score: &low, EvaluatedAt: cutoff.Add(-2 * time.Hour)},
+		{ID: 2, NodeIP: "10.0.0.1", GPUUUID: "GPU-A", Score: &lower, EvaluatedAt: cutoff.Add(-time.Hour)},
+		{ID: 3, NodeIP: "10.0.0.1", GPUUUID: "GPU-B", Score: &equalCutoff, EvaluatedAt: cutoff},
+	}
+	risk := healthRiskByNodeBefore(scores, cutoff)
+	if risk["10.0.0.1"] != 40 || len(risk) != 1 {
+		t.Fatalf("health risk must use each GPU's latest score strictly before the cutoff: %+v", risk)
 	}
 }
 
