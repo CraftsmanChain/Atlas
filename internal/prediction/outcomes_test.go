@@ -515,7 +515,7 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	if report.SevenDay[0].Rows != 4 || report.SevenDay[0].Nodes != 3 || report.SevenDay[0].Positives != 2 || len(report.SevenDay[0].RankingAtK) == 0 {
 		t.Fatalf("unexpected logistic challenger metrics: %+v", report.SevenDay[0])
 	}
-	if report.SevenDay[3].NonZeroScoreRows != 1 || report.SevenDay[3].NonZeroScoreNodes != 1 {
+	if report.SevenDay[3].NonZeroScoreRows != 1 || report.SevenDay[3].NonZeroScoreNodes != 1 || report.SevenDay[3].SignalCoverageStatus != "exploratory" {
 		t.Fatalf("severity challenger must expose non-zero history-signal coverage: %+v", report.SevenDay[3])
 	}
 	if report.MinimumSevenDayRows != HeaRankMinimumSevenDayRows || report.MinimumSevenDayNodes != HeaRankMinimumSevenDayNodes || report.MinimumSevenDayPositives != HeaRankMinimumSevenDayPositives {
@@ -558,6 +558,12 @@ func TestHeaRankSeverityWeightedLabelHistoryUsesOnlyAvailableEligibleLabels(t *t
 	history := challengerHistoryWithLabelsBefore(nil, labels, cutoff)
 	if history.SeverityWeightedLabels["10.0.0.1"] != 5 || len(history.SeverityWeightedLabels) != 1 {
 		t.Fatalf("severity history must use only labels available at the cutoff and eligible for validation: %+v", history)
+	}
+}
+
+func TestHeaRankSignalCoverageStatus(t *testing.T) {
+	if challengerSignalCoverageStatus(0, 0) != "no_signal" || challengerSignalCoverageStatus(2, 2) != "exploratory" || challengerSignalCoverageStatus(3, 1) != "exploratory" || challengerSignalCoverageStatus(3, 2) != "covered" {
+		t.Fatalf("unexpected challenger signal coverage statuses")
 	}
 }
 

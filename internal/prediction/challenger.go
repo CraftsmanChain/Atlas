@@ -8,24 +8,27 @@ import (
 	"atlas/pkg/api"
 )
 
-const HeaRankChallengerReportVersion = "hearank-challenger-report-v3"
+const HeaRankChallengerReportVersion = "hearank-challenger-report-v4"
 
 const (
 	HeaRankMinimumSevenDayRows      = 30
 	HeaRankMinimumSevenDayNodes     = 10
 	HeaRankMinimumSevenDayPositives = 3
 	HeaRankHistoryHalfLifeDays      = 90
+	HeaRankMinimumSignalRows        = 3
+	HeaRankMinimumSignalNodes       = 2
 )
 
 type ChallengerMetricSet struct {
-	Policy            string       `json:"policy"`
-	Description       string       `json:"description"`
-	Rows              int          `json:"rows"`
-	Nodes             int          `json:"nodes"`
-	Positives         int          `json:"positives"`
-	NonZeroScoreRows  int          `json:"non_zero_score_rows"`
-	NonZeroScoreNodes int          `json:"non_zero_score_nodes"`
-	RankingAtK        []RankingAtK `json:"ranking_at_k"`
+	Policy               string       `json:"policy"`
+	Description          string       `json:"description"`
+	Rows                 int          `json:"rows"`
+	Nodes                int          `json:"nodes"`
+	Positives            int          `json:"positives"`
+	NonZeroScoreRows     int          `json:"non_zero_score_rows"`
+	NonZeroScoreNodes    int          `json:"non_zero_score_nodes"`
+	SignalCoverageStatus string       `json:"signal_coverage_status"`
+	RankingAtK           []RankingAtK `json:"ranking_at_k"`
 }
 
 type HeaRankChallengerReport struct {
@@ -70,11 +73,13 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 			"This is a node-risk challenger scaffold, not a released HeaRank model.",
 			"All policies are evaluated on mature scored outcomes only; pending and censored rows are excluded.",
 			"Seven-day rows are reported separately because HeaRank validation should target 7d node risk.",
+			"A policy with no_signal or exploratory signal coverage must not be interpreted as a comparable historical-risk ranking result.",
 		},
 		RecommendedNextRun: []string{
 			"Accumulate enough mature 7d node outcomes before training a HeaRank-style MLP.",
 			"Use the same node-level Ranking@K denominator when comparing Logistic, historical-risk baselines, and future HeaRank scores.",
 			"Keep the challenger offline until time-split, leakage, and calibration checks pass.",
+			"Accumulate eligible historical evidence before interpreting policies whose signal coverage is no_signal or exploratory.",
 		},
 	}
 	report.AllMatured = challengerMetricSets(rows, labels, 0)
@@ -175,9 +180,19 @@ func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, labels []api.Fa
 	}
 	return ChallengerMetricSet{
 		Policy: policy, Description: description, Rows: len(items), Nodes: len(nodes), Positives: positives,
-		NonZeroScoreRows: nonZeroRows, NonZeroScoreNodes: len(nonZeroNodes),
+		NonZeroScoreRows: nonZeroRows, NonZeroScoreNodes: len(nonZeroNodes), SignalCoverageStatus: challengerSignalCoverageStatus(nonZeroRows, len(nonZeroNodes)),
 		RankingAtK: rankingFromItems(items),
 	}
+}
+
+func challengerSignalCoverageStatus(rows, nodes int) string {
+	if rows == 0 {
+		return "no_signal"
+	}
+	if rows < HeaRankMinimumSignalRows || nodes < HeaRankMinimumSignalNodes {
+		return "exploratory"
+	}
+	return "covered"
 }
 
 func challengerHistoryBefore(rows []api.PredictionOutcomeEvaluation, cutoff time.Time) challengerHistory {
