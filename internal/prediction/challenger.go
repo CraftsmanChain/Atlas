@@ -11,7 +11,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const HeaRankChallengerReportVersion = "hearank-challenger-report-v11"
+const HeaRankChallengerReportVersion = "hearank-challenger-report-v12"
 
 const (
 	HeaRankMinimumSevenDayRows      = 30
@@ -68,16 +68,8 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 	if err := s.db.Order("prediction_evaluated_at ASC, id ASC").Find(&rows).Error; err != nil {
 		return HeaRankChallengerReport{}, err
 	}
-	var labels []api.FailureLabel
-	if err := s.db.Order("available_at ASC, id ASC").Find(&labels).Error; err != nil {
-		return HeaRankChallengerReport{}, err
-	}
-	var healthScores []api.GPUHealthScore
-	if err := s.db.Order("evaluated_at ASC, id ASC").Find(&healthScores).Error; err != nil {
-		return HeaRankChallengerReport{}, err
-	}
-	var ruleHits []api.GPUHealthRuleHit
-	if err := s.db.Order("evaluated_at ASC, id ASC").Find(&ruleHits).Error; err != nil {
+	labels, healthScores, ruleHits, err := s.loadChallengerEvidence(rows)
+	if err != nil {
 		return HeaRankChallengerReport{}, err
 	}
 	report := HeaRankChallengerReport{
@@ -118,6 +110,46 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 	report.PolicyComparisons = challengerPolicyComparisons(report.SevenDay, report.ConfidenceStatus)
 	report.ReportSHA256 = heaRankChallengerChecksum(report)
 	return report, nil
+}
+
+func (s *Service) loadChallengerEvidence(rows []api.PredictionOutcomeEvaluation) ([]api.FailureLabel, []api.GPUHealthScore, []api.GPUHealthRuleHit, error) {
+	windowStart, windowEnd, found := challengerEvidenceQueryWindow(rows)
+	if !found {
+		return nil, nil, nil, nil
+	}
+	var labels []api.FailureLabel
+	if err := s.db.Where("occurred_at < ? AND available_at < ?", windowEnd, windowEnd).Order("available_at ASC, id ASC").Find(&labels).Error; err != nil {
+		return nil, nil, nil, err
+	}
+	var healthScores []api.GPUHealthScore
+	if err := s.db.Where("evaluated_at >= ? AND evaluated_at < ?", windowStart, windowEnd).Order("evaluated_at ASC, id ASC").Find(&healthScores).Error; err != nil {
+		return nil, nil, nil, err
+	}
+	var ruleHits []api.GPUHealthRuleHit
+	if err := s.db.Where("evaluated_at >= ? AND evaluated_at < ?", windowStart, windowEnd).Order("evaluated_at ASC, id ASC").Find(&ruleHits).Error; err != nil {
+		return nil, nil, nil, err
+	}
+	return labels, healthScores, ruleHits, nil
+}
+
+func challengerEvidenceQueryWindow(rows []api.PredictionOutcomeEvaluation) (time.Time, time.Time, bool) {
+	var earliest, latest time.Time
+	for _, row := range rows {
+		cutoff := row.PredictionEvaluatedAt
+		if cutoff.IsZero() {
+			continue
+		}
+		if earliest.IsZero() || cutoff.Before(earliest) {
+			earliest = cutoff
+		}
+		if latest.IsZero() || cutoff.After(latest) {
+			latest = cutoff
+		}
+	}
+	if earliest.IsZero() {
+		return time.Time{}, time.Time{}, false
+	}
+	return earliest.Add(-HeaRankOperationalSignalMaxAge), latest, true
 }
 
 func heaRankChallengerChecksum(report HeaRankChallengerReport) string {
