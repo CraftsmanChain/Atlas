@@ -1,6 +1,9 @@
 package prediction
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"math"
 	"strings"
 	"time"
@@ -8,7 +11,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const HeaRankChallengerReportVersion = "hearank-challenger-report-v10"
+const HeaRankChallengerReportVersion = "hearank-challenger-report-v11"
 
 const (
 	HeaRankMinimumSevenDayRows      = 30
@@ -44,6 +47,7 @@ type HeaRankChallengerReport struct {
 	FrameworkVersion         string                       `json:"framework_version"`
 	Mode                     string                       `json:"mode"`
 	Status                   string                       `json:"status"`
+	ReportSHA256             string                       `json:"report_sha256"`
 	ConfidenceStatus         string                       `json:"confidence_status"`
 	TargetHorizonMinutes     int                          `json:"target_horizon_minutes"`
 	MinimumSevenDayRows      int                          `json:"minimum_seven_day_rows"`
@@ -112,7 +116,39 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 		report.Status = "ready_for_offline_comparison"
 	}
 	report.PolicyComparisons = challengerPolicyComparisons(report.SevenDay, report.ConfidenceStatus)
+	report.ReportSHA256 = heaRankChallengerChecksum(report)
 	return report, nil
+}
+
+func heaRankChallengerChecksum(report HeaRankChallengerReport) string {
+	fingerprint := struct {
+		Version                  string                       `json:"version"`
+		FrameworkVersion         string                       `json:"framework_version"`
+		Mode                     string                       `json:"mode"`
+		Status                   string                       `json:"status"`
+		ConfidenceStatus         string                       `json:"confidence_status"`
+		TargetHorizonMinutes     int                          `json:"target_horizon_minutes"`
+		MinimumSevenDayRows      int                          `json:"minimum_seven_day_rows"`
+		MinimumSevenDayNodes     int                          `json:"minimum_seven_day_nodes"`
+		MinimumSevenDayPositives int                          `json:"minimum_seven_day_positives"`
+		SampleSummary            OutcomeMaturity              `json:"sample_summary"`
+		AllMatured               []ChallengerMetricSet        `json:"all_matured"`
+		SevenDay                 []ChallengerMetricSet        `json:"seven_day"`
+		PolicyComparisons        []ChallengerPolicyComparison `json:"policy_comparisons"`
+		BlockingReasons          []string                     `json:"blocking_reasons"`
+		Interpretation           []string                     `json:"interpretation"`
+		RecommendedNextRun       []string                     `json:"recommended_next_run"`
+	}{
+		Version: report.Version, FrameworkVersion: report.FrameworkVersion, Mode: report.Mode, Status: report.Status,
+		ConfidenceStatus: report.ConfidenceStatus, TargetHorizonMinutes: report.TargetHorizonMinutes,
+		MinimumSevenDayRows: report.MinimumSevenDayRows, MinimumSevenDayNodes: report.MinimumSevenDayNodes,
+		MinimumSevenDayPositives: report.MinimumSevenDayPositives, SampleSummary: report.SampleSummary,
+		AllMatured: report.AllMatured, SevenDay: report.SevenDay, PolicyComparisons: report.PolicyComparisons,
+		BlockingReasons: report.BlockingReasons, Interpretation: report.Interpretation, RecommendedNextRun: report.RecommendedNextRun,
+	}
+	payload, _ := json.Marshal(fingerprint)
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
 }
 
 func challengerPolicyComparisons(rows []ChallengerMetricSet, confidence string) []ChallengerPolicyComparison {
