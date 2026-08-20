@@ -509,7 +509,7 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || len(report.SevenDay) != 8 || len(report.PolicyComparisons) != 7 || report.PolicyComparisons[0].Status != "blocked_insufficient_sample" || report.SevenDay[0].Policy != "logistic_probability" || report.SevenDay[1].Policy != "health_score_risk_prior" || report.SevenDay[2].Policy != "rule_hit_risk_prior" || report.SevenDay[3].Policy != "model_label_density_prior" || report.SevenDay[5].Policy != "recency_weighted_failure_prior" || report.SevenDay[6].Policy != "severity_weighted_label_history" {
+	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || report.ReportSHA256 == "" || len(report.SevenDay) != 8 || len(report.PolicyComparisons) != 7 || report.PolicyComparisons[0].Status != "blocked_insufficient_sample" || report.SevenDay[0].Policy != "logistic_probability" || report.SevenDay[1].Policy != "health_score_risk_prior" || report.SevenDay[2].Policy != "rule_hit_risk_prior" || report.SevenDay[3].Policy != "model_label_density_prior" || report.SevenDay[5].Policy != "recency_weighted_failure_prior" || report.SevenDay[6].Policy != "severity_weighted_label_history" {
 		t.Fatalf("unexpected challenger report: %+v", report)
 	}
 	if report.SevenDay[0].Rows != 4 || report.SevenDay[0].Nodes != 3 || report.SevenDay[0].Positives != 2 || len(report.SevenDay[0].RankingAtK) == 0 {
@@ -521,10 +521,16 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	if report.MinimumSevenDayRows != HeaRankMinimumSevenDayRows || report.MinimumSevenDayNodes != HeaRankMinimumSevenDayNodes || report.MinimumSevenDayPositives != HeaRankMinimumSevenDayPositives {
 		t.Fatalf("unexpected challenger gates: %+v", report)
 	}
+	later := now.Add(time.Hour)
+	service.now = func() time.Time { return later }
+	laterReport, err := service.HeaRankChallengerReport()
+	if err != nil || laterReport.ReportSHA256 != report.ReportSHA256 || laterReport.GeneratedAt.Equal(report.GeneratedAt) {
+		t.Fatalf("challenger checksum should be stable across generated_at changes: before=%+v after=%+v err=%v", report, laterReport, err)
+	}
 	handler := NewHandlerWithService(service)
 	response := httptest.NewRecorder()
-	handler.HandleHeaRankChallenger(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/hearank-challenger", nil))
-	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(HeaRankChallengerReportVersion)) {
+	handler.HandleHeaRankChallenger(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/hearank-challenger?download=1", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(HeaRankChallengerReportVersion)) || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" {
 		t.Fatalf("challenger handler failed: %d %s", response.Code, response.Body.String())
 	}
 }

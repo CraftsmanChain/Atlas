@@ -145,6 +145,13 @@ func (h *Handler) HandleHeaRankChallenger(w http.ResponseWriter, r *http.Request
 		predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("ETag", `"`+report.ReportSHA256+`"`)
+	w.Header().Set("X-Atlas-HeaRank-Challenger-Version", report.Version)
+	w.Header().Set("X-Atlas-HeaRank-Challenger-SHA256", report.ReportSHA256)
+	if r.URL.Query().Get("download") == "1" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.json"`, report.Version, report.ReportSHA256[:12]))
+	}
 	predictionJSON(w, http.StatusOK, map[string]any{"data": report})
 }
 
