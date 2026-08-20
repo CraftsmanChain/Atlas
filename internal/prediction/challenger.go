@@ -8,7 +8,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const HeaRankChallengerReportVersion = "hearank-challenger-report-v2"
+const HeaRankChallengerReportVersion = "hearank-challenger-report-v3"
 
 const (
 	HeaRankMinimumSevenDayRows      = 30
@@ -18,12 +18,14 @@ const (
 )
 
 type ChallengerMetricSet struct {
-	Policy      string       `json:"policy"`
-	Description string       `json:"description"`
-	Rows        int          `json:"rows"`
-	Nodes       int          `json:"nodes"`
-	Positives   int          `json:"positives"`
-	RankingAtK  []RankingAtK `json:"ranking_at_k"`
+	Policy            string       `json:"policy"`
+	Description       string       `json:"description"`
+	Rows              int          `json:"rows"`
+	Nodes             int          `json:"nodes"`
+	Positives         int          `json:"positives"`
+	NonZeroScoreRows  int          `json:"non_zero_score_rows"`
+	NonZeroScoreNodes int          `json:"non_zero_score_nodes"`
+	RankingAtK        []RankingAtK `json:"ranking_at_k"`
 }
 
 type HeaRankChallengerReport struct {
@@ -147,6 +149,8 @@ type challengerHistory struct {
 func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, horizonMinutes int, policy, description string, score func(api.PredictionOutcomeEvaluation, challengerHistory) float64) ChallengerMetricSet {
 	items := make([]rankedOutcome, 0, len(rows))
 	nodes := map[string]struct{}{}
+	nonZeroNodes := map[string]struct{}{}
+	nonZeroRows := 0
 	for _, row := range rows {
 		if row.MaturityStatus != "matured" || row.Probability == nil || row.FinalActualValue == nil || strings.TrimSpace(row.NodeIP) == "" {
 			continue
@@ -156,7 +160,12 @@ func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, labels []api.Fa
 		}
 		node := normalNode(row.NodeIP)
 		nodes[node] = struct{}{}
-		items = append(items, rankedOutcome{probability: score(row, challengerHistoryWithLabelsBefore(rows, labels, row.PredictionEvaluatedAt)), actual: *row.FinalActualValue})
+		scoreValue := score(row, challengerHistoryWithLabelsBefore(rows, labels, row.PredictionEvaluatedAt))
+		if math.Abs(scoreValue) > 1e-12 {
+			nonZeroRows++
+			nonZeroNodes[node] = struct{}{}
+		}
+		items = append(items, rankedOutcome{probability: scoreValue, actual: *row.FinalActualValue})
 	}
 	positives := 0
 	for _, item := range items {
@@ -166,6 +175,7 @@ func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, labels []api.Fa
 	}
 	return ChallengerMetricSet{
 		Policy: policy, Description: description, Rows: len(items), Nodes: len(nodes), Positives: positives,
+		NonZeroScoreRows: nonZeroRows, NonZeroScoreNodes: len(nonZeroNodes),
 		RankingAtK: rankingFromItems(items),
 	}
 }

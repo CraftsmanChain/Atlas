@@ -498,6 +498,13 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := db.Create(&api.FailureLabel{
+		LabelKey: "challenger-history-label", HardwareClass: "gpu", EntityType: "gpu", EntityKey: "GPU-7D", GPUUUID: "GPU-7D", NodeIP: "10.0.0.1", ModelName: "H100",
+		EventType: "row_remap_failure", RuleVersion: "rule-v1", LabelValue: 1, QualityTier: "strong_proxy", SourceType: "test", SourceRecordID: 1,
+		LabelContractVersion: LabelContractVersion, OccurredAt: now.Add(-12 * time.Hour), AvailableAt: now.Add(-12 * time.Hour),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 	report, err := service.HeaRankChallengerReport()
 	if err != nil {
 		t.Fatal(err)
@@ -507,6 +514,9 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	}
 	if report.SevenDay[0].Rows != 4 || report.SevenDay[0].Nodes != 3 || report.SevenDay[0].Positives != 2 || len(report.SevenDay[0].RankingAtK) == 0 {
 		t.Fatalf("unexpected logistic challenger metrics: %+v", report.SevenDay[0])
+	}
+	if report.SevenDay[3].NonZeroScoreRows != 1 || report.SevenDay[3].NonZeroScoreNodes != 1 {
+		t.Fatalf("severity challenger must expose non-zero history-signal coverage: %+v", report.SevenDay[3])
 	}
 	if report.MinimumSevenDayRows != HeaRankMinimumSevenDayRows || report.MinimumSevenDayNodes != HeaRankMinimumSevenDayNodes || report.MinimumSevenDayPositives != HeaRankMinimumSevenDayPositives {
 		t.Fatalf("unexpected challenger gates: %+v", report)
