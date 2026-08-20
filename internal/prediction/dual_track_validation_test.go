@@ -2,6 +2,7 @@ package prediction
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,6 +11,20 @@ import (
 	"atlas/pkg/api"
 	"atlas/pkg/storage"
 )
+
+func TestDualTrackEmptyRankingMetricsSerializeAsArray(t *testing.T) {
+	cohort := DualTrackTemporalCohort{NodeRankingAtK: nonNilRankingMetrics(nil)}
+	if cohort.NodeRankingAtK == nil {
+		t.Fatal("empty temporal Ranking@K must use a non-nil slice")
+	}
+	payload, err := json.Marshal(cohort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(payload, []byte(`"node_ranking_at_k":[]`)) {
+		t.Fatalf("empty temporal Ranking@K must serialize as []: %s", payload)
+	}
+}
 
 func TestDualTrackValidationAlignsRankingAndProbabilityCohort(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")

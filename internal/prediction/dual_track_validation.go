@@ -193,7 +193,7 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 	positives := accuracy.Final.TP + accuracy.Final.FN
 	report.Ranking.MaturedRows = maturity.Matured
 	report.Ranking.PositiveRows = positives
-	report.Ranking.Metrics = append([]RankingAtK(nil), accuracy.Final.NodeRankingAtK...)
+	report.Ranking.Metrics = nonNilRankingMetrics(accuracy.Final.NodeRankingAtK)
 	report.Ranking.Status, report.Ranking.BlockingReasons = dualTrackRankingStatus(rankingSnapshot, maturity, positives)
 	report.Probability.Status = stability.Status
 	report.Probability.Maturity = maturity
@@ -251,7 +251,7 @@ func (s *Service) dualTrackTemporalCohorts(snapshot RiskRankingSnapshotReport) (
 			TotalRows: maturity.Total, MaturedRows: maturity.Matured, PendingRows: maturity.Pending,
 			CensoredRows: maturity.Censored, NodeCount: maturity.NodeEligible, PositiveRows: positives,
 			RankingStatus: rankingStatus, ProbabilityStatus: stability.Status,
-			NodeRankingAtK: append([]RankingAtK(nil), accuracy.Final.NodeRankingAtK...),
+			NodeRankingAtK: nonNilRankingMetrics(accuracy.Final.NodeRankingAtK),
 			ProbabilityMetrics: TemporalProbabilityMetrics{
 				TP: accuracy.Final.TP, FP: accuracy.Final.FP, FN: accuracy.Final.FN, TN: accuracy.Final.TN,
 				Evaluated: accuracy.Final.Evaluated, Precision: accuracy.Final.Precision,
@@ -274,6 +274,13 @@ func (s *Service) dualTrackTemporalCohorts(snapshot RiskRankingSnapshotReport) (
 	}
 	summary.CohortCount = len(cohorts)
 	return summary, cohorts, nil
+}
+
+func nonNilRankingMetrics(rows []RankingAtK) []RankingAtK {
+	if len(rows) == 0 {
+		return []RankingAtK{}
+	}
+	return append([]RankingAtK(nil), rows...)
 }
 
 func dualTrackRankingStatus(snapshot RiskRankingSnapshotReport, maturity OutcomeMaturity, positives int) (string, []string) {
