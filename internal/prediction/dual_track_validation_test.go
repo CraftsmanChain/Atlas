@@ -78,6 +78,48 @@ func TestDualTrackValidationAlignsRankingAndProbabilityCohort(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	seedHistoricalCohort := func(historicalCutoff time.Time, runKey, uuidPrefix string) {
+		historicalFinished := historicalCutoff.Add(time.Hour)
+		historicalRun := api.PredictionShadowScoringRun{
+			RunKey: runKey, Version: "gpu-shadow-scoring-v3", Status: "completed",
+			ModelSpecID: spec.ID, ModelKey: spec.ModelKey, ModelVersion: spec.Version, ScopeModelName: spec.ScopeModelName,
+			TargetGPUCount: 4, ScoredGPUCount: 4, NoAlertEmitted: true, NoActionExecuted: true,
+			StartedAt: historicalCutoff, FinishedAt: &historicalFinished,
+		}
+		if err := db.Create(&historicalRun).Error; err != nil {
+			t.Fatal(err)
+		}
+		for index := range probabilities {
+			node := "10.1.0." + string(rune('1'+index))
+			uuid := uuidPrefix + string(rune('A'+index))
+			prediction := api.HardwareRiskPrediction{
+				ShadowRunID: historicalRun.ID, ModelSpecID: spec.ID, ModelVersion: spec.Version, HardwareClass: "gpu", EntityType: "gpu",
+				EntityKey: uuid, GPUUUID: uuid, NodeIP: node, HorizonMinutes: spec.HorizonMinutes,
+				Probability: &probabilities[index], Status: "shadow_scored", ObservedAt: historicalCutoff, EvaluatedAt: historicalCutoff,
+			}
+			if err := db.Create(&prediction).Error; err != nil {
+				t.Fatal(err)
+			}
+			outcome := "tn"
+			if actuals[index] == 1 {
+				outcome = "tp"
+			}
+			actual := actuals[index]
+			evaluation := api.PredictionOutcomeEvaluation{
+				PredictionID: prediction.ID, ModelSpecID: spec.ID, ModelKey: spec.ModelKey, ModelVersion: spec.Version,
+				EntityType: "gpu", EntityKey: uuid, GPUUUID: uuid, NodeIP: node, HorizonMinutes: spec.HorizonMinutes,
+				Probability: &probabilities[index], DecisionThreshold: &threshold, PredictedPositive: probabilities[index] >= threshold,
+				PredictionEvaluatedAt: historicalCutoff, WindowStartAt: historicalCutoff, WindowEndAt: historicalCutoff.Add(7 * 24 * time.Hour),
+				MaturityStatus: "matured", RuleActualValue: &actual, RuleOutcome: outcome, RuleDecisionVersion: OutcomeRuleVersion,
+				FinalActualValue: &actual, FinalOutcome: outcome, FinalSource: "rule",
+			}
+			if err := db.Create(&evaluation).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	seedHistoricalCohort(cutoff.Add(-24*time.Hour), "shadow-run-overlap", "GPU-O")
+	seedHistoricalCohort(cutoff.Add(-8*24*time.Hour), "shadow-run-independent", "GPU-I")
 
 	report, err := service.DualTrackValidationReport()
 	if err != nil {
@@ -91,6 +133,17 @@ func TestDualTrackValidationAlignsRankingAndProbabilityCohort(t *testing.T) {
 	}
 	if report.Ranking.ScoreSemantics != "relative_priority_not_absolute_failure_probability" || report.ReportSHA256 == "" || report.Evidence.ReadinessSHA256 == "" {
 		t.Fatalf("dual-track evidence binding is incomplete: %+v", report)
+	}
+	if report.TemporalSummary.CohortLimit != DualTrackTemporalCohortLimit || report.TemporalSummary.CohortCount != 3 || report.TemporalSummary.MaturedCohortCount != 3 || report.TemporalSummary.IndependentCohortCount != 2 || len(report.TemporalCohorts) != 3 {
+		t.Fatalf("unexpected temporal cohort summary: %+v", report)
+	}
+	if !report.TemporalCohorts[0].PredictionCutoffAt.Equal(cutoff) || !report.TemporalCohorts[0].IndependentTimeBatch || report.TemporalCohorts[1].IndependentTimeBatch || !report.TemporalCohorts[2].IndependentTimeBatch {
+		t.Fatalf("overlapping horizons must not count as independent time batches: %+v", report.TemporalCohorts)
+	}
+	changedTemporal := report
+	changedTemporal.TemporalSummary.IndependentCohortCount++
+	if dualTrackValidationChecksum(report) == dualTrackValidationChecksum(changedTemporal) {
+		t.Fatal("dual-track checksum should bind temporal cohort evidence")
 	}
 	service.now = func() time.Time { return now.Add(time.Hour) }
 	later, err := service.DualTrackValidationReport()
