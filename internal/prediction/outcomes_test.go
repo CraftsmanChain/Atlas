@@ -502,7 +502,7 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || len(report.SevenDay) != 4 || report.SevenDay[0].Policy != "logistic_probability" || report.SevenDay[2].Policy != "recency_weighted_failure_prior" {
+	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || len(report.SevenDay) != 5 || report.SevenDay[0].Policy != "logistic_probability" || report.SevenDay[2].Policy != "recency_weighted_failure_prior" || report.SevenDay[3].Policy != "severity_weighted_label_history" {
 		t.Fatalf("unexpected challenger report: %+v", report)
 	}
 	if report.SevenDay[0].Rows != 4 || report.SevenDay[0].Nodes != 3 || report.SevenDay[0].Positives != 2 || len(report.SevenDay[0].RankingAtK) == 0 {
@@ -533,6 +533,21 @@ func TestHeaRankHistoricalRiskUsesOnlyClosedOutcomeWindows(t *testing.T) {
 	}
 	if math.Abs(history.RecencyWeighted["10.0.0.1"]-0.5) > 1e-12 || math.Abs(history.RecencyWeighted["10.0.0.2"]-math.Sqrt(0.5)) > 1e-12 {
 		t.Fatalf("unexpected recency-weighted history: %+v", history)
+	}
+}
+
+func TestHeaRankSeverityWeightedLabelHistoryUsesOnlyAvailableEligibleLabels(t *testing.T) {
+	cutoff := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	labels := []api.FailureLabel{
+		{NodeIP: "10.0.0.1", EventType: "row_remap_failure", LabelValue: 1, QualityTier: "strong_proxy", OccurredAt: cutoff.Add(-2 * time.Hour), AvailableAt: cutoff.Add(-time.Hour)},
+		{NodeIP: "10.0.0.1", EventType: "gpu_temp_sustained_5m_critical", LabelValue: 1, QualityTier: "confirmed", OccurredAt: cutoff.Add(-2 * time.Hour), AvailableAt: cutoff.Add(-time.Hour)},
+		{NodeIP: "10.0.0.1", EventType: "recent_uncorrected_ecc", LabelValue: 1, QualityTier: "strong_proxy", OccurredAt: cutoff.Add(-time.Hour), AvailableAt: cutoff.Add(time.Hour)},
+		{NodeIP: "10.0.0.2", EventType: "xid_repeated", LabelValue: 1, QualityTier: "weak_proxy", OccurredAt: cutoff.Add(-time.Hour), AvailableAt: cutoff.Add(-time.Hour)},
+		{NodeIP: "10.0.0.3", EventType: "xid_repeated", LabelValue: 1, QualityTier: "strong_proxy", Excluded: true, OccurredAt: cutoff.Add(-time.Hour), AvailableAt: cutoff.Add(-time.Hour)},
+	}
+	history := challengerHistoryWithLabelsBefore(nil, labels, cutoff)
+	if history.SeverityWeightedLabels["10.0.0.1"] != 5 || len(history.SeverityWeightedLabels) != 1 {
+		t.Fatalf("severity history must use only labels available at the cutoff and eligible for validation: %+v", history)
 	}
 }
 
