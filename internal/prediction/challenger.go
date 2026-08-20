@@ -8,7 +8,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const HeaRankChallengerReportVersion = "hearank-challenger-report-v7"
+const HeaRankChallengerReportVersion = "hearank-challenger-report-v8"
 
 const (
 	HeaRankMinimumSevenDayRows      = 30
@@ -71,6 +71,10 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 	if err := s.db.Order("evaluated_at ASC, id ASC").Find(&healthScores).Error; err != nil {
 		return HeaRankChallengerReport{}, err
 	}
+	var ruleHits []api.GPUHealthRuleHit
+	if err := s.db.Order("evaluated_at ASC, id ASC").Find(&ruleHits).Error; err != nil {
+		return HeaRankChallengerReport{}, err
+	}
 	report := HeaRankChallengerReport{
 		Version:                  HeaRankChallengerReportVersion,
 		FrameworkVersion:         FrameworkVersion,
@@ -95,8 +99,8 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 			"Accumulate eligible historical evidence before interpreting policies whose signal coverage is no_signal or exploratory.",
 		},
 	}
-	report.AllMatured = challengerMetricSets(rows, labels, healthScores, 0)
-	report.SevenDay = challengerMetricSets(rows, labels, healthScores, report.TargetHorizonMinutes)
+	report.AllMatured = challengerMetricSets(rows, labels, healthScores, ruleHits, 0)
+	report.SevenDay = challengerMetricSets(rows, labels, healthScores, ruleHits, report.TargetHorizonMinutes)
 	rows7d, nodes7d, positives7d := validationReadinessSevenDaySummary(report.SevenDay)
 	report.ConfidenceStatus, report.BlockingReasons = heaRankConfidence(rows7d, nodes7d, positives7d)
 	if rows7d == 0 {
@@ -162,27 +166,30 @@ func heaRankConfidence(rows, nodes, positives int) (string, []string) {
 	return "comparable", nil
 }
 
-func challengerMetricSets(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, horizonMinutes int) []ChallengerMetricSet {
+func challengerMetricSets(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit, horizonMinutes int) []ChallengerMetricSet {
 	return []ChallengerMetricSet{
-		challengerMetricSet(rows, labels, healthScores, horizonMinutes, "logistic_probability", "current shadow probability aggregated by node", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
+		challengerMetricSet(rows, labels, healthScores, ruleHits, horizonMinutes, "logistic_probability", "current shadow probability aggregated by node", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
 			if row.Probability == nil {
 				return 0
 			}
 			return *row.Probability
 		}),
-		challengerMetricSet(rows, labels, healthScores, horizonMinutes, "health_score_risk_prior", "node maximum risk derived from each GPU's latest health score strictly before the prediction cutoff", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
+		challengerMetricSet(rows, labels, healthScores, ruleHits, horizonMinutes, "health_score_risk_prior", "node maximum risk derived from each GPU's latest health score strictly before the prediction cutoff", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
 			return prior.HealthRiskByNode[normalNode(row.NodeIP)]
 		}),
-		challengerMetricSet(rows, labels, healthScores, horizonMinutes, "failure_count_prior", "node positive outcomes whose full evaluation window closed before the prediction cutoff", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
+		challengerMetricSet(rows, labels, healthScores, ruleHits, horizonMinutes, "rule_hit_risk_prior", "node maximum severity-weighted risk from each GPU's latest health-rule-hit batch strictly before the prediction cutoff", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
+			return prior.RuleHitRiskByNode[normalNode(row.NodeIP)]
+		}),
+		challengerMetricSet(rows, labels, healthScores, ruleHits, horizonMinutes, "failure_count_prior", "node positive outcomes whose full evaluation window closed before the prediction cutoff", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
 			return float64(prior.PositiveCounts[normalNode(row.NodeIP)])
 		}),
-		challengerMetricSet(rows, labels, healthScores, horizonMinutes, "recency_weighted_failure_prior", "node prior positive outcomes exponentially decayed by a 90-day half-life; only closed evaluation windows are used", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
+		challengerMetricSet(rows, labels, healthScores, ruleHits, horizonMinutes, "recency_weighted_failure_prior", "node prior positive outcomes exponentially decayed by a 90-day half-life; only closed evaluation windows are used", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
 			return prior.RecencyWeighted[normalNode(row.NodeIP)]
 		}),
-		challengerMetricSet(rows, labels, healthScores, horizonMinutes, "severity_weighted_label_history", "node confirmed or strong-proxy labels available before the prediction cutoff, weighted critical=3, xid/thermal-critical=2, other eligible=1", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
+		challengerMetricSet(rows, labels, healthScores, ruleHits, horizonMinutes, "severity_weighted_label_history", "node confirmed or strong-proxy labels available before the prediction cutoff, weighted critical=3, xid/thermal-critical=2, other eligible=1", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
 			return prior.SeverityWeightedLabels[normalNode(row.NodeIP)]
 		}),
-		challengerMetricSet(rows, labels, healthScores, horizonMinutes, "threshold_binary", "released decision threshold converted to a node-level binary score", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
+		challengerMetricSet(rows, labels, healthScores, ruleHits, horizonMinutes, "threshold_binary", "released decision threshold converted to a node-level binary score", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
 			if row.PredictedPositive {
 				return 1
 			}
@@ -196,9 +203,10 @@ type challengerHistory struct {
 	RecencyWeighted        map[string]float64
 	SeverityWeightedLabels map[string]float64
 	HealthRiskByNode       map[string]float64
+	RuleHitRiskByNode      map[string]float64
 }
 
-func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, horizonMinutes int, policy, description string, score func(api.PredictionOutcomeEvaluation, challengerHistory) float64) ChallengerMetricSet {
+func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit, horizonMinutes int, policy, description string, score func(api.PredictionOutcomeEvaluation, challengerHistory) float64) ChallengerMetricSet {
 	items := make([]rankedOutcome, 0, len(rows))
 	nodes := map[string]struct{}{}
 	nonZeroNodes := map[string]struct{}{}
@@ -212,7 +220,7 @@ func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, labels []api.Fa
 		}
 		node := normalNode(row.NodeIP)
 		nodes[node] = struct{}{}
-		scoreValue := score(row, challengerHistoryWithEvidenceBefore(rows, labels, healthScores, row.PredictionEvaluatedAt))
+		scoreValue := score(row, challengerHistoryWithEvidenceBefore(rows, labels, healthScores, ruleHits, row.PredictionEvaluatedAt))
 		if math.Abs(scoreValue) > 1e-12 {
 			nonZeroRows++
 			nonZeroNodes[node] = struct{}{}
@@ -243,15 +251,15 @@ func challengerSignalCoverageStatus(rows, nodes int) string {
 }
 
 func challengerHistoryBefore(rows []api.PredictionOutcomeEvaluation, cutoff time.Time) challengerHistory {
-	return challengerHistoryWithEvidenceBefore(rows, nil, nil, cutoff)
+	return challengerHistoryWithEvidenceBefore(rows, nil, nil, nil, cutoff)
 }
 
 func challengerHistoryWithLabelsBefore(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, cutoff time.Time) challengerHistory {
-	return challengerHistoryWithEvidenceBefore(rows, labels, nil, cutoff)
+	return challengerHistoryWithEvidenceBefore(rows, labels, nil, nil, cutoff)
 }
 
-func challengerHistoryWithEvidenceBefore(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, cutoff time.Time) challengerHistory {
-	history := challengerHistory{PositiveCounts: map[string]int{}, RecencyWeighted: map[string]float64{}, SeverityWeightedLabels: map[string]float64{}, HealthRiskByNode: healthRiskByNodeBefore(healthScores, cutoff)}
+func challengerHistoryWithEvidenceBefore(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit, cutoff time.Time) challengerHistory {
+	history := challengerHistory{PositiveCounts: map[string]int{}, RecencyWeighted: map[string]float64{}, SeverityWeightedLabels: map[string]float64{}, HealthRiskByNode: healthRiskByNodeBefore(healthScores, cutoff), RuleHitRiskByNode: ruleHitRiskByNodeBefore(ruleHits, healthScores, cutoff)}
 	for _, candidate := range rows {
 		if candidate.MaturityStatus != "matured" || candidate.FinalActualValue == nil || *candidate.FinalActualValue != 1 || strings.TrimSpace(candidate.NodeIP) == "" || !candidate.WindowEndAt.Before(cutoff) {
 			continue
@@ -294,6 +302,52 @@ func healthRiskByNodeBefore(scores []api.GPUHealthScore, cutoff time.Time) map[s
 		}
 	}
 	return riskByNode
+}
+
+func ruleHitRiskByNodeBefore(hits []api.GPUHealthRuleHit, scores []api.GPUHealthScore, cutoff time.Time) map[string]float64 {
+	type latestRisk struct {
+		node        string
+		evaluatedAt time.Time
+		risk        float64
+	}
+	scoreByID := map[uint]api.GPUHealthScore{}
+	for _, score := range scores {
+		scoreByID[score.ID] = score
+	}
+	latestByGPU := map[string]latestRisk{}
+	for _, hit := range hits {
+		score, found := scoreByID[hit.HealthScoreID]
+		if !found || strings.TrimSpace(score.NodeIP) == "" || strings.TrimSpace(hit.GPUUUID) == "" || !hit.EvaluatedAt.Before(cutoff) {
+			continue
+		}
+		key := normalNode(score.NodeIP) + "|" + strings.ToLower(strings.TrimSpace(hit.GPUUUID))
+		previous, found := latestByGPU[key]
+		weight := ruleHitSeverityWeight(hit.Severity)
+		if !found || hit.EvaluatedAt.After(previous.evaluatedAt) {
+			latestByGPU[key] = latestRisk{node: normalNode(score.NodeIP), evaluatedAt: hit.EvaluatedAt, risk: weight}
+		} else if hit.EvaluatedAt.Equal(previous.evaluatedAt) {
+			previous.risk += weight
+			latestByGPU[key] = previous
+		}
+	}
+	riskByNode := map[string]float64{}
+	for _, risk := range latestByGPU {
+		if risk.risk > riskByNode[risk.node] {
+			riskByNode[risk.node] = risk.risk
+		}
+	}
+	return riskByNode
+}
+
+func ruleHitSeverityWeight(severity string) float64 {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "critical":
+		return 3
+	case "warning":
+		return 2
+	default:
+		return 1
+	}
 }
 
 func eligibleSeverityHistoryLabel(label api.FailureLabel, cutoff time.Time) bool {
