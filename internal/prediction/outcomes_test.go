@@ -665,6 +665,28 @@ func TestHeaRankEvidenceQueryUsesPredictionCutoffWindow(t *testing.T) {
 	}
 }
 
+func TestHeaRankEvidenceCutoffsUseOnlyEvaluationEligibleRows(t *testing.T) {
+	cutoff := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	probability := 0.8
+	positive := 1
+	rows := []api.PredictionOutcomeEvaluation{
+		{PredictionEvaluatedAt: cutoff.Add(-4 * time.Hour), HorizonMinutes: 10080, MaturityStatus: "pending", Probability: &probability, FinalActualValue: &positive, NodeIP: "10.0.0.1"},
+		{PredictionEvaluatedAt: cutoff.Add(-3 * time.Hour), HorizonMinutes: 10080, MaturityStatus: "censored", Probability: &probability, FinalActualValue: &positive, NodeIP: "10.0.0.2"},
+		{PredictionEvaluatedAt: cutoff.Add(-2 * time.Hour), HorizonMinutes: 10080, MaturityStatus: "matured", FinalActualValue: &positive, NodeIP: "10.0.0.3"},
+		{PredictionEvaluatedAt: cutoff.Add(-time.Hour), HorizonMinutes: 60, MaturityStatus: "matured", Probability: &probability, FinalActualValue: &positive, NodeIP: "10.0.0.4"},
+		{PredictionEvaluatedAt: cutoff, HorizonMinutes: 10080, MaturityStatus: "matured", Probability: &probability, FinalActualValue: &positive, NodeIP: "10.0.0.5"},
+	}
+	allMatured := challengerEvaluationRows(rows, 0)
+	sevenDay := challengerEvaluationRows(rows, 10080)
+	if len(allMatured) != 2 || len(sevenDay) != 1 || !sevenDay[0].PredictionEvaluatedAt.Equal(cutoff) {
+		t.Fatalf("only mature, scored, labeled, node-eligible rows may drive evidence queries: all=%+v sevenDay=%+v", allMatured, sevenDay)
+	}
+	histories := challengerHistoriesForCutoffs(rows, sevenDay, nil, nil, nil)
+	if len(histories) != 1 {
+		t.Fatalf("pending, censored and other-horizon rows must not create challenger cutoffs: %+v", histories)
+	}
+}
+
 func TestHeaRankSeverityWeightedLabelHistoryUsesOnlyAvailableEligibleLabels(t *testing.T) {
 	cutoff := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	labels := []api.FailureLabel{
