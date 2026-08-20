@@ -536,10 +536,11 @@ func TestHeaRankHistoricalRiskUsesOnlyClosedOutcomeWindows(t *testing.T) {
 		{NodeIP: "10.0.0.1", MaturityStatus: "matured", FinalActualValue: &positive, WindowEndAt: cutoff.Add(-90 * 24 * time.Hour)},
 		{NodeIP: "10.0.0.1", MaturityStatus: "matured", FinalActualValue: &positive, WindowEndAt: cutoff.Add(time.Hour)},
 		{NodeIP: "10.0.0.2", MaturityStatus: "matured", FinalActualValue: &positive, WindowEndAt: cutoff.Add(-45 * 24 * time.Hour)},
+		{NodeIP: "10.0.0.3", MaturityStatus: "matured", FinalActualValue: &positive, WindowEndAt: cutoff},
 	}
 	history := challengerHistoryBefore(rows, cutoff)
-	if history.PositiveCounts["10.0.0.1"] != 1 || history.PositiveCounts["10.0.0.2"] != 1 {
-		t.Fatalf("history must exclude outcomes whose window has not closed: %+v", history)
+	if history.PositiveCounts["10.0.0.1"] != 1 || history.PositiveCounts["10.0.0.2"] != 1 || len(history.PositiveCounts) != 2 {
+		t.Fatalf("history must exclude outcomes whose window has not closed strictly before the cutoff: %+v", history)
 	}
 	if math.Abs(history.RecencyWeighted["10.0.0.1"]-0.5) > 1e-12 || math.Abs(history.RecencyWeighted["10.0.0.2"]-math.Sqrt(0.5)) > 1e-12 {
 		t.Fatalf("unexpected recency-weighted history: %+v", history)
@@ -554,6 +555,8 @@ func TestHeaRankSeverityWeightedLabelHistoryUsesOnlyAvailableEligibleLabels(t *t
 		{NodeIP: "10.0.0.1", EventType: "recent_uncorrected_ecc", LabelValue: 1, QualityTier: "strong_proxy", OccurredAt: cutoff.Add(-time.Hour), AvailableAt: cutoff.Add(time.Hour)},
 		{NodeIP: "10.0.0.2", EventType: "xid_repeated", LabelValue: 1, QualityTier: "weak_proxy", OccurredAt: cutoff.Add(-time.Hour), AvailableAt: cutoff.Add(-time.Hour)},
 		{NodeIP: "10.0.0.3", EventType: "xid_repeated", LabelValue: 1, QualityTier: "strong_proxy", Excluded: true, OccurredAt: cutoff.Add(-time.Hour), AvailableAt: cutoff.Add(-time.Hour)},
+		{NodeIP: "10.0.0.4", EventType: "xid_repeated", LabelValue: 1, QualityTier: "strong_proxy", OccurredAt: cutoff.Add(-time.Hour), AvailableAt: cutoff},
+		{NodeIP: "10.0.0.5", EventType: "xid_repeated", LabelValue: 1, QualityTier: "strong_proxy", OccurredAt: cutoff, AvailableAt: cutoff.Add(-time.Hour)},
 	}
 	history := challengerHistoryWithLabelsBefore(nil, labels, cutoff)
 	if history.SeverityWeightedLabels["10.0.0.1"] != 5 || len(history.SeverityWeightedLabels) != 1 {
