@@ -9,7 +9,8 @@ import (
 	"atlas/pkg/api"
 )
 
-const DualTrackValidationReportVersion = "prediction-dual-track-validation-v1"
+const DualTrackValidationReportVersion = "prediction-dual-track-validation-v2"
+const DualTrackTemporalCohortLimit = 12
 
 type DualTrackAlignment struct {
 	Status             string     `json:"status"`
@@ -58,6 +59,41 @@ type DualTrackValidationEvidence struct {
 	FeatureDriftStatus     string `json:"feature_drift_status"`
 }
 
+type TemporalProbabilityMetrics struct {
+	TP        int      `json:"tp"`
+	FP        int      `json:"fp"`
+	FN        int      `json:"fn"`
+	TN        int      `json:"tn"`
+	Evaluated int      `json:"evaluated"`
+	Precision *float64 `json:"precision,omitempty"`
+	Recall    *float64 `json:"recall,omitempty"`
+	Accuracy  *float64 `json:"accuracy,omitempty"`
+}
+
+type DualTrackTemporalCohort struct {
+	PredictionCutoffAt   time.Time                  `json:"prediction_cutoff_at"`
+	IndependentTimeBatch bool                       `json:"independent_time_batch"`
+	TotalRows            int                        `json:"total_rows"`
+	MaturedRows          int                        `json:"matured_rows"`
+	PendingRows          int                        `json:"pending_rows"`
+	CensoredRows         int                        `json:"censored_rows"`
+	NodeCount            int                        `json:"node_count"`
+	PositiveRows         int                        `json:"positive_rows"`
+	RankingStatus        string                     `json:"ranking_status"`
+	ProbabilityStatus    string                     `json:"probability_status"`
+	NodeRankingAtK       []RankingAtK               `json:"node_ranking_at_k"`
+	ProbabilityMetrics   TemporalProbabilityMetrics `json:"probability_metrics"`
+}
+
+type DualTrackTemporalSummary struct {
+	CohortLimit                      int `json:"cohort_limit"`
+	CohortCount                      int `json:"cohort_count"`
+	MaturedCohortCount               int `json:"matured_cohort_count"`
+	IndependentCohortCount           int `json:"independent_cohort_count"`
+	ComparableRankingCohortCount     int `json:"comparable_ranking_cohort_count"`
+	ComparableProbabilityCohortCount int `json:"comparable_probability_cohort_count"`
+}
+
 type DualTrackValidationReport struct {
 	Version            string                      `json:"version"`
 	FrameworkVersion   string                      `json:"framework_version"`
@@ -69,6 +105,8 @@ type DualTrackValidationReport struct {
 	Probability        ProbabilityValidationTrack  `json:"probability_track"`
 	Evidence           DualTrackValidationEvidence `json:"evidence"`
 	Readiness          ValidationReadinessReport   `json:"readiness"`
+	TemporalSummary    DualTrackTemporalSummary    `json:"temporal_summary"`
+	TemporalCohorts    []DualTrackTemporalCohort   `json:"temporal_cohorts"`
 	Safety             RiskRankingSafety           `json:"safety"`
 	Interpretation     []string                    `json:"interpretation"`
 	RecommendedNextRun []string                    `json:"recommended_next_run"`
@@ -108,7 +146,9 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 			DataDriftStatus: readiness.DataDriftStatus, CalibrationDriftStatus: readiness.CalibrationDriftStatus,
 			FeatureDriftStatus: readiness.FeatureDriftStatus,
 		},
-		Readiness: readiness,
+		Readiness:       readiness,
+		TemporalSummary: DualTrackTemporalSummary{CohortLimit: DualTrackTemporalCohortLimit},
+		TemporalCohorts: []DualTrackTemporalCohort{},
 		Interpretation: []string{
 			"ranking track answers who should be reviewed first and is evaluated with node Ranking@K metrics",
 			"probability track answers event risk within a fixed horizon and is evaluated with discrimination and calibration metrics",
@@ -127,6 +167,10 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 		report.Status = "blocked"
 		report.ReportSHA256 = dualTrackValidationChecksum(report)
 		return report, nil
+	}
+	report.TemporalSummary, report.TemporalCohorts, err = s.dualTrackTemporalCohorts(rankingSnapshot)
+	if err != nil {
+		return DualTrackValidationReport{}, err
 	}
 
 	var rows []api.PredictionOutcomeEvaluation
@@ -161,6 +205,75 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 	report.Status = dualTrackOverallStatus(report.Ranking.Status, report.Probability.Status)
 	report.ReportSHA256 = dualTrackValidationChecksum(report)
 	return report, nil
+}
+
+func (s *Service) dualTrackTemporalCohorts(snapshot RiskRankingSnapshotReport) (DualTrackTemporalSummary, []DualTrackTemporalCohort, error) {
+	summary := DualTrackTemporalSummary{CohortLimit: DualTrackTemporalCohortLimit}
+	var cutoffs []time.Time
+	if err := s.db.Model(&api.PredictionOutcomeEvaluation{}).
+		Where("model_spec_id = ? AND horizon_minutes = ?", snapshot.ModelSpecID, snapshot.HorizonMinutes).
+		Distinct("prediction_evaluated_at").Order("prediction_evaluated_at DESC").Limit(DualTrackTemporalCohortLimit).
+		Pluck("prediction_evaluated_at", &cutoffs).Error; err != nil {
+		return summary, nil, err
+	}
+	if len(cutoffs) == 0 {
+		return summary, []DualTrackTemporalCohort{}, nil
+	}
+	var rows []api.PredictionOutcomeEvaluation
+	if err := s.db.Where("model_spec_id = ? AND horizon_minutes = ? AND prediction_evaluated_at IN ?", snapshot.ModelSpecID, snapshot.HorizonMinutes, cutoffs).
+		Order("prediction_evaluated_at DESC, node_ip ASC, gpu_uuid ASC, id ASC").Find(&rows).Error; err != nil {
+		return summary, nil, err
+	}
+	rowsByCutoff := make(map[int64][]api.PredictionOutcomeEvaluation, len(cutoffs))
+	for _, row := range rows {
+		key := row.PredictionEvaluatedAt.UnixNano()
+		rowsByCutoff[key] = append(rowsByCutoff[key], row)
+	}
+	independent := make(map[int64]bool, len(cutoffs))
+	horizon := time.Duration(snapshot.HorizonMinutes) * time.Minute
+	var lastIndependent time.Time
+	for _, cutoff := range cutoffs {
+		if lastIndependent.IsZero() || !cutoff.After(lastIndependent.Add(-horizon)) {
+			independent[cutoff.UnixNano()] = true
+			lastIndependent = cutoff
+		}
+	}
+	cohorts := make([]DualTrackTemporalCohort, 0, len(cutoffs))
+	for _, cutoff := range cutoffs {
+		cohortRows := rowsByCutoff[cutoff.UnixNano()]
+		accuracy := accuracyFromRows(cohortRows, cutoff)
+		maturity := outcomeMaturity(cohortRows)
+		stability := outcomeStability(maturity, accuracy)
+		positives := accuracy.Final.TP + accuracy.Final.FN
+		rankingStatus, _ := dualTrackRankingStatus(snapshot, maturity, positives)
+		cohort := DualTrackTemporalCohort{
+			PredictionCutoffAt: cutoff, IndependentTimeBatch: independent[cutoff.UnixNano()],
+			TotalRows: maturity.Total, MaturedRows: maturity.Matured, PendingRows: maturity.Pending,
+			CensoredRows: maturity.Censored, NodeCount: maturity.NodeEligible, PositiveRows: positives,
+			RankingStatus: rankingStatus, ProbabilityStatus: stability.Status,
+			NodeRankingAtK: append([]RankingAtK(nil), accuracy.Final.NodeRankingAtK...),
+			ProbabilityMetrics: TemporalProbabilityMetrics{
+				TP: accuracy.Final.TP, FP: accuracy.Final.FP, FN: accuracy.Final.FN, TN: accuracy.Final.TN,
+				Evaluated: accuracy.Final.Evaluated, Precision: accuracy.Final.Precision,
+				Recall: accuracy.Final.Recall, Accuracy: accuracy.Final.Accuracy,
+			},
+		}
+		cohorts = append(cohorts, cohort)
+		if cohort.MaturedRows > 0 {
+			summary.MaturedCohortCount++
+		}
+		if cohort.IndependentTimeBatch {
+			summary.IndependentCohortCount++
+		}
+		if cohort.RankingStatus == "comparable" {
+			summary.ComparableRankingCohortCount++
+		}
+		if cohort.ProbabilityStatus == "comparable" {
+			summary.ComparableProbabilityCohortCount++
+		}
+	}
+	summary.CohortCount = len(cohorts)
+	return summary, cohorts, nil
 }
 
 func dualTrackRankingStatus(snapshot RiskRankingSnapshotReport, maturity OutcomeMaturity, positives int) (string, []string) {
