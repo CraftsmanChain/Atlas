@@ -8,7 +8,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const HeaRankChallengerReportVersion = "hearank-challenger-report-v4"
+const HeaRankChallengerReportVersion = "hearank-challenger-report-v5"
 
 const (
 	HeaRankMinimumSevenDayRows      = 30
@@ -73,6 +73,7 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 			"This is a node-risk challenger scaffold, not a released HeaRank model.",
 			"All policies are evaluated on mature scored outcomes only; pending and censored rows are excluded.",
 			"Seven-day rows are reported separately because HeaRank validation should target 7d node risk.",
+			"Historical outcome windows and labels must close or become available strictly before the prediction cutoff; equal-timestamp evidence is excluded.",
 			"A policy with no_signal or exploratory signal coverage must not be interpreted as a comparable historical-risk ranking result.",
 		},
 		RecommendedNextRun: []string{
@@ -202,7 +203,7 @@ func challengerHistoryBefore(rows []api.PredictionOutcomeEvaluation, cutoff time
 func challengerHistoryWithLabelsBefore(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, cutoff time.Time) challengerHistory {
 	history := challengerHistory{PositiveCounts: map[string]int{}, RecencyWeighted: map[string]float64{}, SeverityWeightedLabels: map[string]float64{}}
 	for _, candidate := range rows {
-		if candidate.MaturityStatus != "matured" || candidate.FinalActualValue == nil || *candidate.FinalActualValue != 1 || strings.TrimSpace(candidate.NodeIP) == "" || candidate.WindowEndAt.After(cutoff) {
+		if candidate.MaturityStatus != "matured" || candidate.FinalActualValue == nil || *candidate.FinalActualValue != 1 || strings.TrimSpace(candidate.NodeIP) == "" || !candidate.WindowEndAt.Before(cutoff) {
 			continue
 		}
 		node := normalNode(candidate.NodeIP)
@@ -223,7 +224,7 @@ func challengerHistoryWithLabelsBefore(rows []api.PredictionOutcomeEvaluation, l
 }
 
 func eligibleSeverityHistoryLabel(label api.FailureLabel, cutoff time.Time) bool {
-	if label.LabelValue != 1 || label.Excluded || strings.TrimSpace(label.NodeIP) == "" || label.AvailableAt.After(cutoff) || label.OccurredAt.After(cutoff) {
+	if label.LabelValue != 1 || label.Excluded || strings.TrimSpace(label.NodeIP) == "" || !label.AvailableAt.Before(cutoff) || !label.OccurredAt.Before(cutoff) {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(label.QualityTier)) {
