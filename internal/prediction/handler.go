@@ -367,6 +367,30 @@ func (h *Handler) HandleEvidenceBundle(w http.ResponseWriter, r *http.Request) {
 	predictionJSON(w, http.StatusOK, map[string]any{"data": report})
 }
 
+func (h *Handler) HandleHumanFeedbackManifest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	report, err := h.service.HumanFeedbackManifest()
+	if err != nil {
+		predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("ETag", `"`+report.ManifestSHA256+`"`)
+	w.Header().Set("X-Atlas-Human-Feedback-Manifest-Version", report.Version)
+	w.Header().Set("X-Atlas-Human-Feedback-Manifest-SHA256", report.ManifestSHA256)
+	if etagMatches(r.Header.Get("If-None-Match"), report.ManifestSHA256) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	if r.URL.Query().Get("download") == "1" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.json"`, report.Version, report.ManifestSHA256[:12]))
+	}
+	predictionJSON(w, http.StatusOK, map[string]any{"data": report})
+}
+
 func (h *Handler) HandleDataDriftReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
