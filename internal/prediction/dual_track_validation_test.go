@@ -26,6 +26,34 @@ func TestDualTrackEmptyRankingMetricsSerializeAsArray(t *testing.T) {
 	}
 }
 
+func TestDualTrackTemporalConsistencyRequiresThreePositiveIndependentCohorts(t *testing.T) {
+	lift, skill := 1.5, 0.2
+	cohorts := make([]DualTrackTemporalCohort, 3)
+	for index := range cohorts {
+		cohorts[index] = DualTrackTemporalCohort{
+			IndependentTimeBatch: true, MaturedRows: 30, PositiveRows: 3,
+			NodeRankingAtK:     []RankingAtK{{K: 3, Lift: &lift}},
+			ProbabilityMetrics: TemporalProbabilityMetrics{BrierSkillScore: &skill},
+		}
+	}
+	consistency := dualTrackTemporalConsistency(cohorts)
+	if consistency.Ranking.Status != "consistent" || consistency.Probability.Status != "consistent" || consistency.Ranking.PositiveDirectionCohorts != 3 || consistency.Probability.PositiveDirectionCohorts != 3 {
+		t.Fatalf("three positive independent cohorts should pass direction consistency: %+v", consistency)
+	}
+	negativeLift, negativeSkill := 0.8, -0.1
+	cohorts[0].NodeRankingAtK[0].Lift = &negativeLift
+	cohorts[0].ProbabilityMetrics.BrierSkillScore = &negativeSkill
+	mixed := dualTrackTemporalConsistency(cohorts)
+	if mixed.Ranking.Status != "review_mixed_direction" || mixed.Probability.Status != "review_mixed_direction" {
+		t.Fatalf("fewer than three positive cohorts must remain under review: %+v", mixed)
+	}
+	cohorts[0].IndependentTimeBatch = false
+	insufficient := dualTrackTemporalConsistency(cohorts)
+	if insufficient.Ranking.Status != "insufficient_independent_cohorts" || insufficient.Probability.Status != "insufficient_independent_cohorts" {
+		t.Fatalf("overlapping cohorts must not satisfy the temporal gate: %+v", insufficient)
+	}
+}
+
 func TestDualTrackValidationAlignsRankingAndProbabilityCohort(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
@@ -154,6 +182,12 @@ func TestDualTrackValidationAlignsRankingAndProbabilityCohort(t *testing.T) {
 	}
 	if !report.TemporalCohorts[0].PredictionCutoffAt.Equal(cutoff) || !report.TemporalCohorts[0].IndependentTimeBatch || report.TemporalCohorts[1].IndependentTimeBatch || !report.TemporalCohorts[2].IndependentTimeBatch {
 		t.Fatalf("overlapping horizons must not count as independent time batches: %+v", report.TemporalCohorts)
+	}
+	if report.TemporalCohorts[0].ProbabilityMetrics.BrierScore == nil || report.TemporalCohorts[0].ProbabilityMetrics.NullBrierScore == nil || report.TemporalCohorts[0].ProbabilityMetrics.BrierSkillScore == nil || *report.TemporalCohorts[0].ProbabilityMetrics.BrierSkillScore <= 0 {
+		t.Fatalf("mature probability cohorts must expose Brier skill against the null baseline: %+v", report.TemporalCohorts[0])
+	}
+	if report.TemporalConsistency.Ranking.Status != "insufficient_independent_cohorts" || report.TemporalConsistency.Probability.Status != "insufficient_independent_cohorts" || report.TemporalConsistency.Ranking.EvaluableIndependentCohorts != 2 || report.TemporalConsistency.Probability.EvaluableIndependentCohorts != 2 {
+		t.Fatalf("two independent cohorts must not pass the three-cohort consistency gate: %+v", report.TemporalConsistency)
 	}
 	changedTemporal := report
 	changedTemporal.TemporalSummary.IndependentCohortCount++
