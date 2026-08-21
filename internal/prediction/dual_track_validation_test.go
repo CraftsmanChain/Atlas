@@ -384,6 +384,18 @@ func TestDualTrackValidationAlignsRankingAndProbabilityCohort(t *testing.T) {
 	if conditionalResponse.Code != http.StatusNotModified || conditionalResponse.Body.Len() != 0 || conditionalResponse.Header().Get("X-Atlas-Report-Cache") != "HIT" {
 		t.Fatalf("cached conditional request must return an empty 304 response: code=%d headers=%v body=%s", conditionalResponse.Code, conditionalResponse.Header(), conditionalResponse.Body.String())
 	}
+	readinessResponse := httptest.NewRecorder()
+	handler.HandleValidationReadiness(readinessResponse, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/validation-readiness", nil))
+	if readinessResponse.Code != http.StatusOK || readinessResponse.Header().Get("X-Atlas-Report-Cache") != "HIT" || readinessResponse.Header().Get("X-Atlas-Report-Cache-Version") != dualTrackValidationCacheVersion || readinessResponse.Header().Get("ETag") != `"`+report.Readiness.ReadinessSHA256+`"` || !bytes.Contains(readinessResponse.Body.Bytes(), []byte(report.Readiness.ReadinessSHA256)) {
+		t.Fatalf("independent readiness endpoint must reuse the cached dual-track readiness: code=%d headers=%v body=%s", readinessResponse.Code, readinessResponse.Header(), readinessResponse.Body.String())
+	}
+	readinessConditionalRequest := httptest.NewRequest(http.MethodGet, "/api/v1/prediction/validation-readiness", nil)
+	readinessConditionalRequest.Header.Set("If-None-Match", readinessResponse.Header().Get("ETag"))
+	readinessConditionalResponse := httptest.NewRecorder()
+	handler.HandleValidationReadiness(readinessConditionalResponse, readinessConditionalRequest)
+	if readinessConditionalResponse.Code != http.StatusNotModified || readinessConditionalResponse.Body.Len() != 0 || readinessConditionalResponse.Header().Get("X-Atlas-Report-Cache") != "HIT" {
+		t.Fatalf("cached readiness conditional request must return an empty 304 response: code=%d headers=%v body=%s", readinessConditionalResponse.Code, readinessConditionalResponse.Header(), readinessConditionalResponse.Body.String())
+	}
 	if !etagMatches(`W/"old", `+response.Header().Get("ETag"), report.ReportSHA256) || !etagMatches("*", report.ReportSHA256) {
 		t.Fatal("ETag matching must support weak lists and wildcard validators")
 	}
