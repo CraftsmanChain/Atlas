@@ -188,7 +188,17 @@ const subPages = (page: PageId, tx: Tx): SubPage[] => ({
   incidents: [{ id: 'hardware', label: tx('硬件事件', 'Hardware Events') }, { id: 'ingestion', label: tx('接收记录', 'Ingestion Records') }, { id: 'workflow', label: tx('处理流程', 'Workflow') }],
   validations: [{ id: 'degradation', label: tx('衰减检测', 'Degradation') }, { id: 'records', label: tx('验证记录', 'Records') }],
   quality: [{ id: 'targets', label: tx('采集覆盖', 'Target Coverage') }, { id: 'continuity', label: tx('指标连续性', 'Metric Continuity') }, { id: 'issues', label: tx('问题统计', 'Issue Statistics') }, { id: 'node-access', label: tx('节点访问', 'Node Access') }, { id: 'identity', label: tx('身份与带外', 'Identity & BMC') }, { id: 'audit', label: tx('同步审计', 'Sync Audit') }],
-  models: [{ id: 'stack', label: tx('决策分层', 'Decision Stack') }, { id: 'prediction', label: tx('故障预警', 'Failure Early Warning') }, { id: 'algorithms', label: tx('算法与约束', 'Algorithms & Gates') }],
+  models: [
+    { id: 'prediction-feedback-package', label: tx('故障前后数据反馈包', 'Feedback Pack') },
+    { id: 'prediction-human-feedback', label: tx('硬件故障人工反馈', 'Human Feedback') },
+    { id: 'prediction-readiness', label: tx('验证就绪', 'Readiness') },
+    { id: 'prediction-outcomes', label: tx('准确率改判', 'Accuracy Overrides') },
+    { id: 'prediction-shadow-runtime', label: tx('影子运行', 'Shadow Runtime') },
+    { id: 'prediction-training-history', label: tx('历史训练链路', 'Training History') },
+    { id: 'prediction', label: tx('故障预警总览', 'Warning Overview') },
+    { id: 'stack', label: tx('决策分层', 'Decision Stack') },
+    { id: 'algorithms', label: tx('算法与约束', 'Algorithms & Gates') },
+  ],
   about: [{ id: 'definition', label: tx('能力与里程碑', 'Capabilities & Milestones') }, { id: 'architecture', label: tx('架构与边界', 'Architecture & Boundaries') }, { id: 'settings', label: tx('平台配置', 'Platform Settings') }],
 }[page]);
 
@@ -276,7 +286,7 @@ export default function App() {
   const [degradationSummary, setDegradationSummary] = useState<DegradationSummary | null>(null);
   const [degradationCandidates, setDegradationCandidates] = useState<DegradationCandidate[]>([]);
   const [nodeAccess, setNodeAccess] = useState<NodeAccessOverview | null>(null);
-  const [subPage, setSubPage] = useState<Record<PageId, string>>({ overview: '', gpus: 'health', issues: 'ledger', incidents: 'hardware', validations: 'degradation', quality: 'targets', models: 'stack', about: 'definition' });
+  const [subPage, setSubPage] = useState<Record<PageId, string>>({ overview: '', gpus: 'health', issues: 'ledger', incidents: 'hardware', validations: 'degradation', quality: 'targets', models: 'prediction-feedback-package', about: 'definition' });
 
   const navigate = (id: PageId) => { setPage(id); setSidebar(false); window.location.hash = `/${id}`; window.scrollTo(0, 0); };
   const load = async () => {
@@ -993,8 +1003,9 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
   const [reviewingCandidateID, setReviewingCandidateID] = useState<number | null>(null);
   const [readinessPage, setReadinessPage] = useState(0);
   const [predictionError, setPredictionError] = useState('');
+  const isPredictionView = view === 'prediction' || view.startsWith('prediction-');
   useEffect(() => {
-    if (view !== 'prediction') return;
+    if (!isPredictionView) return;
     let cancelled = false;
     const loadPrediction = async () => {
       try {
@@ -1040,9 +1051,9 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
     };
     void loadPrediction();
     return () => { cancelled = true; };
-  }, [view]);
+  }, [isPredictionView]);
   useEffect(() => {
-    if (view !== 'prediction') return;
+    if (!isPredictionView) return;
     let cancelled = false;
     const loadIdentityHistory = async () => {
       try {
@@ -1075,7 +1086,14 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
     };
     void loadIdentityHistory();
     return () => { cancelled = true; };
-  }, [view]);
+  }, [isPredictionView]);
+  useEffect(() => {
+    if (!isPredictionView || view === 'prediction') return;
+    const timer = window.setTimeout(() => {
+      document.getElementById(view)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [isPredictionView, view, prediction, humanFeedbackManifest, validationReadiness, predictionAccuracy, shadowScoringRuns.length, trainingMatrixBuilds.length]);
   useEffect(() => {
     if (!featureBuilds.some(build => build.status === 'queued' || build.status === 'running')) return;
     const timer = window.setInterval(() => {
@@ -1534,7 +1552,7 @@ function Models({ tx, view, lang }: { tx: Tx; view: string; lang: string }) {
     ['L3', tx('监督预测', 'Supervised prediction'), 'failure_probability', tx('框架就绪', 'FRAMEWORK')],
     ['L4', 'LLM + Skill', 'RCA / SOP', tx('待开发', 'PLANNED')],
   ];
-  if (view === 'prediction') {
+  if (isPredictionView) {
     const summary = prediction?.readiness;
     const latestBackfill = historyBackfills[0];
     const latestIdentityBackfill = identityBackfills[0];
@@ -1973,13 +1991,14 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const releaseModule = { id: 'release', name: tx('发布与产物同步', 'Release & Artifact Sync'), version: 'v0.1.0', status: tx('Rsync 增量同步', 'RSYNC TRANSFER'), desc: tx('发布链路统一使用 rsync 同步源码包、前端产物、二进制和数据库备份脚本，支持校验和、断点保留和传输进度；远端构建、备份、原子切换及回滚流程保持不变。', 'Release pipelines use rsync for source archives, web assets, binaries, and database-backup scripts with checksums, partial-transfer retention, and visible progress; remote builds, backups, atomic switching, and rollback remain unchanged.'), history: [tx('v0.1.0 · 默认远端源码发布和 legacy 二进制发布全部由 scp 切换为 rsync，并增加本机/远端依赖预检', 'v0.1.0 · Replaced scp with rsync in both remote-source and legacy-binary release paths, adding local and remote dependency preflight checks')] };
   const modules = [...baseModules, releaseModule].map(module => module.id === 'prediction' ? {
     ...module,
-    version: 'v0.27.3',
+    version: 'v0.27.4',
     status: tx('故障预警工作台', 'EARLY-WARNING WORKBENCH'),
     desc: tx(
       '当前故障预警能力保持 GPU-only、read-only shadow：已具备训练数据、标签 Manifest、训练样本 Evidence Bundle、模型治理卡、影子门禁、成熟 outcome、Ranking@K、naive baseline、HeaRank 7d node-risk challenger、数据/校准漂移、训练侧和 live-shadow 特征分布快照，并把故障前后数据反馈包列为重点入口；不触发告警、调度、维修或自动隔离。',
       'Early warning remains GPU-only and read-only shadow: training data, label manifest, training-sample Evidence Bundle, model governance cards, shadow gates, mature outcomes, Ranking@K, naive baselines, a HeaRank 7d node-risk challenger, data/calibration drift, and training/live-shadow feature-distribution snapshots are available, with the pre/post-fault feedback pack promoted as a priority entry; no alert, scheduling, repair or automatic isolation is triggered.',
     ),
     history: [
+      tx('v0.27.4 · 故障预警工作台入口升级为真实顶部子菜单，默认进入故障前后数据反馈包；所有 prediction-* 子菜单都会加载预警数据并自动定位对应面板', 'v0.27.4 · Promotes the early-warning workbench entries into real top submenus, defaults to the pre/post-fault feedback pack, and makes every prediction-* submenu load early-warning data and auto-focus its panel'),
       tx('v0.27.3 · 前端统一当前能力命名为故障预警，新增工作台子功能入口，并将故障前后数据反馈包置顶绑定人工反馈、Evidence Bundle、Outcome 和 Readiness 下载证据', 'v0.27.3 · Renames the current UI capability to failure early warning, adds workbench subfunction entries, and promotes the pre/post-fault feedback pack with human feedback, Evidence Bundle, Outcome, and Readiness evidence downloads'),
       tx('v0.27.2 · Validation Readiness 与只读候选晋级决策绑定人工反馈 Manifest 版本、SHA、状态、匹配窗口和时间安全计数，反馈缺失或元数据阻断会进入晋级 blockers', 'v0.27.2 · Validation Readiness and the read-only promotion decision now bind the human feedback manifest version, SHA, status, matched windows, and point-in-time safety counts; missing or blocked feedback metadata enters promotion blockers'),
       tx('v0.27.1 · 新增人工故障反馈 Manifest，绑定确认标签、人工 outcome 覆写、预测窗口匹配、元数据缺口和稳定 SHA；反馈只进入验证/训练证据，不触发自动处置', 'v0.27.1 · Adds a human fault-feedback manifest binding confirmed labels, human outcome overrides, prediction-window matches, metadata gaps, and a stable SHA; feedback is validation/training evidence only and triggers no automatic remediation'),
@@ -2127,7 +2146,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.3" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.4" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>
