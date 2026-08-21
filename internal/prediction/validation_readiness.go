@@ -11,7 +11,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const ValidationReadinessReportVersion = "prediction-validation-readiness-v4"
+const ValidationReadinessReportVersion = "prediction-validation-readiness-v5"
 const validationFeatureDistributionArchiveVersion = "gpu-feature-distribution-archive-v1"
 const validationFeatureDistributionMinimumPairs = 1
 
@@ -87,6 +87,16 @@ type ValidationReadinessReport struct {
 	TemporalConsistencyVersion         string                                    `json:"temporal_consistency_version"`
 	TemporalSummary                    DualTrackTemporalSummary                  `json:"temporal_summary"`
 	TemporalConsistency                DualTrackTemporalConsistency              `json:"temporal_consistency"`
+	SliceAuditVersion                  string                                    `json:"slice_audit_version"`
+	SliceContractVersion               string                                    `json:"slice_contract_version"`
+	SliceAuditStatus                   string                                    `json:"slice_audit_status"`
+	SliceReadyDimensions               int                                       `json:"slice_ready_dimensions"`
+	SlicePartialDimensions             int                                       `json:"slice_partial_dimensions"`
+	ValidationSliceCount               int                                       `json:"validation_slice_count"`
+	ValidationSlicesSHA256             string                                    `json:"validation_slices_sha256"`
+	ComparableRankingSlices            int                                       `json:"comparable_ranking_slices"`
+	ComparableProbabilitySlices        int                                       `json:"comparable_probability_slices"`
+	SliceBlockingReasons               []string                                  `json:"slice_blocking_reasons"`
 	DataDriftVersion                   string                                    `json:"data_drift_version"`
 	DataDriftSHA256                    string                                    `json:"data_drift_sha256"`
 	DataDriftStatus                    string                                    `json:"data_drift_status"`
@@ -135,10 +145,10 @@ type ValidationReadinessReport struct {
 }
 
 func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error) {
-	return s.validationReadinessReport(nil, nil, nil)
+	return s.validationReadinessReport(nil, nil, nil, nil, nil)
 }
 
-func (s *Service) validationReadinessReport(boundRiskRanking *RiskRankingSnapshotReport, boundTemporalSummary *DualTrackTemporalSummary, boundTemporalConsistency *DualTrackTemporalConsistency) (ValidationReadinessReport, error) {
+func (s *Service) validationReadinessReport(boundRiskRanking *RiskRankingSnapshotReport, boundTemporalSummary *DualTrackTemporalSummary, boundTemporalConsistency *DualTrackTemporalConsistency, boundSliceAudit *DualTrackSliceAudit, boundValidationSlices *[]DualTrackValidationSlice) (ValidationReadinessReport, error) {
 	labelManifest, err := s.LabelManifest()
 	if err != nil {
 		return ValidationReadinessReport{}, err
@@ -177,6 +187,20 @@ func (s *Service) validationReadinessReport(boundRiskRanking *RiskRankingSnapsho
 		}
 		temporalConsistency = dualTrackTemporalConsistency(temporalCohorts)
 	}
+	sliceAudit := dualTrackSliceAudit(nil)
+	validationSlices := []DualTrackValidationSlice{}
+	if boundSliceAudit != nil && boundValidationSlices != nil {
+		sliceAudit = *boundSliceAudit
+		validationSlices = append(validationSlices, (*boundValidationSlices)...)
+	} else {
+		alignedRows, alignedErr := s.dualTrackAlignedRows(riskRankingReport)
+		if alignedErr != nil {
+			return ValidationReadinessReport{}, alignedErr
+		}
+		sliceAudit = dualTrackSliceAudit(alignedRows)
+		validationSlices = dualTrackValidationSlices(alignedRows, riskRankingReport, sliceAudit)
+	}
+	sliceReady, slicePartial, comparableRankingSlices, comparableProbabilitySlices, sliceBlockers := validationSliceReadinessSummary(sliceAudit, validationSlices)
 	driftReport, err := s.DataDriftReport()
 	if err != nil {
 		return ValidationReadinessReport{}, err
@@ -226,6 +250,16 @@ func (s *Service) validationReadinessReport(boundRiskRanking *RiskRankingSnapsho
 		TemporalConsistencyVersion:        DualTrackValidationReportVersion,
 		TemporalSummary:                   temporalSummary,
 		TemporalConsistency:               temporalConsistency,
+		SliceAuditVersion:                 sliceAudit.Version,
+		SliceContractVersion:              sliceAudit.ContractVersion,
+		SliceAuditStatus:                  sliceAudit.Status,
+		SliceReadyDimensions:              sliceReady,
+		SlicePartialDimensions:            slicePartial,
+		ValidationSliceCount:              len(validationSlices),
+		ValidationSlicesSHA256:            validationSlicesChecksum(validationSlices),
+		ComparableRankingSlices:           comparableRankingSlices,
+		ComparableProbabilitySlices:       comparableProbabilitySlices,
+		SliceBlockingReasons:              sliceBlockers,
 		DataDriftVersion:                  driftReport.Version,
 		DataDriftSHA256:                   driftReport.ReportSHA256,
 		DataDriftStatus:                   driftReport.Status,
@@ -272,6 +306,7 @@ func (s *Service) validationReadinessReport(boundRiskRanking *RiskRankingSnapsho
 			"freeze the label manifest SHA256 before comparing challenger metrics",
 			"archive the risk ranking snapshot SHA256 with every dual-track validation run",
 			"require both temporal consistency tracks to pass before promoting any candidate",
+			"require prediction-time slice dimensions to be fully frozen before interpreting sliced metrics",
 			"archive the evidence bundle SHA256 with every offline validation run",
 			"archive the data drift report SHA256 before comparing shadow candidates",
 			"archive the calibration drift report SHA256 before comparing shadow candidates",
@@ -286,6 +321,8 @@ func (s *Service) validationReadinessReport(boundRiskRanking *RiskRankingSnapsho
 		report.RecommendedNextRun = append(report.RecommendedNextRun, "do not interpret historical-risk challenger policies as comparable until their 7d signal coverage is covered")
 	}
 	report.BlockingReasons = validationReadinessBlockers(labelManifest, evidenceBundle, outcomeReport, challengerReport, riskRankingReport, temporalConsistency, driftReport, calibrationReport, featureDriftReport, distributionArchive)
+	report.BlockingReasons = append(report.BlockingReasons, sliceBlockers...)
+	report.BlockingReasons = uniqueSorted(report.BlockingReasons)
 	if len(report.BlockingReasons) > 0 {
 		report.Status = "blocked"
 		report.RecommendedNextRun = append(report.RecommendedNextRun, report.BlockingReasons...)
@@ -298,6 +335,41 @@ func (s *Service) validationReadinessReport(boundRiskRanking *RiskRankingSnapsho
 	report.RecommendedNextRun = uniqueSorted(report.RecommendedNextRun)
 	report.ReadinessSHA256 = validationReadinessChecksum(report)
 	return report, nil
+}
+
+func validationSliceReadinessSummary(audit DualTrackSliceAudit, slices []DualTrackValidationSlice) (ready, partial, comparableRanking, comparableProbability int, blockers []string) {
+	for _, dimension := range audit.Dimensions {
+		if dimension.Dimension == "label_quality" {
+			continue
+		}
+		switch dimension.Status {
+		case "ready":
+			ready++
+		case "partial":
+			partial++
+		}
+		if dimension.Status != "ready" {
+			blockers = append(blockers, "validation slice dimension "+dimension.Dimension+" is "+dimension.Status)
+		}
+	}
+	for _, slice := range slices {
+		if slice.RankingStatus == "comparable" {
+			comparableRanking++
+		}
+		if slice.ProbabilityStatus == "comparable" {
+			comparableProbability++
+		}
+	}
+	if audit.Status != "ready" {
+		blockers = append(blockers, "validation slice audit is "+audit.Status)
+	}
+	return ready, partial, comparableRanking, comparableProbability, uniqueSorted(blockers)
+}
+
+func validationSlicesChecksum(slices []DualTrackValidationSlice) string {
+	payload, _ := json.Marshal(slices)
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
 }
 
 func validationReadinessSevenDaySummary(rows []ChallengerMetricSet) (int, int, int) {
@@ -692,6 +764,16 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		TemporalConsistencyVersion         string                                    `json:"temporal_consistency_version"`
 		TemporalSummary                    DualTrackTemporalSummary                  `json:"temporal_summary"`
 		TemporalConsistency                DualTrackTemporalConsistency              `json:"temporal_consistency"`
+		SliceAuditVersion                  string                                    `json:"slice_audit_version"`
+		SliceContractVersion               string                                    `json:"slice_contract_version"`
+		SliceAuditStatus                   string                                    `json:"slice_audit_status"`
+		SliceReadyDimensions               int                                       `json:"slice_ready_dimensions"`
+		SlicePartialDimensions             int                                       `json:"slice_partial_dimensions"`
+		ValidationSliceCount               int                                       `json:"validation_slice_count"`
+		ValidationSlicesSHA256             string                                    `json:"validation_slices_sha256"`
+		ComparableRankingSlices            int                                       `json:"comparable_ranking_slices"`
+		ComparableProbabilitySlices        int                                       `json:"comparable_probability_slices"`
+		SliceBlockingReasons               []string                                  `json:"slice_blocking_reasons"`
 		DataDriftVersion                   string                                    `json:"data_drift_version"`
 		DataDriftSHA256                    string                                    `json:"data_drift_sha256"`
 		DataDriftStatus                    string                                    `json:"data_drift_status"`
@@ -752,7 +834,12 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		RiskRankingScoredGPUs: report.RiskRankingScoredGPUs, RiskRankingNodes: report.RiskRankingNodes,
 		TemporalConsistencyVersion: report.TemporalConsistencyVersion, TemporalSummary: report.TemporalSummary,
 		TemporalConsistency: report.TemporalConsistency,
-		DataDriftVersion:    report.DataDriftVersion, DataDriftSHA256: report.DataDriftSHA256,
+		SliceAuditVersion:   report.SliceAuditVersion, SliceContractVersion: report.SliceContractVersion,
+		SliceAuditStatus: report.SliceAuditStatus, SliceReadyDimensions: report.SliceReadyDimensions,
+		SlicePartialDimensions: report.SlicePartialDimensions, ValidationSliceCount: report.ValidationSliceCount,
+		ValidationSlicesSHA256: report.ValidationSlicesSHA256, ComparableRankingSlices: report.ComparableRankingSlices,
+		ComparableProbabilitySlices: report.ComparableProbabilitySlices, SliceBlockingReasons: report.SliceBlockingReasons,
+		DataDriftVersion: report.DataDriftVersion, DataDriftSHA256: report.DataDriftSHA256,
 		DataDriftStatus: report.DataDriftStatus, DataDriftCoverage: report.DataDriftCoverage,
 		DataDriftPSIProxy: report.DataDriftPSIProxy, DataDriftKSProxy: report.DataDriftKSProxy,
 		CalibrationDriftVersion: report.CalibrationDriftVersion, CalibrationDriftSHA256: report.CalibrationDriftSHA256,

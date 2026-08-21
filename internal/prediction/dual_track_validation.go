@@ -209,7 +209,13 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 		}
 	}
 	temporalConsistency := dualTrackTemporalConsistency(temporalCohorts)
-	readiness, err := s.validationReadinessReport(&rankingSnapshot, &temporalSummary, &temporalConsistency)
+	alignedRows, err := s.dualTrackAlignedRows(rankingSnapshot)
+	if err != nil {
+		return DualTrackValidationReport{}, err
+	}
+	sliceAudit := dualTrackSliceAudit(alignedRows)
+	validationSlices := dualTrackValidationSlices(alignedRows, rankingSnapshot, sliceAudit)
+	readiness, err := s.validationReadinessReport(&rankingSnapshot, &temporalSummary, &temporalConsistency, &sliceAudit, &validationSlices)
 	if err != nil {
 		return DualTrackValidationReport{}, err
 	}
@@ -241,8 +247,8 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 		TemporalSummary:     temporalSummary,
 		TemporalCohorts:     temporalCohorts,
 		TemporalConsistency: temporalConsistency,
-		SliceAudit:          dualTrackSliceAudit(nil),
-		ValidationSlices:    []DualTrackValidationSlice{},
+		SliceAudit:          sliceAudit,
+		ValidationSlices:    validationSlices,
 		Interpretation: []string{
 			"ranking track answers who should be reviewed first and is evaluated with node Ranking@K metrics",
 			"probability track answers event risk within a fixed horizon and is evaluated with discrimination and calibration metrics",
@@ -262,11 +268,7 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 		report.ReportSHA256 = dualTrackValidationChecksum(report)
 		return report, nil
 	}
-	var rows []api.PredictionOutcomeEvaluation
-	if err := s.db.Where("model_spec_id = ? AND horizon_minutes = ? AND prediction_evaluated_at = ?", rankingSnapshot.ModelSpecID, rankingSnapshot.HorizonMinutes, *rankingSnapshot.SnapshotCutoffAt).
-		Order("node_ip ASC, gpu_uuid ASC, id ASC").Find(&rows).Error; err != nil {
-		return DualTrackValidationReport{}, err
-	}
+	rows := alignedRows
 	report.Alignment.AlignedOutcomeRows = len(rows)
 	if len(rows) == 0 {
 		report.Alignment.Status = "blocked_no_aligned_outcomes"
@@ -276,8 +278,6 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 		return report, nil
 	}
 	report.Alignment.Status = "aligned"
-	report.SliceAudit = dualTrackSliceAudit(rows)
-	report.ValidationSlices = dualTrackValidationSlices(rows, rankingSnapshot, report.SliceAudit)
 	accuracy := accuracyFromRows(rows, report.GeneratedAt)
 	maturity := outcomeMaturity(rows)
 	stability := outcomeStability(maturity, accuracy)
@@ -298,6 +298,18 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 	report.Status = dualTrackOverallStatus(report.Ranking.Status, report.Probability.Status)
 	report.ReportSHA256 = dualTrackValidationChecksum(report)
 	return report, nil
+}
+
+func (s *Service) dualTrackAlignedRows(snapshot RiskRankingSnapshotReport) ([]api.PredictionOutcomeEvaluation, error) {
+	if snapshot.Status != "shadow_snapshot_available" || snapshot.SnapshotCutoffAt == nil {
+		return []api.PredictionOutcomeEvaluation{}, nil
+	}
+	var rows []api.PredictionOutcomeEvaluation
+	if err := s.db.Where("model_spec_id = ? AND horizon_minutes = ? AND prediction_evaluated_at = ?", snapshot.ModelSpecID, snapshot.HorizonMinutes, *snapshot.SnapshotCutoffAt).
+		Order("node_ip ASC, gpu_uuid ASC, id ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 func (s *Service) dualTrackTemporalCohorts(snapshot RiskRankingSnapshotReport) (DualTrackTemporalSummary, []DualTrackTemporalCohort, error) {
