@@ -281,6 +281,7 @@ func main() {
 	mux.HandleFunc("/api/v1/prediction/dual-track-validation", predictionHandler.HandleDualTrackValidation)
 	mux.HandleFunc("/api/v1/prediction/label-manifest", predictionHandler.HandleLabelManifest)
 	mux.HandleFunc("/api/v1/prediction/validation-readiness", predictionHandler.HandleValidationReadiness)
+	mux.HandleFunc("/api/v1/prediction/promotion-decision", predictionHandler.HandlePromotionDecision)
 	mux.HandleFunc("/api/v1/prediction/evidence-bundle", predictionHandler.HandleEvidenceBundle)
 	mux.HandleFunc("/api/v1/prediction/data-drift-report", predictionHandler.HandleDataDriftReport)
 	mux.HandleFunc("/api/v1/prediction/calibration-drift-report", predictionHandler.HandleCalibrationDriftReport)

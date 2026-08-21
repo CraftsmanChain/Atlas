@@ -396,6 +396,11 @@ func TestDualTrackValidationAlignsRankingAndProbabilityCohort(t *testing.T) {
 	if readinessConditionalResponse.Code != http.StatusNotModified || readinessConditionalResponse.Body.Len() != 0 || readinessConditionalResponse.Header().Get("X-Atlas-Report-Cache") != "HIT" {
 		t.Fatalf("cached readiness conditional request must return an empty 304 response: code=%d headers=%v body=%s", readinessConditionalResponse.Code, readinessConditionalResponse.Header(), readinessConditionalResponse.Body.String())
 	}
+	promotionResponse := httptest.NewRecorder()
+	handler.HandlePromotionDecision(promotionResponse, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/promotion-decision?download=1", nil))
+	if promotionResponse.Code != http.StatusOK || promotionResponse.Header().Get("X-Atlas-Report-Cache") != "HIT" || promotionResponse.Header().Get("X-Atlas-Promotion-Decision-Version") != PromotionDecisionReportVersion || promotionResponse.Header().Get("ETag") == "" || promotionResponse.Header().Get("Content-Disposition") == "" {
+		t.Fatalf("promotion decision must reuse the cached dual-track snapshot: code=%d headers=%v body=%s", promotionResponse.Code, promotionResponse.Header(), promotionResponse.Body.String())
+	}
 	if !etagMatches(`W/"old", `+response.Header().Get("ETag"), report.ReportSHA256) || !etagMatches("*", report.ReportSHA256) {
 		t.Fatal("ETag matching must support weak lists and wildcard validators")
 	}
