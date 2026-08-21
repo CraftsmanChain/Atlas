@@ -12,7 +12,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const DualTrackValidationReportVersion = "prediction-dual-track-validation-v7"
+const DualTrackValidationReportVersion = "prediction-dual-track-validation-v8"
 const DualTrackSliceAuditVersion = "prediction-slice-audit-v1"
 const DualTrackTemporalCohortLimit = 12
 const DualTrackMinimumConsistentCohorts = 3
@@ -173,6 +173,17 @@ type DualTrackValidationSlice struct {
 	BlockingReasons    []string                   `json:"blocking_reasons"`
 }
 
+type DualTrackSliceComparability struct {
+	Status                          string   `json:"status"`
+	RequiredDimensions              int      `json:"required_dimensions"`
+	RankingComparableDimensions     int      `json:"ranking_comparable_dimensions"`
+	ProbabilityComparableDimensions int      `json:"probability_comparable_dimensions"`
+	JointComparableDimensions       int      `json:"joint_comparable_dimensions"`
+	MissingRankingDimensions        []string `json:"missing_ranking_dimensions"`
+	MissingProbabilityDimensions    []string `json:"missing_probability_dimensions"`
+	BlockingReasons                 []string `json:"blocking_reasons"`
+}
+
 type DualTrackValidationReport struct {
 	Version             string                       `json:"version"`
 	FrameworkVersion    string                       `json:"framework_version"`
@@ -189,6 +200,7 @@ type DualTrackValidationReport struct {
 	TemporalConsistency DualTrackTemporalConsistency `json:"temporal_consistency"`
 	SliceAudit          DualTrackSliceAudit          `json:"slice_audit"`
 	ValidationSlices    []DualTrackValidationSlice   `json:"validation_slices"`
+	SliceComparability  DualTrackSliceComparability  `json:"slice_comparability"`
 	Safety              RiskRankingSafety            `json:"safety"`
 	Interpretation      []string                     `json:"interpretation"`
 	RecommendedNextRun  []string                     `json:"recommended_next_run"`
@@ -215,6 +227,7 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 	}
 	sliceAudit := dualTrackSliceAudit(alignedRows)
 	validationSlices := dualTrackValidationSlices(alignedRows, rankingSnapshot, sliceAudit)
+	sliceComparability := dualTrackSliceComparability(sliceAudit, validationSlices)
 	readiness, err := s.validationReadinessReport(&rankingSnapshot, &temporalSummary, &temporalConsistency, &sliceAudit, &validationSlices)
 	if err != nil {
 		return DualTrackValidationReport{}, err
@@ -249,6 +262,7 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 		TemporalConsistency: temporalConsistency,
 		SliceAudit:          sliceAudit,
 		ValidationSlices:    validationSlices,
+		SliceComparability:  sliceComparability,
 		Interpretation: []string{
 			"ranking track answers who should be reviewed first and is evaluated with node Ranking@K metrics",
 			"probability track answers event risk within a fixed horizon and is evaluated with discrimination and calibration metrics",
@@ -634,6 +648,62 @@ func dualTrackValidationSlices(rows []api.PredictionOutcomeEvaluation, snapshot 
 			})
 		}
 	}
+	return result
+}
+
+func dualTrackSliceComparability(audit DualTrackSliceAudit, slices []DualTrackValidationSlice) DualTrackSliceComparability {
+	required := []string{"model_name", "event_type", "data_center_id", "driver_version"}
+	ranking := map[string]bool{}
+	probability := map[string]bool{}
+	for _, slice := range slices {
+		if slice.RankingStatus == "comparable" {
+			ranking[slice.Dimension] = true
+		}
+		if slice.ProbabilityStatus == "comparable" {
+			probability[slice.Dimension] = true
+		}
+	}
+	result := DualTrackSliceComparability{
+		RequiredDimensions: len(required), MissingRankingDimensions: []string{},
+		MissingProbabilityDimensions: []string{}, BlockingReasons: []string{},
+	}
+	for _, dimension := range required {
+		if ranking[dimension] {
+			result.RankingComparableDimensions++
+		} else {
+			result.MissingRankingDimensions = append(result.MissingRankingDimensions, dimension)
+		}
+		if probability[dimension] {
+			result.ProbabilityComparableDimensions++
+		} else {
+			result.MissingProbabilityDimensions = append(result.MissingProbabilityDimensions, dimension)
+		}
+		if ranking[dimension] && probability[dimension] {
+			result.JointComparableDimensions++
+		}
+	}
+	switch {
+	case audit.Status != "ready":
+		result.Status = "blocked_incomplete_slice_audit"
+		result.BlockingReasons = append(result.BlockingReasons, "slice comparability requires all prediction-time dimensions to pass the coverage audit")
+	case result.JointComparableDimensions == result.RequiredDimensions:
+		result.Status = "comparable"
+	case result.RankingComparableDimensions > 0 || result.ProbabilityComparableDimensions > 0:
+		result.Status = "exploratory_partial_comparability"
+	case len(slices) > 0:
+		result.Status = "insufficient_sample"
+	default:
+		result.Status = "blocked_no_validation_slices"
+	}
+	if result.Status != "comparable" {
+		if len(result.MissingRankingDimensions) > 0 {
+			result.BlockingReasons = append(result.BlockingReasons, "ranking slices are not comparable for dimensions: "+strings.Join(result.MissingRankingDimensions, ", "))
+		}
+		if len(result.MissingProbabilityDimensions) > 0 {
+			result.BlockingReasons = append(result.BlockingReasons, "probability slices are not comparable for dimensions: "+strings.Join(result.MissingProbabilityDimensions, ", "))
+		}
+	}
+	result.BlockingReasons = uniqueSorted(result.BlockingReasons)
 	return result
 }
 
