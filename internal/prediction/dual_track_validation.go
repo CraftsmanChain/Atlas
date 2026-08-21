@@ -4,13 +4,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"math"
 	"time"
 
 	"atlas/pkg/api"
 )
 
-const DualTrackValidationReportVersion = "prediction-dual-track-validation-v2"
+const DualTrackValidationReportVersion = "prediction-dual-track-validation-v3"
 const DualTrackTemporalCohortLimit = 12
+const DualTrackMinimumConsistentCohorts = 3
+const DualTrackMinimumDirectionRatio = 2.0 / 3.0
 
 type DualTrackAlignment struct {
 	Status             string     `json:"status"`
@@ -60,14 +63,17 @@ type DualTrackValidationEvidence struct {
 }
 
 type TemporalProbabilityMetrics struct {
-	TP        int      `json:"tp"`
-	FP        int      `json:"fp"`
-	FN        int      `json:"fn"`
-	TN        int      `json:"tn"`
-	Evaluated int      `json:"evaluated"`
-	Precision *float64 `json:"precision,omitempty"`
-	Recall    *float64 `json:"recall,omitempty"`
-	Accuracy  *float64 `json:"accuracy,omitempty"`
+	TP              int      `json:"tp"`
+	FP              int      `json:"fp"`
+	FN              int      `json:"fn"`
+	TN              int      `json:"tn"`
+	Evaluated       int      `json:"evaluated"`
+	Precision       *float64 `json:"precision,omitempty"`
+	Recall          *float64 `json:"recall,omitempty"`
+	Accuracy        *float64 `json:"accuracy,omitempty"`
+	BrierScore      *float64 `json:"brier_score,omitempty"`
+	NullBrierScore  *float64 `json:"null_brier_score,omitempty"`
+	BrierSkillScore *float64 `json:"brier_skill_score,omitempty"`
 }
 
 type DualTrackTemporalCohort struct {
@@ -94,23 +100,41 @@ type DualTrackTemporalSummary struct {
 	ComparableProbabilityCohortCount int `json:"comparable_probability_cohort_count"`
 }
 
+type TemporalTrackConsistency struct {
+	Status                      string   `json:"status"`
+	Metric                      string   `json:"metric"`
+	PositiveDirectionRule       string   `json:"positive_direction_rule"`
+	MinimumIndependentCohorts   int      `json:"minimum_independent_cohorts"`
+	MinimumDirectionRatio       float64  `json:"minimum_direction_ratio"`
+	EvaluableIndependentCohorts int      `json:"evaluable_independent_cohorts"`
+	PositiveDirectionCohorts    int      `json:"positive_direction_cohorts"`
+	DirectionConsistencyRatio   *float64 `json:"direction_consistency_ratio,omitempty"`
+	BlockingReasons             []string `json:"blocking_reasons"`
+}
+
+type DualTrackTemporalConsistency struct {
+	Ranking     TemporalTrackConsistency `json:"ranking_track"`
+	Probability TemporalTrackConsistency `json:"probability_track"`
+}
+
 type DualTrackValidationReport struct {
-	Version            string                      `json:"version"`
-	FrameworkVersion   string                      `json:"framework_version"`
-	Mode               string                      `json:"mode"`
-	Status             string                      `json:"status"`
-	ReportSHA256       string                      `json:"report_sha256"`
-	Alignment          DualTrackAlignment          `json:"alignment"`
-	Ranking            RankingValidationTrack      `json:"ranking_track"`
-	Probability        ProbabilityValidationTrack  `json:"probability_track"`
-	Evidence           DualTrackValidationEvidence `json:"evidence"`
-	Readiness          ValidationReadinessReport   `json:"readiness"`
-	TemporalSummary    DualTrackTemporalSummary    `json:"temporal_summary"`
-	TemporalCohorts    []DualTrackTemporalCohort   `json:"temporal_cohorts"`
-	Safety             RiskRankingSafety           `json:"safety"`
-	Interpretation     []string                    `json:"interpretation"`
-	RecommendedNextRun []string                    `json:"recommended_next_run"`
-	GeneratedAt        time.Time                   `json:"generated_at"`
+	Version             string                       `json:"version"`
+	FrameworkVersion    string                       `json:"framework_version"`
+	Mode                string                       `json:"mode"`
+	Status              string                       `json:"status"`
+	ReportSHA256        string                       `json:"report_sha256"`
+	Alignment           DualTrackAlignment           `json:"alignment"`
+	Ranking             RankingValidationTrack       `json:"ranking_track"`
+	Probability         ProbabilityValidationTrack   `json:"probability_track"`
+	Evidence            DualTrackValidationEvidence  `json:"evidence"`
+	Readiness           ValidationReadinessReport    `json:"readiness"`
+	TemporalSummary     DualTrackTemporalSummary     `json:"temporal_summary"`
+	TemporalCohorts     []DualTrackTemporalCohort    `json:"temporal_cohorts"`
+	TemporalConsistency DualTrackTemporalConsistency `json:"temporal_consistency"`
+	Safety              RiskRankingSafety            `json:"safety"`
+	Interpretation      []string                     `json:"interpretation"`
+	RecommendedNextRun  []string                     `json:"recommended_next_run"`
+	GeneratedAt         time.Time                    `json:"generated_at"`
 }
 
 func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error) {
@@ -146,9 +170,10 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 			DataDriftStatus: readiness.DataDriftStatus, CalibrationDriftStatus: readiness.CalibrationDriftStatus,
 			FeatureDriftStatus: readiness.FeatureDriftStatus,
 		},
-		Readiness:       readiness,
-		TemporalSummary: DualTrackTemporalSummary{CohortLimit: DualTrackTemporalCohortLimit},
-		TemporalCohorts: []DualTrackTemporalCohort{},
+		Readiness:           readiness,
+		TemporalSummary:     DualTrackTemporalSummary{CohortLimit: DualTrackTemporalCohortLimit},
+		TemporalCohorts:     []DualTrackTemporalCohort{},
+		TemporalConsistency: dualTrackTemporalConsistency(nil),
 		Interpretation: []string{
 			"ranking track answers who should be reviewed first and is evaluated with node Ranking@K metrics",
 			"probability track answers event risk within a fixed horizon and is evaluated with discrimination and calibration metrics",
@@ -172,6 +197,7 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 	if err != nil {
 		return DualTrackValidationReport{}, err
 	}
+	report.TemporalConsistency = dualTrackTemporalConsistency(report.TemporalCohorts)
 
 	var rows []api.PredictionOutcomeEvaluation
 	if err := s.db.Where("model_spec_id = ? AND horizon_minutes = ? AND prediction_evaluated_at = ?", rankingSnapshot.ModelSpecID, rankingSnapshot.HorizonMinutes, *rankingSnapshot.SnapshotCutoffAt).
@@ -258,6 +284,7 @@ func (s *Service) dualTrackTemporalCohorts(snapshot RiskRankingSnapshotReport) (
 				Recall: accuracy.Final.Recall, Accuracy: accuracy.Final.Accuracy,
 			},
 		}
+		cohort.ProbabilityMetrics.BrierScore, cohort.ProbabilityMetrics.NullBrierScore, cohort.ProbabilityMetrics.BrierSkillScore = temporalBrierMetrics(cohortRows)
 		cohorts = append(cohorts, cohort)
 		if cohort.MaturedRows > 0 {
 			summary.MaturedCohortCount++
@@ -274,6 +301,92 @@ func (s *Service) dualTrackTemporalCohorts(snapshot RiskRankingSnapshotReport) (
 	}
 	summary.CohortCount = len(cohorts)
 	return summary, cohorts, nil
+}
+
+func temporalBrierMetrics(rows []api.PredictionOutcomeEvaluation) (*float64, *float64, *float64) {
+	type scoredActual struct {
+		probability float64
+		actual      float64
+	}
+	values := make([]scoredActual, 0, len(rows))
+	actualSum := 0.0
+	for _, row := range rows {
+		if row.MaturityStatus != "matured" || row.Probability == nil || row.FinalActualValue == nil {
+			continue
+		}
+		actual := float64(*row.FinalActualValue)
+		values = append(values, scoredActual{probability: *row.Probability, actual: actual})
+		actualSum += actual
+	}
+	if len(values) == 0 {
+		return nil, nil, nil
+	}
+	baseRate := actualSum / float64(len(values))
+	modelLoss, nullLoss := 0.0, 0.0
+	for _, value := range values {
+		modelLoss += math.Pow(value.probability-value.actual, 2)
+		nullLoss += math.Pow(baseRate-value.actual, 2)
+	}
+	brier := modelLoss / float64(len(values))
+	nullBrier := nullLoss / float64(len(values))
+	if nullBrier == 0 {
+		return &brier, &nullBrier, nil
+	}
+	skill := 1 - brier/nullBrier
+	return &brier, &nullBrier, &skill
+}
+
+func dualTrackTemporalConsistency(cohorts []DualTrackTemporalCohort) DualTrackTemporalConsistency {
+	ranking := TemporalTrackConsistency{
+		Metric: "node_rank_at_3_lift", PositiveDirectionRule: "lift_greater_than_1",
+		MinimumIndependentCohorts: DualTrackMinimumConsistentCohorts, MinimumDirectionRatio: DualTrackMinimumDirectionRatio,
+	}
+	probability := TemporalTrackConsistency{
+		Metric: "brier_skill_score", PositiveDirectionRule: "brier_skill_score_greater_than_0",
+		MinimumIndependentCohorts: DualTrackMinimumConsistentCohorts, MinimumDirectionRatio: DualTrackMinimumDirectionRatio,
+	}
+	for _, cohort := range cohorts {
+		if !cohort.IndependentTimeBatch || cohort.MaturedRows == 0 || cohort.PositiveRows == 0 {
+			continue
+		}
+		for _, metric := range cohort.NodeRankingAtK {
+			if metric.K == 3 && metric.Lift != nil {
+				ranking.EvaluableIndependentCohorts++
+				if *metric.Lift > 1 {
+					ranking.PositiveDirectionCohorts++
+				}
+				break
+			}
+		}
+		if cohort.ProbabilityMetrics.BrierSkillScore != nil {
+			probability.EvaluableIndependentCohorts++
+			if *cohort.ProbabilityMetrics.BrierSkillScore > 0 {
+				probability.PositiveDirectionCohorts++
+			}
+		}
+	}
+	finalizeTemporalConsistency(&ranking, "ranking consistency requires at least three independent evaluable cohorts")
+	finalizeTemporalConsistency(&probability, "probability consistency requires at least three independent evaluable cohorts")
+	return DualTrackTemporalConsistency{Ranking: ranking, Probability: probability}
+}
+
+func finalizeTemporalConsistency(consistency *TemporalTrackConsistency, insufficientReason string) {
+	if consistency.EvaluableIndependentCohorts > 0 {
+		ratio := float64(consistency.PositiveDirectionCohorts) / float64(consistency.EvaluableIndependentCohorts)
+		consistency.DirectionConsistencyRatio = &ratio
+	}
+	if consistency.EvaluableIndependentCohorts < consistency.MinimumIndependentCohorts {
+		consistency.Status = "insufficient_independent_cohorts"
+		consistency.BlockingReasons = []string{insufficientReason}
+		return
+	}
+	if consistency.PositiveDirectionCohorts >= consistency.MinimumIndependentCohorts && consistency.DirectionConsistencyRatio != nil && *consistency.DirectionConsistencyRatio >= consistency.MinimumDirectionRatio {
+		consistency.Status = "consistent"
+		consistency.BlockingReasons = []string{}
+		return
+	}
+	consistency.Status = "review_mixed_direction"
+	consistency.BlockingReasons = []string{"independent cohorts do not show a stable positive direction"}
 }
 
 func nonNilRankingMetrics(rows []RankingAtK) []RankingAtK {
