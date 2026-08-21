@@ -17,7 +17,9 @@ func TestPromotionDecisionRequiresEveryFrozenGate(t *testing.T) {
 		},
 		Readiness: ValidationReadinessReport{
 			Version: ValidationReadinessReportVersion, Status: "ready_for_offline_validation",
-			ReadinessSHA256: "readiness-sha", ValidationSlicesSHA256: "slices-sha", BlockingReasons: []string{},
+			ReadinessSHA256: "readiness-sha", HumanFeedbackVersion: HumanFeedbackManifestVersion,
+			HumanFeedbackSHA256: "feedback-sha", HumanFeedbackStatus: "feedback_ready",
+			ValidationSlicesSHA256: "slices-sha", BlockingReasons: []string{},
 		},
 		TemporalConsistency: DualTrackTemporalConsistency{
 			Ranking:     TemporalTrackConsistency{Status: "consistent"},
@@ -30,7 +32,7 @@ func TestPromotionDecisionRequiresEveryFrozenGate(t *testing.T) {
 	}
 
 	report := promotionDecisionReport(source)
-	if report.Status != "eligible_for_shadow_observation" || report.DecisionSHA256 == "" || len(report.BlockingReasons) != 0 || len(report.Gates) != 7 {
+	if report.Status != "eligible_for_shadow_observation" || report.DecisionSHA256 == "" || len(report.BlockingReasons) != 0 || len(report.Gates) != 8 {
 		t.Fatalf("unexpected eligible promotion decision: %+v", report)
 	}
 	later := source
@@ -53,7 +55,9 @@ func TestPromotionDecisionPreservesExploratoryReadiness(t *testing.T) {
 		Alignment: DualTrackAlignment{Status: "aligned"},
 		Readiness: ValidationReadinessReport{
 			Version: ValidationReadinessReportVersion, Status: "exploratory_ready",
-			ReadinessSHA256: "readiness-sha", ValidationSlicesSHA256: "slices-sha", BlockingReasons: []string{},
+			ReadinessSHA256: "readiness-sha", HumanFeedbackVersion: HumanFeedbackManifestVersion,
+			HumanFeedbackSHA256: "feedback-sha", HumanFeedbackStatus: "exploratory_ready",
+			ValidationSlicesSHA256: "slices-sha", BlockingReasons: []string{},
 		},
 		TemporalConsistency: DualTrackTemporalConsistency{
 			Ranking:     TemporalTrackConsistency{Status: "consistent"},

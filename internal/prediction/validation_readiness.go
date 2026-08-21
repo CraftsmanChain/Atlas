@@ -11,7 +11,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const ValidationReadinessReportVersion = "prediction-validation-readiness-v6"
+const ValidationReadinessReportVersion = "prediction-validation-readiness-v7"
 const validationFeatureDistributionArchiveVersion = "gpu-feature-distribution-archive-v1"
 const validationFeatureDistributionMinimumPairs = 1
 
@@ -65,6 +65,13 @@ type ValidationReadinessReport struct {
 	EvidenceBundleSHA256               string                                    `json:"evidence_bundle_sha256"`
 	EvidencePositive                   int                                       `json:"evidence_positive_labels"`
 	EvidenceExcluded                   int                                       `json:"evidence_excluded_labels"`
+	HumanFeedbackVersion               string                                    `json:"human_feedback_manifest_version"`
+	HumanFeedbackSHA256                string                                    `json:"human_feedback_manifest_sha256"`
+	HumanFeedbackStatus                string                                    `json:"human_feedback_status"`
+	HumanFeedbackConfirmed             int                                       `json:"human_feedback_confirmed_labels"`
+	HumanFeedbackOverrides             int                                       `json:"human_feedback_outcome_overrides"`
+	HumanFeedbackMatchedWindows        int                                       `json:"human_feedback_matched_prediction_windows"`
+	HumanFeedbackPointInTimeViolations int                                       `json:"human_feedback_point_in_time_violations"`
 	OutcomeReportVersion               string                                    `json:"outcome_report_version"`
 	OutcomeStability                   string                                    `json:"outcome_stability_status"`
 	OutcomeMaturity                    OutcomeMaturity                           `json:"outcome_maturity"`
@@ -164,6 +171,10 @@ func (s *Service) validationReadinessReport(boundRiskRanking *RiskRankingSnapsho
 	if err != nil {
 		return ValidationReadinessReport{}, err
 	}
+	humanFeedback, err := s.HumanFeedbackManifest()
+	if err != nil {
+		return ValidationReadinessReport{}, err
+	}
 	outcomeReport, err := s.OutcomeReport()
 	if err != nil {
 		return ValidationReadinessReport{}, err
@@ -227,90 +238,97 @@ func (s *Service) validationReadinessReport(boundRiskRanking *RiskRankingSnapsho
 		return ValidationReadinessReport{}, err
 	}
 	report := ValidationReadinessReport{
-		Version:                           ValidationReadinessReportVersion,
-		FrameworkVersion:                  FrameworkVersion,
-		Mode:                              "read_only_validation_gate",
-		LabelGateStatus:                   labelManifest.QualityGateStatus,
-		LabelManifestVersion:              labelManifest.Version,
-		LabelManifestSHA256:               labelManifest.ManifestSHA256,
-		EvidenceBundleVersion:             evidenceBundle.Version,
-		EvidenceBundleSHA256:              evidenceBundle.BundleSHA256,
-		EvidencePositive:                  evidenceBundle.PositiveLabels,
-		EvidenceExcluded:                  evidenceBundle.ExcludedLabels,
-		OutcomeReportVersion:              outcomeReport.Version,
-		OutcomeStability:                  outcomeReport.Stability.Status,
-		OutcomeMaturity:                   outcomeReport.SampleMaturity,
-		ChallengerVersion:                 challengerReport.Version,
-		ChallengerStatus:                  challengerReport.Status,
-		ChallengerConfidence:              challengerReport.ConfidenceStatus,
-		ChallengerHistoricalSignal:        challengerHistoricalSignalStatus(challengerReport.SevenDay),
-		RiskRankingVersion:                riskRankingReport.Version,
-		RiskRankingSHA256:                 riskRankingReport.ReportSHA256,
-		RiskRankingStatus:                 riskRankingReport.Status,
-		RiskRankingPolicy:                 riskRankingReport.Policy,
-		RiskRankingScoreSemantics:         riskRankingReport.ScoreSemantics,
-		RiskRankingShadowRunID:            riskRankingReport.ShadowRunID,
-		RiskRankingShadowRunKey:           riskRankingReport.ShadowRunKey,
-		RiskRankingHorizonMinutes:         riskRankingReport.HorizonMinutes,
-		RiskRankingSnapshotCutoffAt:       riskRankingReport.SnapshotCutoffAt,
-		RiskRankingTargetGPUs:             riskRankingReport.TargetGPUCount,
-		RiskRankingScoredGPUs:             riskRankingReport.ScoredGPUCount,
-		RiskRankingNodes:                  riskRankingReport.NodeCount,
-		TemporalConsistencyVersion:        DualTrackValidationReportVersion,
-		TemporalSummary:                   temporalSummary,
-		TemporalConsistency:               temporalConsistency,
-		SliceAuditVersion:                 sliceAudit.Version,
-		SliceContractVersion:              sliceAudit.ContractVersion,
-		SliceAuditStatus:                  sliceAudit.Status,
-		SliceReadyDimensions:              sliceReady,
-		SlicePartialDimensions:            slicePartial,
-		ValidationSliceCount:              len(validationSlices),
-		ValidationSlicesSHA256:            validationSlicesChecksum(validationSlices),
-		ComparableRankingSlices:           comparableRankingSlices,
-		ComparableProbabilitySlices:       comparableProbabilitySlices,
-		SliceComparabilityStatus:          sliceComparability.Status,
-		SliceRequiredDimensions:           sliceComparability.RequiredDimensions,
-		ComparableRankingDimensions:       sliceComparability.RankingComparableDimensions,
-		ComparableProbabilityDimensions:   sliceComparability.ProbabilityComparableDimensions,
-		ComparableJointDimensions:         sliceComparability.JointComparableDimensions,
-		MissingRankingDimensions:          append([]string(nil), sliceComparability.MissingRankingDimensions...),
-		MissingProbabilityDimensions:      append([]string(nil), sliceComparability.MissingProbabilityDimensions...),
-		SliceBlockingReasons:              sliceBlockers,
-		DataDriftVersion:                  driftReport.Version,
-		DataDriftSHA256:                   driftReport.ReportSHA256,
-		DataDriftStatus:                   driftReport.Status,
-		DataDriftCoverage:                 driftReport.CoverageQualityStatus,
-		DataDriftPSIProxy:                 driftReport.PSIProxy,
-		DataDriftKSProxy:                  driftReport.KSProxy,
-		CalibrationDriftVersion:           calibrationReport.Version,
-		CalibrationDriftSHA256:            calibrationReport.ReportSHA256,
-		CalibrationDriftStatus:            calibrationReport.Status,
-		CalibrationECEDelta:               calibrationReport.ECEDelta,
-		CalibrationBSSDelta:               calibrationReport.BrierSkillScoreDelta,
-		FeatureDriftVersion:               featureDriftReport.Version,
-		FeatureDriftSHA256:                featureDriftReport.ReportSHA256,
-		FeatureDriftStatus:                featureDriftReport.Status,
-		FeatureDriftColumns:               featureDriftReport.FeatureColumnCount,
-		FeatureDriftDistributions:         featureDriftReport.FeatureDistributionCount,
-		FeatureDriftCompared:              featureDriftReport.ComparedFeatureCount,
-		FeatureDriftPassed:                featureDriftReport.PassedFeatureCount,
-		FeatureDriftReview:                featureDriftReport.ReviewRequiredFeatureCount,
-		FeatureDriftMaxPSI:                featureDriftReport.MaximumPSI,
-		FeatureDriftMaxKS:                 featureDriftReport.MaximumKS,
-		FeatureDriftPSIStatus:             featureDriftReport.PSIStatus,
-		FeatureDriftKSStatus:              featureDriftReport.KSStatus,
-		FeatureDriftBlockers:              append([]string(nil), featureDriftReport.BlockingReasons...),
-		FeatureDriftNextRun:               append([]string(nil), featureDriftReport.RecommendedNextRun...),
-		FeatureDistributionArchiveVersion: distributionArchive.Version,
-		FeatureDistributionArchiveSHA256:  distributionArchive.ArchiveSHA256,
-		FeatureDistributionArchiveScope:   distributionArchive.Scope,
-		FeatureDistributionComparability:  distributionArchive.ComparabilityStatus,
-		FeatureDistributionMinimumPairs:   distributionArchive.MinimumFeaturePairs,
-		FeatureDistributionSnapshots:      distributionArchive.SnapshotCount,
-		FeatureDistributionTraining:       distributionArchive.TrainingSnapshotCount,
-		FeatureDistributionLiveShadow:     distributionArchive.LiveShadowSnapshotCount,
-		FeatureDistributionFeatures:       distributionArchive.FeatureCount,
-		FeatureDistributionPairedFeatures: distributionArchive.PairedFeatureCount,
+		Version:                            ValidationReadinessReportVersion,
+		FrameworkVersion:                   FrameworkVersion,
+		Mode:                               "read_only_validation_gate",
+		LabelGateStatus:                    labelManifest.QualityGateStatus,
+		LabelManifestVersion:               labelManifest.Version,
+		LabelManifestSHA256:                labelManifest.ManifestSHA256,
+		EvidenceBundleVersion:              evidenceBundle.Version,
+		EvidenceBundleSHA256:               evidenceBundle.BundleSHA256,
+		EvidencePositive:                   evidenceBundle.PositiveLabels,
+		EvidenceExcluded:                   evidenceBundle.ExcludedLabels,
+		HumanFeedbackVersion:               humanFeedback.Version,
+		HumanFeedbackSHA256:                humanFeedback.ManifestSHA256,
+		HumanFeedbackStatus:                humanFeedback.Status,
+		HumanFeedbackConfirmed:             humanFeedback.HumanConfirmedLabels,
+		HumanFeedbackOverrides:             humanFeedback.HumanOverrideOutcomes,
+		HumanFeedbackMatchedWindows:        humanFeedback.MatchedPredictionWindows,
+		HumanFeedbackPointInTimeViolations: humanFeedback.PointInTimeViolations,
+		OutcomeReportVersion:               outcomeReport.Version,
+		OutcomeStability:                   outcomeReport.Stability.Status,
+		OutcomeMaturity:                    outcomeReport.SampleMaturity,
+		ChallengerVersion:                  challengerReport.Version,
+		ChallengerStatus:                   challengerReport.Status,
+		ChallengerConfidence:               challengerReport.ConfidenceStatus,
+		ChallengerHistoricalSignal:         challengerHistoricalSignalStatus(challengerReport.SevenDay),
+		RiskRankingVersion:                 riskRankingReport.Version,
+		RiskRankingSHA256:                  riskRankingReport.ReportSHA256,
+		RiskRankingStatus:                  riskRankingReport.Status,
+		RiskRankingPolicy:                  riskRankingReport.Policy,
+		RiskRankingScoreSemantics:          riskRankingReport.ScoreSemantics,
+		RiskRankingShadowRunID:             riskRankingReport.ShadowRunID,
+		RiskRankingShadowRunKey:            riskRankingReport.ShadowRunKey,
+		RiskRankingHorizonMinutes:          riskRankingReport.HorizonMinutes,
+		RiskRankingSnapshotCutoffAt:        riskRankingReport.SnapshotCutoffAt,
+		RiskRankingTargetGPUs:              riskRankingReport.TargetGPUCount,
+		RiskRankingScoredGPUs:              riskRankingReport.ScoredGPUCount,
+		RiskRankingNodes:                   riskRankingReport.NodeCount,
+		TemporalConsistencyVersion:         DualTrackValidationReportVersion,
+		TemporalSummary:                    temporalSummary,
+		TemporalConsistency:                temporalConsistency,
+		SliceAuditVersion:                  sliceAudit.Version,
+		SliceContractVersion:               sliceAudit.ContractVersion,
+		SliceAuditStatus:                   sliceAudit.Status,
+		SliceReadyDimensions:               sliceReady,
+		SlicePartialDimensions:             slicePartial,
+		ValidationSliceCount:               len(validationSlices),
+		ValidationSlicesSHA256:             validationSlicesChecksum(validationSlices),
+		ComparableRankingSlices:            comparableRankingSlices,
+		ComparableProbabilitySlices:        comparableProbabilitySlices,
+		SliceComparabilityStatus:           sliceComparability.Status,
+		SliceRequiredDimensions:            sliceComparability.RequiredDimensions,
+		ComparableRankingDimensions:        sliceComparability.RankingComparableDimensions,
+		ComparableProbabilityDimensions:    sliceComparability.ProbabilityComparableDimensions,
+		ComparableJointDimensions:          sliceComparability.JointComparableDimensions,
+		MissingRankingDimensions:           append([]string(nil), sliceComparability.MissingRankingDimensions...),
+		MissingProbabilityDimensions:       append([]string(nil), sliceComparability.MissingProbabilityDimensions...),
+		SliceBlockingReasons:               sliceBlockers,
+		DataDriftVersion:                   driftReport.Version,
+		DataDriftSHA256:                    driftReport.ReportSHA256,
+		DataDriftStatus:                    driftReport.Status,
+		DataDriftCoverage:                  driftReport.CoverageQualityStatus,
+		DataDriftPSIProxy:                  driftReport.PSIProxy,
+		DataDriftKSProxy:                   driftReport.KSProxy,
+		CalibrationDriftVersion:            calibrationReport.Version,
+		CalibrationDriftSHA256:             calibrationReport.ReportSHA256,
+		CalibrationDriftStatus:             calibrationReport.Status,
+		CalibrationECEDelta:                calibrationReport.ECEDelta,
+		CalibrationBSSDelta:                calibrationReport.BrierSkillScoreDelta,
+		FeatureDriftVersion:                featureDriftReport.Version,
+		FeatureDriftSHA256:                 featureDriftReport.ReportSHA256,
+		FeatureDriftStatus:                 featureDriftReport.Status,
+		FeatureDriftColumns:                featureDriftReport.FeatureColumnCount,
+		FeatureDriftDistributions:          featureDriftReport.FeatureDistributionCount,
+		FeatureDriftCompared:               featureDriftReport.ComparedFeatureCount,
+		FeatureDriftPassed:                 featureDriftReport.PassedFeatureCount,
+		FeatureDriftReview:                 featureDriftReport.ReviewRequiredFeatureCount,
+		FeatureDriftMaxPSI:                 featureDriftReport.MaximumPSI,
+		FeatureDriftMaxKS:                  featureDriftReport.MaximumKS,
+		FeatureDriftPSIStatus:              featureDriftReport.PSIStatus,
+		FeatureDriftKSStatus:               featureDriftReport.KSStatus,
+		FeatureDriftBlockers:               append([]string(nil), featureDriftReport.BlockingReasons...),
+		FeatureDriftNextRun:                append([]string(nil), featureDriftReport.RecommendedNextRun...),
+		FeatureDistributionArchiveVersion:  distributionArchive.Version,
+		FeatureDistributionArchiveSHA256:   distributionArchive.ArchiveSHA256,
+		FeatureDistributionArchiveScope:    distributionArchive.Scope,
+		FeatureDistributionComparability:   distributionArchive.ComparabilityStatus,
+		FeatureDistributionMinimumPairs:    distributionArchive.MinimumFeaturePairs,
+		FeatureDistributionSnapshots:       distributionArchive.SnapshotCount,
+		FeatureDistributionTraining:        distributionArchive.TrainingSnapshotCount,
+		FeatureDistributionLiveShadow:      distributionArchive.LiveShadowSnapshotCount,
+		FeatureDistributionFeatures:        distributionArchive.FeatureCount,
+		FeatureDistributionPairedFeatures:  distributionArchive.PairedFeatureCount,
 		FeatureDistributionMissingTraining: append([]string(nil),
 			distributionArchive.MissingTrainingFeatures...),
 		FeatureDistributionMissingLive: append([]string(nil),
@@ -325,25 +343,26 @@ func (s *Service) validationReadinessReport(boundRiskRanking *RiskRankingSnapsho
 			"require prediction-time slice dimensions to be fully frozen before interpreting sliced metrics",
 			"require every prediction-time slice dimension to have comparable ranking and probability evidence before promotion",
 			"archive the evidence bundle SHA256 with every offline validation run",
+			"archive the human feedback manifest SHA256 with every validation run",
 			"archive the data drift report SHA256 before comparing shadow candidates",
 			"archive the calibration drift report SHA256 before comparing shadow candidates",
 			"archive the feature drift readiness report SHA256 before interpreting per-feature drift gates",
 			"archive the scoped feature distribution archive SHA256 before comparing feature drift metrics",
 			"use the same matured outcome denominator for Logistic, rules, and HeaRank-style policies",
-			"keep all validation read-only until label, evidence, outcome, drift, calibration, feature drift, and challenger gates pass together",
+			"keep all validation read-only until label, evidence, human feedback, outcome, drift, calibration, feature drift, and challenger gates pass together",
 		},
 	}
 	report.SevenDayRows, report.SevenDayNodes, report.SevenDayPositives = validationReadinessSevenDaySummary(report.SevenDay)
 	if report.ChallengerHistoricalSignal != "covered" {
 		report.RecommendedNextRun = append(report.RecommendedNextRun, "do not interpret historical-risk challenger policies as comparable until their 7d signal coverage is covered")
 	}
-	report.BlockingReasons = validationReadinessBlockers(labelManifest, evidenceBundle, outcomeReport, challengerReport, riskRankingReport, temporalConsistency, driftReport, calibrationReport, featureDriftReport, distributionArchive)
+	report.BlockingReasons = validationReadinessBlockers(labelManifest, evidenceBundle, humanFeedback, outcomeReport, challengerReport, riskRankingReport, temporalConsistency, driftReport, calibrationReport, featureDriftReport, distributionArchive)
 	report.BlockingReasons = append(report.BlockingReasons, sliceBlockers...)
 	report.BlockingReasons = uniqueSorted(report.BlockingReasons)
 	if len(report.BlockingReasons) > 0 {
 		report.Status = "blocked"
 		report.RecommendedNextRun = append(report.RecommendedNextRun, report.BlockingReasons...)
-	} else if labelManifest.QualityGateStatus == "exploratory_ready" || outcomeReport.Stability.Status == "exploratory" || driftReport.Status == "exploratory_insufficient_shadow_runs" || calibrationReport.Status == "exploratory_insufficient_calibration_reports" || outcomeReport.SampleMaturity.Matured < 30 {
+	} else if labelManifest.QualityGateStatus == "exploratory_ready" || humanFeedback.Status == "exploratory_ready" || outcomeReport.Stability.Status == "exploratory" || driftReport.Status == "exploratory_insufficient_shadow_runs" || calibrationReport.Status == "exploratory_insufficient_calibration_reports" || outcomeReport.SampleMaturity.Matured < 30 {
 		report.Status = "exploratory_ready"
 		report.RecommendedNextRun = append(report.RecommendedNextRun, "treat metrics as exploratory until more mature outcomes accumulate")
 	} else {
@@ -568,7 +587,7 @@ func validationFeatureDistributionComparabilityBlockers(archive validationFeatur
 	}
 }
 
-func validationReadinessBlockers(labelManifest LabelManifest, evidenceBundle EvidenceBundleReport, outcomeReport OutcomeReport, challengerReport HeaRankChallengerReport, riskRankingReport RiskRankingSnapshotReport, temporalConsistency DualTrackTemporalConsistency, driftReport DataDriftReport, calibrationReport CalibrationDriftReport, featureDriftReport FeatureDriftReport, distributionArchive validationFeatureDistributionArchive) []string {
+func validationReadinessBlockers(labelManifest LabelManifest, evidenceBundle EvidenceBundleReport, humanFeedback HumanFeedbackManifest, outcomeReport OutcomeReport, challengerReport HeaRankChallengerReport, riskRankingReport RiskRankingSnapshotReport, temporalConsistency DualTrackTemporalConsistency, driftReport DataDriftReport, calibrationReport CalibrationDriftReport, featureDriftReport FeatureDriftReport, distributionArchive validationFeatureDistributionArchive) []string {
 	blockers := []string{}
 	if labelManifest.QualityGateStatus == "blocked" {
 		blockers = append(blockers, labelManifest.BlockingReasons...)
@@ -578,6 +597,12 @@ func validationReadinessBlockers(labelManifest LabelManifest, evidenceBundle Evi
 	}
 	if evidenceBundle.TotalLabels != labelManifest.Total {
 		blockers = append(blockers, "evidence bundle label count does not match label manifest")
+	}
+	if humanFeedback.ManifestSHA256 == "" {
+		blockers = append(blockers, "human feedback manifest SHA256 is unavailable")
+	}
+	if humanFeedback.Status == "blocked" {
+		blockers = append(blockers, humanFeedback.BlockingReasons...)
 	}
 	if outcomeReport.SampleMaturity.Matured == 0 {
 		blockers = append(blockers, "no mature shadow outcomes are available")
@@ -759,6 +784,13 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		EvidenceBundleSHA256               string                                    `json:"evidence_bundle_sha256"`
 		EvidencePositive                   int                                       `json:"evidence_positive_labels"`
 		EvidenceExcluded                   int                                       `json:"evidence_excluded_labels"`
+		HumanFeedbackVersion               string                                    `json:"human_feedback_manifest_version"`
+		HumanFeedbackSHA256                string                                    `json:"human_feedback_manifest_sha256"`
+		HumanFeedbackStatus                string                                    `json:"human_feedback_status"`
+		HumanFeedbackConfirmed             int                                       `json:"human_feedback_confirmed_labels"`
+		HumanFeedbackOverrides             int                                       `json:"human_feedback_outcome_overrides"`
+		HumanFeedbackMatchedWindows        int                                       `json:"human_feedback_matched_prediction_windows"`
+		HumanFeedbackPointInTimeViolations int                                       `json:"human_feedback_point_in_time_violations"`
 		OutcomeReportVersion               string                                    `json:"outcome_report_version"`
 		OutcomeStability                   string                                    `json:"outcome_stability_status"`
 		OutcomeMaturity                    OutcomeMaturity                           `json:"outcome_maturity"`
@@ -847,7 +879,11 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		LabelGateStatus: report.LabelGateStatus, LabelManifestVersion: report.LabelManifestVersion, LabelManifestSHA256: report.LabelManifestSHA256,
 		EvidenceBundleVersion: report.EvidenceBundleVersion, EvidenceBundleSHA256: report.EvidenceBundleSHA256,
 		EvidencePositive: report.EvidencePositive, EvidenceExcluded: report.EvidenceExcluded,
-		OutcomeReportVersion: report.OutcomeReportVersion, OutcomeStability: report.OutcomeStability, OutcomeMaturity: report.OutcomeMaturity,
+		HumanFeedbackVersion: report.HumanFeedbackVersion, HumanFeedbackSHA256: report.HumanFeedbackSHA256,
+		HumanFeedbackStatus: report.HumanFeedbackStatus, HumanFeedbackConfirmed: report.HumanFeedbackConfirmed,
+		HumanFeedbackOverrides: report.HumanFeedbackOverrides, HumanFeedbackMatchedWindows: report.HumanFeedbackMatchedWindows,
+		HumanFeedbackPointInTimeViolations: report.HumanFeedbackPointInTimeViolations,
+		OutcomeReportVersion:               report.OutcomeReportVersion, OutcomeStability: report.OutcomeStability, OutcomeMaturity: report.OutcomeMaturity,
 		ChallengerVersion: report.ChallengerVersion, ChallengerStatus: report.ChallengerStatus,
 		ChallengerConfidence: report.ChallengerConfidence, ChallengerHistoricalSignal: report.ChallengerHistoricalSignal,
 		RiskRankingVersion: report.RiskRankingVersion, RiskRankingSHA256: report.RiskRankingSHA256,
