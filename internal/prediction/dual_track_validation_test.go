@@ -19,11 +19,14 @@ func TestTemporalProbabilityQualityMetrics(t *testing.T) {
 	rows := make([]api.PredictionOutcomeEvaluation, 0, len(probabilities))
 	for index := range probabilities {
 		probability, actual := probabilities[index], actuals[index]
-		rows = append(rows, api.PredictionOutcomeEvaluation{MaturityStatus: "matured", Probability: &probability, FinalActualValue: &actual})
+		rows = append(rows, api.PredictionOutcomeEvaluation{MaturityStatus: "matured", Probability: &probability, FinalActualValue: &actual, PredictedPositive: probability >= 0.5})
 	}
-	metrics := temporalProbabilityMetrics(rows, AccuracyMetrics{})
-	if metrics.ScoredRows != 4 || metrics.InvalidProbabilityRows != 1 || metrics.InvalidLabelRows != 0 || metrics.CalibrationBins != 10 || metrics.CalibrationBinsUsed != 4 {
+	metrics := temporalProbabilityMetrics(rows)
+	if metrics.Status != "exploratory" || metrics.ScoredRows != 4 || metrics.PositiveRows != 2 || metrics.NegativeRows != 2 || metrics.InvalidProbabilityRows != 1 || metrics.InvalidLabelRows != 0 || metrics.CalibrationBins != 10 || metrics.CalibrationBinsUsed != 4 {
 		t.Fatalf("unexpected probability quality coverage: %+v", metrics)
+	}
+	if metrics.TP != 1 || metrics.FP != 1 || metrics.FN != 1 || metrics.TN != 1 || metrics.F1Score == nil || math.Abs(*metrics.F1Score-0.5) > 1e-12 {
+		t.Fatalf("probability quality confusion matrix must use only valid audited rows: %+v", metrics)
 	}
 	if metrics.ROCAUC == nil || math.Abs(*metrics.ROCAUC-0.75) > 1e-12 {
 		t.Fatalf("expected tie-safe ROC-AUC 0.75: %+v", metrics)
@@ -41,6 +44,15 @@ func TestTemporalProbabilityQualityMetrics(t *testing.T) {
 	if averagePrecision := temporalAveragePrecision(tieValues); averagePrecision == nil || math.Abs(*averagePrecision-0.5) > 1e-12 {
 		t.Fatalf("equal scores should produce tie-invariant average precision 0.5: %v", averagePrecision)
 	}
+	positive, one := 0.8, 1
+	singleClass := temporalProbabilityMetrics([]api.PredictionOutcomeEvaluation{{MaturityStatus: "matured", Probability: &positive, FinalActualValue: &one, PredictedPositive: true}})
+	if singleClass.Status != "blocked_single_class" || singleClass.ROCAUC != nil || singleClass.PRAUCAveragePrecision != nil || singleClass.BrierSkillScore != nil || len(singleClass.BlockingReasons) == 0 {
+		t.Fatalf("single-class cohorts must not expose discrimination or skill as comparable: %+v", singleClass)
+	}
+	empty := temporalProbabilityMetrics(nil)
+	if empty.Status != "blocked_no_scored_rows" || empty.ScoredRows != 0 || len(empty.BlockingReasons) == 0 {
+		t.Fatalf("empty cohorts must expose an explicit blocked quality state: %+v", empty)
+	}
 }
 
 func TestDualTrackEmptyRankingMetricsSerializeAsArray(t *testing.T) {
@@ -54,6 +66,18 @@ func TestDualTrackEmptyRankingMetricsSerializeAsArray(t *testing.T) {
 	}
 	if !bytes.Contains(payload, []byte(`"node_ranking_at_k":[]`)) {
 		t.Fatalf("empty temporal Ranking@K must serialize as []: %s", payload)
+	}
+}
+
+func TestDualTrackProbabilityStatusConsumesQualityGate(t *testing.T) {
+	if got := dualTrackProbabilityStatus("comparable", "blocked_single_class"); got != "blocked" {
+		t.Fatalf("single-class quality must block the probability track, got %q", got)
+	}
+	if got := dualTrackProbabilityStatus("comparable", "exploratory"); got != "exploratory" {
+		t.Fatalf("small-sample quality must keep the probability track exploratory, got %q", got)
+	}
+	if got := dualTrackProbabilityStatus("comparable", "comparable"); got != "comparable" {
+		t.Fatalf("both gates must pass before the probability track is comparable, got %q", got)
 	}
 }
 

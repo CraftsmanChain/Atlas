@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"atlas/pkg/api"
 )
 
-const DualTrackValidationReportVersion = "prediction-dual-track-validation-v4"
+const DualTrackValidationReportVersion = "prediction-dual-track-validation-v5"
 const DualTrackTemporalCohortLimit = 12
 const DualTrackMinimumConsistentCohorts = 3
 const DualTrackMinimumDirectionRatio = 2.0 / 3.0
@@ -65,6 +66,7 @@ type DualTrackValidationEvidence struct {
 }
 
 type TemporalProbabilityMetrics struct {
+	Status                   string   `json:"status"`
 	TP                       int      `json:"tp"`
 	FP                       int      `json:"fp"`
 	FN                       int      `json:"fn"`
@@ -73,6 +75,7 @@ type TemporalProbabilityMetrics struct {
 	Precision                *float64 `json:"precision,omitempty"`
 	Recall                   *float64 `json:"recall,omitempty"`
 	Accuracy                 *float64 `json:"accuracy,omitempty"`
+	F1Score                  *float64 `json:"f1_score,omitempty"`
 	BrierScore               *float64 `json:"brier_score,omitempty"`
 	NullBrierScore           *float64 `json:"null_brier_score,omitempty"`
 	BrierSkillScore          *float64 `json:"brier_skill_score,omitempty"`
@@ -80,10 +83,13 @@ type TemporalProbabilityMetrics struct {
 	PRAUCAveragePrecision    *float64 `json:"pr_auc_average_precision,omitempty"`
 	ExpectedCalibrationError *float64 `json:"expected_calibration_error,omitempty"`
 	ScoredRows               int      `json:"scored_rows"`
+	PositiveRows             int      `json:"positive_rows"`
+	NegativeRows             int      `json:"negative_rows"`
 	InvalidProbabilityRows   int      `json:"invalid_probability_rows"`
 	InvalidLabelRows         int      `json:"invalid_label_rows"`
 	CalibrationBins          int      `json:"calibration_bins"`
 	CalibrationBinsUsed      int      `json:"calibration_bins_used"`
+	BlockingReasons          []string `json:"blocking_reasons"`
 }
 
 type temporalScoredActual struct {
@@ -234,19 +240,20 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 	accuracy := accuracyFromRows(rows, report.GeneratedAt)
 	maturity := outcomeMaturity(rows)
 	stability := outcomeStability(maturity, accuracy)
+	quality := temporalProbabilityMetrics(rows)
 	positives := accuracy.Final.TP + accuracy.Final.FN
 	report.Ranking.MaturedRows = maturity.Matured
 	report.Ranking.PositiveRows = positives
 	report.Ranking.Metrics = nonNilRankingMetrics(accuracy.Final.NodeRankingAtK)
 	report.Ranking.Status, report.Ranking.BlockingReasons = dualTrackRankingStatus(rankingSnapshot, maturity, positives)
-	report.Probability.Status = stability.Status
+	report.Probability.Status = dualTrackProbabilityStatus(stability.Status, quality.Status)
 	report.Probability.Maturity = maturity
 	report.Probability.PositiveRows = positives
 	report.Probability.ProbabilityCoverage = stability.ProbabilityCoverage
 	report.Probability.Rule = accuracy.Rule
 	report.Probability.Final = accuracy.Final
-	report.Probability.Quality = temporalProbabilityMetrics(rows, accuracy.Final)
-	report.Probability.BlockingReasons = append([]string(nil), stability.BlockingReasons...)
+	report.Probability.Quality = quality
+	report.Probability.BlockingReasons = uniqueSorted(append(append([]string(nil), stability.BlockingReasons...), quality.BlockingReasons...))
 	report.Status = dualTrackOverallStatus(report.Ranking.Status, report.Probability.Status)
 	report.ReportSHA256 = dualTrackValidationChecksum(report)
 	return report, nil
@@ -289,15 +296,16 @@ func (s *Service) dualTrackTemporalCohorts(snapshot RiskRankingSnapshotReport) (
 		accuracy := accuracyFromRows(cohortRows, cutoff)
 		maturity := outcomeMaturity(cohortRows)
 		stability := outcomeStability(maturity, accuracy)
+		quality := temporalProbabilityMetrics(cohortRows)
 		positives := accuracy.Final.TP + accuracy.Final.FN
 		rankingStatus, _ := dualTrackRankingStatus(snapshot, maturity, positives)
 		cohort := DualTrackTemporalCohort{
 			PredictionCutoffAt: cutoff, IndependentTimeBatch: independent[cutoff.UnixNano()],
 			TotalRows: maturity.Total, MaturedRows: maturity.Matured, PendingRows: maturity.Pending,
 			CensoredRows: maturity.Censored, NodeCount: maturity.NodeEligible, PositiveRows: positives,
-			RankingStatus: rankingStatus, ProbabilityStatus: stability.Status,
+			RankingStatus: rankingStatus, ProbabilityStatus: dualTrackProbabilityStatus(stability.Status, quality.Status),
 			NodeRankingAtK:     nonNilRankingMetrics(accuracy.Final.NodeRankingAtK),
-			ProbabilityMetrics: temporalProbabilityMetrics(cohortRows, accuracy.Final),
+			ProbabilityMetrics: quality,
 		}
 		cohorts = append(cohorts, cohort)
 		if cohort.MaturedRows > 0 {
@@ -317,12 +325,8 @@ func (s *Service) dualTrackTemporalCohorts(snapshot RiskRankingSnapshotReport) (
 	return summary, cohorts, nil
 }
 
-func temporalProbabilityMetrics(rows []api.PredictionOutcomeEvaluation, accuracy AccuracyMetrics) TemporalProbabilityMetrics {
-	metrics := TemporalProbabilityMetrics{
-		TP: accuracy.TP, FP: accuracy.FP, FN: accuracy.FN, TN: accuracy.TN,
-		Evaluated: accuracy.Evaluated, Precision: accuracy.Precision, Recall: accuracy.Recall,
-		Accuracy: accuracy.Accuracy, CalibrationBins: 10,
-	}
+func temporalProbabilityMetrics(rows []api.PredictionOutcomeEvaluation) TemporalProbabilityMetrics {
+	metrics := TemporalProbabilityMetrics{CalibrationBins: 10, BlockingReasons: []string{}}
 	values := make([]temporalScoredActual, 0, len(rows))
 	actualSum := 0.0
 	for _, row := range rows {
@@ -340,10 +344,35 @@ func temporalProbabilityMetrics(rows []api.PredictionOutcomeEvaluation, accuracy
 		actual := float64(*row.FinalActualValue)
 		values = append(values, temporalScoredActual{probability: *row.Probability, actual: actual})
 		actualSum += actual
+		if *row.FinalActualValue == 1 {
+			metrics.PositiveRows++
+			if row.PredictedPositive {
+				metrics.TP++
+			} else {
+				metrics.FN++
+			}
+		} else {
+			metrics.NegativeRows++
+			if row.PredictedPositive {
+				metrics.FP++
+			} else {
+				metrics.TN++
+			}
+		}
 	}
 	metrics.ScoredRows = len(values)
+	metrics.Evaluated = metrics.ScoredRows
 	if len(values) == 0 {
+		metrics.Status = "blocked_no_scored_rows"
+		metrics.BlockingReasons = []string{"no mature rows have a valid probability and binary final label"}
 		return metrics
+	}
+	metrics.Precision = temporalRatio(metrics.TP, metrics.TP+metrics.FP)
+	metrics.Recall = temporalRatio(metrics.TP, metrics.TP+metrics.FN)
+	metrics.Accuracy = temporalRatio(metrics.TP+metrics.TN, metrics.Evaluated)
+	if denominator := 2*metrics.TP + metrics.FP + metrics.FN; denominator > 0 {
+		f1 := float64(2*metrics.TP) / float64(denominator)
+		metrics.F1Score = &f1
 	}
 	baseRate := actualSum / float64(len(values))
 	modelLoss, nullLoss := 0.0, 0.0
@@ -381,7 +410,43 @@ func temporalProbabilityMetrics(rows []api.PredictionOutcomeEvaluation, accuracy
 	metrics.ExpectedCalibrationError = &ece
 	metrics.ROCAUC = temporalROCAUC(values)
 	metrics.PRAUCAveragePrecision = temporalAveragePrecision(values)
+	switch {
+	case metrics.PositiveRows == 0 || metrics.NegativeRows == 0:
+		metrics.Status = "blocked_single_class"
+		metrics.BlockingReasons = []string{"probability discrimination requires both positive and negative mature rows"}
+	case metrics.ScoredRows < OutcomeMinimumMaturedSamples || metrics.PositiveRows < OutcomeMinimumPositiveSamples:
+		metrics.Status = "exploratory"
+		if metrics.ScoredRows < OutcomeMinimumMaturedSamples {
+			metrics.BlockingReasons = append(metrics.BlockingReasons, "probability quality sample count is below the stability gate")
+		}
+		if metrics.PositiveRows < OutcomeMinimumPositiveSamples {
+			metrics.BlockingReasons = append(metrics.BlockingReasons, "positive probability sample count is below the stability gate")
+		}
+	default:
+		metrics.Status = "comparable"
+	}
 	return metrics
+}
+
+func temporalRatio(numerator, denominator int) *float64 {
+	if denominator == 0 {
+		return nil
+	}
+	value := float64(numerator) / float64(denominator)
+	return &value
+}
+
+func dualTrackProbabilityStatus(stabilityStatus, qualityStatus string) string {
+	if stabilityStatus == "blocked" || strings.HasPrefix(qualityStatus, "blocked_") || qualityStatus == "" {
+		return "blocked"
+	}
+	if stabilityStatus == "exploratory" || qualityStatus == "exploratory" {
+		return "exploratory"
+	}
+	if stabilityStatus == "comparable" && qualityStatus == "comparable" {
+		return "comparable"
+	}
+	return "blocked"
 }
 
 func temporalROCAUC(values []temporalScoredActual) *float64 {
@@ -423,7 +488,7 @@ func temporalAveragePrecision(values []temporalScoredActual) *float64 {
 			positives++
 		}
 	}
-	if positives == 0 {
+	if positives == 0 || positives == len(ordered) {
 		return nil
 	}
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].probability > ordered[j].probability })
