@@ -277,15 +277,22 @@ if [[ "$mode" == "deploy" || "$mode" == "all" ]]; then
   ensure_ready_for_deploy
   if [[ "$release_strategy" == "remote-source" ]]; then
     print_section "远端源码构建发布"
-    REMOTE_URL="$remote_url" \
-      REMOTE_SSH="$remote_ssh" \
-      REMOTE_ROOT="$remote_root" \
-      VERSION_NAME="$version_name" \
-      BRANCH="$branch" \
-      GIT_REMOTE="$git_remote" \
-      EXTRA_GIT_REMOTE="$extra_git_remote" \
-      SKIP_NPM_INSTALL="$skip_npm_install" \
-      bash "$repo_root/scripts/deploy_remote_source.sh"
+    if REMOTE_URL="$remote_url" \
+        REMOTE_SSH="$remote_ssh" \
+        REMOTE_ROOT="$remote_root" \
+        VERSION_NAME="$version_name" \
+        BRANCH="$branch" \
+        GIT_REMOTE="$git_remote" \
+        EXTRA_GIT_REMOTE="$extra_git_remote" \
+        SKIP_NPM_INSTALL="$skip_npm_install" \
+        bash "$repo_root/scripts/deploy_remote_source.sh"; then
+      verify_remote_after_deploy
+    else
+      deploy_status=$?
+      print_section "发布未完成，回查当前线上服务"
+      verify_remote_after_deploy
+      exit "$deploy_status"
+    fi
   elif [[ "$release_strategy" == "legacy-binary" ]]; then
     push_git_updates
     build_artifacts
