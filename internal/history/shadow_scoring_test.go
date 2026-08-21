@@ -3,6 +3,8 @@ package history
 import (
 	"math"
 	"testing"
+
+	"atlas/pkg/api"
 )
 
 func TestScoreShadowModelStandardizesAndCalibrates(t *testing.T) {
@@ -35,5 +37,25 @@ func TestShadowQuantileInterpolatesFleetDistribution(t *testing.T) {
 	values := []float64{0.1, 0.2, 0.3, 0.4}
 	if actual := shadowQuantile(values, 0.5); math.Abs(actual-0.25) > 1e-12 {
 		t.Fatalf("median=%v expected=0.25", actual)
+	}
+}
+
+func TestUnambiguousDataCentersByNodeRejectsConflicts(t *testing.T) {
+	assets := []api.InfrastructureAsset{
+		{IPAddress: "10.0.0.1", DataCenterID: "dc-a"},
+		{IPAddress: "10.0.0.1", DataCenterID: "dc-a"},
+		{IPAddress: "10.0.0.2", DataCenterID: "dc-a"},
+		{IPAddress: "10.0.0.2", DataCenterID: "dc-b"},
+		{IPAddress: "10.0.0.3", DataCenterID: ""},
+	}
+	result := unambiguousDataCentersByNode(assets)
+	if result["10.0.0.1"] != "dc-a" {
+		t.Fatalf("matching authoritative sources should freeze one data center: %+v", result)
+	}
+	if _, exists := result["10.0.0.2"]; exists {
+		t.Fatalf("conflicting data centers must remain missing instead of choosing one: %+v", result)
+	}
+	if _, exists := result["10.0.0.3"]; exists {
+		t.Fatalf("empty data centers must not be frozen: %+v", result)
 	}
 }

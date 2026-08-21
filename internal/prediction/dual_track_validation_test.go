@@ -81,6 +81,36 @@ func TestDualTrackProbabilityStatusConsumesQualityGate(t *testing.T) {
 	}
 }
 
+func TestDualTrackSliceAuditRequiresFrozenPredictionDimensions(t *testing.T) {
+	one, zero := 1, 0
+	rows := []api.PredictionOutcomeEvaluation{
+		{MaturityStatus: "matured", FinalActualValue: &one, ModelName: "H100", ScopeEventType: "xid_94", DataCenterID: "dc-a", DriverVersion: "560", SliceContract: api.PredictionSliceContractVersion, RuleLabelQuality: "confirmed"},
+		{MaturityStatus: "matured", FinalActualValue: &zero, ModelName: "H100", ScopeEventType: "xid_94", DataCenterID: "dc-a", DriverVersion: "560", SliceContract: api.PredictionSliceContractVersion},
+	}
+	audit := dualTrackSliceAudit(rows)
+	if audit.Status != "ready" || audit.Version != DualTrackSliceAuditVersion || audit.ContractVersion != api.PredictionSliceContractVersion || len(audit.Dimensions) != 5 {
+		t.Fatalf("fully frozen predictive dimensions should be ready: %+v", audit)
+	}
+	if audit.Dimensions[4].Status != "audit_only_post_outcome" || audit.Dimensions[4].ApplicableRows != 1 || audit.Dimensions[4].FrozenRows != 1 {
+		t.Fatalf("label quality must remain an outcome-only audit dimension: %+v", audit.Dimensions[4])
+	}
+	rows[1].DriverVersion = ""
+	partial := dualTrackSliceAudit(rows)
+	if partial.Status != "partial" || partial.Dimensions[3].Status != "partial" || partial.Dimensions[3].MissingRows != 1 {
+		t.Fatalf("partially frozen driver versions must not be marked ready: %+v", partial)
+	}
+	rows[1].DriverVersion = "560"
+	rows[1].SliceContract = ""
+	contractPartial := dualTrackSliceAudit(rows)
+	if contractPartial.Status != "partial" || contractPartial.Dimensions[0].MissingRows != 1 {
+		t.Fatalf("unversioned dimensions must not be accepted as frozen evidence: %+v", contractPartial)
+	}
+	legacy := dualTrackSliceAudit([]api.PredictionOutcomeEvaluation{{MaturityStatus: "matured", FinalActualValue: &zero}})
+	if legacy.Status != "blocked_missing_frozen_dimensions" {
+		t.Fatalf("legacy rows without frozen dimensions must be blocked: %+v", legacy)
+	}
+}
+
 func TestDualTrackTemporalConsistencyRequiresThreePositiveIndependentCohorts(t *testing.T) {
 	lift, skill := 1.5, 0.2
 	cohorts := make([]DualTrackTemporalCohort, 3)

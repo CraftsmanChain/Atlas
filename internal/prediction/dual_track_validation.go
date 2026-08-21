@@ -12,7 +12,8 @@ import (
 	"atlas/pkg/api"
 )
 
-const DualTrackValidationReportVersion = "prediction-dual-track-validation-v5"
+const DualTrackValidationReportVersion = "prediction-dual-track-validation-v6"
+const DualTrackSliceAuditVersion = "prediction-slice-audit-v1"
 const DualTrackTemporalCohortLimit = 12
 const DualTrackMinimumConsistentCohorts = 3
 const DualTrackMinimumDirectionRatio = 2.0 / 3.0
@@ -138,6 +139,26 @@ type DualTrackTemporalConsistency struct {
 	Probability TemporalTrackConsistency `json:"probability_track"`
 }
 
+type DualTrackSliceDimension struct {
+	Dimension       string   `json:"dimension"`
+	Source          string   `json:"source"`
+	Status          string   `json:"status"`
+	ApplicableRows  int      `json:"applicable_rows"`
+	FrozenRows      int      `json:"frozen_rows"`
+	MissingRows     int      `json:"missing_rows"`
+	DistinctValues  int      `json:"distinct_values"`
+	Values          []string `json:"values"`
+	BlockingReasons []string `json:"blocking_reasons"`
+}
+
+type DualTrackSliceAudit struct {
+	Version         string                    `json:"version"`
+	ContractVersion string                    `json:"contract_version"`
+	Status          string                    `json:"status"`
+	TotalRows       int                       `json:"total_rows"`
+	Dimensions      []DualTrackSliceDimension `json:"dimensions"`
+}
+
 type DualTrackValidationReport struct {
 	Version             string                       `json:"version"`
 	FrameworkVersion    string                       `json:"framework_version"`
@@ -152,6 +173,7 @@ type DualTrackValidationReport struct {
 	TemporalSummary     DualTrackTemporalSummary     `json:"temporal_summary"`
 	TemporalCohorts     []DualTrackTemporalCohort    `json:"temporal_cohorts"`
 	TemporalConsistency DualTrackTemporalConsistency `json:"temporal_consistency"`
+	SliceAudit          DualTrackSliceAudit          `json:"slice_audit"`
 	Safety              RiskRankingSafety            `json:"safety"`
 	Interpretation      []string                     `json:"interpretation"`
 	RecommendedNextRun  []string                     `json:"recommended_next_run"`
@@ -204,6 +226,7 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 		TemporalSummary:     temporalSummary,
 		TemporalCohorts:     temporalCohorts,
 		TemporalConsistency: temporalConsistency,
+		SliceAudit:          dualTrackSliceAudit(nil),
 		Interpretation: []string{
 			"ranking track answers who should be reviewed first and is evaluated with node Ranking@K metrics",
 			"probability track answers event risk within a fixed horizon and is evaluated with discrimination and calibration metrics",
@@ -237,6 +260,7 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 		return report, nil
 	}
 	report.Alignment.Status = "aligned"
+	report.SliceAudit = dualTrackSliceAudit(rows)
 	accuracy := accuracyFromRows(rows, report.GeneratedAt)
 	maturity := outcomeMaturity(rows)
 	stability := outcomeStability(maturity, accuracy)
@@ -447,6 +471,93 @@ func dualTrackProbabilityStatus(stabilityStatus, qualityStatus string) string {
 		return "comparable"
 	}
 	return "blocked"
+}
+
+func dualTrackSliceAudit(rows []api.PredictionOutcomeEvaluation) DualTrackSliceAudit {
+	type dimensionDefinition struct {
+		name, source string
+		value        func(api.PredictionOutcomeEvaluation) (string, bool)
+	}
+	definitions := []dimensionDefinition{
+		{name: "model_name", source: "prediction.model_name", value: func(row api.PredictionOutcomeEvaluation) (string, bool) { return row.ModelName, true }},
+		{name: "event_type", source: "prediction.scope_event_type", value: func(row api.PredictionOutcomeEvaluation) (string, bool) { return row.ScopeEventType, true }},
+		{name: "data_center_id", source: "prediction.data_center_id", value: func(row api.PredictionOutcomeEvaluation) (string, bool) { return row.DataCenterID, true }},
+		{name: "driver_version", source: "prediction.driver_version", value: func(row api.PredictionOutcomeEvaluation) (string, bool) { return row.DriverVersion, true }},
+		{name: "label_quality", source: "outcome.rule_label_quality", value: func(row api.PredictionOutcomeEvaluation) (string, bool) {
+			return row.RuleLabelQuality, row.MaturityStatus == "matured" && row.FinalActualValue != nil && *row.FinalActualValue == 1
+		}},
+	}
+	audit := DualTrackSliceAudit{
+		Version: DualTrackSliceAuditVersion, ContractVersion: api.PredictionSliceContractVersion,
+		Status: "blocked_no_rows", TotalRows: len(rows), Dimensions: make([]DualTrackSliceDimension, 0, len(definitions)),
+	}
+	readyPredictiveDimensions := 0
+	availablePredictiveDimensions := 0
+	for _, definition := range definitions {
+		dimension := DualTrackSliceDimension{
+			Dimension: definition.name, Source: definition.source, Values: []string{}, BlockingReasons: []string{},
+		}
+		values := map[string]struct{}{}
+		for _, row := range rows {
+			if definition.name != "label_quality" && row.SliceContract != api.PredictionSliceContractVersion {
+				dimension.ApplicableRows++
+				dimension.MissingRows++
+				continue
+			}
+			value, applicable := definition.value(row)
+			if !applicable {
+				continue
+			}
+			dimension.ApplicableRows++
+			value = strings.TrimSpace(value)
+			if value == "" {
+				dimension.MissingRows++
+				continue
+			}
+			dimension.FrozenRows++
+			values[value] = struct{}{}
+		}
+		for value := range values {
+			dimension.Values = append(dimension.Values, value)
+		}
+		sort.Strings(dimension.Values)
+		dimension.DistinctValues = len(dimension.Values)
+		if definition.name == "label_quality" {
+			dimension.Status = "audit_only_post_outcome"
+			dimension.BlockingReasons = []string{"label quality is outcome-derived and must not be used as a pre-prediction feature slice"}
+		} else {
+			if dimension.FrozenRows > 0 {
+				availablePredictiveDimensions++
+			}
+			switch {
+			case dimension.ApplicableRows == 0 || dimension.FrozenRows == 0:
+				dimension.Status = "blocked_missing_frozen_dimension"
+				dimension.BlockingReasons = []string{"dimension was not frozen on prediction rows at the prediction cutoff"}
+			case dimension.MissingRows > 0:
+				dimension.Status = "partial"
+				dimension.BlockingReasons = []string{"dimension is missing on some prediction rows"}
+			default:
+				dimension.Status = "ready"
+				readyPredictiveDimensions++
+			}
+		}
+		audit.Dimensions = append(audit.Dimensions, dimension)
+	}
+	if len(rows) > 0 {
+		switch readyPredictiveDimensions {
+		case 4:
+			audit.Status = "ready"
+		case 0:
+			if availablePredictiveDimensions > 0 {
+				audit.Status = "partial"
+				break
+			}
+			audit.Status = "blocked_missing_frozen_dimensions"
+		default:
+			audit.Status = "partial"
+		}
+	}
+	return audit
 }
 
 func temporalROCAUC(values []temporalScoredActual) *float64 {

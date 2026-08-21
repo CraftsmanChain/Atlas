@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"atlas/internal/featurestats"
@@ -21,7 +22,7 @@ import (
 )
 
 const (
-	shadowScoringVersion           = "gpu-shadow-scoring-v3"
+	shadowScoringVersion           = "gpu-shadow-scoring-v4"
 	maximumShadowPositiveRatio     = 0.20
 	maximumShadowMedianToThreshold = 1.0
 )
@@ -178,6 +179,10 @@ func (s *Service) buildShadowScoring(run *api.PredictionShadowScoringRun) error 
 	if len(assets) == 0 {
 		return fmt.Errorf("no active GPUs match model scope %q", spec.ScopeModelName)
 	}
+	dataCentersByNode, err := s.shadowDataCentersByNode(assets)
+	if err != nil {
+		return err
+	}
 	source, err := s.resolveSource(run.SourceKey)
 	if err != nil {
 		return err
@@ -235,7 +240,7 @@ func (s *Service) buildShadowScoring(run *api.PredictionShadowScoringRun) error 
 				item.BlockingReasons = append(item.BlockingReasons, "feature_missing:"+column)
 			}
 		}
-		prediction := api.HardwareRiskPrediction{ShadowRunID: run.ID, ModelSpecID: spec.ID, ModelVersion: spec.Version, HardwareClass: "gpu", EntityType: "gpu", EntityKey: asset.CurrentUUID, GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, HorizonMinutes: spec.HorizonMinutes, RiskLevel: "unknown", Status: "shadow_blocked", Explanations: api.StringList{}, Current: true, ObservedAt: end, EvaluatedAt: s.now(), ExpiresAt: end.Add(time.Duration(spec.HorizonMinutes) * time.Minute), TransformVersion: parity.TransformationContractVersion}
+		prediction := api.HardwareRiskPrediction{ShadowRunID: run.ID, ModelSpecID: spec.ID, ModelVersion: spec.Version, HardwareClass: "gpu", EntityType: "gpu", EntityKey: asset.CurrentUUID, GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, ScopeEventType: spec.ScopeEventType, ModelName: asset.ModelName, DataCenterID: dataCentersByNode[strings.TrimSpace(asset.NodeIP)], DriverVersion: asset.DriverVersion, SliceContract: api.PredictionSliceContractVersion, HorizonMinutes: spec.HorizonMinutes, RiskLevel: "unknown", Status: "shadow_blocked", Explanations: api.StringList{}, Current: true, ObservedAt: end, EvaluatedAt: s.now(), ExpiresAt: end.Add(time.Duration(spec.HorizonMinutes) * time.Minute), TransformVersion: parity.TransformationContractVersion}
 		if len(item.BlockingReasons) > 0 {
 			item.Status = "blocked"
 			prediction.Explanations = append(prediction.Explanations, item.BlockingReasons...)
@@ -369,6 +374,60 @@ func shadowQuantile(sorted []float64, probability float64) float64 {
 	}
 	weight := position - float64(lower)
 	return sorted[lower]*(1-weight) + sorted[upper]*weight
+}
+
+func (s *Service) shadowDataCentersByNode(gpus []api.GPUAsset) (map[string]string, error) {
+	nodeIPs := make([]string, 0, len(gpus))
+	seen := map[string]struct{}{}
+	for _, gpu := range gpus {
+		nodeIP := strings.TrimSpace(gpu.NodeIP)
+		if nodeIP == "" {
+			continue
+		}
+		if _, exists := seen[nodeIP]; exists {
+			continue
+		}
+		seen[nodeIP] = struct{}{}
+		nodeIPs = append(nodeIPs, nodeIP)
+	}
+	if len(nodeIPs) == 0 {
+		return map[string]string{}, nil
+	}
+	var assets []api.InfrastructureAsset
+	if err := s.db.Where("ip_address IN ? AND present = ? AND in_use = ?", nodeIPs, true, true).
+		Order("ip_address ASC, source ASC, id ASC").Find(&assets).Error; err != nil {
+		return nil, err
+	}
+	return unambiguousDataCentersByNode(assets), nil
+}
+
+func unambiguousDataCentersByNode(assets []api.InfrastructureAsset) map[string]string {
+	type dataCenterState struct {
+		value     string
+		ambiguous bool
+	}
+	states := map[string]dataCenterState{}
+	for _, asset := range assets {
+		nodeIP := strings.TrimSpace(asset.IPAddress)
+		dataCenter := strings.TrimSpace(asset.DataCenterID)
+		if nodeIP == "" || dataCenter == "" {
+			continue
+		}
+		state := states[nodeIP]
+		if state.value == "" {
+			state.value = dataCenter
+		} else if state.value != dataCenter {
+			state.ambiguous = true
+		}
+		states[nodeIP] = state
+	}
+	result := make(map[string]string, len(states))
+	for nodeIP, state := range states {
+		if !state.ambiguous {
+			result[nodeIP] = state.value
+		}
+	}
+	return result
 }
 
 func scoreShadowModel(model logisticModel, features map[string]float64) float64 {
