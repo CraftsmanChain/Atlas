@@ -369,9 +369,39 @@ func TestDualTrackValidationAlignsRankingAndProbabilityCohort(t *testing.T) {
 	if err != nil || later.ReportSHA256 != report.ReportSHA256 || later.GeneratedAt.Equal(report.GeneratedAt) {
 		t.Fatalf("dual-track checksum must ignore generated_at: before=%+v after=%+v err=%v", report, later, err)
 	}
+	handler := NewHandlerWithService(service)
+	cacheNow := now.Add(2 * time.Hour)
+	handler.now = func() time.Time { return cacheNow }
 	response := httptest.NewRecorder()
-	NewHandlerWithService(service).HandleDualTrackValidation(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/dual-track-validation?download=1", nil))
-	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(DualTrackValidationReportVersion)) || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" {
+	handler.HandleDualTrackValidation(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/dual-track-validation?download=1", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(DualTrackValidationReportVersion)) || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" || response.Header().Get("X-Atlas-Report-Cache") != "MISS" || response.Header().Get("X-Atlas-Report-Cache-Version") != dualTrackValidationCacheVersion || response.Header().Get("X-Atlas-Report-Cache-TTL-Seconds") != "30" {
 		t.Fatalf("dual-track validation download failed: %d %s", response.Code, response.Body.String())
+	}
+	conditionalRequest := httptest.NewRequest(http.MethodGet, "/api/v1/prediction/dual-track-validation", nil)
+	conditionalRequest.Header.Set("If-None-Match", response.Header().Get("ETag"))
+	conditionalResponse := httptest.NewRecorder()
+	handler.HandleDualTrackValidation(conditionalResponse, conditionalRequest)
+	if conditionalResponse.Code != http.StatusNotModified || conditionalResponse.Body.Len() != 0 || conditionalResponse.Header().Get("X-Atlas-Report-Cache") != "HIT" {
+		t.Fatalf("cached conditional request must return an empty 304 response: code=%d headers=%v body=%s", conditionalResponse.Code, conditionalResponse.Header(), conditionalResponse.Body.String())
+	}
+	if !etagMatches(`W/"old", `+response.Header().Get("ETag"), report.ReportSHA256) || !etagMatches("*", report.ReportSHA256) {
+		t.Fatal("ETag matching must support weak lists and wildcard validators")
+	}
+	forcedResponse := httptest.NewRecorder()
+	handler.HandleDualTrackValidation(forcedResponse, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/dual-track-validation?refresh=1", nil))
+	if forcedResponse.Code != http.StatusOK || forcedResponse.Header().Get("X-Atlas-Report-Cache") != "REFRESH" || forcedResponse.Header().Get("ETag") != response.Header().Get("ETag") {
+		t.Fatalf("explicit refresh must bypass cache while preserving a stable unchanged report: code=%d headers=%v", forcedResponse.Code, forcedResponse.Header())
+	}
+	cacheNow = cacheNow.Add(dualTrackValidationCacheTTL)
+	expiredResponse := httptest.NewRecorder()
+	handler.HandleDualTrackValidation(expiredResponse, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/dual-track-validation", nil))
+	if expiredResponse.Code != http.StatusOK || expiredResponse.Header().Get("X-Atlas-Report-Cache") != "MISS" || expiredResponse.Header().Get("ETag") != response.Header().Get("ETag") {
+		t.Fatalf("expired cache must recompute the same stable report when data is unchanged: code=%d headers=%v", expiredResponse.Code, expiredResponse.Header())
+	}
+	handler.invalidateValidationCache()
+	refreshedResponse := httptest.NewRecorder()
+	handler.HandleDualTrackValidation(refreshedResponse, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/dual-track-validation", nil))
+	if refreshedResponse.Code != http.StatusOK || refreshedResponse.Header().Get("X-Atlas-Report-Cache") != "MISS" {
+		t.Fatalf("explicit invalidation must force a fresh report: code=%d headers=%v", refreshedResponse.Code, refreshedResponse.Header())
 	}
 }

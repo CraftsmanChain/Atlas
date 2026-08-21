@@ -6,17 +6,36 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"atlas/pkg/storage"
 	"gorm.io/gorm"
 )
 
 type Handler struct {
-	service *Service
+	service            *Service
+	validationCacheMu  sync.Mutex
+	dualTrackCache     *dualTrackValidationCache
+	validationCacheTTL time.Duration
+	now                func() time.Time
 }
 
-func NewHandler(db *storage.DB) *Handler              { return &Handler{service: NewService(db)} }
-func NewHandlerWithService(service *Service) *Handler { return &Handler{service: service} }
+type dualTrackValidationCache struct {
+	report    DualTrackValidationReport
+	cachedAt  time.Time
+	expiresAt time.Time
+}
+
+const dualTrackValidationCacheVersion = "prediction-validation-report-cache-v1"
+const dualTrackValidationCacheTTL = 30 * time.Second
+
+func NewHandler(db *storage.DB) *Handler              { return newHandler(NewService(db)) }
+func NewHandlerWithService(service *Service) *Handler { return newHandler(service) }
+
+func newHandler(service *Service) *Handler {
+	return &Handler{service: service, validationCacheTTL: dualTrackValidationCacheTTL, now: time.Now}
+}
 
 func (h *Handler) HandleOverview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -180,19 +199,71 @@ func (h *Handler) HandleDualTrackValidation(w http.ResponseWriter, r *http.Reque
 		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	report, err := h.service.DualTrackValidationReport()
+	forceRefresh := r.URL.Query().Get("refresh") == "1"
+	if forceRefresh {
+		h.invalidateValidationCache()
+	}
+	report, cacheHit, cachedAt, err := h.cachedDualTrackValidationReport()
 	if err != nil {
 		predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("ETag", `"`+report.ReportSHA256+`"`)
+	cacheState := "MISS"
+	if forceRefresh {
+		cacheState = "REFRESH"
+	} else if cacheHit {
+		cacheState = "HIT"
+	}
+	w.Header().Set("X-Atlas-Report-Cache", cacheState)
+	w.Header().Set("X-Atlas-Report-Cache-Version", dualTrackValidationCacheVersion)
+	w.Header().Set("X-Atlas-Report-Cached-At", cachedAt.UTC().Format(time.RFC3339Nano))
+	w.Header().Set("X-Atlas-Report-Cache-TTL-Seconds", strconv.FormatInt(int64(h.validationCacheTTL/time.Second), 10))
 	w.Header().Set("X-Atlas-Dual-Track-Validation-Version", report.Version)
 	w.Header().Set("X-Atlas-Dual-Track-Validation-SHA256", report.ReportSHA256)
+	if etagMatches(r.Header.Get("If-None-Match"), report.ReportSHA256) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	if r.URL.Query().Get("download") == "1" {
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.json"`, report.Version, report.ReportSHA256[:12]))
 	}
 	predictionJSON(w, http.StatusOK, map[string]any{"data": report})
+}
+
+func (h *Handler) cachedDualTrackValidationReport() (DualTrackValidationReport, bool, time.Time, error) {
+	h.validationCacheMu.Lock()
+	defer h.validationCacheMu.Unlock()
+	now := h.now()
+	if h.dualTrackCache != nil && now.Before(h.dualTrackCache.expiresAt) {
+		return h.dualTrackCache.report, true, h.dualTrackCache.cachedAt, nil
+	}
+	report, err := h.service.DualTrackValidationReport()
+	if err != nil {
+		return DualTrackValidationReport{}, false, time.Time{}, err
+	}
+	h.dualTrackCache = &dualTrackValidationCache{
+		report: report, cachedAt: now, expiresAt: now.Add(h.validationCacheTTL),
+	}
+	return report, false, now, nil
+}
+
+func (h *Handler) invalidateValidationCache() {
+	h.validationCacheMu.Lock()
+	h.dualTrackCache = nil
+	h.validationCacheMu.Unlock()
+}
+
+func etagMatches(header, sha string) bool {
+	for _, value := range strings.Split(header, ",") {
+		value = strings.TrimSpace(value)
+		value = strings.TrimSpace(strings.TrimPrefix(value, "W/"))
+		if value == "*" || value == `"`+sha+`"` {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) HandleLabelManifest(w http.ResponseWriter, r *http.Request) {
@@ -337,6 +408,7 @@ func (h *Handler) HandleOutcomes(w http.ResponseWriter, r *http.Request) {
 			predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
+		h.invalidateValidationCache()
 		summary, err := h.service.Accuracy()
 		if err != nil {
 			predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -375,6 +447,7 @@ func (h *Handler) HandleOutcome(w http.ResponseWriter, r *http.Request) {
 		predictionJSON(w, status, map[string]any{"error": err.Error()})
 		return
 	}
+	h.invalidateValidationCache()
 	predictionJSON(w, http.StatusOK, map[string]any{"data": row})
 }
 
