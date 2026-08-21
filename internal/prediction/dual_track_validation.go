@@ -5,12 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"math"
+	"sort"
 	"time"
 
 	"atlas/pkg/api"
 )
 
-const DualTrackValidationReportVersion = "prediction-dual-track-validation-v3"
+const DualTrackValidationReportVersion = "prediction-dual-track-validation-v4"
 const DualTrackTemporalCohortLimit = 12
 const DualTrackMinimumConsistentCohorts = 3
 const DualTrackMinimumDirectionRatio = 2.0 / 3.0
@@ -39,16 +40,17 @@ type RankingValidationTrack struct {
 }
 
 type ProbabilityValidationTrack struct {
-	Status               string          `json:"status"`
-	OutcomeReportVersion string          `json:"outcome_report_version"`
-	HorizonMinutes       int             `json:"horizon_minutes"`
-	Maturity             OutcomeMaturity `json:"maturity"`
-	PositiveRows         int             `json:"positive_rows"`
-	ProbabilityCoverage  float64         `json:"probability_coverage"`
-	Rule                 AccuracyMetrics `json:"rule"`
-	Final                AccuracyMetrics `json:"final"`
-	CalibrationStatus    string          `json:"calibration_status"`
-	BlockingReasons      []string        `json:"blocking_reasons"`
+	Status               string                     `json:"status"`
+	OutcomeReportVersion string                     `json:"outcome_report_version"`
+	HorizonMinutes       int                        `json:"horizon_minutes"`
+	Maturity             OutcomeMaturity            `json:"maturity"`
+	PositiveRows         int                        `json:"positive_rows"`
+	ProbabilityCoverage  float64                    `json:"probability_coverage"`
+	Rule                 AccuracyMetrics            `json:"rule"`
+	Final                AccuracyMetrics            `json:"final"`
+	Quality              TemporalProbabilityMetrics `json:"quality"`
+	CalibrationStatus    string                     `json:"calibration_status"`
+	BlockingReasons      []string                   `json:"blocking_reasons"`
 }
 
 type DualTrackValidationEvidence struct {
@@ -63,17 +65,30 @@ type DualTrackValidationEvidence struct {
 }
 
 type TemporalProbabilityMetrics struct {
-	TP              int      `json:"tp"`
-	FP              int      `json:"fp"`
-	FN              int      `json:"fn"`
-	TN              int      `json:"tn"`
-	Evaluated       int      `json:"evaluated"`
-	Precision       *float64 `json:"precision,omitempty"`
-	Recall          *float64 `json:"recall,omitempty"`
-	Accuracy        *float64 `json:"accuracy,omitempty"`
-	BrierScore      *float64 `json:"brier_score,omitempty"`
-	NullBrierScore  *float64 `json:"null_brier_score,omitempty"`
-	BrierSkillScore *float64 `json:"brier_skill_score,omitempty"`
+	TP                       int      `json:"tp"`
+	FP                       int      `json:"fp"`
+	FN                       int      `json:"fn"`
+	TN                       int      `json:"tn"`
+	Evaluated                int      `json:"evaluated"`
+	Precision                *float64 `json:"precision,omitempty"`
+	Recall                   *float64 `json:"recall,omitempty"`
+	Accuracy                 *float64 `json:"accuracy,omitempty"`
+	BrierScore               *float64 `json:"brier_score,omitempty"`
+	NullBrierScore           *float64 `json:"null_brier_score,omitempty"`
+	BrierSkillScore          *float64 `json:"brier_skill_score,omitempty"`
+	ROCAUC                   *float64 `json:"roc_auc,omitempty"`
+	PRAUCAveragePrecision    *float64 `json:"pr_auc_average_precision,omitempty"`
+	ExpectedCalibrationError *float64 `json:"expected_calibration_error,omitempty"`
+	ScoredRows               int      `json:"scored_rows"`
+	InvalidProbabilityRows   int      `json:"invalid_probability_rows"`
+	InvalidLabelRows         int      `json:"invalid_label_rows"`
+	CalibrationBins          int      `json:"calibration_bins"`
+	CalibrationBinsUsed      int      `json:"calibration_bins_used"`
+}
+
+type temporalScoredActual struct {
+	probability float64
+	actual      float64
 }
 
 type DualTrackTemporalCohort struct {
@@ -230,6 +245,7 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 	report.Probability.ProbabilityCoverage = stability.ProbabilityCoverage
 	report.Probability.Rule = accuracy.Rule
 	report.Probability.Final = accuracy.Final
+	report.Probability.Quality = temporalProbabilityMetrics(rows, accuracy.Final)
 	report.Probability.BlockingReasons = append([]string(nil), stability.BlockingReasons...)
 	report.Status = dualTrackOverallStatus(report.Ranking.Status, report.Probability.Status)
 	report.ReportSHA256 = dualTrackValidationChecksum(report)
@@ -280,14 +296,9 @@ func (s *Service) dualTrackTemporalCohorts(snapshot RiskRankingSnapshotReport) (
 			TotalRows: maturity.Total, MaturedRows: maturity.Matured, PendingRows: maturity.Pending,
 			CensoredRows: maturity.Censored, NodeCount: maturity.NodeEligible, PositiveRows: positives,
 			RankingStatus: rankingStatus, ProbabilityStatus: stability.Status,
-			NodeRankingAtK: nonNilRankingMetrics(accuracy.Final.NodeRankingAtK),
-			ProbabilityMetrics: TemporalProbabilityMetrics{
-				TP: accuracy.Final.TP, FP: accuracy.Final.FP, FN: accuracy.Final.FN, TN: accuracy.Final.TN,
-				Evaluated: accuracy.Final.Evaluated, Precision: accuracy.Final.Precision,
-				Recall: accuracy.Final.Recall, Accuracy: accuracy.Final.Accuracy,
-			},
+			NodeRankingAtK:     nonNilRankingMetrics(accuracy.Final.NodeRankingAtK),
+			ProbabilityMetrics: temporalProbabilityMetrics(cohortRows, accuracy.Final),
 		}
-		cohort.ProbabilityMetrics.BrierScore, cohort.ProbabilityMetrics.NullBrierScore, cohort.ProbabilityMetrics.BrierSkillScore = temporalBrierMetrics(cohortRows)
 		cohorts = append(cohorts, cohort)
 		if cohort.MaturedRows > 0 {
 			summary.MaturedCohortCount++
@@ -306,37 +317,133 @@ func (s *Service) dualTrackTemporalCohorts(snapshot RiskRankingSnapshotReport) (
 	return summary, cohorts, nil
 }
 
-func temporalBrierMetrics(rows []api.PredictionOutcomeEvaluation) (*float64, *float64, *float64) {
-	type scoredActual struct {
-		probability float64
-		actual      float64
+func temporalProbabilityMetrics(rows []api.PredictionOutcomeEvaluation, accuracy AccuracyMetrics) TemporalProbabilityMetrics {
+	metrics := TemporalProbabilityMetrics{
+		TP: accuracy.TP, FP: accuracy.FP, FN: accuracy.FN, TN: accuracy.TN,
+		Evaluated: accuracy.Evaluated, Precision: accuracy.Precision, Recall: accuracy.Recall,
+		Accuracy: accuracy.Accuracy, CalibrationBins: 10,
 	}
-	values := make([]scoredActual, 0, len(rows))
+	values := make([]temporalScoredActual, 0, len(rows))
 	actualSum := 0.0
 	for _, row := range rows {
 		if row.MaturityStatus != "matured" || row.Probability == nil || row.FinalActualValue == nil {
 			continue
 		}
+		if *row.Probability < 0 || *row.Probability > 1 || math.IsNaN(*row.Probability) || math.IsInf(*row.Probability, 0) {
+			metrics.InvalidProbabilityRows++
+			continue
+		}
+		if *row.FinalActualValue != 0 && *row.FinalActualValue != 1 {
+			metrics.InvalidLabelRows++
+			continue
+		}
 		actual := float64(*row.FinalActualValue)
-		values = append(values, scoredActual{probability: *row.Probability, actual: actual})
+		values = append(values, temporalScoredActual{probability: *row.Probability, actual: actual})
 		actualSum += actual
 	}
+	metrics.ScoredRows = len(values)
 	if len(values) == 0 {
-		return nil, nil, nil
+		return metrics
 	}
 	baseRate := actualSum / float64(len(values))
 	modelLoss, nullLoss := 0.0, 0.0
+	binCounts := make([]int, metrics.CalibrationBins)
+	binProbabilitySums := make([]float64, metrics.CalibrationBins)
+	binActualSums := make([]float64, metrics.CalibrationBins)
 	for _, value := range values {
 		modelLoss += math.Pow(value.probability-value.actual, 2)
 		nullLoss += math.Pow(baseRate-value.actual, 2)
+		bin := int(value.probability * float64(metrics.CalibrationBins))
+		if bin == metrics.CalibrationBins {
+			bin--
+		}
+		binCounts[bin]++
+		binProbabilitySums[bin] += value.probability
+		binActualSums[bin] += value.actual
 	}
 	brier := modelLoss / float64(len(values))
 	nullBrier := nullLoss / float64(len(values))
-	if nullBrier == 0 {
-		return &brier, &nullBrier, nil
+	metrics.BrierScore, metrics.NullBrierScore = &brier, &nullBrier
+	if nullBrier > 0 {
+		skill := 1 - brier/nullBrier
+		metrics.BrierSkillScore = &skill
 	}
-	skill := 1 - brier/nullBrier
-	return &brier, &nullBrier, &skill
+	ece := 0.0
+	for bin, count := range binCounts {
+		if count == 0 {
+			continue
+		}
+		metrics.CalibrationBinsUsed++
+		meanProbability := binProbabilitySums[bin] / float64(count)
+		observedRate := binActualSums[bin] / float64(count)
+		ece += math.Abs(meanProbability-observedRate) * float64(count) / float64(len(values))
+	}
+	metrics.ExpectedCalibrationError = &ece
+	metrics.ROCAUC = temporalROCAUC(values)
+	metrics.PRAUCAveragePrecision = temporalAveragePrecision(values)
+	return metrics
+}
+
+func temporalROCAUC(values []temporalScoredActual) *float64 {
+	ordered := append([]temporalScoredActual(nil), values...)
+	positives := 0
+	for _, value := range ordered {
+		if value.actual == 1 {
+			positives++
+		}
+	}
+	negatives := len(ordered) - positives
+	if positives == 0 || negatives == 0 {
+		return nil
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].probability < ordered[j].probability })
+	positiveRankSum := 0.0
+	for start := 0; start < len(ordered); {
+		end := start + 1
+		for end < len(ordered) && ordered[end].probability == ordered[start].probability {
+			end++
+		}
+		averageRank := float64(start+1+end) / 2
+		for index := start; index < end; index++ {
+			if ordered[index].actual == 1 {
+				positiveRankSum += averageRank
+			}
+		}
+		start = end
+	}
+	auc := (positiveRankSum - float64(positives*(positives+1))/2) / float64(positives*negatives)
+	return &auc
+}
+
+func temporalAveragePrecision(values []temporalScoredActual) *float64 {
+	ordered := append([]temporalScoredActual(nil), values...)
+	positives := 0
+	for _, value := range ordered {
+		if value.actual == 1 {
+			positives++
+		}
+	}
+	if positives == 0 {
+		return nil
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].probability > ordered[j].probability })
+	tp, seen, previousTP, averagePrecision := 0, 0, 0, 0.0
+	for start := 0; start < len(ordered); {
+		end := start + 1
+		for end < len(ordered) && ordered[end].probability == ordered[start].probability {
+			end++
+		}
+		for index := start; index < end; index++ {
+			seen++
+			if ordered[index].actual == 1 {
+				tp++
+			}
+		}
+		averagePrecision += float64(tp-previousTP) / float64(positives) * float64(tp) / float64(seen)
+		previousTP = tp
+		start = end
+	}
+	return &averagePrecision
 }
 
 func dualTrackTemporalConsistency(cohorts []DualTrackTemporalCohort) DualTrackTemporalConsistency {
