@@ -34,7 +34,7 @@ func TestHardwareFaultFeedbackCreatesOfflineHistoryPackRequest(t *testing.T) {
 	body := bytes.NewBufferString(`{
 		"gpu_asset_id": 1,
 		"node_ip": "10.114.4.21",
-		"gpu_uuid": "GPU-HW-FAULT",
+		"reported_gpu_uuid": "GPU-HW-FAULT",
 		"gpu_index": 2,
 		"fault_type": "gpu_hardware_failure",
 		"fault_occurred_at": "2026-08-21T08:00:00Z",
@@ -61,13 +61,19 @@ func TestHardwareFaultFeedbackCreatesOfflineHistoryPackRequest(t *testing.T) {
 	if created.Data.Status != "history_pack_requested" || created.Data.HistoryPackStatus != "queued_offline_collection" {
 		t.Fatalf("feedback did not become offline pack request: %+v", created.Data)
 	}
-	if created.Data.NodeIP != "10.114.4.21" || created.Data.GPUIndex != 2 || created.Data.GPUUUID != "GPU-HW-FAULT" || created.Data.ModelName != "H100" {
+	if created.Data.NodeIP != "10.114.4.21" || created.Data.GPUIndex != 2 || created.Data.GPUUUID != "" || created.Data.ReportedGPUUUID != "GPU-HW-FAULT" || created.Data.ModelName != "H100" {
 		t.Fatalf("feedback lost failed GPU identity: %+v", created.Data)
+	}
+	if created.Data.IdentityResolutionStatus != "requires_historical_identity_at_fault_time" || !strings.Contains(created.Data.IdentityResolutionNote, "historical identity intervals") {
+		t.Fatalf("replacement feedback must require historical identity resolution: %+v", created.Data)
 	}
 	if !strings.Contains(created.Data.HistoryPackScope, "start=2026-08-18T08:00:00Z") || !strings.Contains(created.Data.HistoryPackScope, "end=2026-08-22T08:00:00Z") {
 		t.Fatalf("feedback scope did not bind pre/post windows: %s", created.Data.HistoryPackScope)
 	}
-	if len(created.Data.BlockingReasons) == 0 || !created.Data.TrainingEligible || !created.Data.HardwareReplaced {
+	if !strings.Contains(created.Data.HistoryPackScope, "identity_resolution=requires_historical_identity_at_fault_time") || !strings.Contains(created.Data.HistoryPackScope, "reported_gpu_uuid=GPU-HW-FAULT") {
+		t.Fatalf("replacement feedback scope must keep reported UUID separate from resolved fault identity: %s", created.Data.HistoryPackScope)
+	}
+	if len(created.Data.BlockingReasons) < 2 || !created.Data.TrainingEligible || !created.Data.HardwareReplaced {
 		t.Fatalf("feedback lost governance fields: %+v", created.Data)
 	}
 
@@ -102,5 +108,43 @@ func TestHardwareFaultFeedbackRejectsMissingOperator(t *testing.T) {
 	}`)))
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "operator is required") {
 		t.Fatalf("missing operator should be rejected: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestHardwareFaultFeedbackUsesCurrentIdentityWhenNoReplacementReported(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := api.GPUAsset{
+		AssetKey:    "node-10.114.4.22-gpu-3",
+		NodeIP:      "10.114.4.22",
+		GPUIndex:    3,
+		CurrentUUID: "GPU-STILL-IN-SLOT",
+		ModelName:   "H100",
+		State:       "active",
+	}
+	if err := db.Create(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	row, err := service.CreateHardwareFaultFeedback(HardwareFaultFeedbackInput{
+		GPUAssetID:       asset.ID,
+		NodeIP:           asset.NodeIP,
+		GPUUUID:          asset.CurrentUUID,
+		GPUIndex:         asset.GPUIndex,
+		FaultType:        "pcie_link_failure",
+		FaultOccurredAt:  "2026-08-21T08:00:00Z",
+		Operator:         "ops-b",
+		TrainingEligible: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.IdentityResolutionStatus != "current_identity_selected" || row.GPUUUID != "GPU-STILL-IN-SLOT" || row.ReportedGPUUUID != "GPU-STILL-IN-SLOT" {
+		t.Fatalf("non-replacement feedback should keep current identity selected: %+v", row)
+	}
+	if len(row.BlockingReasons) != 1 || strings.Contains(row.HistoryPackScope, "requires_historical_identity_at_fault_time") {
+		t.Fatalf("non-replacement feedback should not require replacement identity blocker: %+v", row)
 	}
 }
