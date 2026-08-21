@@ -137,6 +137,10 @@ func TestDualTrackValidationSlicesUseOnlyReadyPredictiveDimensions(t *testing.T)
 			t.Fatalf("each predictive slice must expose non-null ranking and probability status: %+v", slice)
 		}
 	}
+	ready, partial, comparableRanking, comparableProbability, blockers := validationSliceReadinessSummary(audit, slices)
+	if ready != 4 || partial != 0 || comparableRanking != 0 || comparableProbability != 0 || len(blockers) != 0 {
+		t.Fatalf("ready slice coverage must bind counts without pretending small slices are comparable: ready=%d partial=%d rank=%d prob=%d blockers=%v", ready, partial, comparableRanking, comparableProbability, blockers)
+	}
 	rows[0].DriverVersion = ""
 	partialAudit := dualTrackSliceAudit(rows)
 	partialSlices := dualTrackValidationSlices(rows, RiskRankingSnapshotReport{Status: "shadow_snapshot_available"}, partialAudit)
@@ -144,6 +148,10 @@ func TestDualTrackValidationSlicesUseOnlyReadyPredictiveDimensions(t *testing.T)
 		if slice.Dimension == "driver_version" {
 			t.Fatalf("partially frozen dimensions must not emit comparison slices: %+v", partialSlices)
 		}
+	}
+	_, partial, _, _, blockers = validationSliceReadinessSummary(partialAudit, partialSlices)
+	if partial != 1 || len(blockers) == 0 {
+		t.Fatalf("partial slice coverage must block readiness with a concrete reason: audit=%+v blockers=%v", partialAudit, blockers)
 	}
 }
 
