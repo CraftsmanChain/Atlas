@@ -1098,7 +1098,7 @@ func TestValidationReadinessCombinesLabelOutcomeAndChallengerGates(t *testing.T)
 	handler := NewHandlerWithService(service)
 	response := httptest.NewRecorder()
 	handler.HandleValidationReadiness(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/validation-readiness?download=1", nil))
-	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(ValidationReadinessReportVersion)) || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" {
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(ValidationReadinessReportVersion)) || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" || response.Header().Get("X-Atlas-Report-Cache") != "MISS" || response.Header().Get("X-Atlas-Report-Cache-Version") != dualTrackValidationCacheVersion || response.Header().Get("X-Atlas-Report-Cache-TTL-Seconds") != "30" {
 		t.Fatalf("validation readiness handler failed: %d %s", response.Code, response.Body.String())
 	}
 }

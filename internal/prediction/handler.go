@@ -27,7 +27,7 @@ type dualTrackValidationCache struct {
 	expiresAt time.Time
 }
 
-const dualTrackValidationCacheVersion = "prediction-validation-report-cache-v1"
+const dualTrackValidationCacheVersion = "prediction-validation-report-cache-v2"
 const dualTrackValidationCacheTTL = 30 * time.Second
 
 func NewHandler(db *storage.DB) *Handler              { return newHandler(NewService(db)) }
@@ -199,27 +199,13 @@ func (h *Handler) HandleDualTrackValidation(w http.ResponseWriter, r *http.Reque
 		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	forceRefresh := r.URL.Query().Get("refresh") == "1"
-	if forceRefresh {
-		h.invalidateValidationCache()
-	}
-	report, cacheHit, cachedAt, err := h.cachedDualTrackValidationReport()
+	report, cacheState, cachedAt, err := h.validationReport(r.URL.Query().Get("refresh") == "1")
 	if err != nil {
 		predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	w.Header().Set("Cache-Control", "private, no-store")
+	h.setValidationCacheHeaders(w, cacheState, cachedAt)
 	w.Header().Set("ETag", `"`+report.ReportSHA256+`"`)
-	cacheState := "MISS"
-	if forceRefresh {
-		cacheState = "REFRESH"
-	} else if cacheHit {
-		cacheState = "HIT"
-	}
-	w.Header().Set("X-Atlas-Report-Cache", cacheState)
-	w.Header().Set("X-Atlas-Report-Cache-Version", dualTrackValidationCacheVersion)
-	w.Header().Set("X-Atlas-Report-Cached-At", cachedAt.UTC().Format(time.RFC3339Nano))
-	w.Header().Set("X-Atlas-Report-Cache-TTL-Seconds", strconv.FormatInt(int64(h.validationCacheTTL/time.Second), 10))
 	w.Header().Set("X-Atlas-Dual-Track-Validation-Version", report.Version)
 	w.Header().Set("X-Atlas-Dual-Track-Validation-SHA256", report.ReportSHA256)
 	if etagMatches(r.Header.Get("If-None-Match"), report.ReportSHA256) {
@@ -230,6 +216,31 @@ func (h *Handler) HandleDualTrackValidation(w http.ResponseWriter, r *http.Reque
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.json"`, report.Version, report.ReportSHA256[:12]))
 	}
 	predictionJSON(w, http.StatusOK, map[string]any{"data": report})
+}
+
+func (h *Handler) validationReport(forceRefresh bool) (DualTrackValidationReport, string, time.Time, error) {
+	if forceRefresh {
+		h.invalidateValidationCache()
+	}
+	report, cacheHit, cachedAt, err := h.cachedDualTrackValidationReport()
+	if err != nil {
+		return DualTrackValidationReport{}, "", time.Time{}, err
+	}
+	cacheState := "MISS"
+	if forceRefresh {
+		cacheState = "REFRESH"
+	} else if cacheHit {
+		cacheState = "HIT"
+	}
+	return report, cacheState, cachedAt, nil
+}
+
+func (h *Handler) setValidationCacheHeaders(w http.ResponseWriter, cacheState string, cachedAt time.Time) {
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-Atlas-Report-Cache", cacheState)
+	w.Header().Set("X-Atlas-Report-Cache-Version", dualTrackValidationCacheVersion)
+	w.Header().Set("X-Atlas-Report-Cached-At", cachedAt.UTC().Format(time.RFC3339Nano))
+	w.Header().Set("X-Atlas-Report-Cache-TTL-Seconds", strconv.FormatInt(int64(h.validationCacheTTL/time.Second), 10))
 }
 
 func (h *Handler) cachedDualTrackValidationReport() (DualTrackValidationReport, bool, time.Time, error) {
@@ -291,15 +302,20 @@ func (h *Handler) HandleValidationReadiness(w http.ResponseWriter, r *http.Reque
 		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	report, err := h.service.ValidationReadinessReport()
+	dualTrackReport, cacheState, cachedAt, err := h.validationReport(r.URL.Query().Get("refresh") == "1")
 	if err != nil {
 		predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	w.Header().Set("Cache-Control", "private, no-store")
+	report := dualTrackReport.Readiness
+	h.setValidationCacheHeaders(w, cacheState, cachedAt)
 	w.Header().Set("ETag", `"`+report.ReadinessSHA256+`"`)
 	w.Header().Set("X-Atlas-Validation-Readiness-Version", report.Version)
 	w.Header().Set("X-Atlas-Validation-Readiness-SHA256", report.ReadinessSHA256)
+	if etagMatches(r.Header.Get("If-None-Match"), report.ReadinessSHA256) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	if r.URL.Query().Get("download") == "1" {
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.json"`, report.Version, report.ReadinessSHA256[:12]))
 	}
