@@ -3,6 +3,7 @@ package prediction
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,6 +12,36 @@ import (
 	"atlas/pkg/api"
 	"atlas/pkg/storage"
 )
+
+func TestTemporalProbabilityQualityMetrics(t *testing.T) {
+	probabilities := []float64{0.9, 0.8, 0.2, 0.1, 1.2}
+	actuals := []int{1, 0, 1, 0, 0}
+	rows := make([]api.PredictionOutcomeEvaluation, 0, len(probabilities))
+	for index := range probabilities {
+		probability, actual := probabilities[index], actuals[index]
+		rows = append(rows, api.PredictionOutcomeEvaluation{MaturityStatus: "matured", Probability: &probability, FinalActualValue: &actual})
+	}
+	metrics := temporalProbabilityMetrics(rows, AccuracyMetrics{})
+	if metrics.ScoredRows != 4 || metrics.InvalidProbabilityRows != 1 || metrics.InvalidLabelRows != 0 || metrics.CalibrationBins != 10 || metrics.CalibrationBinsUsed != 4 {
+		t.Fatalf("unexpected probability quality coverage: %+v", metrics)
+	}
+	if metrics.ROCAUC == nil || math.Abs(*metrics.ROCAUC-0.75) > 1e-12 {
+		t.Fatalf("expected tie-safe ROC-AUC 0.75: %+v", metrics)
+	}
+	if metrics.PRAUCAveragePrecision == nil || math.Abs(*metrics.PRAUCAveragePrecision-5.0/6.0) > 1e-12 {
+		t.Fatalf("expected average precision 5/6: %+v", metrics)
+	}
+	if metrics.ExpectedCalibrationError == nil || metrics.BrierScore == nil || metrics.NullBrierScore == nil || metrics.BrierSkillScore == nil {
+		t.Fatalf("expected calibration and Brier metrics: %+v", metrics)
+	}
+	tieValues := []temporalScoredActual{{probability: 0.5, actual: 1}, {probability: 0.5, actual: 0}}
+	if auc := temporalROCAUC(tieValues); auc == nil || math.Abs(*auc-0.5) > 1e-12 {
+		t.Fatalf("equal scores should produce ROC-AUC 0.5: %v", auc)
+	}
+	if averagePrecision := temporalAveragePrecision(tieValues); averagePrecision == nil || math.Abs(*averagePrecision-0.5) > 1e-12 {
+		t.Fatalf("equal scores should produce tie-invariant average precision 0.5: %v", averagePrecision)
+	}
+}
 
 func TestDualTrackEmptyRankingMetricsSerializeAsArray(t *testing.T) {
 	cohort := DualTrackTemporalCohort{NodeRankingAtK: nonNilRankingMetrics(nil)}
@@ -185,6 +216,9 @@ func TestDualTrackValidationAlignsRankingAndProbabilityCohort(t *testing.T) {
 	}
 	if report.TemporalCohorts[0].ProbabilityMetrics.BrierScore == nil || report.TemporalCohorts[0].ProbabilityMetrics.NullBrierScore == nil || report.TemporalCohorts[0].ProbabilityMetrics.BrierSkillScore == nil || *report.TemporalCohorts[0].ProbabilityMetrics.BrierSkillScore <= 0 {
 		t.Fatalf("mature probability cohorts must expose Brier skill against the null baseline: %+v", report.TemporalCohorts[0])
+	}
+	if report.TemporalCohorts[0].ProbabilityMetrics.ROCAUC == nil || *report.TemporalCohorts[0].ProbabilityMetrics.ROCAUC != 1 || report.TemporalCohorts[0].ProbabilityMetrics.PRAUCAveragePrecision == nil || *report.TemporalCohorts[0].ProbabilityMetrics.PRAUCAveragePrecision != 1 || report.TemporalCohorts[0].ProbabilityMetrics.ExpectedCalibrationError == nil || report.Probability.Quality.ROCAUC == nil {
+		t.Fatalf("aligned cohorts must expose discrimination and calibration metrics: %+v", report.TemporalCohorts[0])
 	}
 	if report.TemporalConsistency.Ranking.Status != "insufficient_independent_cohorts" || report.TemporalConsistency.Probability.Status != "insufficient_independent_cohorts" || report.TemporalConsistency.Ranking.EvaluableIndependentCohorts != 2 || report.TemporalConsistency.Probability.EvaluableIndependentCohorts != 2 {
 		t.Fatalf("two independent cohorts must not pass the three-cohort consistency gate: %+v", report.TemporalConsistency)
