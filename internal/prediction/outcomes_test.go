@@ -43,7 +43,9 @@ func TestOutcomeReconciliationAndHumanOverride(t *testing.T) {
 		prediction := api.HardwareRiskPrediction{
 			ModelSpecID: spec.ID, HardwareClass: "gpu", EntityType: "gpu", EntityKey: uuids[index],
 			GPUUUID: uuids[index], HorizonMinutes: 60, Probability: &probabilities[index],
-			NodeIP: nodes[index], RiskLevel: "test", Status: "scored", EvaluatedAt: evaluatedAt, ExpiresAt: expiresAt,
+			NodeIP: nodes[index], ScopeEventType: "xid_critical", ModelName: "H100", DataCenterID: "dc-a",
+			DriverVersion: "560", SliceContract: api.PredictionSliceContractVersion,
+			RiskLevel: "test", Status: "scored", EvaluatedAt: evaluatedAt, ExpiresAt: expiresAt,
 		}
 		if err := db.Create(&prediction).Error; err != nil {
 			t.Fatal(err)
@@ -82,6 +84,9 @@ func TestOutcomeReconciliationAndHumanOverride(t *testing.T) {
 	var falsePositive api.PredictionOutcomeEvaluation
 	if err := db.Where("gpu_uuid = ?", "GPU-FP").First(&falsePositive).Error; err != nil {
 		t.Fatal(err)
+	}
+	if falsePositive.ScopeEventType != "xid_critical" || falsePositive.ModelName != "H100" || falsePositive.DataCenterID != "dc-a" || falsePositive.DriverVersion != "560" || falsePositive.SliceContract != api.PredictionSliceContractVersion {
+		t.Fatalf("outcome must preserve prediction-time slice dimensions: %+v", falsePositive)
 	}
 	overridden, err := service.OverrideOutcome(falsePositive.ID, OutcomeOverride{
 		ActualValue: 1, Reason: "operator confirmed a board replacement", DecidedBy: "tester",

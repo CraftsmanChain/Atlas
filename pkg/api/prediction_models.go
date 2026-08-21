@@ -2,6 +2,8 @@ package api
 
 import "time"
 
+const PredictionSliceContractVersion = "prediction-slice-dimensions-v1"
+
 // PredictionModelSpec is the immutable contract for one hardware failure
 // prediction horizon. A registered spec does not imply that a trained model or
 // calibrated probability is available.
@@ -76,6 +78,11 @@ type HardwareRiskPrediction struct {
 	GPUAssetID        uint       `json:"gpu_asset_id,omitempty" gorm:"index"`
 	GPUUUID           string     `json:"gpu_uuid,omitempty" gorm:"column:gpu_uuid;index"`
 	NodeIP            string     `json:"node_ip,omitempty" gorm:"index"`
+	ScopeEventType    string     `json:"scope_event_type,omitempty" gorm:"index"`
+	ModelName         string     `json:"model_name,omitempty" gorm:"index"`
+	DataCenterID      string     `json:"data_center_id,omitempty" gorm:"index"`
+	DriverVersion     string     `json:"driver_version,omitempty" gorm:"index"`
+	SliceContract     string     `json:"slice_contract_version,omitempty" gorm:"index"`
 	FeatureSnapshotID uint       `json:"feature_snapshot_id" gorm:"index"`
 	FeatureVectorSHA  string     `json:"feature_vector_sha256,omitempty" gorm:"index"`
 	TransformVersion  string     `json:"transformation_contract_version,omitempty" gorm:"index"`
@@ -136,6 +143,11 @@ type PredictionOutcomeEvaluation struct {
 	GPUAssetID            uint       `json:"gpu_asset_id,omitempty" gorm:"index"`
 	GPUUUID               string     `json:"gpu_uuid,omitempty" gorm:"column:gpu_uuid;index"`
 	NodeIP                string     `json:"node_ip,omitempty" gorm:"index"`
+	ScopeEventType        string     `json:"scope_event_type,omitempty" gorm:"index"`
+	ModelName             string     `json:"model_name,omitempty" gorm:"index"`
+	DataCenterID          string     `json:"data_center_id,omitempty" gorm:"index"`
+	DriverVersion         string     `json:"driver_version,omitempty" gorm:"index"`
+	SliceContract         string     `json:"slice_contract_version,omitempty" gorm:"index"`
 	HorizonMinutes        int        `json:"horizon_minutes" gorm:"index;not null"`
 	Probability           *float64   `json:"probability,omitempty"`
 	DecisionThreshold     *float64   `json:"decision_threshold,omitempty"`
