@@ -391,6 +391,32 @@ func (h *Handler) HandleHumanFeedbackManifest(w http.ResponseWriter, r *http.Req
 	predictionJSON(w, http.StatusOK, map[string]any{"data": report})
 }
 
+func (h *Handler) HandleHardwareFaultFeedback(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		rows, err := h.service.HardwareFaultFeedbackRequests(parseLimit(r, 50, 200))
+		if err != nil {
+			predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		predictionJSON(w, http.StatusOK, map[string]any{"data": rows, "meta": map[string]any{"total": len(rows), "version": HardwareFaultFeedbackRequestVersion}})
+	case http.MethodPost:
+		var input HardwareFaultFeedbackInput
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			predictionJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+			return
+		}
+		row, err := h.service.CreateHardwareFaultFeedback(input)
+		if err != nil {
+			predictionJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		predictionJSON(w, http.StatusCreated, map[string]any{"data": row})
+	default:
+		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+	}
+}
+
 func (h *Handler) HandleDataDriftReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -520,4 +546,20 @@ func predictionJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func parseLimit(r *http.Request, defaultLimit, maxLimit int) int {
+	limit := defaultLimit
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			limit = parsed
+		}
+	}
+	if limit <= 0 {
+		return defaultLimit
+	}
+	if maxLimit > 0 && limit > maxLimit {
+		return maxLimit
+	}
+	return limit
 }
