@@ -175,3 +175,34 @@ type PredictionOutcomeEvaluation struct {
 	CreatedAt             time.Time  `json:"created_at"`
 	UpdatedAt             time.Time  `json:"updated_at"`
 }
+
+// HardwareFaultFeedbackRequest is operator-entered hardware-failure feedback.
+// It records the affected machine/GPU, fault timing, and requested pre/post
+// monitoring window. The request is read-only evidence intake: it queues an
+// offline history pack and never executes remediation or scheduling actions.
+type HardwareFaultFeedbackRequest struct {
+	ID                uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	RequestKey        string     `json:"request_key" gorm:"uniqueIndex;not null"`
+	Status            string     `json:"status" gorm:"index;not null"`
+	NodeIP            string     `json:"node_ip" gorm:"index;not null"`
+	GPUUUID           string     `json:"gpu_uuid,omitempty" gorm:"column:gpu_uuid;index"`
+	GPUIndex          int        `json:"gpu_index" gorm:"column:gpu_index;index"`
+	GPUAssetID        uint       `json:"gpu_asset_id,omitempty" gorm:"index"`
+	ModelName         string     `json:"model_name,omitempty" gorm:"index"`
+	FaultType         string     `json:"fault_type" gorm:"index;not null"`
+	FaultOccurredAt   time.Time  `json:"fault_occurred_at" gorm:"index;not null"`
+	PreWindowHours    int        `json:"pre_window_hours"`
+	PostWindowHours   int        `json:"post_window_hours"`
+	Operator          string     `json:"operator" gorm:"index;not null"`
+	Description       string     `json:"description,omitempty" gorm:"type:text"`
+	RepairAction      string     `json:"repair_action,omitempty" gorm:"index"`
+	HardwareReplaced  bool       `json:"hardware_replaced" gorm:"index"`
+	EvidenceNote      string     `json:"evidence_note,omitempty" gorm:"type:text"`
+	TrainingEligible  bool       `json:"training_eligible" gorm:"index"`
+	HistoryPackStatus string     `json:"history_pack_status" gorm:"index;not null"`
+	HistoryPackScope  string     `json:"history_pack_scope" gorm:"type:text"`
+	HistoryPackSHA256 string     `json:"history_pack_sha256,omitempty" gorm:"index"`
+	BlockingReasons   StringList `json:"blocking_reasons" gorm:"type:text"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
