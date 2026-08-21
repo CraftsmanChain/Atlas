@@ -322,6 +322,31 @@ func (h *Handler) HandleValidationReadiness(w http.ResponseWriter, r *http.Reque
 	predictionJSON(w, http.StatusOK, map[string]any{"data": report})
 }
 
+func (h *Handler) HandlePromotionDecision(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	dualTrackReport, cacheState, cachedAt, err := h.validationReport(r.URL.Query().Get("refresh") == "1")
+	if err != nil {
+		predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	report := promotionDecisionReport(dualTrackReport)
+	h.setValidationCacheHeaders(w, cacheState, cachedAt)
+	w.Header().Set("ETag", `"`+report.DecisionSHA256+`"`)
+	w.Header().Set("X-Atlas-Promotion-Decision-Version", report.Version)
+	w.Header().Set("X-Atlas-Promotion-Decision-SHA256", report.DecisionSHA256)
+	if etagMatches(r.Header.Get("If-None-Match"), report.DecisionSHA256) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	if r.URL.Query().Get("download") == "1" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.json"`, report.Version, report.DecisionSHA256[:12]))
+	}
+	predictionJSON(w, http.StatusOK, map[string]any{"data": report})
+}
+
 func (h *Handler) HandleEvidenceBundle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
