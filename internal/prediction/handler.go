@@ -417,6 +417,30 @@ func (h *Handler) HandleHardwareFaultFeedback(w http.ResponseWriter, r *http.Req
 	}
 }
 
+func (h *Handler) HandleHardwareFaultFeedbackAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/prediction/hardware-fault-feedback/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 2 || parts[1] != "prepare" {
+		predictionJSON(w, http.StatusNotFound, map[string]any{"error": "unknown hardware feedback action"})
+		return
+	}
+	id, err := strconv.Atoi(parts[0])
+	if err != nil || id <= 0 {
+		predictionJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid feedback request id"})
+		return
+	}
+	row, err := h.service.PrepareHardwareFaultFeedbackPack(uint(id))
+	if err != nil {
+		predictionJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	predictionJSON(w, http.StatusOK, map[string]any{"data": row})
+}
+
 func (h *Handler) HandleDataDriftReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
