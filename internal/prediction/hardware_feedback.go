@@ -13,6 +13,7 @@ const HardwareFaultFeedbackRequestVersion = "hardware-fault-feedback-request-v1"
 type HardwareFaultFeedbackInput struct {
 	NodeIP           string `json:"node_ip"`
 	GPUUUID          string `json:"gpu_uuid"`
+	ReportedGPUUUID  string `json:"reported_gpu_uuid"`
 	GPUIndex         int    `json:"gpu_index"`
 	GPUAssetID       uint   `json:"gpu_asset_id"`
 	FaultType        string `json:"fault_type"`
@@ -41,7 +42,9 @@ func (s *Service) HardwareFaultFeedbackRequests(limit int) ([]api.HardwareFaultF
 func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) (api.HardwareFaultFeedbackRequest, error) {
 	nodeIP := strings.TrimSpace(input.NodeIP)
 	gpuUUID := strings.TrimSpace(input.GPUUUID)
+	reportedGPUUUID := firstNonEmpty(input.ReportedGPUUUID, gpuUUID)
 	faultType := strings.TrimSpace(input.FaultType)
+	repairAction := strings.TrimSpace(input.RepairAction)
 	operator := strings.TrimSpace(input.Operator)
 	if nodeIP == "" {
 		return api.HardwareFaultFeedbackRequest{}, fmt.Errorf("node_ip is required")
@@ -71,26 +74,38 @@ func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) 
 		return api.HardwareFaultFeedbackRequest{}, fmt.Errorf("pre/post window cannot exceed 30 days")
 	}
 	now := s.now()
+	replacementFeedback := input.HardwareReplaced || strings.Contains(repairAction, "replace")
+	identityStatus := "current_identity_selected"
+	identityNote := "selected GPU identity can be used for the fault-time history pack"
+	blockingReasons := api.StringList{"offline pre/post monitoring history pack has not been collected yet"}
+	if replacementFeedback {
+		identityStatus = "requires_historical_identity_at_fault_time"
+		identityNote = "hardware replacement was reported; current slot UUID is only a reference and must not be used as the failed GPU identity until historical identity intervals are resolved at fault time"
+		blockingReasons = append(blockingReasons, "hardware replacement reported; resolve historical GPU identity at fault time before training")
+		gpuUUID = ""
+	}
 	row := api.HardwareFaultFeedbackRequest{
-		RequestKey:        fmt.Sprintf("fault-feedback-%d", now.UnixNano()),
-		Status:            "history_pack_requested",
-		NodeIP:            nodeIP,
-		GPUUUID:           gpuUUID,
-		GPUIndex:          input.GPUIndex,
-		GPUAssetID:        input.GPUAssetID,
-		FaultType:         faultType,
-		FaultOccurredAt:   occurredAt,
-		PreWindowHours:    preWindow,
-		PostWindowHours:   postWindow,
-		Operator:          operator,
-		Description:       strings.TrimSpace(input.Description),
-		RepairAction:      strings.TrimSpace(input.RepairAction),
-		HardwareReplaced:  input.HardwareReplaced,
-		EvidenceNote:      strings.TrimSpace(input.EvidenceNote),
-		TrainingEligible:  input.TrainingEligible,
-		HistoryPackStatus: "queued_offline_collection",
-		HistoryPackScope:  feedbackHistoryScope(nodeIP, gpuUUID, input.GPUIndex, occurredAt, preWindow, postWindow),
-		BlockingReasons:   api.StringList{"offline pre/post monitoring history pack has not been collected yet"},
+		RequestKey:               fmt.Sprintf("fault-feedback-%d", now.UnixNano()),
+		Status:                   "history_pack_requested",
+		NodeIP:                   nodeIP,
+		GPUUUID:                  gpuUUID,
+		ReportedGPUUUID:          reportedGPUUUID,
+		GPUIndex:                 input.GPUIndex,
+		GPUAssetID:               input.GPUAssetID,
+		FaultType:                faultType,
+		FaultOccurredAt:          occurredAt,
+		PreWindowHours:           preWindow,
+		PostWindowHours:          postWindow,
+		Operator:                 operator,
+		Description:              strings.TrimSpace(input.Description),
+		RepairAction:             repairAction,
+		HardwareReplaced:         replacementFeedback,
+		EvidenceNote:             strings.TrimSpace(input.EvidenceNote),
+		TrainingEligible:         input.TrainingEligible,
+		HistoryPackStatus:        "queued_offline_collection",
+		IdentityResolutionStatus: identityStatus,
+		IdentityResolutionNote:   identityNote,
+		BlockingReasons:          blockingReasons,
 	}
 	var asset api.GPUAsset
 	query := s.db.Where("node_ip = ?", nodeIP)
@@ -103,10 +118,14 @@ func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) 
 	}
 	if err := query.First(&asset).Error; err == nil {
 		row.GPUAssetID = asset.ID
-		row.GPUUUID = firstNonEmpty(row.GPUUUID, asset.CurrentUUID)
+		row.ReportedGPUUUID = firstNonEmpty(row.ReportedGPUUUID, asset.CurrentUUID)
+		if !replacementFeedback {
+			row.GPUUUID = firstNonEmpty(row.GPUUUID, asset.CurrentUUID)
+		}
 		row.GPUIndex = asset.GPUIndex
 		row.ModelName = firstNonEmpty(asset.ModelName, asset.Model)
 	}
+	row.HistoryPackScope = feedbackHistoryScope(row.NodeIP, row.GPUUUID, row.ReportedGPUUUID, row.GPUIndex, row.FaultOccurredAt, row.PreWindowHours, row.PostWindowHours, row.IdentityResolutionStatus)
 	if err := s.db.Create(&row).Error; err != nil {
 		return row, err
 	}
@@ -127,10 +146,10 @@ func parseFeedbackTime(value string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("fault_occurred_at must be RFC3339 or local datetime")
 }
 
-func feedbackHistoryScope(nodeIP, gpuUUID string, gpuIndex int, occurredAt time.Time, preWindow, postWindow int) string {
+func feedbackHistoryScope(nodeIP, gpuUUID, reportedGPUUUID string, gpuIndex int, occurredAt time.Time, preWindow, postWindow int, identityStatus string) string {
 	start := occurredAt.Add(-time.Duration(preWindow) * time.Hour).Format(time.RFC3339)
 	end := occurredAt.Add(time.Duration(postWindow) * time.Hour).Format(time.RFC3339)
-	return fmt.Sprintf("node_ip=%s gpu_uuid=%s gpu_index=%d start=%s fault=%s end=%s", nodeIP, gpuUUID, gpuIndex, start, occurredAt.Format(time.RFC3339), end)
+	return fmt.Sprintf("node_ip=%s gpu_uuid=%s reported_gpu_uuid=%s gpu_index=%d identity_resolution=%s start=%s fault=%s end=%s", nodeIP, gpuUUID, reportedGPUUUID, gpuIndex, identityStatus, start, occurredAt.Format(time.RFC3339), end)
 }
 
 func firstNonEmpty(values ...string) string {
