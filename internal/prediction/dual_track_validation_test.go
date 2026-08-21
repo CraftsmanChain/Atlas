@@ -111,6 +111,42 @@ func TestDualTrackSliceAuditRequiresFrozenPredictionDimensions(t *testing.T) {
 	}
 }
 
+func TestDualTrackValidationSlicesUseOnlyReadyPredictiveDimensions(t *testing.T) {
+	probabilities := []float64{0.9, 0.7, 0.3, 0.1}
+	actuals := []int{1, 0, 0, 0}
+	dataCenters := []string{"dc-a", "dc-a", "dc-b", "dc-b"}
+	rows := make([]api.PredictionOutcomeEvaluation, 0, len(probabilities))
+	for index := range probabilities {
+		probability, actual := probabilities[index], actuals[index]
+		rows = append(rows, api.PredictionOutcomeEvaluation{
+			MaturityStatus: "matured", FinalActualValue: &actual, Probability: &probability, PredictedPositive: probability >= 0.5,
+			NodeIP: "10.0.0." + string(rune('1'+index)), ModelName: "H100", ScopeEventType: "xid_94",
+			DataCenterID: dataCenters[index], DriverVersion: "560", SliceContract: api.PredictionSliceContractVersion,
+		})
+	}
+	audit := dualTrackSliceAudit(rows)
+	slices := dualTrackValidationSlices(rows, RiskRankingSnapshotReport{Status: "shadow_snapshot_available"}, audit)
+	if audit.Status != "ready" || len(slices) != 5 {
+		t.Fatalf("four ready dimensions with two data centers should produce five slices: audit=%+v slices=%+v", audit, slices)
+	}
+	for _, slice := range slices {
+		if slice.Dimension == "label_quality" {
+			t.Fatalf("outcome-derived label quality must never become a predictive metric slice: %+v", slices)
+		}
+		if slice.NodeRankingAtK == nil || slice.ProbabilityMetrics.Status == "" {
+			t.Fatalf("each predictive slice must expose non-null ranking and probability status: %+v", slice)
+		}
+	}
+	rows[0].DriverVersion = ""
+	partialAudit := dualTrackSliceAudit(rows)
+	partialSlices := dualTrackValidationSlices(rows, RiskRankingSnapshotReport{Status: "shadow_snapshot_available"}, partialAudit)
+	for _, slice := range partialSlices {
+		if slice.Dimension == "driver_version" {
+			t.Fatalf("partially frozen dimensions must not emit comparison slices: %+v", partialSlices)
+		}
+	}
+}
+
 func TestDualTrackTemporalConsistencyRequiresThreePositiveIndependentCohorts(t *testing.T) {
 	lift, skill := 1.5, 0.2
 	cohorts := make([]DualTrackTemporalCohort, 3)

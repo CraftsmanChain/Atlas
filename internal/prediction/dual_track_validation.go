@@ -12,7 +12,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const DualTrackValidationReportVersion = "prediction-dual-track-validation-v6"
+const DualTrackValidationReportVersion = "prediction-dual-track-validation-v7"
 const DualTrackSliceAuditVersion = "prediction-slice-audit-v1"
 const DualTrackTemporalCohortLimit = 12
 const DualTrackMinimumConsistentCohorts = 3
@@ -159,6 +159,20 @@ type DualTrackSliceAudit struct {
 	Dimensions      []DualTrackSliceDimension `json:"dimensions"`
 }
 
+type DualTrackValidationSlice struct {
+	Dimension          string                     `json:"dimension"`
+	Value              string                     `json:"value"`
+	TotalRows          int                        `json:"total_rows"`
+	MaturedRows        int                        `json:"matured_rows"`
+	NodeCount          int                        `json:"node_count"`
+	PositiveRows       int                        `json:"positive_rows"`
+	RankingStatus      string                     `json:"ranking_status"`
+	ProbabilityStatus  string                     `json:"probability_status"`
+	NodeRankingAtK     []RankingAtK               `json:"node_ranking_at_k"`
+	ProbabilityMetrics TemporalProbabilityMetrics `json:"probability_metrics"`
+	BlockingReasons    []string                   `json:"blocking_reasons"`
+}
+
 type DualTrackValidationReport struct {
 	Version             string                       `json:"version"`
 	FrameworkVersion    string                       `json:"framework_version"`
@@ -174,6 +188,7 @@ type DualTrackValidationReport struct {
 	TemporalCohorts     []DualTrackTemporalCohort    `json:"temporal_cohorts"`
 	TemporalConsistency DualTrackTemporalConsistency `json:"temporal_consistency"`
 	SliceAudit          DualTrackSliceAudit          `json:"slice_audit"`
+	ValidationSlices    []DualTrackValidationSlice   `json:"validation_slices"`
 	Safety              RiskRankingSafety            `json:"safety"`
 	Interpretation      []string                     `json:"interpretation"`
 	RecommendedNextRun  []string                     `json:"recommended_next_run"`
@@ -227,6 +242,7 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 		TemporalCohorts:     temporalCohorts,
 		TemporalConsistency: temporalConsistency,
 		SliceAudit:          dualTrackSliceAudit(nil),
+		ValidationSlices:    []DualTrackValidationSlice{},
 		Interpretation: []string{
 			"ranking track answers who should be reviewed first and is evaluated with node Ranking@K metrics",
 			"probability track answers event risk within a fixed horizon and is evaluated with discrimination and calibration metrics",
@@ -261,6 +277,7 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 	}
 	report.Alignment.Status = "aligned"
 	report.SliceAudit = dualTrackSliceAudit(rows)
+	report.ValidationSlices = dualTrackValidationSlices(rows, rankingSnapshot, report.SliceAudit)
 	accuracy := accuracyFromRows(rows, report.GeneratedAt)
 	maturity := outcomeMaturity(rows)
 	stability := outcomeStability(maturity, accuracy)
@@ -558,6 +575,69 @@ func dualTrackSliceAudit(rows []api.PredictionOutcomeEvaluation) DualTrackSliceA
 		}
 	}
 	return audit
+}
+
+func dualTrackValidationSlices(rows []api.PredictionOutcomeEvaluation, snapshot RiskRankingSnapshotReport, audit DualTrackSliceAudit) []DualTrackValidationSlice {
+	readyDimensions := make([]string, 0, 4)
+	for _, dimension := range audit.Dimensions {
+		if dimension.Status == "ready" && dimension.Dimension != "label_quality" {
+			readyDimensions = append(readyDimensions, dimension.Dimension)
+		}
+	}
+	if len(readyDimensions) == 0 {
+		return []DualTrackValidationSlice{}
+	}
+	result := []DualTrackValidationSlice{}
+	for _, dimension := range readyDimensions {
+		groups := map[string][]api.PredictionOutcomeEvaluation{}
+		for _, row := range rows {
+			if row.SliceContract != api.PredictionSliceContractVersion {
+				continue
+			}
+			value := strings.TrimSpace(dualTrackPredictiveSliceValue(row, dimension))
+			if value != "" {
+				groups[value] = append(groups[value], row)
+			}
+		}
+		values := make([]string, 0, len(groups))
+		for value := range groups {
+			values = append(values, value)
+		}
+		sort.Strings(values)
+		for _, value := range values {
+			groupRows := groups[value]
+			accuracy := accuracyFromRows(groupRows, snapshot.GeneratedAt)
+			maturity := outcomeMaturity(groupRows)
+			quality := temporalProbabilityMetrics(groupRows)
+			positives := accuracy.Final.TP + accuracy.Final.FN
+			rankingStatus, rankingBlockers := dualTrackRankingStatus(snapshot, maturity, positives)
+			stability := outcomeStability(maturity, accuracy)
+			probabilityStatus := dualTrackProbabilityStatus(stability.Status, quality.Status)
+			blockers := uniqueSorted(append(append(append([]string(nil), rankingBlockers...), stability.BlockingReasons...), quality.BlockingReasons...))
+			result = append(result, DualTrackValidationSlice{
+				Dimension: dimension, Value: value, TotalRows: maturity.Total, MaturedRows: maturity.Matured,
+				NodeCount: maturity.NodeEligible, PositiveRows: positives, RankingStatus: rankingStatus,
+				ProbabilityStatus: probabilityStatus, NodeRankingAtK: nonNilRankingMetrics(accuracy.Final.NodeRankingAtK),
+				ProbabilityMetrics: quality, BlockingReasons: blockers,
+			})
+		}
+	}
+	return result
+}
+
+func dualTrackPredictiveSliceValue(row api.PredictionOutcomeEvaluation, dimension string) string {
+	switch dimension {
+	case "model_name":
+		return row.ModelName
+	case "event_type":
+		return row.ScopeEventType
+	case "data_center_id":
+		return row.DataCenterID
+	case "driver_version":
+		return row.DriverVersion
+	default:
+		return ""
+	}
 }
 
 func temporalROCAUC(values []temporalScoredActual) *float64 {
