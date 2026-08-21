@@ -1,4 +1,4 @@
-.PHONY: all build clean test verify web-install web-build run-server run-agent run-dbmigrate
+.PHONY: all build clean test verify release-scripts-check web-install web-build run-server run-agent run-dbmigrate
 
 # Binary names
 SERVER_BIN=bin/atlas-server
@@ -34,7 +34,11 @@ web-install:
 web-build: web-install
 	cd $(WEB_DIR) && $(NPM) run build
 
-verify: test web-build
+release-scripts-check:
+	bash -n scripts/check_release_status.sh scripts/deploy_remote_source.sh scripts/remote_build_release.sh scripts/postgres_backup.sh
+	@if grep -Rnw scp scripts; then echo "scp is forbidden in release scripts; use rsync instead." >&2; exit 1; fi
+
+verify: release-scripts-check test web-build
 
 clean:
 	@echo "Cleaning up..."

@@ -12,6 +12,7 @@ branch="${BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
 skip_npm_install="${SKIP_NPM_INSTALL:-0}"
 version_name="${VERSION_NAME:-prod}"
 release_strategy="${RELEASE_STRATEGY:-remote-source}"
+rsync_rsh="${RSYNC_RSH:-ssh}"
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "$repo_root" ]]; then
@@ -45,6 +46,7 @@ usage() {
   VERSION_NAME=prod
   SKIP_NPM_INSTALL=1
   RELEASE_STRATEGY=remote-source   # 可设为 legacy-binary 使用旧二进制上传流程
+  RSYNC_RSH=ssh                    # rsync 使用的远端 shell，可附加受控 SSH 参数
 EOF
 }
 
@@ -192,12 +194,32 @@ build_artifacts() {
   echo "生成: $dist_tarball"
 }
 
+ensure_rsync_available() {
+  if ! command -v rsync >/dev/null 2>&1; then
+    echo "本机缺少 rsync，无法同步发布产物。" >&2
+    exit 1
+  fi
+  if ! ssh "$remote_ssh" "command -v rsync >/dev/null 2>&1"; then
+    echo "远端缺少 rsync，无法同步发布产物: $remote_ssh" >&2
+    exit 1
+  fi
+}
+
+sync_to_remote() {
+  local source_path="$1"
+  local destination_path="$2"
+  rsync --archive --checksum --partial --human-readable --progress \
+    --rsh="$rsync_rsh" \
+    "$source_path" "$remote_ssh:$destination_path"
+}
+
 deploy_remote() {
   print_section "上传并更新线上服务"
-  scp "$repo_root/bin/linux-amd64/atlas-server" "$remote_ssh:$remote_root/atlas-server.new"
-  scp "$repo_root/bin/linux-amd64/atlas-db-migrate" "$remote_ssh:$remote_root/atlas-db-migrate.new"
-  scp "$repo_root/scripts/postgres_backup.sh" "$remote_ssh:$remote_root/postgres_backup.sh.new"
-  scp "$dist_tarball" "$remote_ssh:$remote_root/dist.tar.gz"
+  ensure_rsync_available
+  sync_to_remote "$repo_root/bin/linux-amd64/atlas-server" "$remote_root/atlas-server.new"
+  sync_to_remote "$repo_root/bin/linux-amd64/atlas-db-migrate" "$remote_root/atlas-db-migrate.new"
+  sync_to_remote "$repo_root/scripts/postgres_backup.sh" "$remote_root/postgres_backup.sh.new"
+  sync_to_remote "$dist_tarball" "$remote_root/dist.tar.gz"
 
   ssh "$remote_ssh" "set -euo pipefail
 mkdir -p '$remote_root/web'
