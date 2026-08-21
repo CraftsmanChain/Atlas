@@ -155,6 +155,33 @@ func TestDualTrackValidationSlicesUseOnlyReadyPredictiveDimensions(t *testing.T)
 	}
 }
 
+func TestDualTrackSliceComparabilityRequiresBothTracksForEveryDimension(t *testing.T) {
+	dimensions := []string{"model_name", "event_type", "data_center_id", "driver_version"}
+	audit := DualTrackSliceAudit{Status: "ready", Dimensions: make([]DualTrackSliceDimension, 0, len(dimensions))}
+	slices := make([]DualTrackValidationSlice, 0, len(dimensions))
+	for _, dimension := range dimensions {
+		audit.Dimensions = append(audit.Dimensions, DualTrackSliceDimension{Dimension: dimension, Status: "ready"})
+		slices = append(slices, DualTrackValidationSlice{Dimension: dimension, Value: "value", RankingStatus: "comparable", ProbabilityStatus: "comparable"})
+	}
+	comparable := dualTrackSliceComparability(audit, slices)
+	if comparable.Status != "comparable" || comparable.RequiredDimensions != 4 || comparable.RankingComparableDimensions != 4 || comparable.ProbabilityComparableDimensions != 4 || comparable.JointComparableDimensions != 4 || len(comparable.BlockingReasons) != 0 {
+		t.Fatalf("every required dimension on both tracks should pass: %+v", comparable)
+	}
+	slices[2].ProbabilityStatus = "exploratory"
+	partial := dualTrackSliceComparability(audit, slices)
+	if partial.Status != "exploratory_partial_comparability" || partial.RankingComparableDimensions != 4 || partial.ProbabilityComparableDimensions != 3 || partial.JointComparableDimensions != 3 || len(partial.MissingProbabilityDimensions) != 1 || partial.MissingProbabilityDimensions[0] != "data_center_id" || len(partial.BlockingReasons) == 0 {
+		t.Fatalf("one underpowered probability dimension must block promotion explicitly: %+v", partial)
+	}
+	for index := range slices {
+		slices[index].RankingStatus = "exploratory"
+		slices[index].ProbabilityStatus = "exploratory"
+	}
+	insufficient := dualTrackSliceComparability(audit, slices)
+	if insufficient.Status != "insufficient_sample" || insufficient.JointComparableDimensions != 0 || len(insufficient.MissingRankingDimensions) != 4 || len(insufficient.MissingProbabilityDimensions) != 4 {
+		t.Fatalf("fully frozen but sparse slices must remain an insufficient-sample gate: %+v", insufficient)
+	}
+}
+
 func TestDualTrackTemporalConsistencyRequiresThreePositiveIndependentCohorts(t *testing.T) {
 	lift, skill := 1.5, 0.2
 	cohorts := make([]DualTrackTemporalCohort, 3)
@@ -324,10 +351,18 @@ func TestDualTrackValidationAlignsRankingAndProbabilityCohort(t *testing.T) {
 	if report.Readiness.TemporalConsistencyVersion != DualTrackValidationReportVersion || report.Readiness.TemporalSummary.IndependentCohortCount != 2 || report.Readiness.TemporalConsistency.Ranking.Status != "insufficient_independent_cohorts" || report.Readiness.TemporalConsistency.Probability.Status != "insufficient_independent_cohorts" {
 		t.Fatalf("validation readiness must consume temporal consistency gates: %+v", report.Readiness)
 	}
+	if report.SliceComparability.Status != "blocked_incomplete_slice_audit" || report.Readiness.SliceComparabilityStatus != report.SliceComparability.Status || report.SliceComparability.RequiredDimensions != 4 || len(report.SliceComparability.MissingRankingDimensions) != 4 || len(report.SliceComparability.MissingProbabilityDimensions) != 4 {
+		t.Fatalf("dual-track and readiness reports must bind the same slice comparability gate: report=%+v readiness=%+v", report.SliceComparability, report.Readiness)
+	}
 	changedTemporal := report
 	changedTemporal.TemporalSummary.IndependentCohortCount++
 	if dualTrackValidationChecksum(report) == dualTrackValidationChecksum(changedTemporal) {
 		t.Fatal("dual-track checksum should bind temporal cohort evidence")
+	}
+	changedSlices := report
+	changedSlices.SliceComparability.Status = "comparable"
+	if dualTrackValidationChecksum(report) == dualTrackValidationChecksum(changedSlices) {
+		t.Fatal("dual-track checksum should bind slice comparability evidence")
 	}
 	service.now = func() time.Time { return now.Add(time.Hour) }
 	later, err := service.DualTrackValidationReport()

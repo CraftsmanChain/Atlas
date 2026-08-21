@@ -11,7 +11,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const ValidationReadinessReportVersion = "prediction-validation-readiness-v5"
+const ValidationReadinessReportVersion = "prediction-validation-readiness-v6"
 const validationFeatureDistributionArchiveVersion = "gpu-feature-distribution-archive-v1"
 const validationFeatureDistributionMinimumPairs = 1
 
@@ -96,6 +96,13 @@ type ValidationReadinessReport struct {
 	ValidationSlicesSHA256             string                                    `json:"validation_slices_sha256"`
 	ComparableRankingSlices            int                                       `json:"comparable_ranking_slices"`
 	ComparableProbabilitySlices        int                                       `json:"comparable_probability_slices"`
+	SliceComparabilityStatus           string                                    `json:"slice_comparability_status"`
+	SliceRequiredDimensions            int                                       `json:"slice_required_dimensions"`
+	ComparableRankingDimensions        int                                       `json:"comparable_ranking_dimensions"`
+	ComparableProbabilityDimensions    int                                       `json:"comparable_probability_dimensions"`
+	ComparableJointDimensions          int                                       `json:"comparable_joint_dimensions"`
+	MissingRankingDimensions           []string                                  `json:"missing_ranking_dimensions"`
+	MissingProbabilityDimensions       []string                                  `json:"missing_probability_dimensions"`
 	SliceBlockingReasons               []string                                  `json:"slice_blocking_reasons"`
 	DataDriftVersion                   string                                    `json:"data_drift_version"`
 	DataDriftSHA256                    string                                    `json:"data_drift_sha256"`
@@ -201,6 +208,8 @@ func (s *Service) validationReadinessReport(boundRiskRanking *RiskRankingSnapsho
 		validationSlices = dualTrackValidationSlices(alignedRows, riskRankingReport, sliceAudit)
 	}
 	sliceReady, slicePartial, comparableRankingSlices, comparableProbabilitySlices, sliceBlockers := validationSliceReadinessSummary(sliceAudit, validationSlices)
+	sliceComparability := dualTrackSliceComparability(sliceAudit, validationSlices)
+	sliceBlockers = uniqueSorted(append(sliceBlockers, sliceComparability.BlockingReasons...))
 	driftReport, err := s.DataDriftReport()
 	if err != nil {
 		return ValidationReadinessReport{}, err
@@ -259,6 +268,13 @@ func (s *Service) validationReadinessReport(boundRiskRanking *RiskRankingSnapsho
 		ValidationSlicesSHA256:            validationSlicesChecksum(validationSlices),
 		ComparableRankingSlices:           comparableRankingSlices,
 		ComparableProbabilitySlices:       comparableProbabilitySlices,
+		SliceComparabilityStatus:          sliceComparability.Status,
+		SliceRequiredDimensions:           sliceComparability.RequiredDimensions,
+		ComparableRankingDimensions:       sliceComparability.RankingComparableDimensions,
+		ComparableProbabilityDimensions:   sliceComparability.ProbabilityComparableDimensions,
+		ComparableJointDimensions:         sliceComparability.JointComparableDimensions,
+		MissingRankingDimensions:          append([]string(nil), sliceComparability.MissingRankingDimensions...),
+		MissingProbabilityDimensions:      append([]string(nil), sliceComparability.MissingProbabilityDimensions...),
 		SliceBlockingReasons:              sliceBlockers,
 		DataDriftVersion:                  driftReport.Version,
 		DataDriftSHA256:                   driftReport.ReportSHA256,
@@ -307,6 +323,7 @@ func (s *Service) validationReadinessReport(boundRiskRanking *RiskRankingSnapsho
 			"archive the risk ranking snapshot SHA256 with every dual-track validation run",
 			"require both temporal consistency tracks to pass before promoting any candidate",
 			"require prediction-time slice dimensions to be fully frozen before interpreting sliced metrics",
+			"require every prediction-time slice dimension to have comparable ranking and probability evidence before promotion",
 			"archive the evidence bundle SHA256 with every offline validation run",
 			"archive the data drift report SHA256 before comparing shadow candidates",
 			"archive the calibration drift report SHA256 before comparing shadow candidates",
@@ -773,6 +790,13 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		ValidationSlicesSHA256             string                                    `json:"validation_slices_sha256"`
 		ComparableRankingSlices            int                                       `json:"comparable_ranking_slices"`
 		ComparableProbabilitySlices        int                                       `json:"comparable_probability_slices"`
+		SliceComparabilityStatus           string                                    `json:"slice_comparability_status"`
+		SliceRequiredDimensions            int                                       `json:"slice_required_dimensions"`
+		ComparableRankingDimensions        int                                       `json:"comparable_ranking_dimensions"`
+		ComparableProbabilityDimensions    int                                       `json:"comparable_probability_dimensions"`
+		ComparableJointDimensions          int                                       `json:"comparable_joint_dimensions"`
+		MissingRankingDimensions           []string                                  `json:"missing_ranking_dimensions"`
+		MissingProbabilityDimensions       []string                                  `json:"missing_probability_dimensions"`
 		SliceBlockingReasons               []string                                  `json:"slice_blocking_reasons"`
 		DataDriftVersion                   string                                    `json:"data_drift_version"`
 		DataDriftSHA256                    string                                    `json:"data_drift_sha256"`
@@ -838,8 +862,14 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		SliceAuditStatus: report.SliceAuditStatus, SliceReadyDimensions: report.SliceReadyDimensions,
 		SlicePartialDimensions: report.SlicePartialDimensions, ValidationSliceCount: report.ValidationSliceCount,
 		ValidationSlicesSHA256: report.ValidationSlicesSHA256, ComparableRankingSlices: report.ComparableRankingSlices,
-		ComparableProbabilitySlices: report.ComparableProbabilitySlices, SliceBlockingReasons: report.SliceBlockingReasons,
-		DataDriftVersion: report.DataDriftVersion, DataDriftSHA256: report.DataDriftSHA256,
+		ComparableProbabilitySlices: report.ComparableProbabilitySlices,
+		SliceComparabilityStatus:    report.SliceComparabilityStatus, SliceRequiredDimensions: report.SliceRequiredDimensions,
+		ComparableRankingDimensions: report.ComparableRankingDimensions, ComparableProbabilityDimensions: report.ComparableProbabilityDimensions,
+		ComparableJointDimensions:    report.ComparableJointDimensions,
+		MissingRankingDimensions:     append([]string(nil), report.MissingRankingDimensions...),
+		MissingProbabilityDimensions: append([]string(nil), report.MissingProbabilityDimensions...),
+		SliceBlockingReasons:         report.SliceBlockingReasons,
+		DataDriftVersion:             report.DataDriftVersion, DataDriftSHA256: report.DataDriftSHA256,
 		DataDriftStatus: report.DataDriftStatus, DataDriftCoverage: report.DataDriftCoverage,
 		DataDriftPSIProxy: report.DataDriftPSIProxy, DataDriftKSProxy: report.DataDriftKSProxy,
 		CalibrationDriftVersion: report.CalibrationDriftVersion, CalibrationDriftSHA256: report.CalibrationDriftSHA256,
