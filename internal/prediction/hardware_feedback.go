@@ -1,11 +1,14 @@
 package prediction
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"atlas/pkg/api"
+	"gorm.io/gorm"
 )
 
 const HardwareFaultFeedbackRequestVersion = "hardware-fault-feedback-request-v1"
@@ -132,6 +135,76 @@ func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) 
 	return row, nil
 }
 
+func (s *Service) PrepareHardwareFaultFeedbackPack(id uint) (api.HardwareFaultFeedbackRequest, error) {
+	if id == 0 {
+		return api.HardwareFaultFeedbackRequest{}, fmt.Errorf("feedback request id is required")
+	}
+	var row api.HardwareFaultFeedbackRequest
+	if err := s.db.First(&row, id).Error; err != nil {
+		return row, err
+	}
+	start := row.FaultOccurredAt.Add(-time.Duration(row.PreWindowHours) * time.Hour)
+	end := row.FaultOccurredAt.Add(time.Duration(row.PostWindowHours) * time.Hour)
+	blockers := api.StringList{}
+	needsHistoricalIdentity := row.IdentityResolutionStatus == "requires_historical_identity_at_fault_time" || strings.TrimSpace(row.GPUUUID) == ""
+	if needsHistoricalIdentity {
+		var interval api.HistoricalGPUIdentityInterval
+		err := s.db.Where("node_ip = ? AND gpu_index = ? AND first_seen_at <= ? AND last_seen_at >= ?", row.NodeIP, row.GPUIndex, row.FaultOccurredAt, row.FaultOccurredAt).
+			Order("observation_count DESC, last_seen_at DESC, id DESC").
+			First(&interval).Error
+		if err == nil {
+			row.GPUUUID = interval.GPUUUID
+			row.ModelName = firstNonEmpty(row.ModelName, interval.ModelName)
+			row.IdentityResolutionStatus = "historical_identity_resolved"
+			row.IdentityResolutionNote = fmt.Sprintf("resolved from historical identity interval #%d source=%s first=%s last=%s", interval.ID, interval.SourceKey, interval.FirstSeenAt.Format(time.RFC3339), interval.LastSeenAt.Format(time.RFC3339))
+		} else if err == gorm.ErrRecordNotFound {
+			row.IdentityResolutionStatus = "blocked_no_fault_time_identity"
+			row.IdentityResolutionNote = "no historical GPU identity interval covers the reported fault time for this node and GPU index"
+			blockers = append(blockers, "no historical GPU identity interval covers fault time")
+		} else {
+			return row, err
+		}
+	}
+	if strings.TrimSpace(row.GPUUUID) == "" {
+		blockers = append(blockers, "resolved failed GPU UUID is required before history pack extraction")
+	}
+	var audit api.MonitoringHistoryAudit
+	err := s.db.Where("status = ? AND earliest_sample_at <= ? AND latest_sample_at >= ?", "success", start, end).
+		Order("finished_at DESC, id DESC").
+		First(&audit).Error
+	if err == nil {
+		if audit.SourceKey != "" && !strings.Contains(row.HistoryPackScope, "source_key=") {
+			row.HistoryPackScope = row.HistoryPackScope + fmt.Sprintf(" source_key=%s", audit.SourceKey)
+		}
+	} else if err == gorm.ErrRecordNotFound {
+		blockers = append(blockers, fmt.Sprintf("no successful historical monitoring audit covers %s to %s", start.Format(time.RFC3339), end.Format(time.RFC3339)))
+	} else {
+		return row, err
+	}
+	row.HistoryPackScope = feedbackHistoryScope(row.NodeIP, row.GPUUUID, row.ReportedGPUUUID, row.GPUIndex, row.FaultOccurredAt, row.PreWindowHours, row.PostWindowHours, row.IdentityResolutionStatus)
+	if audit.SourceKey != "" {
+		row.HistoryPackScope += fmt.Sprintf(" source_key=%s", audit.SourceKey)
+	}
+	if len(blockers) > 0 {
+		row.Status = "blocked"
+		row.HistoryPackStatus = "blocked_identity_unresolved"
+		if row.IdentityResolutionStatus == "historical_identity_resolved" || row.IdentityResolutionStatus == "current_identity_selected" {
+			row.HistoryPackStatus = "blocked_history_source_unavailable"
+		}
+		row.HistoryPackSHA256 = ""
+		row.BlockingReasons = blockers
+	} else {
+		row.Status = "history_pack_manifest_ready"
+		row.HistoryPackStatus = "manifest_ready_pending_metric_extraction"
+		row.HistoryPackSHA256 = hardwareFeedbackPackChecksum(row, audit)
+		row.BlockingReasons = api.StringList{}
+	}
+	if err := s.db.Save(&row).Error; err != nil {
+		return row, err
+	}
+	return row, nil
+}
+
 func parseFeedbackTime(value string) (time.Time, error) {
 	text := strings.TrimSpace(value)
 	if text == "" {
@@ -144,6 +217,31 @@ func parseFeedbackTime(value string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("fault_occurred_at must be RFC3339 or local datetime")
+}
+
+func hardwareFeedbackPackChecksum(row api.HardwareFaultFeedbackRequest, audit api.MonitoringHistoryAudit) string {
+	fingerprint := map[string]any{
+		"version":                    HardwareFaultFeedbackRequestVersion,
+		"request_key":                row.RequestKey,
+		"node_ip":                    row.NodeIP,
+		"gpu_uuid":                   row.GPUUUID,
+		"reported_gpu_uuid":          row.ReportedGPUUUID,
+		"gpu_index":                  row.GPUIndex,
+		"fault_type":                 row.FaultType,
+		"fault_occurred_at":          row.FaultOccurredAt.UTC().Format(time.RFC3339),
+		"pre_window_hours":           row.PreWindowHours,
+		"post_window_hours":          row.PostWindowHours,
+		"repair_action":              row.RepairAction,
+		"hardware_replaced":          row.HardwareReplaced,
+		"training_eligible":          row.TrainingEligible,
+		"identity_resolution_status": row.IdentityResolutionStatus,
+		"history_pack_scope":         row.HistoryPackScope,
+		"source_key":                 audit.SourceKey,
+		"audit_id":                   audit.ID,
+	}
+	payload, _ := json.Marshal(fingerprint)
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", sum)
 }
 
 func feedbackHistoryScope(nodeIP, gpuUUID, reportedGPUUUID string, gpuIndex int, occurredAt time.Time, preWindow, postWindow int, identityStatus string) string {

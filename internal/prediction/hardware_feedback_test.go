@@ -148,3 +148,80 @@ func TestHardwareFaultFeedbackUsesCurrentIdentityWhenNoReplacementReported(t *te
 		t.Fatalf("non-replacement feedback should not require replacement identity blocker: %+v", row)
 	}
 }
+
+func TestPrepareHardwareFaultFeedbackPackResolvesReplacementIdentityAndSourceCoverage(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
+	last := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+	if err := db.Create(&api.HistoricalGPUIdentityInterval{
+		IntervalKey: "identity-10.114.4.23-gpu3-old",
+		SourceKey:   "current-prometheus", NodeIP: "10.114.4.23", GPUIndex: 3, GPUUUID: "GPU-OLD-FAILED", ModelName: "H100",
+		FirstSeenAt: first, LastSeenAt: last, ObservationCount: 120, EvidenceStrength: "strong",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&api.MonitoringHistoryAudit{
+		SourceKey: "current-prometheus", SourceName: "Current Prometheus", SourceType: "prometheus", BaseURL: "http://prometheus",
+		Status: "success", EarliestSampleAt: &first, LatestSampleAt: &last, StartedAt: first, FinishedAt: last,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	row, err := service.CreateHardwareFaultFeedback(HardwareFaultFeedbackInput{
+		NodeIP: "10.114.4.23", ReportedGPUUUID: "GPU-NEW-AFTER-REPLACE", GPUIndex: 3,
+		FaultType: "pcie_link_failure", FaultOccurredAt: "2026-08-21T08:00:00Z",
+		PreWindowHours: 8, PostWindowHours: 4, Operator: "ops-c", RepairAction: "replace_gpu", TrainingEligible: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := service.PrepareHardwareFaultFeedbackPack(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Status != "history_pack_manifest_ready" || prepared.HistoryPackStatus != "manifest_ready_pending_metric_extraction" || prepared.HistoryPackSHA256 == "" {
+		t.Fatalf("pack manifest was not prepared: %+v", prepared)
+	}
+	if prepared.GPUUUID != "GPU-OLD-FAILED" || prepared.ReportedGPUUUID != "GPU-NEW-AFTER-REPLACE" || prepared.IdentityResolutionStatus != "historical_identity_resolved" {
+		t.Fatalf("replacement identity was not resolved safely: %+v", prepared)
+	}
+	if len(prepared.BlockingReasons) != 0 || !strings.Contains(prepared.HistoryPackScope, "source_key=current-prometheus") {
+		t.Fatalf("prepared pack kept blockers or lost source scope: %+v", prepared)
+	}
+	again, err := service.PrepareHardwareFaultFeedbackPack(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.HistoryPackSHA256 != prepared.HistoryPackSHA256 {
+		t.Fatalf("pack checksum must be stable: %s != %s", again.HistoryPackSHA256, prepared.HistoryPackSHA256)
+	}
+}
+
+func TestPrepareHardwareFaultFeedbackPackBlocksWhenFaultTimeIdentityMissing(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	row, err := service.CreateHardwareFaultFeedback(HardwareFaultFeedbackInput{
+		NodeIP: "10.114.4.24", ReportedGPUUUID: "GPU-NEW", GPUIndex: 3,
+		FaultType: "pcie_link_failure", FaultOccurredAt: "2026-08-21T08:00:00Z",
+		Operator: "ops-d", RepairAction: "replace_gpu", TrainingEligible: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := service.PrepareHardwareFaultFeedbackPack(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Status != "blocked" || prepared.HistoryPackStatus != "blocked_identity_unresolved" || prepared.HistoryPackSHA256 != "" {
+		t.Fatalf("missing identity should block pack preparation: %+v", prepared)
+	}
+	if prepared.IdentityResolutionStatus != "blocked_no_fault_time_identity" || len(prepared.BlockingReasons) == 0 {
+		t.Fatalf("missing identity blocker not recorded: %+v", prepared)
+	}
+}
