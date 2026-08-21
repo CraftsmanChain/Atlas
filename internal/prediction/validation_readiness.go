@@ -11,7 +11,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const ValidationReadinessReportVersion = "prediction-validation-readiness-v3"
+const ValidationReadinessReportVersion = "prediction-validation-readiness-v4"
 const validationFeatureDistributionArchiveVersion = "gpu-feature-distribution-archive-v1"
 const validationFeatureDistributionMinimumPairs = 1
 
@@ -84,6 +84,9 @@ type ValidationReadinessReport struct {
 	RiskRankingTargetGPUs              int                                       `json:"risk_ranking_target_gpu_count"`
 	RiskRankingScoredGPUs              int                                       `json:"risk_ranking_scored_gpu_count"`
 	RiskRankingNodes                   int                                       `json:"risk_ranking_node_count"`
+	TemporalConsistencyVersion         string                                    `json:"temporal_consistency_version"`
+	TemporalSummary                    DualTrackTemporalSummary                  `json:"temporal_summary"`
+	TemporalConsistency                DualTrackTemporalConsistency              `json:"temporal_consistency"`
 	DataDriftVersion                   string                                    `json:"data_drift_version"`
 	DataDriftSHA256                    string                                    `json:"data_drift_sha256"`
 	DataDriftStatus                    string                                    `json:"data_drift_status"`
@@ -132,6 +135,10 @@ type ValidationReadinessReport struct {
 }
 
 func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error) {
+	return s.validationReadinessReport(nil, nil, nil)
+}
+
+func (s *Service) validationReadinessReport(boundRiskRanking *RiskRankingSnapshotReport, boundTemporalSummary *DualTrackTemporalSummary, boundTemporalConsistency *DualTrackTemporalConsistency) (ValidationReadinessReport, error) {
 	labelManifest, err := s.LabelManifest()
 	if err != nil {
 		return ValidationReadinessReport{}, err
@@ -148,9 +155,27 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 	if err != nil {
 		return ValidationReadinessReport{}, err
 	}
-	riskRankingReport, err := s.RiskRankingSnapshotReport()
-	if err != nil {
-		return ValidationReadinessReport{}, err
+	var riskRankingReport RiskRankingSnapshotReport
+	if boundRiskRanking != nil {
+		riskRankingReport = *boundRiskRanking
+	} else {
+		riskRankingReport, err = s.RiskRankingSnapshotReport()
+		if err != nil {
+			return ValidationReadinessReport{}, err
+		}
+	}
+	temporalSummary := DualTrackTemporalSummary{CohortLimit: DualTrackTemporalCohortLimit}
+	temporalConsistency := dualTrackTemporalConsistency(nil)
+	if boundTemporalSummary != nil && boundTemporalConsistency != nil {
+		temporalSummary = *boundTemporalSummary
+		temporalConsistency = *boundTemporalConsistency
+	} else if riskRankingReport.Status == "shadow_snapshot_available" && riskRankingReport.SnapshotCutoffAt != nil {
+		var temporalCohorts []DualTrackTemporalCohort
+		temporalSummary, temporalCohorts, err = s.dualTrackTemporalCohorts(riskRankingReport)
+		if err != nil {
+			return ValidationReadinessReport{}, err
+		}
+		temporalConsistency = dualTrackTemporalConsistency(temporalCohorts)
 	}
 	driftReport, err := s.DataDriftReport()
 	if err != nil {
@@ -198,6 +223,9 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 		RiskRankingTargetGPUs:             riskRankingReport.TargetGPUCount,
 		RiskRankingScoredGPUs:             riskRankingReport.ScoredGPUCount,
 		RiskRankingNodes:                  riskRankingReport.NodeCount,
+		TemporalConsistencyVersion:        DualTrackValidationReportVersion,
+		TemporalSummary:                   temporalSummary,
+		TemporalConsistency:               temporalConsistency,
 		DataDriftVersion:                  driftReport.Version,
 		DataDriftSHA256:                   driftReport.ReportSHA256,
 		DataDriftStatus:                   driftReport.Status,
@@ -243,6 +271,7 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 		RecommendedNextRun: []string{
 			"freeze the label manifest SHA256 before comparing challenger metrics",
 			"archive the risk ranking snapshot SHA256 with every dual-track validation run",
+			"require both temporal consistency tracks to pass before promoting any candidate",
 			"archive the evidence bundle SHA256 with every offline validation run",
 			"archive the data drift report SHA256 before comparing shadow candidates",
 			"archive the calibration drift report SHA256 before comparing shadow candidates",
@@ -256,7 +285,7 @@ func (s *Service) ValidationReadinessReport() (ValidationReadinessReport, error)
 	if report.ChallengerHistoricalSignal != "covered" {
 		report.RecommendedNextRun = append(report.RecommendedNextRun, "do not interpret historical-risk challenger policies as comparable until their 7d signal coverage is covered")
 	}
-	report.BlockingReasons = validationReadinessBlockers(labelManifest, evidenceBundle, outcomeReport, challengerReport, riskRankingReport, driftReport, calibrationReport, featureDriftReport, distributionArchive)
+	report.BlockingReasons = validationReadinessBlockers(labelManifest, evidenceBundle, outcomeReport, challengerReport, riskRankingReport, temporalConsistency, driftReport, calibrationReport, featureDriftReport, distributionArchive)
 	if len(report.BlockingReasons) > 0 {
 		report.Status = "blocked"
 		report.RecommendedNextRun = append(report.RecommendedNextRun, report.BlockingReasons...)
@@ -450,7 +479,7 @@ func validationFeatureDistributionComparabilityBlockers(archive validationFeatur
 	}
 }
 
-func validationReadinessBlockers(labelManifest LabelManifest, evidenceBundle EvidenceBundleReport, outcomeReport OutcomeReport, challengerReport HeaRankChallengerReport, riskRankingReport RiskRankingSnapshotReport, driftReport DataDriftReport, calibrationReport CalibrationDriftReport, featureDriftReport FeatureDriftReport, distributionArchive validationFeatureDistributionArchive) []string {
+func validationReadinessBlockers(labelManifest LabelManifest, evidenceBundle EvidenceBundleReport, outcomeReport OutcomeReport, challengerReport HeaRankChallengerReport, riskRankingReport RiskRankingSnapshotReport, temporalConsistency DualTrackTemporalConsistency, driftReport DataDriftReport, calibrationReport CalibrationDriftReport, featureDriftReport FeatureDriftReport, distributionArchive validationFeatureDistributionArchive) []string {
 	blockers := []string{}
 	if labelManifest.QualityGateStatus == "blocked" {
 		blockers = append(blockers, labelManifest.BlockingReasons...)
@@ -478,6 +507,12 @@ func validationReadinessBlockers(labelManifest LabelManifest, evidenceBundle Evi
 	}
 	if riskRankingReport.ReportSHA256 == "" {
 		blockers = append(blockers, "risk ranking snapshot SHA256 is unavailable")
+	}
+	if temporalConsistency.Ranking.Status != "consistent" {
+		blockers = append(blockers, temporalConsistency.Ranking.BlockingReasons...)
+	}
+	if temporalConsistency.Probability.Status != "consistent" {
+		blockers = append(blockers, temporalConsistency.Probability.BlockingReasons...)
 	}
 	if driftReport.Status == "blocked_no_shadow_runs" || driftReport.Status == "review_required" {
 		blockers = append(blockers, driftReport.BlockingReasons...)
@@ -654,6 +689,9 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		RiskRankingTargetGPUs              int                                       `json:"risk_ranking_target_gpu_count"`
 		RiskRankingScoredGPUs              int                                       `json:"risk_ranking_scored_gpu_count"`
 		RiskRankingNodes                   int                                       `json:"risk_ranking_node_count"`
+		TemporalConsistencyVersion         string                                    `json:"temporal_consistency_version"`
+		TemporalSummary                    DualTrackTemporalSummary                  `json:"temporal_summary"`
+		TemporalConsistency                DualTrackTemporalConsistency              `json:"temporal_consistency"`
 		DataDriftVersion                   string                                    `json:"data_drift_version"`
 		DataDriftSHA256                    string                                    `json:"data_drift_sha256"`
 		DataDriftStatus                    string                                    `json:"data_drift_status"`
@@ -712,7 +750,9 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		RiskRankingShadowRunKey: report.RiskRankingShadowRunKey, RiskRankingHorizonMinutes: report.RiskRankingHorizonMinutes,
 		RiskRankingSnapshotCutoffAt: report.RiskRankingSnapshotCutoffAt, RiskRankingTargetGPUs: report.RiskRankingTargetGPUs,
 		RiskRankingScoredGPUs: report.RiskRankingScoredGPUs, RiskRankingNodes: report.RiskRankingNodes,
-		DataDriftVersion: report.DataDriftVersion, DataDriftSHA256: report.DataDriftSHA256,
+		TemporalConsistencyVersion: report.TemporalConsistencyVersion, TemporalSummary: report.TemporalSummary,
+		TemporalConsistency: report.TemporalConsistency,
+		DataDriftVersion:    report.DataDriftVersion, DataDriftSHA256: report.DataDriftSHA256,
 		DataDriftStatus: report.DataDriftStatus, DataDriftCoverage: report.DataDriftCoverage,
 		DataDriftPSIProxy: report.DataDriftPSIProxy, DataDriftKSProxy: report.DataDriftKSProxy,
 		CalibrationDriftVersion: report.CalibrationDriftVersion, CalibrationDriftSHA256: report.CalibrationDriftSHA256,

@@ -142,7 +142,16 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 	if err != nil {
 		return DualTrackValidationReport{}, err
 	}
-	readiness, err := s.ValidationReadinessReport()
+	temporalSummary := DualTrackTemporalSummary{CohortLimit: DualTrackTemporalCohortLimit}
+	temporalCohorts := []DualTrackTemporalCohort{}
+	if rankingSnapshot.Status == "shadow_snapshot_available" && rankingSnapshot.SnapshotCutoffAt != nil {
+		temporalSummary, temporalCohorts, err = s.dualTrackTemporalCohorts(rankingSnapshot)
+		if err != nil {
+			return DualTrackValidationReport{}, err
+		}
+	}
+	temporalConsistency := dualTrackTemporalConsistency(temporalCohorts)
+	readiness, err := s.validationReadinessReport(&rankingSnapshot, &temporalSummary, &temporalConsistency)
 	if err != nil {
 		return DualTrackValidationReport{}, err
 	}
@@ -171,9 +180,9 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 			FeatureDriftStatus: readiness.FeatureDriftStatus,
 		},
 		Readiness:           readiness,
-		TemporalSummary:     DualTrackTemporalSummary{CohortLimit: DualTrackTemporalCohortLimit},
-		TemporalCohorts:     []DualTrackTemporalCohort{},
-		TemporalConsistency: dualTrackTemporalConsistency(nil),
+		TemporalSummary:     temporalSummary,
+		TemporalCohorts:     temporalCohorts,
+		TemporalConsistency: temporalConsistency,
 		Interpretation: []string{
 			"ranking track answers who should be reviewed first and is evaluated with node Ranking@K metrics",
 			"probability track answers event risk within a fixed horizon and is evaluated with discrimination and calibration metrics",
@@ -193,12 +202,6 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 		report.ReportSHA256 = dualTrackValidationChecksum(report)
 		return report, nil
 	}
-	report.TemporalSummary, report.TemporalCohorts, err = s.dualTrackTemporalCohorts(rankingSnapshot)
-	if err != nil {
-		return DualTrackValidationReport{}, err
-	}
-	report.TemporalConsistency = dualTrackTemporalConsistency(report.TemporalCohorts)
-
 	var rows []api.PredictionOutcomeEvaluation
 	if err := s.db.Where("model_spec_id = ? AND horizon_minutes = ? AND prediction_evaluated_at = ?", rankingSnapshot.ModelSpecID, rankingSnapshot.HorizonMinutes, *rankingSnapshot.SnapshotCutoffAt).
 		Order("node_ip ASC, gpu_uuid ASC, id ASC").Find(&rows).Error; err != nil {
