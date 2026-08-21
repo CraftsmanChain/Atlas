@@ -189,6 +189,9 @@ func TestDualTrackValidationAlignsRankingAndProbabilityCohort(t *testing.T) {
 	if report.TemporalConsistency.Ranking.Status != "insufficient_independent_cohorts" || report.TemporalConsistency.Probability.Status != "insufficient_independent_cohorts" || report.TemporalConsistency.Ranking.EvaluableIndependentCohorts != 2 || report.TemporalConsistency.Probability.EvaluableIndependentCohorts != 2 {
 		t.Fatalf("two independent cohorts must not pass the three-cohort consistency gate: %+v", report.TemporalConsistency)
 	}
+	if report.Readiness.TemporalConsistencyVersion != DualTrackValidationReportVersion || report.Readiness.TemporalSummary.IndependentCohortCount != 2 || report.Readiness.TemporalConsistency.Ranking.Status != "insufficient_independent_cohorts" || report.Readiness.TemporalConsistency.Probability.Status != "insufficient_independent_cohorts" {
+		t.Fatalf("validation readiness must consume temporal consistency gates: %+v", report.Readiness)
+	}
 	changedTemporal := report
 	changedTemporal.TemporalSummary.IndependentCohortCount++
 	if dualTrackValidationChecksum(report) == dualTrackValidationChecksum(changedTemporal) {
