@@ -226,6 +226,55 @@ func TestPrepareHardwareFaultFeedbackPackBlocksWhenFaultTimeIdentityMissing(t *t
 	}
 }
 
+func TestBaseboardFaultFeedbackAllowsNodeScopeAndDatePrecision(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+	last := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
+	if err := db.Create(&api.MonitoringHistoryAudit{
+		SourceKey: "current-prometheus", SourceName: "Current Prometheus", SourceType: "prometheus", BaseURL: "http://prometheus",
+		Status: "success", EarliestSampleAt: &first, LatestSampleAt: &last, StartedAt: first, FinishedAt: last,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	row, err := service.CreateHardwareFaultFeedback(HardwareFaultFeedbackInput{
+		NodeIP: "10.114.4.36", TargetScope: "baseboard", AffectedGPUIndexes: []string{"0", "1", "2", "3"},
+		FaultType: "gpu_baseboard_fault", FaultOccurredAt: "2026-08-15", FaultTimePrecision: "date",
+		PreWindowHours: 72, PostWindowHours: 24, Operator: "admin", RepairAction: "replace_gpu_baseboard",
+		HardwareReplaced: true, TrainingEligible: true,
+		Description: "GPU baseboard fault; cross-swapping GPU did not recover; replacing GPU baseboard recovered the node",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.TargetScope != "baseboard" || row.GPUUUID != "" || row.GPUIndex != 0 || row.IdentityResolutionStatus != "node_or_board_scope" {
+		t.Fatalf("baseboard feedback should not be forced into single-GPU identity: %+v", row)
+	}
+	if row.FaultTimePrecision != "date" || row.FaultOccurredAt != time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC) || row.FaultWindowStartAt == nil || row.FaultWindowEndAt == nil {
+		t.Fatalf("date precision window not persisted: %+v", row)
+	}
+	if len(row.AffectedGPUIndexes) != 4 || !strings.Contains(row.HistoryPackScope, "target_scope=baseboard") || !strings.Contains(row.HistoryPackScope, "time_precision=date") {
+		t.Fatalf("baseboard scope metadata missing: %+v", row)
+	}
+	prepared, err := service.PrepareHardwareFaultFeedbackPack(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Status != "history_pack_manifest_ready" || prepared.HistoryPackStatus != "manifest_ready_pending_metric_extraction" || prepared.HistoryPackSHA256 == "" {
+		t.Fatalf("baseboard feedback should prepare node-scoped history pack without GPU UUID: %+v", prepared)
+	}
+	reviewed, err := service.ReviewHardwareFaultFeedbackWarning(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed.WarningReviewStatus != "manual_feedback_no_prior_shadow_warning" || reviewed.MatchedWarningCount != 0 {
+		t.Fatalf("baseboard node-scope warning review failed: %+v", reviewed)
+	}
+}
+
 func TestReviewHardwareFaultFeedbackWarningMarksNoPriorShadowWarning(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {

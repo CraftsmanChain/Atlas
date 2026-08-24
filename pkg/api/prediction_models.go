@@ -185,13 +185,18 @@ type HardwareFaultFeedbackRequest struct {
 	RequestKey               string     `json:"request_key" gorm:"uniqueIndex;not null"`
 	Status                   string     `json:"status" gorm:"index;not null"`
 	NodeIP                   string     `json:"node_ip" gorm:"index;not null"`
+	TargetScope              string     `json:"target_scope" gorm:"index;not null;default:gpu"`
 	GPUUUID                  string     `json:"gpu_uuid,omitempty" gorm:"column:gpu_uuid;index"`
 	ReportedGPUUUID          string     `json:"reported_gpu_uuid,omitempty" gorm:"column:reported_gpu_uuid;index"`
 	GPUIndex                 int        `json:"gpu_index" gorm:"column:gpu_index;index"`
+	AffectedGPUIndexes       StringList `json:"affected_gpu_indexes" gorm:"type:text"`
 	GPUAssetID               uint       `json:"gpu_asset_id,omitempty" gorm:"index"`
 	ModelName                string     `json:"model_name,omitempty" gorm:"index"`
 	FaultType                string     `json:"fault_type" gorm:"index;not null"`
 	FaultOccurredAt          time.Time  `json:"fault_occurred_at" gorm:"index;not null"`
+	FaultTimePrecision       string     `json:"fault_time_precision" gorm:"index;not null;default:exact"`
+	FaultWindowStartAt       *time.Time `json:"fault_window_start_at,omitempty" gorm:"index"`
+	FaultWindowEndAt         *time.Time `json:"fault_window_end_at,omitempty" gorm:"index"`
 	PreWindowHours           int        `json:"pre_window_hours"`
 	PostWindowHours          int        `json:"post_window_hours"`
 	Operator                 string     `json:"operator" gorm:"index;not null"`

@@ -238,7 +238,7 @@ func feedbackHardwareBlockers(feedback api.HardwareFaultFeedbackRequest) []strin
 	if !feedback.TrainingEligible {
 		return reasons
 	}
-	if strings.TrimSpace(feedback.GPUUUID) == "" || strings.HasPrefix(feedback.IdentityResolutionStatus, "blocked") || feedback.IdentityResolutionStatus == "requires_historical_identity_at_fault_time" {
+	if feedbackHumanTargetScope(feedback) == "gpu" && (strings.TrimSpace(feedback.GPUUUID) == "" || strings.HasPrefix(feedback.IdentityResolutionStatus, "blocked") || feedback.IdentityResolutionStatus == "requires_historical_identity_at_fault_time") {
 		reasons = append(reasons, "fault-time GPU identity is missing")
 	}
 	if feedback.CreatedAt.IsZero() {
@@ -254,6 +254,13 @@ func feedbackHardwareBlockers(feedback api.HardwareFaultFeedbackRequest) []strin
 		reasons = append(reasons, "shadow warning coverage review is missing")
 	}
 	return uniqueSorted(append(reasons, feedback.BlockingReasons...))
+}
+
+func feedbackHumanTargetScope(feedback api.HardwareFaultFeedbackRequest) string {
+	if strings.TrimSpace(feedback.TargetScope) == "" {
+		return "gpu"
+	}
+	return feedback.TargetScope
 }
 
 func isHardwareWarningReviewed(status string) bool {

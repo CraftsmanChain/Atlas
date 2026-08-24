@@ -44,12 +44,17 @@ type manualFeedbackFeatureManifestRecord struct {
 	FeedbackRequestID    uint      `json:"feedback_request_id"`
 	RequestKey           string    `json:"feedback_request_key"`
 	NodeIP               string    `json:"node_ip"`
+	TargetScope          string    `json:"target_scope"`
 	GPUUUID              string    `json:"gpu_uuid"`
 	ReportedGPUUUID      string    `json:"reported_gpu_uuid,omitempty"`
 	GPUIndex             int       `json:"gpu_index"`
+	AffectedGPUIndexes   []string  `json:"affected_gpu_indexes,omitempty"`
 	ModelName            string    `json:"model_name,omitempty"`
 	FaultType            string    `json:"fault_type"`
 	FaultOccurredAt      time.Time `json:"fault_occurred_at"`
+	FaultTimePrecision   string    `json:"fault_time_precision"`
+	FaultWindowStartAt   time.Time `json:"fault_window_start_at"`
+	FaultWindowEndAt     time.Time `json:"fault_window_end_at"`
 	LabelAvailableAt     time.Time `json:"label_available_at"`
 	PreWindowStartAt     time.Time `json:"pre_window_start_at"`
 	PostWindowEndAt      time.Time `json:"post_window_end_at"`
@@ -143,13 +148,14 @@ func (s *Service) BuildManualFeedbackFeatureRequestManifest(request ManualFeedba
 			blockers = append(blockers, fmt.Sprintf("feedback %d source_key %s does not match build source_key %s", row.ID, rowSource, sourceKey))
 			continue
 		}
+		faultStart, faultEnd := manualFeedbackFaultWindow(row)
 		records = append(records, manualFeedbackFeatureManifestRecord{
-			FeedbackRequestID: row.ID, RequestKey: row.RequestKey, NodeIP: row.NodeIP, GPUUUID: row.GPUUUID,
-			ReportedGPUUUID: row.ReportedGPUUUID, GPUIndex: row.GPUIndex, ModelName: row.ModelName, FaultType: row.FaultType,
-			FaultOccurredAt: row.FaultOccurredAt, LabelAvailableAt: row.CreatedAt,
-			PreWindowStartAt: row.FaultOccurredAt.Add(-time.Duration(row.PreWindowHours) * time.Hour),
-			PostWindowEndAt:  row.FaultOccurredAt.Add(time.Duration(row.PostWindowHours) * time.Hour),
-			FeatureCutoffAt:  row.FaultOccurredAt, PreWindowHours: row.PreWindowHours, PostWindowHours: row.PostWindowHours,
+			FeedbackRequestID: row.ID, RequestKey: row.RequestKey, NodeIP: row.NodeIP, TargetScope: manualFeedbackTargetScope(row), GPUUUID: row.GPUUUID,
+			ReportedGPUUUID: row.ReportedGPUUUID, GPUIndex: row.GPUIndex, AffectedGPUIndexes: append([]string(nil), row.AffectedGPUIndexes...), ModelName: row.ModelName, FaultType: row.FaultType,
+			FaultOccurredAt: row.FaultOccurredAt, FaultTimePrecision: manualFeedbackTimePrecision(row), FaultWindowStartAt: faultStart, FaultWindowEndAt: faultEnd, LabelAvailableAt: row.CreatedAt,
+			PreWindowStartAt: faultStart.Add(-time.Duration(row.PreWindowHours) * time.Hour),
+			PostWindowEndAt:  faultEnd.Add(time.Duration(row.PostWindowHours) * time.Hour),
+			FeatureCutoffAt:  faultStart, PreWindowHours: row.PreWindowHours, PostWindowHours: row.PostWindowHours,
 			HistoryPackSHA256: row.HistoryPackSHA256, HistoryPackScope: row.HistoryPackScope,
 			WarningReviewStatus: row.WarningReviewStatus, MatchedWarningCount: row.MatchedWarningCount,
 			RepairAction: row.RepairAction, TrainingEligible: row.TrainingEligible, IdentityStatus: row.IdentityResolutionStatus,
@@ -271,7 +277,7 @@ func manualFeedbackFeatureBlockers(row api.HardwareFaultFeedbackRequest) []strin
 	if !row.TrainingEligible {
 		return reasons
 	}
-	if strings.TrimSpace(row.GPUUUID) == "" || strings.HasPrefix(row.IdentityResolutionStatus, "blocked") || row.IdentityResolutionStatus == "requires_historical_identity_at_fault_time" {
+	if manualFeedbackTargetScope(row) == "gpu" && (strings.TrimSpace(row.GPUUUID) == "" || strings.HasPrefix(row.IdentityResolutionStatus, "blocked") || row.IdentityResolutionStatus == "requires_historical_identity_at_fault_time") {
 		reasons = append(reasons, fmt.Sprintf("feedback %d missing fault-time GPU identity", row.ID))
 	}
 	if row.HistoryPackStatus != "manifest_ready_pending_metric_extraction" || strings.TrimSpace(row.HistoryPackSHA256) == "" {
@@ -281,6 +287,35 @@ func manualFeedbackFeatureBlockers(row api.HardwareFaultFeedbackRequest) []strin
 		reasons = append(reasons, fmt.Sprintf("feedback %d shadow warning coverage review is missing", row.ID))
 	}
 	return reasons
+}
+
+func manualFeedbackTargetScope(row api.HardwareFaultFeedbackRequest) string {
+	if strings.TrimSpace(row.TargetScope) == "" {
+		return "gpu"
+	}
+	return row.TargetScope
+}
+
+func manualFeedbackTimePrecision(row api.HardwareFaultFeedbackRequest) string {
+	if strings.TrimSpace(row.FaultTimePrecision) == "" {
+		return "exact"
+	}
+	return row.FaultTimePrecision
+}
+
+func manualFeedbackFaultWindow(row api.HardwareFaultFeedbackRequest) (time.Time, time.Time) {
+	start := row.FaultOccurredAt
+	end := row.FaultOccurredAt
+	if row.FaultWindowStartAt != nil {
+		start = *row.FaultWindowStartAt
+	}
+	if row.FaultWindowEndAt != nil {
+		end = *row.FaultWindowEndAt
+	}
+	if end.Before(start) {
+		return start, start
+	}
+	return start, end
 }
 
 func isManualFeedbackWarningReviewed(status string) bool {
