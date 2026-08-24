@@ -108,6 +108,8 @@ func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) 
 		HistoryPackStatus:        "queued_offline_collection",
 		IdentityResolutionStatus: identityStatus,
 		IdentityResolutionNote:   identityNote,
+		WarningReviewStatus:      "pending_warning_review",
+		WarningReviewWindowHours: preWindow,
 		BlockingReasons:          blockingReasons,
 	}
 	var asset api.GPUAsset
@@ -130,6 +132,76 @@ func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) 
 	}
 	row.HistoryPackScope = feedbackHistoryScope(row.NodeIP, row.GPUUUID, row.ReportedGPUUUID, row.GPUIndex, row.FaultOccurredAt, row.PreWindowHours, row.PostWindowHours, row.IdentityResolutionStatus)
 	if err := s.db.Create(&row).Error; err != nil {
+		return row, err
+	}
+	return row, nil
+}
+
+func (s *Service) ReviewHardwareFaultFeedbackWarning(id uint) (api.HardwareFaultFeedbackRequest, error) {
+	if id == 0 {
+		return api.HardwareFaultFeedbackRequest{}, fmt.Errorf("feedback request id is required")
+	}
+	var row api.HardwareFaultFeedbackRequest
+	if err := s.db.First(&row, id).Error; err != nil {
+		return row, err
+	}
+	if strings.TrimSpace(row.GPUUUID) == "" || row.IdentityResolutionStatus == "requires_historical_identity_at_fault_time" {
+		prepared, err := s.PrepareHardwareFaultFeedbackPack(id)
+		if err != nil {
+			return row, err
+		}
+		row = prepared
+	}
+	windowHours := warningReviewWindowHours(row)
+	if strings.TrimSpace(row.GPUUUID) == "" || strings.HasPrefix(row.IdentityResolutionStatus, "blocked") {
+		row.WarningReviewStatus = "blocked_identity_required"
+		row.WarningReviewWindowHours = windowHours
+		row.MatchedWarningCount = 0
+		row.MatchedWarningKeys = api.StringList{}
+		row.WarningReviewNote = "cannot review shadow warning coverage until the failed GPU identity at fault time is resolved"
+		if err := s.db.Save(&row).Error; err != nil {
+			return row, err
+		}
+		return row, nil
+	}
+	start := row.FaultOccurredAt.Add(-time.Duration(windowHours) * time.Hour)
+	end := row.FaultOccurredAt
+	var predictions []api.HardwareRiskPrediction
+	if err := s.db.Where("node_ip = ? AND gpu_uuid = ? AND evaluated_at >= ? AND evaluated_at <= ?", row.NodeIP, row.GPUUUID, start, end).
+		Order("evaluated_at DESC, id DESC").
+		Limit(20).
+		Find(&predictions).Error; err != nil {
+		return row, err
+	}
+	keys := make(api.StringList, 0, len(predictions))
+	positive := 0
+	probabilityScored := 0
+	thresholds := s.warningReviewThresholds(predictions)
+	for _, prediction := range predictions {
+		threshold, hasThreshold := thresholds[prediction.ModelSpecID]
+		if prediction.Probability != nil {
+			probabilityScored++
+			if hasThreshold && *prediction.Probability >= threshold {
+				positive++
+			}
+		}
+		keys = append(keys, fmt.Sprintf("prediction:%d model=%s status=%s p=%s threshold=%s evaluated=%s expires=%s", prediction.ID, prediction.ModelVersion, prediction.Status, formatProbability(prediction.Probability), formatThreshold(threshold, hasThreshold), prediction.EvaluatedAt.UTC().Format(time.RFC3339), prediction.ExpiresAt.UTC().Format(time.RFC3339)))
+	}
+	row.WarningReviewWindowHours = windowHours
+	row.MatchedWarningCount = len(predictions)
+	row.MatchedWarningKeys = keys
+	switch {
+	case len(predictions) == 0:
+		row.WarningReviewStatus = "manual_feedback_no_prior_shadow_warning"
+		row.WarningReviewNote = fmt.Sprintf("manual hardware-fault feedback found no read-only shadow warning candidate for node=%s gpu_uuid=%s within %dh before fault; keep as false-negative/coverage review evidence only", row.NodeIP, row.GPUUUID, windowHours)
+	case positive > 0:
+		row.WarningReviewStatus = "manual_feedback_prior_shadow_candidate_found"
+		row.WarningReviewNote = fmt.Sprintf("manual hardware-fault feedback matched %d read-only shadow record(s), including %d above-threshold candidate(s); review outcome alignment before training", len(predictions), positive)
+	default:
+		row.WarningReviewStatus = "manual_feedback_prior_shadow_below_threshold"
+		row.WarningReviewNote = fmt.Sprintf("manual hardware-fault feedback matched %d shadow record(s), %d with persisted probability, but none was above the model decision threshold; review feature coverage and threshold behavior", len(predictions), probabilityScored)
+	}
+	if err := s.db.Save(&row).Error; err != nil {
 		return row, err
 	}
 	return row, nil
@@ -248,6 +320,56 @@ func feedbackHistoryScope(nodeIP, gpuUUID, reportedGPUUUID string, gpuIndex int,
 	start := occurredAt.Add(-time.Duration(preWindow) * time.Hour).Format(time.RFC3339)
 	end := occurredAt.Add(time.Duration(postWindow) * time.Hour).Format(time.RFC3339)
 	return fmt.Sprintf("node_ip=%s gpu_uuid=%s reported_gpu_uuid=%s gpu_index=%d identity_resolution=%s start=%s fault=%s end=%s", nodeIP, gpuUUID, reportedGPUUUID, gpuIndex, identityStatus, start, occurredAt.Format(time.RFC3339), end)
+}
+
+func warningReviewWindowHours(row api.HardwareFaultFeedbackRequest) int {
+	if row.WarningReviewWindowHours > 0 {
+		return row.WarningReviewWindowHours
+	}
+	if row.PreWindowHours > 0 {
+		return row.PreWindowHours
+	}
+	return 24
+}
+
+func (s *Service) warningReviewThresholds(predictions []api.HardwareRiskPrediction) map[uint]float64 {
+	specIDs := make([]uint, 0, len(predictions))
+	seen := map[uint]bool{}
+	for _, prediction := range predictions {
+		if prediction.ModelSpecID == 0 || seen[prediction.ModelSpecID] {
+			continue
+		}
+		seen[prediction.ModelSpecID] = true
+		specIDs = append(specIDs, prediction.ModelSpecID)
+	}
+	if len(specIDs) == 0 {
+		return map[uint]float64{}
+	}
+	var specs []api.PredictionModelSpec
+	if err := s.db.Where("id IN ?", specIDs).Find(&specs).Error; err != nil {
+		return map[uint]float64{}
+	}
+	thresholds := map[uint]float64{}
+	for _, spec := range specs {
+		if spec.DecisionThreshold != nil {
+			thresholds[spec.ID] = *spec.DecisionThreshold
+		}
+	}
+	return thresholds
+}
+
+func formatProbability(value *float64) string {
+	if value == nil {
+		return "nil"
+	}
+	return fmt.Sprintf("%.6f", *value)
+}
+
+func formatThreshold(value float64, ok bool) string {
+	if !ok {
+		return "nil"
+	}
+	return fmt.Sprintf("%.6f", value)
 }
 
 func firstNonEmpty(values ...string) string {

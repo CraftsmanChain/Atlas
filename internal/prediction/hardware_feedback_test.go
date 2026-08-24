@@ -225,3 +225,75 @@ func TestPrepareHardwareFaultFeedbackPackBlocksWhenFaultTimeIdentityMissing(t *t
 		t.Fatalf("missing identity blocker not recorded: %+v", prepared)
 	}
 }
+
+func TestReviewHardwareFaultFeedbackWarningMarksNoPriorShadowWarning(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	row, err := service.CreateHardwareFaultFeedback(HardwareFaultFeedbackInput{
+		NodeIP: "10.114.4.25", GPUUUID: "GPU-NO-WARNING", GPUIndex: 1,
+		FaultType: "gpu_hardware_failure", FaultOccurredAt: "2026-08-21T08:00:00Z",
+		PreWindowHours: 12, Operator: "ops-e", TrainingEligible: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewed, err := service.ReviewHardwareFaultFeedbackWarning(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed.WarningReviewStatus != "manual_feedback_no_prior_shadow_warning" || reviewed.MatchedWarningCount != 0 || reviewed.WarningReviewWindowHours != 12 {
+		t.Fatalf("no prior warning should become false-negative review evidence: %+v", reviewed)
+	}
+	if !strings.Contains(reviewed.WarningReviewNote, "false-negative") || len(reviewed.MatchedWarningKeys) != 0 {
+		t.Fatalf("review note/keys not recorded correctly: %+v", reviewed)
+	}
+}
+
+func TestReviewHardwareFaultFeedbackWarningFindsPriorShadowCandidate(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	row, err := service.CreateHardwareFaultFeedback(HardwareFaultFeedbackInput{
+		NodeIP: "10.114.4.26", GPUUUID: "GPU-WARNED", GPUIndex: 2,
+		FaultType: "pcie_link_failure", FaultOccurredAt: "2026-08-21T08:00:00Z",
+		PreWindowHours: 24, Operator: "ops-f", TrainingEligible: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	probability := 0.82
+	threshold := 0.60
+	spec := api.PredictionModelSpec{
+		ModelKey: "gpu.failure.within_24h", Version: "baseline-gpu-failure-v1", HardwareClass: "gpu", EntityType: "gpu", Task: "failure_prediction",
+		HorizonMinutes: 1440, Algorithm: "xgboost", Runtime: "offline", Mode: "shadow", Status: "shadow_candidate",
+		FeatureContractVersion: "prediction-feature-contract-v1", LabelContractVersion: "prediction-label-contract-v1", DecisionThreshold: &threshold,
+	}
+	if err := db.Create(&spec).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&api.HardwareRiskPrediction{
+		ModelSpecID: spec.ID, ModelVersion: "baseline-gpu-failure-v1", HardwareClass: "gpu", EntityType: "gpu",
+		EntityKey: "GPU-WARNED", GPUUUID: "GPU-WARNED", NodeIP: "10.114.4.26", HorizonMinutes: 1440,
+		Probability: &probability, RiskLevel: "unvalidated", Status: "shadow_observation",
+		ObservedAt:  time.Date(2026, 8, 21, 6, 45, 0, 0, time.UTC),
+		EvaluatedAt: time.Date(2026, 8, 21, 7, 0, 0, 0, time.UTC),
+		ExpiresAt:   time.Date(2026, 8, 22, 7, 0, 0, 0, time.UTC),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	reviewed, err := service.ReviewHardwareFaultFeedbackWarning(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed.WarningReviewStatus != "manual_feedback_prior_shadow_candidate_found" || reviewed.MatchedWarningCount != 1 {
+		t.Fatalf("prior shadow candidate not linked: %+v", reviewed)
+	}
+	if len(reviewed.MatchedWarningKeys) != 1 || !strings.Contains(reviewed.MatchedWarningKeys[0], "prediction:") || !strings.Contains(reviewed.WarningReviewNote, "matched 1") {
+		t.Fatalf("matched warning evidence not recorded: %+v", reviewed)
+	}
+}

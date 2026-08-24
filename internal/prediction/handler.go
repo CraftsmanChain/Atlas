@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"atlas/pkg/api"
 	"atlas/pkg/storage"
 	"gorm.io/gorm"
 )
@@ -424,7 +425,7 @@ func (h *Handler) HandleHardwareFaultFeedbackAction(w http.ResponseWriter, r *ht
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/prediction/hardware-fault-feedback/")
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) != 2 || parts[1] != "prepare" {
+	if len(parts) != 2 {
 		predictionJSON(w, http.StatusNotFound, map[string]any{"error": "unknown hardware feedback action"})
 		return
 	}
@@ -433,7 +434,16 @@ func (h *Handler) HandleHardwareFaultFeedbackAction(w http.ResponseWriter, r *ht
 		predictionJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid feedback request id"})
 		return
 	}
-	row, err := h.service.PrepareHardwareFaultFeedbackPack(uint(id))
+	var row api.HardwareFaultFeedbackRequest
+	switch parts[1] {
+	case "prepare":
+		row, err = h.service.PrepareHardwareFaultFeedbackPack(uint(id))
+	case "review-warning":
+		row, err = h.service.ReviewHardwareFaultFeedbackWarning(uint(id))
+	default:
+		predictionJSON(w, http.StatusNotFound, map[string]any{"error": "unknown hardware feedback action"})
+		return
+	}
 	if err != nil {
 		predictionJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
