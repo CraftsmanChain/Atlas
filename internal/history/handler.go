@@ -379,6 +379,39 @@ func (h *Handler) HandleFeatureDatasets(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+func (h *Handler) HandleManualFeedbackFeatureRequests(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		rows, err := h.service.ManualFeedbackFeatureRequestBuilds(limit)
+		if err != nil {
+			historyJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		historyJSON(w, http.StatusOK, map[string]any{"data": rows, "meta": map[string]any{
+			"total": len(rows), "execution": "atlas_deployment_node", "read_only_source": true, "raw_telemetry_stored": false,
+		}})
+	case http.MethodPost:
+		var request ManualFeedbackFeatureRequestBuildRequest
+		if r.Body != nil && r.ContentLength != 0 {
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&request); err != nil {
+				historyJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+				return
+			}
+		}
+		build, err := h.service.BuildManualFeedbackFeatureRequestManifest(request)
+		if err != nil {
+			historyJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "data": build})
+			return
+		}
+		historyJSON(w, http.StatusCreated, map[string]any{"data": build})
+	default:
+		historyJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+	}
+}
+
 func (h *Handler) HandleTrainingPreparations(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:

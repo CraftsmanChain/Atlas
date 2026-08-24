@@ -168,6 +168,7 @@ func migrateSchema(db *gorm.DB) error {
 		&api.HistoricalGPUIdentityInterval{},
 		&api.TrainingDatasetBuild{},
 		&api.TrainingFeatureBuild{},
+		&api.ManualFeedbackFeatureRequestBuild{},
 		&api.TrainingPreparationBuild{},
 		&api.TrainingControlFeatureBuild{},
 		&api.TrainingMatrixBuild{},
