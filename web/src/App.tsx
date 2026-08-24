@@ -1719,6 +1719,44 @@ function Models({ tx, view, lang, assets }: { tx: Tx; view: string; lang: string
     const latestControlFeatureBuild = controlFeatureBuilds[0];
     const latestTrainingMatrixBuild = trainingMatrixBuilds[0];
     const latestBaselineModelBuild = baselineModelBuilds[0];
+    const latestMatrixIsGovernanceOnly = latestTrainingMatrixBuild?.status === 'manual_feedback_matrix_ready_pending_training_gate';
+    const matrixPendingTotals = (matrixReadinessReport?.strata || []).reduce((acc, item) => {
+      const pending = item.splits.pending_control_sampling;
+      if (pending) {
+        acc.positives += pending.positive_count || 0;
+        acc.controls += pending.control_count || 0;
+        acc.positiveGPUs += pending.positive_gpus || 0;
+        acc.controlGPUs += pending.control_gpus || 0;
+      }
+      return acc;
+    }, { positives: 0, controls: 0, positiveGPUs: 0, controlGPUs: 0 });
+    const matrixBlockerSummary = (matrixReadinessReport?.strata || []).flatMap(item => item.blocking_reasons || []).reduce<Record<string, number>>((acc, reason) => {
+      const short = reason
+        .replace(/^train_/, 'TRAIN ')
+        .replace(/^validation_/, 'VAL ')
+        .replace(/^test_/, 'TEST ')
+        .replace(/positive_gpus_\d+_lt_\d+$/, 'POS GPU')
+        .replace(/positive_count_\d+_lt_\d+$/, 'POS')
+        .replace(/control_count_\d+_lt_\d+$/, 'CTRL')
+        .replace(/_/g, ' ')
+        .toUpperCase();
+      acc[short] = (acc[short] || 0) + 1;
+      return acc;
+    }, {});
+    const matrixTopBlockers = Object.entries(matrixBlockerSummary).sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0])).slice(0, 6);
+    const splitCell = (item: CohortStratumReadiness, split: string) => {
+      const value = item.splits[split];
+      return <td key={split}>{value ? `${value.positive_count} / ${value.control_count}` : '—'}<small>{value ? `${value.positive_gpus} POS GPU · ${value.control_gpus} CTRL GPU` : ''}</small></td>;
+    };
+    const compactBlockers = (reasons: string[]) => reasons.map(reason => reason
+      .replace(/^train_/, 'TRAIN ')
+      .replace(/^validation_/, 'VAL ')
+      .replace(/^test_/, 'TEST ')
+      .replace(/positive_count_(\d+)_lt_(\d+)/, 'POS $1<$2')
+      .replace(/control_count_(\d+)_lt_(\d+)/, 'CTRL $1<$2')
+      .replace(/positive_gpus_(\d+)_lt_(\d+)/, 'GPU $1<$2')
+      .replace(/_/g, ' ')
+      .toUpperCase());
     const shadowModelCandidates = (prediction?.models || []).filter(model => model.status === 'shadow_candidate');
     const featureParityByModel = new Map(featureParityAudits.map(audit => [audit.model_spec_id, audit]));
     const latestFeatureReplay = featureReplayRuns[0];
@@ -2175,7 +2213,7 @@ function Models({ tx, view, lang, assets }: { tx: Tx; view: string; lang: string
           <div><b>{tx('审计违规', 'Audit violations')}</b><strong>{latestTrainingMatrixBuild ? latestTrainingMatrixBuild.duplicate_count + latestTrainingMatrixBuild.entity_split_conflict_count + latestTrainingMatrixBuild.point_in_time_violation_count + latestTrainingMatrixBuild.pairing_violation_count + latestTrainingMatrixBuild.contract_violation_count : 0}</strong><small>{latestTrainingMatrixBuild?.feature_column_count || 0} FEATURE COLUMNS</small></div>
         </div>
         {latestTrainingMatrixBuild ? <div className="prediction-contract"><span><b>STATUS / VERSION</b>{compactWorkflowStatus(latestTrainingMatrixBuild.status)} · {latestTrainingMatrixBuild.version}</span><span><b>SOURCES</b>PREP #{latestTrainingMatrixBuild.source_preparation_build_id} · CONTROL #{latestTrainingMatrixBuild.source_control_build_id}</span><span><b>OUTPUT</b>{latestTrainingMatrixBuild.output_dir}</span><span><b>SHA256</b>{latestTrainingMatrixBuild.matrix_sha256 || latestTrainingMatrixBuild.error_message || 'PENDING'}</span></div> : <Empty tx={tx} title={tx('等待合格健康对照以构建监督训练矩阵', 'Waiting for eligible healthy controls to build a supervised matrix')} />}
-        {matrixReadinessReport ? <><div className="issue-categories quality-ledger"><div><b>{tx('探索性就绪分层', 'Exploratory-ready strata')}</b><strong>{matrixReadinessReport.ready_strata}</strong><small>{matrixReadinessReport.insufficient_strata} INSUFFICIENT</small></div><div><b>{tx('质量门粒度', 'Quality-gate grain')}</b><strong>{matrixReadinessReport.strata.length}</strong><small>FAULT TYPE × MODEL × HORIZON</small></div></div><div className="table-wrap"><table><thead><tr><th>{tx('故障类型 / 型号', 'Fault type / Model')}</th><th>{tx('预测窗口', 'Horizon')}</th><th>TRAIN</th><th>VALIDATION</th><th>TEST</th><th>{tx('数据状态', 'Data status')}</th></tr></thead><tbody>{matrixReadinessReport.strata.map(item => <tr key={`${item.event_type}-${item.model_name}-${item.horizon_minutes}`}><td><b>{item.event_type}</b><small>{item.model_name}</small></td><td>{item.horizon_minutes}m</td>{['train', 'validation', 'test'].map(split => { const value = item.splits[split]; return <td key={split}>{value ? `${value.positive_count} / ${value.control_count}` : '—'}<small>{value ? `${value.positive_gpus} POSITIVE GPUS` : ''}</small></td>; })}<td><Badge value={item.status.toUpperCase()} kind={item.status === 'exploratory_ready' ? 'healthy' : 'warning'} /><small>{(item.blocking_reasons || []).join(' · ')}</small></td></tr>)}</tbody></table></div></> : null}
+        {matrixReadinessReport ? <><div className="issue-categories quality-ledger"><div><b>{latestMatrixIsGovernanceOnly ? tx('治理态分层', 'Governance strata') : tx('探索性就绪分层', 'Exploratory-ready strata')}</b><strong>{matrixReadinessReport.ready_strata}</strong><small>{matrixReadinessReport.insufficient_strata} INSUFFICIENT · {matrixReadinessReport.strata.length} TOTAL</small></div><div><b>{tx('待切分正/负样本', 'Pending pos / ctrl')}</b><strong>{latestMatrixIsGovernanceOnly ? `${matrixPendingTotals.positives} / ${matrixPendingTotals.controls}` : '—'}</strong><small>{matrixPendingTotals.positiveGPUs} POS GPU · {matrixPendingTotals.controlGPUs} CTRL GPU</small></div><div><b>{tx('主要阻断', 'Top blockers')}</b><strong>{matrixTopBlockers.length || 0}</strong><small>{matrixTopBlockers.map(([key, count]) => `${key}×${count}`).join(' · ') || tx('无阻断', 'none')}</small></div><div><b>{tx('质量门粒度', 'Quality-gate grain')}</b><strong>{matrixReadinessReport.strata.length}</strong><small>FAULT × MODEL × HORIZON</small></div></div><div className="matrix-readiness-hints">{matrixTopBlockers.map(([key, count]) => <span key={key}>{key}<b>×{count}</b></span>)}{latestMatrixIsGovernanceOnly && <span>{tx('人工反馈矩阵只审计，不训练', 'Manual matrix audits only')}</span>}</div><div className="table-wrap"><table className="matrix-readiness-table"><thead><tr><th>{tx('故障类型 / 型号', 'Fault type / Model')}</th><th>{tx('预测窗口', 'Horizon')}</th><th>TRAIN</th><th>VALIDATION</th><th>TEST</th><th>{tx('待切分', 'Pending')}</th><th>{tx('数据状态', 'Data status')}</th></tr></thead><tbody>{matrixReadinessReport.strata.map(item => <tr key={`${item.event_type}-${item.model_name}-${item.horizon_minutes}`}><td><b>{item.event_type}</b><small>{item.model_name}</small></td><td>{item.horizon_minutes}m</td>{['train', 'validation', 'test', 'pending_control_sampling'].map(split => splitCell(item, split))}<td><Badge value={item.status === 'exploratory_ready' ? 'READY' : latestMatrixIsGovernanceOnly ? 'GATED' : 'INSUFFICIENT'} kind={item.status === 'exploratory_ready' ? 'healthy' : 'warning'} /><small title={(item.blocking_reasons || []).join(' · ')}>{compactBlockers(item.blocking_reasons || []).slice(0, 5).join(' · ') || tx('无阻断', 'none')}</small></td></tr>)}</tbody></table></div></> : null}
       </Card>
       <Card className="span-12">
         <CardHead code="SCOPED LOGISTIC BASELINE" title={tx('质量门类型专用基线', 'Readiness-gated Scoped Baseline')} action={<div className="table-actions"><Badge value="NO ONLINE PROBABILITY" kind="info" /><button className="link" type="button" disabled={baselineModelStarting || latestTrainingMatrixBuild?.status !== 'completed' || latestTrainingMatrixBuild?.version !== 'gpu-supervised-training-matrix-v4' || !matrixReadinessReport?.strata.some(item => item.status === 'exploratory_ready') || latestBaselineModelBuild?.status === 'queued' || latestBaselineModelBuild?.status === 'running'} onClick={() => void trainBaselineModels()}>{baselineModelStarting ? tx('训练中…', 'Training…') : tx('训练就绪分层', 'Train ready scope')}</button></div>} />
@@ -2293,13 +2331,14 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const releaseModule = { id: 'release', name: tx('发布与产物同步', 'Release & Artifact Sync'), version: 'v0.1.0', status: tx('Rsync 增量同步', 'RSYNC TRANSFER'), desc: tx('发布链路统一使用 rsync 同步源码包、前端产物、二进制和数据库备份脚本，支持校验和、断点保留和传输进度；远端构建、备份、原子切换及回滚流程保持不变。', 'Release pipelines use rsync for source archives, web assets, binaries, and database-backup scripts with checksums, partial-transfer retention, and visible progress; remote builds, backups, atomic switching, and rollback remain unchanged.'), history: [tx('v0.1.0 · 默认远端源码发布和 legacy 二进制发布全部由 scp 切换为 rsync，并增加本机/远端依赖预检', 'v0.1.0 · Replaced scp with rsync in both remote-source and legacy-binary release paths, adding local and remote dependency preflight checks')] };
   const modules = [...baseModules, releaseModule].map(module => module.id === 'prediction' ? {
     ...module,
-    version: 'v0.27.20',
+    version: 'v0.27.21',
     status: tx('故障预警工作台', 'EARLY-WARNING WORKBENCH'),
     desc: tx(
       '当前故障预警能力保持 GPU-only、read-only shadow：已具备训练数据、标签 Manifest、训练样本 Evidence Bundle、模型治理卡、影子门禁、成熟 outcome、Ranking@K、naive baseline、HeaRank 7d node-risk challenger、数据/校准漂移、训练侧和 live-shadow 特征分布快照，并把故障前后数据反馈包列为重点入口；不触发告警、调度、维修或自动隔离。',
       'Early warning remains GPU-only and read-only shadow: training data, label manifest, training-sample Evidence Bundle, model governance cards, shadow gates, mature outcomes, Ranking@K, naive baselines, a HeaRank 7d node-risk challenger, data/calibration drift, and training/live-shadow feature-distribution snapshots are available, with the pre/post-fault feedback pack promoted as a priority entry; no alert, scheduling, repair or automatic isolation is triggered.',
     ),
     history: [
+      tx('v0.27.21 · MATRIX GATED 治理态矩阵新增可读 readiness 报表：展示待切分正/负样本、GPU 覆盖、主要阻断短码和 pending_control_sampling 分层，帮助判断人工反馈样本还缺什么', 'v0.27.21 · MATRIX GATED governance matrices now show readable readiness reports: pending positives/controls, GPU coverage, top blocker short codes, and pending_control_sampling strata clarify what manual-feedback samples still lack'),
       tx('v0.27.20 · 人工反馈正例与健康对照特征可生成治理态训练矩阵和 readiness manifest，状态为 MATRIX GATED；该产物只用于样本量/切分/配对审计，不会进入 baseline 训练', 'v0.27.20 · manual-feedback positives and healthy-control features can now produce a governance-only training matrix and readiness manifest with MATRIX GATED status; the artifact is for sample-size, split, and pairing audits only and is not eligible for baseline training'),
       tx('v0.27.19 · 人工故障反馈训练准备候选会生成同 GPU 稳定身份健康对照请求，并允许健康对照特征 worker 消费该来源；训练矩阵仍等待下一步治理，不提前训练模型', 'v0.27.19 · manual fault-feedback training-preparation candidates now generate same-GPU stable-identity healthy-control requests and can feed the healthy-control feature worker; training matrix governance remains a later step and no model training is started'),
       tx('v0.27.18 · 人工故障反馈特征聚合完成后可生成训练准备候选 artifact：合格正例进入 pending_control_sampling，质量门阻断样本保留原因和 SHA；仍不训练模型、不发告警、不执行动作', 'v0.27.18 · manual fault-feedback feature aggregations can now produce training-preparation candidate artifacts: eligible positives enter pending_control_sampling while gated samples retain exclusion reasons and SHA evidence; still no model training, alert, or action is executed'),
@@ -2464,7 +2503,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.20" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.21" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>
