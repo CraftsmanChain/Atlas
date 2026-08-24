@@ -205,6 +205,11 @@ type HardwareFaultFeedbackRequest struct {
 	HistoryPackSHA256        string     `json:"history_pack_sha256,omitempty" gorm:"index"`
 	IdentityResolutionStatus string     `json:"identity_resolution_status" gorm:"index;not null;default:current_identity_selected"`
 	IdentityResolutionNote   string     `json:"identity_resolution_note,omitempty" gorm:"type:text"`
+	WarningReviewStatus      string     `json:"warning_review_status" gorm:"index;not null;default:pending_warning_review"`
+	WarningReviewWindowHours int        `json:"warning_review_window_hours"`
+	MatchedWarningCount      int        `json:"matched_warning_count"`
+	MatchedWarningKeys       StringList `json:"matched_warning_keys" gorm:"type:text"`
+	WarningReviewNote        string     `json:"warning_review_note,omitempty" gorm:"type:text"`
 	BlockingReasons          StringList `json:"blocking_reasons" gorm:"type:text"`
 	CreatedAt                time.Time  `json:"created_at"`
 	UpdatedAt                time.Time  `json:"updated_at"`
