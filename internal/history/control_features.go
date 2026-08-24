@@ -88,7 +88,10 @@ func (s *Service) StartControlFeatureBuild(request ControlFeatureBuildRequest) (
 		return api.TrainingControlFeatureBuild{}, fmt.Errorf("max_unique_windows must be between 0 and 10000")
 	}
 	var preparation api.TrainingPreparationBuild
-	query := s.db.Where("status = ? AND version = ?", "completed", preparationDatasetVersion)
+	query := s.db.Where("(status = ? AND version = ?) OR (status = ? AND version = ?)",
+		"completed", preparationDatasetVersion,
+		"manual_feedback_ready_pending_control_extraction", manualPreparationVersion,
+	)
 	if request.SourcePreparationBuildID > 0 {
 		query = query.Where("id = ?", request.SourcePreparationBuildID)
 	}
@@ -97,13 +100,26 @@ func (s *Service) StartControlFeatureBuild(request ControlFeatureBuildRequest) (
 		return api.TrainingControlFeatureBuild{}, result.Error
 	}
 	if result.RowsAffected == 0 {
-		return api.TrainingControlFeatureBuild{}, fmt.Errorf("a completed training preparation %s is required", preparationDatasetVersion)
+		return api.TrainingControlFeatureBuild{}, fmt.Errorf("a completed historical preparation or manual feedback preparation ready for control extraction is required")
 	}
-	var source api.TrainingFeatureBuild
-	if err := s.db.First(&source, preparation.SourceFeatureBuildID).Error; err != nil {
-		return api.TrainingControlFeatureBuild{}, err
+	sourceKey := ""
+	featureContractVersion := ""
+	if preparation.SourceKind == "manual_feedback_feature_request" {
+		var source api.ManualFeedbackFeatureRequestBuild
+		if err := s.db.First(&source, preparation.SourceManualFeedbackFeatureRequestBuildID).Error; err != nil {
+			return api.TrainingControlFeatureBuild{}, err
+		}
+		sourceKey = source.SourceKey
+		featureContractVersion = source.FeatureContractVersion
+	} else {
+		var source api.TrainingFeatureBuild
+		if err := s.db.First(&source, preparation.SourceFeatureBuildID).Error; err != nil {
+			return api.TrainingControlFeatureBuild{}, err
+		}
+		sourceKey = source.SourceKey
+		featureContractVersion = source.FeatureContractVersion
 	}
-	if _, err := s.resolveSource(source.SourceKey); err != nil {
+	if _, err := s.resolveSource(sourceKey); err != nil {
 		return api.TrainingControlFeatureBuild{}, err
 	}
 	started := s.now()
@@ -111,7 +127,7 @@ func (s *Service) StartControlFeatureBuild(request ControlFeatureBuildRequest) (
 	build := api.TrainingControlFeatureBuild{
 		ControlFeatureDatasetKey: key, Version: controlFeatureDatasetVersion, Status: "queued",
 		SourcePreparationBuildID: preparation.ID, SourcePreparedDatasetKey: preparation.PreparedDatasetKey,
-		SourceKey: source.SourceKey, FeatureContractVersion: source.FeatureContractVersion,
+		SourceKey: sourceKey, FeatureContractVersion: featureContractVersion,
 		OutputDir: filepath.Join(s.config.DatasetDir, "control-features", key), StartedAt: started,
 	}
 	if err := s.db.Create(&build).Error; err != nil {
@@ -164,7 +180,7 @@ func (s *Service) buildControlFeatures(build *api.TrainingControlFeatureBuild, m
 	}
 	positiveBySample := make(map[string]extractedFeatureRow, len(prepared))
 	for _, item := range prepared {
-		if item.TrainingStatus == "eligible" {
+		if item.TrainingStatus == "eligible" || item.TrainingStatus == "eligible_pending_controls" {
 			positiveBySample[item.Sample.SampleKey] = item.Sample
 		}
 	}

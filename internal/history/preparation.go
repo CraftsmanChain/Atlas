@@ -281,8 +281,41 @@ func (s *Service) writeManualFeedbackTrainingPreparation(build *api.TrainingPrep
 		}
 		prepared = append(prepared, item)
 	}
-	build.ControlShortfallCount = build.EligiblePositiveCount * controlsPerPositive
-	build.Status = "manual_feedback_ready_pending_control_sampling"
+	var intervals []api.HistoricalGPUIdentityInterval
+	if err := s.db.Order("first_seen_at, id").Find(&intervals).Error; err != nil {
+		return err
+	}
+	intervalsByGPU := map[string][]api.HistoricalGPUIdentityInterval{}
+	for _, interval := range intervals {
+		key := normalizeHistoricalGPUUUID(interval.GPUUUID)
+		intervalsByGPU[key] = append(intervalsByGPU[key], interval)
+	}
+	faultsByGPU := faultTimesByGPU(rows)
+	controls := make([]healthyControlRequest, 0, build.EligiblePositiveCount*controlsPerPositive)
+	for _, item := range prepared {
+		if item.TrainingStatus != "eligible_pending_controls" {
+			continue
+		}
+		selected := healthyControlCutoffs(item.Sample, intervalsByGPU[normalizeHistoricalGPUUUID(item.Sample.GPUUUID)], faultsByGPU[normalizeHistoricalGPUUUID(item.Sample.GPUUUID)], controlsPerPositive)
+		if len(selected) < controlsPerPositive {
+			build.ControlShortfallCount += controlsPerPositive - len(selected)
+		}
+		for _, selectedControl := range selected {
+			material := item.Sample.SampleKey + "|" + selectedControl.cutoff.UTC().Format(time.RFC3339Nano)
+			sum := sha256.Sum256([]byte(material))
+			controls = append(controls, healthyControlRequest{
+				ControlKey: hex.EncodeToString(sum[:]), PairedSampleKey: item.Sample.SampleKey,
+				EpisodeKey: item.Sample.EpisodeKey, GPUUUID: item.Sample.GPUUUID, NodeIP: selectedControl.interval.NodeIP,
+				ModelName: selectedControl.interval.ModelName, DataCenterID: selectedControl.interval.DataCenterID,
+				DriverVersion: selectedControl.interval.DriverVersion, HorizonMinutes: item.Sample.HorizonMinutes,
+				FeatureCutoffAt: selectedControl.cutoff, LookbackMinutes: int(featureLookback / time.Minute),
+				Split: item.Split, LabelValue: 0, Eligibility: "pending_telemetry_and_load_validation",
+				ContaminationRule: "outside every known fault interval [-168h,+72h] with stable GPU identity for the full lookback",
+			})
+		}
+	}
+	build.ControlRequestCount = len(controls)
+	build.Status = "manual_feedback_ready_pending_control_extraction"
 	if build.EligiblePositiveCount == 0 {
 		build.Status = "manual_feedback_blocked_by_quality_gate"
 	}
@@ -294,7 +327,6 @@ func (s *Service) writeManualFeedbackTrainingPreparation(build *api.TrainingPrep
 	if err != nil {
 		return err
 	}
-	controls := make([]healthyControlRequest, 0)
 	controlPath := filepath.Join(build.OutputDir, "healthy_control_requests.jsonl")
 	controlSHA, err := writeJSONLines(controlPath, controls)
 	if err != nil {
@@ -309,7 +341,7 @@ func (s *Service) writeManualFeedbackTrainingPreparation(build *api.TrainingPrep
 		SourceWindowCount: build.SourceWindowCount, EligiblePositiveCount: build.EligiblePositiveCount, Status: build.Status,
 		SplitPolicy:     "manual feedback positives remain pending_control_sampling; train/validation/test split is deferred until control samples and matrix governance are available",
 		QualityPolicy:   "manual feedback positives must pass extraction, nonzero telemetry, minimum metric coverage, and core telemetry continuity; no zero imputation is applied",
-		ControlPolicy:   "healthy controls are not generated in this step; same-GPU/control-window extraction remains a downstream gated workflow",
+		ControlPolicy:   "same-GPU stable-identity historical cutoffs; exclude every known fault [-168h,+72h]; telemetry and load validation remains required",
 		PreparedSamples: filepath.Base(preparedPath), PreparedSamplesSHA256: preparedSHA,
 		ControlRequests: filepath.Base(controlPath), ControlRequestsSHA256: controlSHA, CreatedAt: s.now(),
 	}

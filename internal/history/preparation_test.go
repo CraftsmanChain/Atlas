@@ -138,6 +138,16 @@ func TestManualFeedbackTrainingPreparationBuildsPositiveCandidates(t *testing.T)
 			LabelWeight: 1,
 		},
 	}
+	interval := api.HistoricalGPUIdentityInterval{
+		IntervalKey: "manual-identity-1", SourceKey: "primary", BackfillRunID: 1,
+		NodeIP: "10.114.4.36", GPUIndex: 3, GPUUUID: "GPU-manual-1",
+		ModelName: "NVIDIA H100 80GB HBM3", DataCenterID: "dc-a", DriverVersion: "560",
+		FirstSeenAt: base.Add(-200 * 24 * time.Hour), LastSeenAt: base.Add(24 * time.Hour),
+		ObservationCount: 10, TransitionType: "initial_observation", EvidenceStrength: "strong",
+	}
+	if err := db.Create(&interval).Error; err != nil {
+		t.Fatal(err)
+	}
 	featureDir := filepath.Join(outputRoot, "manual-feedback-features", "source")
 	if err := os.MkdirAll(featureDir, 0o750); err != nil {
 		t.Fatal(err)
@@ -172,13 +182,13 @@ func TestManualFeedbackTrainingPreparationBuildsPositiveCandidates(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if build.Status != "manual_feedback_ready_pending_control_sampling" ||
+	if build.Status != "manual_feedback_ready_pending_control_extraction" ||
 		build.SourceKind != "manual_feedback_feature_request" ||
 		build.SourceManualFeedbackFeatureRequestBuildID != source.ID ||
 		build.EligiblePositiveCount != 1 ||
 		build.LowCoverageCount != 1 ||
-		build.ControlRequestCount != 0 ||
-		build.ControlShortfallCount != 3 ||
+		build.ControlRequestCount != 3 ||
+		build.ControlShortfallCount != 0 ||
 		build.TrainCount != 0 || build.ValidationCount != 0 || build.TestCount != 0 {
 		t.Fatalf("unexpected manual feedback preparation build: %+v", build)
 	}
