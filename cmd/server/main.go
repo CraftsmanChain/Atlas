@@ -302,6 +302,7 @@ func main() {
 	mux.HandleFunc("/api/v1/prediction/history/identities", historyHandler.HandleIdentities)
 	mux.HandleFunc("/api/v1/prediction/history/datasets", historyHandler.HandleDatasets)
 	mux.HandleFunc("/api/v1/prediction/history/feature-datasets", historyHandler.HandleFeatureDatasets)
+	mux.HandleFunc("/api/v1/prediction/history/feedback-feature-requests", historyHandler.HandleManualFeedbackFeatureRequests)
 	mux.HandleFunc("/api/v1/prediction/history/training-preparations", historyHandler.HandleTrainingPreparations)
 	mux.HandleFunc("/api/v1/prediction/history/control-feature-datasets", historyHandler.HandleControlFeatureDatasets)
 	mux.HandleFunc("/api/v1/prediction/history/training-matrices", historyHandler.HandleTrainingMatrices)

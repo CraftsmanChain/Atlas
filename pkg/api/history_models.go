@@ -201,6 +201,44 @@ type TrainingFeatureBuild struct {
 	UpdatedAt              time.Time  `json:"updated_at"`
 }
 
+// ManualFeedbackFeatureRequestBuild records the immutable extraction request
+// manifest for operator-confirmed hardware fault feedback. It is a contract
+// for a later offline worker and stores metadata only: raw historical telemetry
+// remains in the configured monitoring source.
+type ManualFeedbackFeatureRequestBuild struct {
+	ID                       uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	RequestKey               string     `json:"request_key" gorm:"uniqueIndex;not null"`
+	Version                  string     `json:"version" gorm:"index;not null"`
+	Status                   string     `json:"status" gorm:"index;not null"`
+	SourceKey                string     `json:"source_key" gorm:"index;not null"`
+	SourceManifestVersion    string     `json:"source_manifest_version" gorm:"index;not null"`
+	SourceManifestSHA256     string     `json:"source_manifest_sha256" gorm:"index;not null"`
+	FeatureContractVersion   string     `json:"feature_contract_version" gorm:"index;not null"`
+	LookbackMinutes          int        `json:"lookback_minutes"`
+	QueryStepSeconds         int        `json:"query_step_seconds"`
+	HardwareFeedbackRequests int        `json:"hardware_feedback_requests"`
+	TrainingEligibleRequests int        `json:"training_eligible_requests"`
+	PackReadyRequests        int        `json:"pack_ready_requests"`
+	WarningReviewedRequests  int        `json:"warning_reviewed_requests"`
+	WarningMissRequests      int        `json:"warning_miss_requests"`
+	BlockedRequests          int        `json:"blocked_requests"`
+	WindowCount              int        `json:"window_count"`
+	MetricFamilyCount        int        `json:"metric_family_count"`
+	MetricFamilies           StringList `json:"metric_families" gorm:"type:text"`
+	BlockingReasons          StringList `json:"blocking_reasons" gorm:"type:text"`
+	OutputDir                string     `json:"output_dir" gorm:"type:text"`
+	ManifestPath             string     `json:"manifest_path" gorm:"type:text"`
+	ManifestSHA256           string     `json:"manifest_sha256" gorm:"index"`
+	NoRawTelemetryStored     bool       `json:"no_raw_telemetry_stored" gorm:"index;not null;default:true"`
+	NoAlertEmitted           bool       `json:"no_alert_emitted" gorm:"index;not null;default:true"`
+	NoActionExecuted         bool       `json:"no_action_executed" gorm:"index;not null;default:true"`
+	ErrorMessage             string     `json:"error_message,omitempty" gorm:"type:text"`
+	StartedAt                time.Time  `json:"started_at" gorm:"index;not null"`
+	FinishedAt               *time.Time `json:"finished_at,omitempty" gorm:"index"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
+}
+
 // TrainingPreparationBuild records quality gating, leakage-safe split
 // assignment, and healthy-control extraction requests derived from one full
 // historical feature dataset.
