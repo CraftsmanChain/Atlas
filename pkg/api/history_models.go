@@ -248,43 +248,45 @@ type ManualFeedbackFeatureRequestBuild struct {
 }
 
 // TrainingPreparationBuild records quality gating, leakage-safe split
-// assignment, and healthy-control extraction requests derived from one full
-// historical feature dataset.
+// assignment, and healthy-control extraction requests derived from either a
+// full historical feature dataset or a manual feedback feature request.
 type TrainingPreparationBuild struct {
-	ID                         uint       `json:"id" gorm:"primaryKey;autoIncrement"`
-	PreparedDatasetKey         string     `json:"prepared_dataset_key" gorm:"uniqueIndex;not null"`
-	Version                    string     `json:"version" gorm:"index;not null"`
-	Status                     string     `json:"status" gorm:"index;not null"`
-	SourceFeatureBuildID       uint       `json:"source_feature_build_id" gorm:"index;not null"`
-	SourceFeatureDatasetKey    string     `json:"source_feature_dataset_key" gorm:"index;not null"`
-	MinimumMetricCoverage      float64    `json:"minimum_metric_coverage"`
-	SourceWindowCount          int        `json:"source_window_count"`
-	EligiblePositiveCount      int        `json:"eligible_positive_count"`
-	TelemetryCensoredCount     int        `json:"telemetry_censored_count"`
-	LowCoverageCount           int        `json:"low_coverage_count"`
-	ExtractionFailedCount      int        `json:"extraction_failed_count"`
-	PositiveDiscontinuousCount int        `json:"positive_discontinuous_count"`
-	LabelIneligibleCount       int        `json:"label_ineligible_count"`
-	CorrelatedEventCount       int        `json:"correlated_event_count"`
-	EntityTimeConflictCount    int        `json:"entity_time_conflict_count"`
-	TrainCount                 int        `json:"train_count"`
-	ValidationCount            int        `json:"validation_count"`
-	TestCount                  int        `json:"test_count"`
-	ControlRequestCount        int        `json:"control_request_count"`
-	ControlShortfallCount      int        `json:"control_shortfall_count"`
-	TrainEndAt                 *time.Time `json:"train_end_at,omitempty" gorm:"index"`
-	ValidationEndAt            *time.Time `json:"validation_end_at,omitempty" gorm:"index"`
-	OutputDir                  string     `json:"output_dir" gorm:"type:text"`
-	ManifestPath               string     `json:"manifest_path" gorm:"type:text"`
-	PreparedSamplesPath        string     `json:"prepared_samples_path" gorm:"type:text"`
-	PreparedSamplesSHA256      string     `json:"prepared_samples_sha256"`
-	ControlRequestsPath        string     `json:"control_requests_path" gorm:"type:text"`
-	ControlRequestsSHA256      string     `json:"control_requests_sha256"`
-	ErrorMessage               string     `json:"error_message,omitempty" gorm:"type:text"`
-	StartedAt                  time.Time  `json:"started_at" gorm:"index;not null"`
-	FinishedAt                 *time.Time `json:"finished_at,omitempty" gorm:"index"`
-	CreatedAt                  time.Time  `json:"created_at"`
-	UpdatedAt                  time.Time  `json:"updated_at"`
+	ID                                        uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	PreparedDatasetKey                        string     `json:"prepared_dataset_key" gorm:"uniqueIndex;not null"`
+	Version                                   string     `json:"version" gorm:"index;not null"`
+	Status                                    string     `json:"status" gorm:"index;not null"`
+	SourceKind                                string     `json:"source_kind,omitempty" gorm:"index"`
+	SourceFeatureBuildID                      uint       `json:"source_feature_build_id" gorm:"index;not null"`
+	SourceManualFeedbackFeatureRequestBuildID uint       `json:"source_manual_feedback_feature_request_build_id,omitempty" gorm:"index"`
+	SourceFeatureDatasetKey                   string     `json:"source_feature_dataset_key" gorm:"index;not null"`
+	MinimumMetricCoverage                     float64    `json:"minimum_metric_coverage"`
+	SourceWindowCount                         int        `json:"source_window_count"`
+	EligiblePositiveCount                     int        `json:"eligible_positive_count"`
+	TelemetryCensoredCount                    int        `json:"telemetry_censored_count"`
+	LowCoverageCount                          int        `json:"low_coverage_count"`
+	ExtractionFailedCount                     int        `json:"extraction_failed_count"`
+	PositiveDiscontinuousCount                int        `json:"positive_discontinuous_count"`
+	LabelIneligibleCount                      int        `json:"label_ineligible_count"`
+	CorrelatedEventCount                      int        `json:"correlated_event_count"`
+	EntityTimeConflictCount                   int        `json:"entity_time_conflict_count"`
+	TrainCount                                int        `json:"train_count"`
+	ValidationCount                           int        `json:"validation_count"`
+	TestCount                                 int        `json:"test_count"`
+	ControlRequestCount                       int        `json:"control_request_count"`
+	ControlShortfallCount                     int        `json:"control_shortfall_count"`
+	TrainEndAt                                *time.Time `json:"train_end_at,omitempty" gorm:"index"`
+	ValidationEndAt                           *time.Time `json:"validation_end_at,omitempty" gorm:"index"`
+	OutputDir                                 string     `json:"output_dir" gorm:"type:text"`
+	ManifestPath                              string     `json:"manifest_path" gorm:"type:text"`
+	PreparedSamplesPath                       string     `json:"prepared_samples_path" gorm:"type:text"`
+	PreparedSamplesSHA256                     string     `json:"prepared_samples_sha256"`
+	ControlRequestsPath                       string     `json:"control_requests_path" gorm:"type:text"`
+	ControlRequestsSHA256                     string     `json:"control_requests_sha256"`
+	ErrorMessage                              string     `json:"error_message,omitempty" gorm:"type:text"`
+	StartedAt                                 time.Time  `json:"started_at" gorm:"index;not null"`
+	FinishedAt                                *time.Time `json:"finished_at,omitempty" gorm:"index"`
+	CreatedAt                                 time.Time  `json:"created_at"`
+	UpdatedAt                                 time.Time  `json:"updated_at"`
 }
 
 // TrainingControlFeatureBuild records extraction and eligibility checks for

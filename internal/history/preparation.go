@@ -19,6 +19,7 @@ import (
 
 const (
 	preparationDatasetVersion   = "gpu-training-preparation-v5"
+	manualPreparationVersion    = "manual-feedback-training-preparation-v1"
 	correlatedEventBucket       = 5 * time.Minute
 	correlatedEventMinimumGPUs  = 32
 	correlatedEventMinimumNodes = 10
@@ -26,9 +27,10 @@ const (
 )
 
 type PreparationBuildRequest struct {
-	SourceFeatureBuildID uint    `json:"source_feature_build_id"`
-	MinimumCoverage      float64 `json:"minimum_coverage,omitempty"`
-	ControlsPerPositive  int     `json:"controls_per_positive,omitempty"`
+	SourceFeatureBuildID                      uint    `json:"source_feature_build_id"`
+	SourceManualFeedbackFeatureRequestBuildID uint    `json:"source_manual_feedback_feature_request_build_id,omitempty"`
+	MinimumCoverage                           float64 `json:"minimum_coverage,omitempty"`
+	ControlsPerPositive                       int     `json:"controls_per_positive,omitempty"`
 }
 
 type preparedTrainingSample struct {
@@ -92,6 +94,28 @@ type preparationManifest struct {
 	CreatedAt               time.Time `json:"created_at"`
 }
 
+type manualPreparationManifest struct {
+	PreparedDatasetKey                        string    `json:"prepared_dataset_key"`
+	Version                                   string    `json:"version"`
+	SourceKind                                string    `json:"source_kind"`
+	SourceFeatureDatasetKey                   string    `json:"source_feature_dataset_key"`
+	SourceManualFeedbackFeatureRequestBuildID uint      `json:"source_manual_feedback_feature_request_build_id"`
+	SourceFeatureSHA256                       string    `json:"source_feature_sha256"`
+	MinimumCoverage                           float64   `json:"minimum_metric_coverage"`
+	ControlsPerPositive                       int       `json:"controls_per_positive"`
+	SourceWindowCount                         int       `json:"source_window_count"`
+	EligiblePositiveCount                     int       `json:"eligible_positive_count"`
+	Status                                    string    `json:"status"`
+	SplitPolicy                               string    `json:"split_policy"`
+	QualityPolicy                             string    `json:"quality_policy"`
+	ControlPolicy                             string    `json:"control_policy"`
+	PreparedSamples                           string    `json:"prepared_samples"`
+	PreparedSamplesSHA256                     string    `json:"prepared_samples_sha256"`
+	ControlRequests                           string    `json:"control_requests"`
+	ControlRequestsSHA256                     string    `json:"control_requests_sha256"`
+	CreatedAt                                 time.Time `json:"created_at"`
+}
+
 type entityTimeRange struct {
 	min time.Time
 	max time.Time
@@ -124,6 +148,9 @@ func (s *Service) BuildTrainingPreparation(request PreparationBuildRequest) (api
 	if controlsPerPositive < 1 || controlsPerPositive > 5 {
 		return api.TrainingPreparationBuild{}, fmt.Errorf("controls_per_positive must be between 1 and 5")
 	}
+	if request.SourceManualFeedbackFeatureRequestBuildID > 0 {
+		return s.buildManualFeedbackTrainingPreparation(request.SourceManualFeedbackFeatureRequestBuildID, minimumCoverage, controlsPerPositive)
+	}
 	var source api.TrainingFeatureBuild
 	query := s.db.Where("status = ? AND version = ?", "completed", featureDatasetVersion)
 	if request.SourceFeatureBuildID > 0 {
@@ -151,7 +178,7 @@ func (s *Service) BuildTrainingPreparation(request PreparationBuildRequest) (api
 	key := preparationDatasetVersion + "-" + strconv.FormatInt(started.UTC().UnixNano(), 10)
 	build := api.TrainingPreparationBuild{
 		PreparedDatasetKey: key, Version: preparationDatasetVersion, Status: "running",
-		SourceFeatureBuildID: source.ID, SourceFeatureDatasetKey: source.FeatureDatasetKey,
+		SourceKind: "historical_feature_build", SourceFeatureBuildID: source.ID, SourceFeatureDatasetKey: source.FeatureDatasetKey,
 		MinimumMetricCoverage: minimumCoverage, SourceWindowCount: source.WindowCount,
 		OutputDir: filepath.Join(s.config.DatasetDir, "prepared", key), StartedAt: started,
 	}
@@ -173,6 +200,131 @@ func (s *Service) BuildTrainingPreparation(request PreparationBuildRequest) (api
 		return build, err
 	}
 	return build, s.db.First(&build, build.ID).Error
+}
+
+func (s *Service) buildManualFeedbackTrainingPreparation(sourceID uint, minimumCoverage float64, controlsPerPositive int) (api.TrainingPreparationBuild, error) {
+	var source api.ManualFeedbackFeatureRequestBuild
+	result := s.db.Where("id = ? AND version = ? AND status IN ?", sourceID, manualFeedbackFeatureRequestVersion, []string{
+		"features_ready_pending_training_preparation",
+		"features_ready_with_errors_pending_training_preparation",
+	}).Limit(1).Find(&source)
+	if result.Error != nil {
+		return api.TrainingPreparationBuild{}, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return api.TrainingPreparationBuild{}, fmt.Errorf("a features_ready manual feedback feature request is required")
+	}
+	if source.FeaturePath == "" || source.FeatureSHA256 == "" {
+		return api.TrainingPreparationBuild{}, fmt.Errorf("manual feedback feature request is missing feature artifacts")
+	}
+	if err := verifyFileSHA256(source.FeaturePath, source.FeatureSHA256); err != nil {
+		return api.TrainingPreparationBuild{}, fmt.Errorf("manual feedback feature checksum: %w", err)
+	}
+	rows, err := readExtractedFeatureRows(source.FeaturePath)
+	if err != nil {
+		return api.TrainingPreparationBuild{}, err
+	}
+	started := s.now()
+	key := manualPreparationVersion + "-" + strconv.FormatInt(started.UTC().UnixNano(), 10)
+	build := api.TrainingPreparationBuild{
+		PreparedDatasetKey: key, Version: manualPreparationVersion, Status: "running",
+		SourceKind: "manual_feedback_feature_request", SourceManualFeedbackFeatureRequestBuildID: source.ID,
+		SourceFeatureDatasetKey: source.RequestKey, MinimumMetricCoverage: minimumCoverage, SourceWindowCount: source.WindowCount,
+		OutputDir: filepath.Join(s.config.DatasetDir, "prepared", key), StartedAt: started,
+	}
+	if err := s.db.Create(&build).Error; err != nil {
+		return build, err
+	}
+	if err := s.writeManualFeedbackTrainingPreparation(&build, source, rows, controlsPerPositive); err != nil {
+		finished := s.now()
+		_ = s.db.Model(&build).Updates(map[string]any{
+			"status": "failed", "error_message": err.Error(), "finished_at": &finished,
+			"telemetry_censored_count": build.TelemetryCensoredCount, "low_coverage_count": build.LowCoverageCount,
+			"extraction_failed_count": build.ExtractionFailedCount, "positive_discontinuous_count": build.PositiveDiscontinuousCount,
+			"eligible_positive_count": build.EligiblePositiveCount, "control_shortfall_count": build.ControlShortfallCount,
+		}).Error
+		build.Status, build.ErrorMessage, build.FinishedAt = "failed", err.Error(), &finished
+		return build, err
+	}
+	return build, s.db.First(&build, build.ID).Error
+}
+
+func (s *Service) writeManualFeedbackTrainingPreparation(build *api.TrainingPreparationBuild, source api.ManualFeedbackFeatureRequestBuild, rows []extractedFeatureRow, controlsPerPositive int) error {
+	prepared := make([]preparedTrainingSample, 0, len(rows))
+	for _, row := range rows {
+		item := preparedTrainingSample{
+			Sample:     row,
+			LabelValue: 1,
+			LabelMetadata: trainingLabelMetadata{
+				EventTypes:           []string{"manual_hardware_fault_feedback"},
+				RuleDecisionVersions: []string{manualFeedbackFeatureRequestVersion},
+				LabelSources:         []string{"manual_hardware_fault_feedback"},
+				HardwareCertainties:  []string{"operator_confirmed_hardware_repair"},
+			},
+		}
+		switch {
+		case row.ExtractionError != "":
+			item.TrainingStatus, item.ExclusionReason = "excluded", "extraction_failed"
+			build.ExtractionFailedCount++
+		case row.MetricCoverage == 0:
+			item.TrainingStatus, item.ExclusionReason = "excluded", "telemetry_censored"
+			build.TelemetryCensoredCount++
+		case row.MetricCoverage < build.MinimumMetricCoverage:
+			item.TrainingStatus, item.ExclusionReason = "excluded", "metric_coverage_below_threshold"
+			build.LowCoverageCount++
+		case positiveTelemetryContinuity(row) < minimumTelemetryContinuity:
+			item.TrainingStatus, item.ExclusionReason = "excluded", "positive_telemetry_discontinuous"
+			build.PositiveDiscontinuousCount++
+		default:
+			item.TrainingStatus, item.Split = "eligible_pending_controls", "pending_control_sampling"
+			build.EligiblePositiveCount++
+		}
+		prepared = append(prepared, item)
+	}
+	build.ControlShortfallCount = build.EligiblePositiveCount * controlsPerPositive
+	build.Status = "manual_feedback_ready_pending_control_sampling"
+	if build.EligiblePositiveCount == 0 {
+		build.Status = "manual_feedback_blocked_by_quality_gate"
+	}
+	if err := os.MkdirAll(build.OutputDir, 0o750); err != nil {
+		return err
+	}
+	preparedPath := filepath.Join(build.OutputDir, "prepared_manual_feedback_positive_samples.jsonl")
+	preparedSHA, err := writeJSONLines(preparedPath, prepared)
+	if err != nil {
+		return err
+	}
+	controls := make([]healthyControlRequest, 0)
+	controlPath := filepath.Join(build.OutputDir, "healthy_control_requests.jsonl")
+	controlSHA, err := writeJSONLines(controlPath, controls)
+	if err != nil {
+		return err
+	}
+	manifestPath := filepath.Join(build.OutputDir, "manifest.json")
+	manifest := manualPreparationManifest{
+		PreparedDatasetKey: build.PreparedDatasetKey, Version: manualPreparationVersion,
+		SourceKind: "manual_feedback_feature_request", SourceFeatureDatasetKey: source.RequestKey,
+		SourceManualFeedbackFeatureRequestBuildID: source.ID, SourceFeatureSHA256: source.FeatureSHA256,
+		MinimumCoverage: build.MinimumMetricCoverage, ControlsPerPositive: controlsPerPositive,
+		SourceWindowCount: build.SourceWindowCount, EligiblePositiveCount: build.EligiblePositiveCount, Status: build.Status,
+		SplitPolicy:     "manual feedback positives remain pending_control_sampling; train/validation/test split is deferred until control samples and matrix governance are available",
+		QualityPolicy:   "manual feedback positives must pass extraction, nonzero telemetry, minimum metric coverage, and core telemetry continuity; no zero imputation is applied",
+		ControlPolicy:   "healthy controls are not generated in this step; same-GPU/control-window extraction remains a downstream gated workflow",
+		PreparedSamples: filepath.Base(preparedPath), PreparedSamplesSHA256: preparedSHA,
+		ControlRequests: filepath.Base(controlPath), ControlRequestsSHA256: controlSHA, CreatedAt: s.now(),
+	}
+	if err := writeJSONAtomic(manifestPath, manifest); err != nil {
+		return err
+	}
+	finished := s.now()
+	return s.db.Model(build).Updates(map[string]any{
+		"status": build.Status, "eligible_positive_count": build.EligiblePositiveCount,
+		"telemetry_censored_count": build.TelemetryCensoredCount, "low_coverage_count": build.LowCoverageCount,
+		"extraction_failed_count": build.ExtractionFailedCount, "positive_discontinuous_count": build.PositiveDiscontinuousCount,
+		"control_request_count": build.ControlRequestCount, "control_shortfall_count": build.ControlShortfallCount,
+		"manifest_path": manifestPath, "prepared_samples_path": preparedPath, "prepared_samples_sha256": preparedSHA,
+		"control_requests_path": controlPath, "control_requests_sha256": controlSHA, "finished_at": &finished,
+	}).Error
 }
 
 func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, source api.TrainingFeatureBuild, cohort api.TrainingDatasetBuild, controlsPerPositive int) error {
