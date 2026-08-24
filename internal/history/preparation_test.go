@@ -113,6 +113,80 @@ func TestTrainingPreparationGatesTelemetryAndBuildsLeakageSafeSplits(t *testing.
 	}
 }
 
+func TestManualFeedbackTrainingPreparationBuildsPositiveCandidates(t *testing.T) {
+	db, err := storage.InitDB(fmt.Sprintf("file:manual-feedback-training-preparation-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputRoot := t.TempDir()
+	base := time.Date(2026, 8, 19, 13, 0, 0, 0, time.UTC)
+	rows := []extractedFeatureRow{
+		{
+			SampleKey: "manual-sample-eligible", EpisodeKey: "manual-feedback-1",
+			GPUUUID: "GPU-manual-1", NodeIP: "10.114.4.36", ModelName: "NVIDIA H100 80GB HBM3",
+			HorizonMinutes: 1440, FeatureCutoffAt: base.Add(-24 * time.Hour), LabelOnsetAt: base,
+			MetricCoverage: 0.83, ExpectedMetrics: 18, AvailableMetrics: 15, LookbackMinutes: 1440, QueryStepSeconds: 300,
+			Features:    map[string]float64{"gpu_temp_mean_24h": 56, "gpu_temp_sample_count_24h": 289, "power_usage_sample_count_24h": 289, "gpu_util_sample_count_24h": 289},
+			LabelWeight: 1,
+		},
+		{
+			SampleKey: "manual-sample-low-coverage", EpisodeKey: "manual-feedback-2",
+			GPUUUID: "GPU-manual-2", NodeIP: "10.114.4.37", ModelName: "NVIDIA H100 80GB HBM3",
+			HorizonMinutes: 1440, FeatureCutoffAt: base.Add(-24 * time.Hour), LabelOnsetAt: base,
+			MetricCoverage: 0.4, ExpectedMetrics: 18, AvailableMetrics: 7, LookbackMinutes: 1440, QueryStepSeconds: 300,
+			Features:    map[string]float64{"gpu_temp_sample_count_24h": 289, "power_usage_sample_count_24h": 289, "gpu_util_sample_count_24h": 289},
+			LabelWeight: 1,
+		},
+	}
+	featureDir := filepath.Join(outputRoot, "manual-feedback-features", "source")
+	if err := os.MkdirAll(featureDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	featurePath := filepath.Join(featureDir, "features.jsonl")
+	checksum, err := writeJSONLines(featurePath, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := base
+	source := api.ManualFeedbackFeatureRequestBuild{
+		RequestKey: "manual-feedback-features-test", Version: manualFeedbackFeatureRequestVersion,
+		Status: "features_ready_pending_training_preparation", SourceKey: "primary",
+		SourceManifestVersion: "prediction-human-feedback-manifest-v1", SourceManifestSHA256: "manifest-sha",
+		FeatureContractVersion: "1.9.0", LookbackMinutes: 1440, QueryStepSeconds: 300,
+		HardwareFeedbackRequests: 2, TrainingEligibleRequests: 2, PackReadyRequests: 2, WarningReviewedRequests: 2,
+		WindowCount: 2, CompletedWindows: 2, FeatureColumnCount: 4, AverageMetricCoverage: 0.615, MinimumMetricCoverage: 0.4,
+		OutputDir: featureDir, FeaturePath: featurePath, FeatureSHA256: checksum,
+		NoRawTelemetryStored: true, NoAlertEmitted: true, NoActionExecuted: true,
+		StartedAt: base, FinishedAt: &finished,
+	}
+	if err := db.Create(&source).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, config.HistoryConfig{DatasetDir: outputRoot}, time.Second)
+	service.now = func() time.Time { return base.Add(time.Hour) }
+	build, err := service.BuildTrainingPreparation(PreparationBuildRequest{
+		SourceManualFeedbackFeatureRequestBuildID: source.ID,
+		MinimumCoverage:     0.7,
+		ControlsPerPositive: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if build.Status != "manual_feedback_ready_pending_control_sampling" ||
+		build.SourceKind != "manual_feedback_feature_request" ||
+		build.SourceManualFeedbackFeatureRequestBuildID != source.ID ||
+		build.EligiblePositiveCount != 1 ||
+		build.LowCoverageCount != 1 ||
+		build.ControlRequestCount != 0 ||
+		build.ControlShortfallCount != 3 ||
+		build.TrainCount != 0 || build.ValidationCount != 0 || build.TestCount != 0 {
+		t.Fatalf("unexpected manual feedback preparation build: %+v", build)
+	}
+	if build.PreparedSamplesSHA256 == "" || build.ControlRequestsSHA256 == "" || build.ManifestPath == "" {
+		t.Fatalf("manual feedback preparation artifacts were not checksummed: %+v", build)
+	}
+}
+
 func TestPositiveTelemetryContinuityRejectsSparseCoreSamples(t *testing.T) {
 	row := extractedFeatureRow{LookbackMinutes: 1440, QueryStepSeconds: 300, Features: map[string]float64{"gpu_temp_sample_count_24h": 289, "power_usage_sample_count_24h": 289, "gpu_util_sample_count_24h": 20}}
 	if continuity := positiveTelemetryContinuity(row); continuity >= minimumTelemetryContinuity {
