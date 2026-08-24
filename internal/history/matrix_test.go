@@ -3,9 +3,15 @@ package history
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"atlas/pkg/api"
+	"atlas/pkg/config"
+	"atlas/pkg/storage"
 )
 
 func TestAssembleTrainingMatrixPreservesMissingValuesAndWeightsClasses(t *testing.T) {
@@ -50,6 +56,93 @@ func TestAssembleTrainingMatrixRejectsLeakageAndPairMismatch(t *testing.T) {
 	rows, _, audit := assembleTrainingMatrix(positives, []controlFeatureRow{control}, "1.9.0")
 	if len(rows) != 0 || audit.pointInTime != 1 || audit.pairing != 1 {
 		t.Fatalf("audit did not reject leakage: rows=%d audit=%+v", len(rows), audit)
+	}
+}
+
+func TestManualFeedbackTrainingMatrixBuildIsGovernanceOnly(t *testing.T) {
+	db, err := storage.InitDB(fmt.Sprintf("file:manual-feedback-matrix-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputRoot := t.TempDir()
+	onset := time.Date(2026, 8, 19, 13, 0, 0, 0, time.UTC)
+	positive := extractedFeatureRow{SampleKey: "manual-positive-1", GPUUUID: "GPU-MANUAL", NodeIP: "10.114.4.36", ModelName: "H100", HorizonMinutes: 1440,
+		FeatureCutoffAt: onset.Add(-24 * time.Hour), LabelOnsetAt: onset, LabelWeight: 1, FeatureContract: "1.9.0", MetricCoverage: 0.85,
+		Features: map[string]float64{"gpu_util_mean_24h": 72, "gpu_temp_mean_24h": 61}}
+	metadata := trainingLabelMetadata{EventTypes: []string{"manual_hardware_fault_feedback"}, LabelSources: []string{"manual_hardware_fault_feedback"}}
+	prepared := []preparedTrainingSample{{Sample: positive, LabelMetadata: metadata, LabelValue: 1, TrainingStatus: "eligible_pending_controls", Split: "pending_control_sampling"}}
+	controlFeature := extractedFeatureRow{SampleKey: "manual-control-window", GPUUUID: "GPU-MANUAL", NodeIP: "10.114.4.36", ModelName: "H100", HorizonMinutes: 1440,
+		FeatureCutoffAt: onset.Add(-30 * 24 * time.Hour), FeatureContract: "1.9.0", MetricCoverage: 0.9,
+		Features: map[string]float64{"gpu_util_mean_24h": 70, "gpu_temp_mean_24h": 58}}
+	controls := []controlFeatureRow{{
+		Request: healthyControlRequest{ControlKey: "manual-control-1", PairedSampleKey: "manual-positive-1", GPUUUID: "GPU-MANUAL", NodeIP: "10.114.4.36", ModelName: "H100", HorizonMinutes: 1440, FeatureCutoffAt: controlFeature.FeatureCutoffAt, Split: "pending_control_sampling"},
+		Feature: controlFeature, ControlLoadBucket: "high", TrainingStatus: "eligible",
+	}}
+	prepDir := filepath.Join(outputRoot, "prepared", "manual")
+	controlDir := filepath.Join(outputRoot, "control-features", "manual")
+	if err := os.MkdirAll(prepDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(controlDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	preparedPath := filepath.Join(prepDir, "prepared_manual_feedback_positive_samples.jsonl")
+	preparedSHA, err := writeJSONLines(preparedPath, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlPath := filepath.Join(controlDir, "control_features.jsonl")
+	controlSHA, err := writeJSONLines(controlPath, controls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparation := api.TrainingPreparationBuild{
+		PreparedDatasetKey: "manual-prep", Version: manualPreparationVersion, Status: "manual_feedback_ready_pending_control_extraction",
+		SourceKind: "manual_feedback_feature_request", SourceFeatureDatasetKey: "manual-feature-request",
+		MinimumMetricCoverage: 0.7, SourceWindowCount: 1, EligiblePositiveCount: 1, ControlRequestCount: 1,
+		OutputDir: prepDir, PreparedSamplesPath: preparedPath, PreparedSamplesSHA256: preparedSHA,
+		StartedAt: onset,
+	}
+	if err := db.Create(&preparation).Error; err != nil {
+		t.Fatal(err)
+	}
+	control := api.TrainingControlFeatureBuild{
+		ControlFeatureDatasetKey: "manual-controls", Version: controlFeatureDatasetVersion, Status: "completed",
+		SourcePreparationBuildID: preparation.ID, SourcePreparedDatasetKey: preparation.PreparedDatasetKey,
+		SourceKey: "primary", FeatureContractVersion: "1.9.0",
+		RequestCount: 1, UniqueWindowCount: 1, CompletedRequestCount: 1, EligibleRequestCount: 1,
+		OutputDir: controlDir, FeaturePath: controlPath, FeatureSHA256: controlSHA, StartedAt: onset,
+	}
+	if err := db.Create(&control).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, config.HistoryConfig{DatasetDir: outputRoot}, time.Second)
+	service.now = func() time.Time { return onset.Add(time.Hour) }
+	build := api.TrainingMatrixBuild{
+		TrainingMatrixKey: "manual-matrix", Version: trainingMatrixVersion, Status: "running",
+		SourcePreparationBuildID: preparation.ID, SourcePreparedDatasetKey: preparation.PreparedDatasetKey,
+		SourceControlBuildID: control.ID, SourceControlDatasetKey: control.ControlFeatureDatasetKey,
+		FeatureContractVersion: "1.9.0", OutputDir: filepath.Join(outputRoot, "training-matrices", "manual"),
+		StartedAt: onset,
+	}
+	if err := db.Create(&build).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.buildTrainingMatrix(&build); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&build, build.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if build.Status != manualTrainingMatrixStatus || build.PositiveCount != 1 || build.ControlCount != 1 || build.TrainPositiveCount != 0 || build.MatrixSHA256 == "" {
+		t.Fatalf("unexpected manual feedback matrix: %+v", build)
+	}
+	readiness, err := service.TrainingMatrixReadiness(build.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readiness.ReadyStrata != 0 || readiness.InsufficientStrata != 1 || !strings.Contains(strings.Join(readiness.Strata[0].BlockingReasons, " "), "train_positive_count") {
+		t.Fatalf("manual matrix must remain blocked by training gates: %+v", readiness)
 	}
 }
 

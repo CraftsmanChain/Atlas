@@ -14,7 +14,10 @@ import (
 	"atlas/pkg/api"
 )
 
-const trainingMatrixVersion = "gpu-supervised-training-matrix-v4"
+const (
+	trainingMatrixVersion      = "gpu-supervised-training-matrix-v4"
+	manualTrainingMatrixStatus = "manual_feedback_matrix_ready_pending_training_gate"
+)
 
 type cohortReadinessPolicy struct {
 	MinimumTrainPositiveGPUs      int `json:"minimum_train_positive_gpus"`
@@ -107,7 +110,7 @@ func (s *Service) TrainingMatrixReadiness(id uint) (cohortReadinessReport, error
 	if err := s.db.First(&build, id).Error; err != nil {
 		return cohortReadinessReport{}, err
 	}
-	if build.Status != "completed" || build.Version != trainingMatrixVersion || build.ManifestPath == "" {
+	if (build.Status != "completed" && build.Status != manualTrainingMatrixStatus) || build.Version != trainingMatrixVersion || build.ManifestPath == "" {
 		return cohortReadinessReport{}, fmt.Errorf("completed training matrix manifest is required")
 	}
 	base, err := filepath.Abs(s.config.DatasetDir)
@@ -159,8 +162,8 @@ func (s *Service) StartTrainingMatrixBuild(request TrainingMatrixBuildRequest) (
 	if err := s.db.First(&preparation, control.SourcePreparationBuildID).Error; err != nil {
 		return api.TrainingMatrixBuild{}, err
 	}
-	if preparation.Version != preparationDatasetVersion {
-		return api.TrainingMatrixBuild{}, fmt.Errorf("healthy-control features must come from training preparation %s", preparationDatasetVersion)
+	if preparation.Version != preparationDatasetVersion && preparation.Version != manualPreparationVersion {
+		return api.TrainingMatrixBuild{}, fmt.Errorf("healthy-control features must come from historical or manual feedback training preparation")
 	}
 	started := s.now()
 	key := trainingMatrixVersion + "-" + strconv.FormatInt(started.UTC().UnixNano(), 10)
@@ -220,7 +223,10 @@ func (s *Service) buildTrainingMatrix(build *api.TrainingMatrixBuild) error {
 	if err != nil {
 		return err
 	}
-	rows, columns, audit := assembleTrainingMatrix(positives, controls, build.FeatureContractVersion)
+	manualFeedbackMatrix := preparation.Version == manualPreparationVersion || preparation.SourceKind == "manual_feedback_feature_request"
+	rows, columns, audit := assembleTrainingMatrixWithOptions(positives, controls, build.FeatureContractVersion, matrixAssemblyOptions{
+		IncludePendingControlSampling: manualFeedbackMatrix,
+	})
 	build.DuplicateCount, build.EntitySplitConflictCount = audit.duplicates, audit.entityConflicts
 	build.PointInTimeViolationCount, build.PairingViolationCount = audit.pointInTime, audit.pairing
 	build.ContractViolationCount = audit.contract
@@ -253,7 +259,7 @@ func (s *Service) buildTrainingMatrix(build *api.TrainingMatrixBuild) error {
 			build.TestControlCount++
 		}
 	}
-	if build.TrainPositiveCount == 0 || build.TrainControlCount == 0 || build.ValidationPositiveCount == 0 || build.ValidationControlCount == 0 || build.TestPositiveCount == 0 || build.TestControlCount == 0 {
+	if !manualFeedbackMatrix && (build.TrainPositiveCount == 0 || build.TrainControlCount == 0 || build.ValidationPositiveCount == 0 || build.ValidationControlCount == 0 || build.TestPositiveCount == 0 || build.TestControlCount == 0) {
 		return fmt.Errorf("every split must contain both labels")
 	}
 	build.FeatureColumnCount = len(columns)
@@ -284,13 +290,19 @@ func (s *Service) buildTrainingMatrix(build *api.TrainingMatrixBuild) error {
 	if err := writeJSONAtomic(manifestPath, manifest); err != nil {
 		return err
 	}
+	status := "completed"
+	errorMessage := ""
+	if manualFeedbackMatrix {
+		status = manualTrainingMatrixStatus
+		errorMessage = "manual feedback matrix is governance-only until train/validation/test split gates and cohort sample thresholds are satisfied"
+	}
 	finished := s.now()
-	return s.db.Model(build).Updates(map[string]any{"status": "completed", "feature_column_count": build.FeatureColumnCount,
+	return s.db.Model(build).Updates(map[string]any{"status": status, "feature_column_count": build.FeatureColumnCount,
 		"positive_count": build.PositiveCount, "control_count": build.ControlCount, "sample_count": build.SampleCount,
 		"train_positive_count": build.TrainPositiveCount, "train_control_count": build.TrainControlCount,
 		"validation_positive_count": build.ValidationPositiveCount, "validation_control_count": build.ValidationControlCount,
 		"test_positive_count": build.TestPositiveCount, "test_control_count": build.TestControlCount,
-		"matrix_path": matrixPath, "matrix_sha256": checksum, "manifest_path": manifestPath, "finished_at": &finished}).Error
+		"matrix_path": matrixPath, "matrix_sha256": checksum, "manifest_path": manifestPath, "error_message": errorMessage, "finished_at": &finished}).Error
 }
 
 func currentCohortReadinessPolicy() cohortReadinessPolicy {
@@ -353,7 +365,11 @@ func evaluateCohortReadiness(matrixKey string, rows []trainingMatrixRow) cohortR
 	report := cohortReadinessReport{MatrixKey: matrixKey, Policy: policy}
 	for key, splitRows := range grouped {
 		item := cohortStratumReadiness{EventType: key.eventType, ModelName: key.modelName, HorizonMinutes: key.horizon, Status: "exploratory_ready", BlockingReasons: []string{}, Splits: map[string]cohortSplitReadiness{}}
-		for _, splitName := range []string{"train", "validation", "test"} {
+		splitNames := []string{"train", "validation", "test"}
+		if _, exists := splitRows["pending_control_sampling"]; exists {
+			splitNames = append(splitNames, "pending_control_sampling")
+		}
+		for _, splitName := range splitNames {
 			split := splitRows[splitName]
 			if split == nil {
 				split = &mutableCohortSplit{positiveGPUs: map[string]bool{}, controlGPUs: map[string]bool{}}
@@ -395,7 +411,15 @@ func evaluateCohortReadiness(matrixKey string, rows []trainingMatrixRow) cohortR
 
 type matrixAudit struct{ duplicates, entityConflicts, pointInTime, pairing, contract int }
 
+type matrixAssemblyOptions struct {
+	IncludePendingControlSampling bool
+}
+
 func assembleTrainingMatrix(positives []preparedTrainingSample, controls []controlFeatureRow, contract string) ([]trainingMatrixRow, []string, matrixAudit) {
+	return assembleTrainingMatrixWithOptions(positives, controls, contract, matrixAssemblyOptions{})
+}
+
+func assembleTrainingMatrixWithOptions(positives []preparedTrainingSample, controls []controlFeatureRow, contract string, options matrixAssemblyOptions) ([]trainingMatrixRow, []string, matrixAudit) {
 	rows := make([]trainingMatrixRow, 0, len(positives)+len(controls))
 	audit := matrixAudit{}
 	positiveByKey := map[string]preparedTrainingSample{}
@@ -420,7 +444,7 @@ func assembleTrainingMatrix(positives []preparedTrainingSample, controls []contr
 		rows = append(rows, row)
 	}
 	for _, item := range positives {
-		if item.TrainingStatus != "eligible" {
+		if item.TrainingStatus != "eligible" && !(options.IncludePendingControlSampling && item.TrainingStatus == "eligible_pending_controls") {
 			continue
 		}
 		positiveByKey[item.Sample.SampleKey] = item
