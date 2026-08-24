@@ -14,21 +14,26 @@ import (
 const HardwareFaultFeedbackRequestVersion = "hardware-fault-feedback-request-v1"
 
 type HardwareFaultFeedbackInput struct {
-	NodeIP           string `json:"node_ip"`
-	GPUUUID          string `json:"gpu_uuid"`
-	ReportedGPUUUID  string `json:"reported_gpu_uuid"`
-	GPUIndex         int    `json:"gpu_index"`
-	GPUAssetID       uint   `json:"gpu_asset_id"`
-	FaultType        string `json:"fault_type"`
-	FaultOccurredAt  string `json:"fault_occurred_at"`
-	PreWindowHours   int    `json:"pre_window_hours"`
-	PostWindowHours  int    `json:"post_window_hours"`
-	Operator         string `json:"operator"`
-	Description      string `json:"description"`
-	RepairAction     string `json:"repair_action"`
-	HardwareReplaced bool   `json:"hardware_replaced"`
-	EvidenceNote     string `json:"evidence_note"`
-	TrainingEligible bool   `json:"training_eligible"`
+	NodeIP             string   `json:"node_ip"`
+	TargetScope        string   `json:"target_scope"`
+	GPUUUID            string   `json:"gpu_uuid"`
+	ReportedGPUUUID    string   `json:"reported_gpu_uuid"`
+	GPUIndex           int      `json:"gpu_index"`
+	AffectedGPUIndexes []string `json:"affected_gpu_indexes"`
+	GPUAssetID         uint     `json:"gpu_asset_id"`
+	FaultType          string   `json:"fault_type"`
+	FaultOccurredAt    string   `json:"fault_occurred_at"`
+	FaultTimePrecision string   `json:"fault_time_precision"`
+	FaultWindowStartAt string   `json:"fault_window_start_at"`
+	FaultWindowEndAt   string   `json:"fault_window_end_at"`
+	PreWindowHours     int      `json:"pre_window_hours"`
+	PostWindowHours    int      `json:"post_window_hours"`
+	Operator           string   `json:"operator"`
+	Description        string   `json:"description"`
+	RepairAction       string   `json:"repair_action"`
+	HardwareReplaced   bool     `json:"hardware_replaced"`
+	EvidenceNote       string   `json:"evidence_note"`
+	TrainingEligible   bool     `json:"training_eligible"`
 }
 
 func (s *Service) HardwareFaultFeedbackRequests(limit int) ([]api.HardwareFaultFeedbackRequest, error) {
@@ -44,16 +49,18 @@ func (s *Service) HardwareFaultFeedbackRequests(limit int) ([]api.HardwareFaultF
 
 func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) (api.HardwareFaultFeedbackRequest, error) {
 	nodeIP := strings.TrimSpace(input.NodeIP)
+	targetScope := normalizeFeedbackTargetScope(input.TargetScope)
 	gpuUUID := strings.TrimSpace(input.GPUUUID)
 	reportedGPUUUID := firstNonEmpty(input.ReportedGPUUUID, gpuUUID)
+	affectedGPUIndexes := normalizeAffectedGPUIndexes(input.AffectedGPUIndexes, input.GPUIndex, targetScope)
 	faultType := strings.TrimSpace(input.FaultType)
 	repairAction := strings.TrimSpace(input.RepairAction)
 	operator := strings.TrimSpace(input.Operator)
 	if nodeIP == "" {
 		return api.HardwareFaultFeedbackRequest{}, fmt.Errorf("node_ip is required")
 	}
-	if gpuUUID == "" && input.GPUIndex < 0 {
-		return api.HardwareFaultFeedbackRequest{}, fmt.Errorf("gpu_uuid or gpu_index is required")
+	if targetScope == "gpu" && gpuUUID == "" && input.GPUAssetID == 0 && input.GPUIndex < 0 {
+		return api.HardwareFaultFeedbackRequest{}, fmt.Errorf("gpu_uuid, gpu_asset_id, or gpu_index is required for gpu scoped feedback")
 	}
 	if faultType == "" {
 		return api.HardwareFaultFeedbackRequest{}, fmt.Errorf("fault_type is required")
@@ -61,7 +68,7 @@ func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) 
 	if operator == "" {
 		return api.HardwareFaultFeedbackRequest{}, fmt.Errorf("operator is required")
 	}
-	occurredAt, err := parseFeedbackTime(input.FaultOccurredAt)
+	occurredAt, precision, windowStart, windowEnd, err := parseFeedbackTimeWindow(input.FaultOccurredAt, input.FaultTimePrecision, input.FaultWindowStartAt, input.FaultWindowEndAt)
 	if err != nil {
 		return api.HardwareFaultFeedbackRequest{}, err
 	}
@@ -81,22 +88,37 @@ func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) 
 	identityStatus := "current_identity_selected"
 	identityNote := "selected GPU identity can be used for the fault-time history pack"
 	blockingReasons := api.StringList{"offline pre/post monitoring history pack has not been collected yet"}
+	if targetScope != "gpu" {
+		identityStatus = "node_or_board_scope"
+		identityNote = "feedback targets a node, baseboard, slot group, or multiple GPUs; GPU identity is optional and offline training must use node/slot scoped features"
+	} else if len(affectedGPUIndexes) == 0 && input.GPUIndex >= 0 {
+		affectedGPUIndexes = api.StringList{fmt.Sprintf("%d", input.GPUIndex)}
+	}
 	if replacementFeedback {
-		identityStatus = "requires_historical_identity_at_fault_time"
-		identityNote = "hardware replacement was reported; current slot UUID is only a reference and must not be used as the failed GPU identity until historical identity intervals are resolved at fault time"
-		blockingReasons = append(blockingReasons, "hardware replacement reported; resolve historical GPU identity at fault time before training")
+		if targetScope == "gpu" {
+			identityStatus = "requires_historical_identity_at_fault_time"
+			identityNote = "hardware replacement was reported; current slot UUID is only a reference and must not be used as the failed GPU identity until historical identity intervals are resolved at fault time"
+			blockingReasons = append(blockingReasons, "hardware replacement reported; resolve historical GPU identity at fault time before training")
+		} else {
+			blockingReasons = append(blockingReasons, "hardware replacement reported; keep node/board scope and avoid treating current slot UUID as a failed single-GPU identity")
+		}
 		gpuUUID = ""
 	}
 	row := api.HardwareFaultFeedbackRequest{
 		RequestKey:               fmt.Sprintf("fault-feedback-%d", now.UnixNano()),
 		Status:                   "history_pack_requested",
 		NodeIP:                   nodeIP,
+		TargetScope:              targetScope,
 		GPUUUID:                  gpuUUID,
 		ReportedGPUUUID:          reportedGPUUUID,
 		GPUIndex:                 input.GPUIndex,
+		AffectedGPUIndexes:       affectedGPUIndexes,
 		GPUAssetID:               input.GPUAssetID,
 		FaultType:                faultType,
 		FaultOccurredAt:          occurredAt,
+		FaultTimePrecision:       precision,
+		FaultWindowStartAt:       &windowStart,
+		FaultWindowEndAt:         &windowEnd,
 		PreWindowHours:           preWindow,
 		PostWindowHours:          postWindow,
 		Operator:                 operator,
@@ -121,16 +143,23 @@ func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) 
 	} else {
 		query = query.Where("gpu_index = ?", input.GPUIndex)
 	}
-	if err := query.First(&asset).Error; err == nil {
-		row.GPUAssetID = asset.ID
-		row.ReportedGPUUUID = firstNonEmpty(row.ReportedGPUUUID, asset.CurrentUUID)
-		if !replacementFeedback {
-			row.GPUUUID = firstNonEmpty(row.GPUUUID, asset.CurrentUUID)
+	if targetScope == "gpu" || input.GPUAssetID > 0 || gpuUUID != "" {
+		if err := query.First(&asset).Error; err == nil {
+			row.GPUAssetID = asset.ID
+			row.ReportedGPUUUID = firstNonEmpty(row.ReportedGPUUUID, asset.CurrentUUID)
+			if !replacementFeedback && targetScope == "gpu" {
+				row.GPUUUID = firstNonEmpty(row.GPUUUID, asset.CurrentUUID)
+			}
+			if targetScope == "gpu" || input.GPUIndex >= 0 {
+				row.GPUIndex = asset.GPUIndex
+			}
+			row.ModelName = firstNonEmpty(asset.ModelName, asset.Model)
+			if len(row.AffectedGPUIndexes) == 0 && asset.GPUIndex >= 0 {
+				row.AffectedGPUIndexes = api.StringList{fmt.Sprintf("%d", asset.GPUIndex)}
+			}
 		}
-		row.GPUIndex = asset.GPUIndex
-		row.ModelName = firstNonEmpty(asset.ModelName, asset.Model)
 	}
-	row.HistoryPackScope = feedbackHistoryScope(row.NodeIP, row.GPUUUID, row.ReportedGPUUUID, row.GPUIndex, row.FaultOccurredAt, row.PreWindowHours, row.PostWindowHours, row.IdentityResolutionStatus)
+	row.HistoryPackScope = feedbackHistoryScope(row)
 	if err := s.db.Create(&row).Error; err != nil {
 		return row, err
 	}
@@ -145,7 +174,8 @@ func (s *Service) ReviewHardwareFaultFeedbackWarning(id uint) (api.HardwareFault
 	if err := s.db.First(&row, id).Error; err != nil {
 		return row, err
 	}
-	if strings.TrimSpace(row.GPUUUID) == "" || row.IdentityResolutionStatus == "requires_historical_identity_at_fault_time" {
+	gpuScoped := feedbackTargetScope(row) == "gpu"
+	if gpuScoped && (strings.TrimSpace(row.GPUUUID) == "" || row.IdentityResolutionStatus == "requires_historical_identity_at_fault_time") {
 		prepared, err := s.PrepareHardwareFaultFeedbackPack(id)
 		if err != nil {
 			return row, err
@@ -153,7 +183,7 @@ func (s *Service) ReviewHardwareFaultFeedbackWarning(id uint) (api.HardwareFault
 		row = prepared
 	}
 	windowHours := warningReviewWindowHours(row)
-	if strings.TrimSpace(row.GPUUUID) == "" || strings.HasPrefix(row.IdentityResolutionStatus, "blocked") {
+	if gpuScoped && (strings.TrimSpace(row.GPUUUID) == "" || strings.HasPrefix(row.IdentityResolutionStatus, "blocked")) {
 		row.WarningReviewStatus = "blocked_identity_required"
 		row.WarningReviewWindowHours = windowHours
 		row.MatchedWarningCount = 0
@@ -167,7 +197,11 @@ func (s *Service) ReviewHardwareFaultFeedbackWarning(id uint) (api.HardwareFault
 	start := row.FaultOccurredAt.Add(-time.Duration(windowHours) * time.Hour)
 	end := row.FaultOccurredAt
 	var predictions []api.HardwareRiskPrediction
-	if err := s.db.Where("node_ip = ? AND gpu_uuid = ? AND evaluated_at >= ? AND evaluated_at <= ?", row.NodeIP, row.GPUUUID, start, end).
+	query := s.db.Where("node_ip = ? AND evaluated_at >= ? AND evaluated_at <= ?", row.NodeIP, start, end)
+	if gpuScoped {
+		query = query.Where("gpu_uuid = ?", row.GPUUUID)
+	}
+	if err := query.
 		Order("evaluated_at DESC, id DESC").
 		Limit(20).
 		Find(&predictions).Error; err != nil {
@@ -193,7 +227,7 @@ func (s *Service) ReviewHardwareFaultFeedbackWarning(id uint) (api.HardwareFault
 	switch {
 	case len(predictions) == 0:
 		row.WarningReviewStatus = "manual_feedback_no_prior_shadow_warning"
-		row.WarningReviewNote = fmt.Sprintf("manual hardware-fault feedback found no read-only shadow warning candidate for node=%s gpu_uuid=%s within %dh before fault; keep as false-negative/coverage review evidence only", row.NodeIP, row.GPUUUID, windowHours)
+		row.WarningReviewNote = fmt.Sprintf("manual hardware-fault feedback found no read-only shadow warning candidate for scope=%s node=%s gpu_uuid=%s within %dh before fault; keep as false-negative/coverage review evidence only", feedbackTargetScope(row), row.NodeIP, row.GPUUUID, windowHours)
 	case positive > 0:
 		row.WarningReviewStatus = "manual_feedback_prior_shadow_candidate_found"
 		row.WarningReviewNote = fmt.Sprintf("manual hardware-fault feedback matched %d read-only shadow record(s), including %d above-threshold candidate(s); review outcome alignment before training", len(predictions), positive)
@@ -215,10 +249,12 @@ func (s *Service) PrepareHardwareFaultFeedbackPack(id uint) (api.HardwareFaultFe
 	if err := s.db.First(&row, id).Error; err != nil {
 		return row, err
 	}
-	start := row.FaultOccurredAt.Add(-time.Duration(row.PreWindowHours) * time.Hour)
-	end := row.FaultOccurredAt.Add(time.Duration(row.PostWindowHours) * time.Hour)
+	faultStart, faultEnd := feedbackFaultWindow(row)
+	start := faultStart.Add(-time.Duration(row.PreWindowHours) * time.Hour)
+	end := faultEnd.Add(time.Duration(row.PostWindowHours) * time.Hour)
 	blockers := api.StringList{}
-	needsHistoricalIdentity := row.IdentityResolutionStatus == "requires_historical_identity_at_fault_time" || strings.TrimSpace(row.GPUUUID) == ""
+	gpuScoped := feedbackTargetScope(row) == "gpu"
+	needsHistoricalIdentity := gpuScoped && (row.IdentityResolutionStatus == "requires_historical_identity_at_fault_time" || strings.TrimSpace(row.GPUUUID) == "")
 	if needsHistoricalIdentity {
 		var interval api.HistoricalGPUIdentityInterval
 		err := s.db.Where("node_ip = ? AND gpu_index = ? AND first_seen_at <= ? AND last_seen_at >= ?", row.NodeIP, row.GPUIndex, row.FaultOccurredAt, row.FaultOccurredAt).
@@ -237,7 +273,7 @@ func (s *Service) PrepareHardwareFaultFeedbackPack(id uint) (api.HardwareFaultFe
 			return row, err
 		}
 	}
-	if strings.TrimSpace(row.GPUUUID) == "" {
+	if gpuScoped && strings.TrimSpace(row.GPUUUID) == "" {
 		blockers = append(blockers, "resolved failed GPU UUID is required before history pack extraction")
 	}
 	var audit api.MonitoringHistoryAudit
@@ -253,14 +289,14 @@ func (s *Service) PrepareHardwareFaultFeedbackPack(id uint) (api.HardwareFaultFe
 	} else {
 		return row, err
 	}
-	row.HistoryPackScope = feedbackHistoryScope(row.NodeIP, row.GPUUUID, row.ReportedGPUUUID, row.GPUIndex, row.FaultOccurredAt, row.PreWindowHours, row.PostWindowHours, row.IdentityResolutionStatus)
+	row.HistoryPackScope = feedbackHistoryScope(row)
 	if audit.SourceKey != "" {
 		row.HistoryPackScope += fmt.Sprintf(" source_key=%s", audit.SourceKey)
 	}
 	if len(blockers) > 0 {
 		row.Status = "blocked"
 		row.HistoryPackStatus = "blocked_identity_unresolved"
-		if row.IdentityResolutionStatus == "historical_identity_resolved" || row.IdentityResolutionStatus == "current_identity_selected" {
+		if row.IdentityResolutionStatus == "historical_identity_resolved" || row.IdentityResolutionStatus == "current_identity_selected" || !gpuScoped {
 			row.HistoryPackStatus = "blocked_history_source_unavailable"
 		}
 		row.HistoryPackSHA256 = ""
@@ -282,13 +318,118 @@ func parseFeedbackTime(value string) (time.Time, error) {
 	if text == "" {
 		return time.Time{}, fmt.Errorf("fault_occurred_at is required")
 	}
-	layouts := []string{time.RFC3339, "2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02 15:04"}
+	layouts := []string{time.RFC3339, "2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02"}
 	for _, layout := range layouts {
 		if parsed, err := time.Parse(layout, text); err == nil {
 			return parsed, nil
 		}
 	}
-	return time.Time{}, fmt.Errorf("fault_occurred_at must be RFC3339 or local datetime")
+	return time.Time{}, fmt.Errorf("fault_occurred_at must be RFC3339, local datetime, or YYYY-MM-DD")
+}
+
+func parseFeedbackTimeWindow(value, precisionValue, startValue, endValue string) (time.Time, string, time.Time, time.Time, error) {
+	precision := strings.TrimSpace(precisionValue)
+	if precision == "" {
+		if strings.TrimSpace(startValue) != "" || strings.TrimSpace(endValue) != "" {
+			precision = "window"
+		} else if isFeedbackDateOnly(value) {
+			precision = "date"
+		} else {
+			precision = "exact"
+		}
+	}
+	switch precision {
+	case "exact":
+		occurredAt, err := parseFeedbackTime(value)
+		if err != nil {
+			return time.Time{}, "", time.Time{}, time.Time{}, err
+		}
+		return occurredAt, precision, occurredAt, occurredAt, nil
+	case "date":
+		occurredAt, err := time.Parse("2006-01-02", strings.TrimSpace(value))
+		if err != nil {
+			return time.Time{}, "", time.Time{}, time.Time{}, fmt.Errorf("date precision fault_occurred_at must be YYYY-MM-DD")
+		}
+		windowEnd := occurredAt.Add(24*time.Hour - time.Nanosecond)
+		return occurredAt, precision, occurredAt, windowEnd, nil
+	case "window":
+		start, err := parseFeedbackTime(startValue)
+		if err != nil {
+			return time.Time{}, "", time.Time{}, time.Time{}, fmt.Errorf("fault_window_start_at is required for window precision")
+		}
+		end, err := parseFeedbackTime(endValue)
+		if err != nil {
+			return time.Time{}, "", time.Time{}, time.Time{}, fmt.Errorf("fault_window_end_at is required for window precision")
+		}
+		if end.Before(start) {
+			return time.Time{}, "", time.Time{}, time.Time{}, fmt.Errorf("fault_window_end_at must be after fault_window_start_at")
+		}
+		return start, precision, start, end, nil
+	default:
+		return time.Time{}, "", time.Time{}, time.Time{}, fmt.Errorf("fault_time_precision must be exact, date, or window")
+	}
+}
+
+func isFeedbackDateOnly(value string) bool {
+	text := strings.TrimSpace(value)
+	if len(text) != len("2006-01-02") {
+		return false
+	}
+	_, err := time.Parse("2006-01-02", text)
+	return err == nil
+}
+
+func normalizeFeedbackTargetScope(value string) string {
+	switch strings.TrimSpace(value) {
+	case "", "gpu":
+		return "gpu"
+	case "multi_gpu", "node", "baseboard":
+		return strings.TrimSpace(value)
+	default:
+		return "gpu"
+	}
+}
+
+func normalizeAffectedGPUIndexes(values []string, gpuIndex int, targetScope string) api.StringList {
+	indexes := make([]string, 0, len(values)+1)
+	seen := map[string]bool{}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(value), "gpu"))
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		indexes = append(indexes, trimmed)
+	}
+	if targetScope == "gpu" && gpuIndex >= 0 {
+		value := fmt.Sprintf("%d", gpuIndex)
+		if !seen[value] {
+			indexes = append(indexes, value)
+		}
+	}
+	return api.StringList(indexes)
+}
+
+func feedbackTargetScope(row api.HardwareFaultFeedbackRequest) string {
+	if strings.TrimSpace(row.TargetScope) == "" {
+		return "gpu"
+	}
+	return row.TargetScope
+}
+
+func feedbackFaultWindow(row api.HardwareFaultFeedbackRequest) (time.Time, time.Time) {
+	start := row.FaultOccurredAt
+	end := row.FaultOccurredAt
+	if row.FaultWindowStartAt != nil {
+		start = *row.FaultWindowStartAt
+	}
+	if row.FaultWindowEndAt != nil {
+		end = *row.FaultWindowEndAt
+	}
+	if end.Before(start) {
+		return start, start
+	}
+	return start, end
 }
 
 func hardwareFeedbackPackChecksum(row api.HardwareFaultFeedbackRequest, audit api.MonitoringHistoryAudit) string {
@@ -296,11 +437,16 @@ func hardwareFeedbackPackChecksum(row api.HardwareFaultFeedbackRequest, audit ap
 		"version":                    HardwareFaultFeedbackRequestVersion,
 		"request_key":                row.RequestKey,
 		"node_ip":                    row.NodeIP,
+		"target_scope":               feedbackTargetScope(row),
 		"gpu_uuid":                   row.GPUUUID,
 		"reported_gpu_uuid":          row.ReportedGPUUUID,
 		"gpu_index":                  row.GPUIndex,
+		"affected_gpu_indexes":       row.AffectedGPUIndexes,
 		"fault_type":                 row.FaultType,
 		"fault_occurred_at":          row.FaultOccurredAt.UTC().Format(time.RFC3339),
+		"fault_time_precision":       row.FaultTimePrecision,
+		"fault_window_start_at":      row.FaultWindowStartAt,
+		"fault_window_end_at":        row.FaultWindowEndAt,
 		"pre_window_hours":           row.PreWindowHours,
 		"post_window_hours":          row.PostWindowHours,
 		"repair_action":              row.RepairAction,
@@ -316,10 +462,11 @@ func hardwareFeedbackPackChecksum(row api.HardwareFaultFeedbackRequest, audit ap
 	return fmt.Sprintf("%x", sum)
 }
 
-func feedbackHistoryScope(nodeIP, gpuUUID, reportedGPUUUID string, gpuIndex int, occurredAt time.Time, preWindow, postWindow int, identityStatus string) string {
-	start := occurredAt.Add(-time.Duration(preWindow) * time.Hour).Format(time.RFC3339)
-	end := occurredAt.Add(time.Duration(postWindow) * time.Hour).Format(time.RFC3339)
-	return fmt.Sprintf("node_ip=%s gpu_uuid=%s reported_gpu_uuid=%s gpu_index=%d identity_resolution=%s start=%s fault=%s end=%s", nodeIP, gpuUUID, reportedGPUUUID, gpuIndex, identityStatus, start, occurredAt.Format(time.RFC3339), end)
+func feedbackHistoryScope(row api.HardwareFaultFeedbackRequest) string {
+	faultStart, faultEnd := feedbackFaultWindow(row)
+	start := faultStart.Add(-time.Duration(row.PreWindowHours) * time.Hour).Format(time.RFC3339)
+	end := faultEnd.Add(time.Duration(row.PostWindowHours) * time.Hour).Format(time.RFC3339)
+	return fmt.Sprintf("node_ip=%s target_scope=%s gpu_uuid=%s reported_gpu_uuid=%s gpu_index=%d affected_gpu_indexes=%s identity_resolution=%s time_precision=%s start=%s fault=%s fault_window_start=%s fault_window_end=%s end=%s", row.NodeIP, feedbackTargetScope(row), row.GPUUUID, row.ReportedGPUUUID, row.GPUIndex, strings.Join(row.AffectedGPUIndexes, ","), row.IdentityResolutionStatus, row.FaultTimePrecision, start, row.FaultOccurredAt.Format(time.RFC3339), faultStart.Format(time.RFC3339), faultEnd.Format(time.RFC3339), end)
 }
 
 func warningReviewWindowHours(row api.HardwareFaultFeedbackRequest) int {
