@@ -998,7 +998,21 @@ function Models({ tx, view, lang, assets }: { tx: Tx; view: string; lang: string
   const [reviewingCandidateID, setReviewingCandidateID] = useState<number | null>(null);
   const [readinessPage, setReadinessPage] = useState(0);
   const [predictionError, setPredictionError] = useState('');
-  const [warningTab, setWarningTab] = useState('human-feedback');
+  const [warningTab, setWarningTabState] = useState(() => {
+    try {
+      return localStorage.getItem('atlas.prediction.warningTab') || 'human-feedback';
+    } catch {
+      return 'human-feedback';
+    }
+  });
+  const setWarningTab = (tab: string) => {
+    setWarningTabState(tab);
+    try {
+      localStorage.setItem('atlas.prediction.warningTab', tab);
+    } catch {
+      // Ignore storage errors; the selected tab still updates in memory.
+    }
+  };
   const [feedbackForm, setFeedbackForm] = useState({ target_scope: 'gpu', node_ip: '', gpu_asset_id: '', affected_gpu_indexes: '', fault_type: 'gpu_hardware_failure', fault_time_precision: 'exact', fault_occurred_at: '', fault_window_start_at: '', fault_window_end_at: '', pre_window_hours: '72', post_window_hours: '24', operator: '', description: '', repair_action: 'pending', hardware_replaced: false, evidence_note: '', training_eligible: true });
   const [feedbackAssetQuery, setFeedbackAssetQuery] = useState('');
   const [feedbackSaving, setFeedbackSaving] = useState(false);
@@ -2118,13 +2132,14 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const releaseModule = { id: 'release', name: tx('发布与产物同步', 'Release & Artifact Sync'), version: 'v0.1.0', status: tx('Rsync 增量同步', 'RSYNC TRANSFER'), desc: tx('发布链路统一使用 rsync 同步源码包、前端产物、二进制和数据库备份脚本，支持校验和、断点保留和传输进度；远端构建、备份、原子切换及回滚流程保持不变。', 'Release pipelines use rsync for source archives, web assets, binaries, and database-backup scripts with checksums, partial-transfer retention, and visible progress; remote builds, backups, atomic switching, and rollback remain unchanged.'), history: [tx('v0.1.0 · 默认远端源码发布和 legacy 二进制发布全部由 scp 切换为 rsync，并增加本机/远端依赖预检', 'v0.1.0 · Replaced scp with rsync in both remote-source and legacy-binary release paths, adding local and remote dependency preflight checks')] };
   const modules = [...baseModules, releaseModule].map(module => module.id === 'prediction' ? {
     ...module,
-    version: 'v0.27.11',
+    version: 'v0.27.12',
     status: tx('故障预警工作台', 'EARLY-WARNING WORKBENCH'),
     desc: tx(
       '当前故障预警能力保持 GPU-only、read-only shadow：已具备训练数据、标签 Manifest、训练样本 Evidence Bundle、模型治理卡、影子门禁、成熟 outcome、Ranking@K、naive baseline、HeaRank 7d node-risk challenger、数据/校准漂移、训练侧和 live-shadow 特征分布快照，并把故障前后数据反馈包列为重点入口；不触发告警、调度、维修或自动隔离。',
       'Early warning remains GPU-only and read-only shadow: training data, label manifest, training-sample Evidence Bundle, model governance cards, shadow gates, mature outcomes, Ranking@K, naive baselines, a HeaRank 7d node-risk challenger, data/calibration drift, and training/live-shadow feature-distribution snapshots are available, with the pre/post-fault feedback pack promoted as a priority entry; no alert, scheduling, repair or automatic isolation is triggered.',
     ),
     history: [
+      tx('v0.27.12 · 故障预警三级子功能页签会在刷新后保留当前位置，人工反馈提交后继续停留在“故障前后数据反馈包”，避免新提交记录被默认页签隐藏', 'v0.27.12 · preserves the selected failure early-warning subfunction tab after refresh, keeping users on the pre/post-fault data-pack view after feedback submission so newly submitted records are not hidden by the default tab'),
       tx('v0.27.11 · 人工硬件故障反馈支持单 GPU、多 GPU/槽位组、GPU 底板和整节点范围，并支持精确时间、仅日期和时间范围，避免把底板/节点级故障误标成单卡故障', 'v0.27.11 · manual hardware-fault feedback now supports single-GPU, multi-GPU/slot-group, GPU-baseboard, and node scopes with exact, date-only, or time-window precision, avoiding mislabeled baseboard/node faults as single-GPU failures'),
       tx('v0.27.10 · 人工故障反馈训练闭环新增离线特征请求 Manifest：将 pack-ready、身份已解析、预警已复核的反馈固化为 worker 输入清单和 SHA，不读取原始遥测、不发告警、不执行动作', 'v0.27.10 · adds an offline feature-request manifest for the manual fault-feedback training loop, freezing pack-ready, identity-resolved, warning-reviewed feedback into worker input and SHA without reading raw telemetry, emitting alerts, or executing actions'),
       tx('v0.27.9 · Human Feedback Manifest 和 Validation Readiness 纳入人工硬件故障反馈闭环，统计 pack-ready、预警复核、漏预警和阻断反馈，作为离线训练证据入口', 'v0.27.9 · Human Feedback Manifest and Validation Readiness now include the manual hardware-fault feedback loop, counting pack-ready, warning-reviewed, warning-miss, and blocked feedback as offline-training evidence gates'),
@@ -2280,7 +2295,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.11" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, an alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.12" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>
