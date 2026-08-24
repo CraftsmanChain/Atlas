@@ -41,6 +41,7 @@ type cohortStratumReadiness struct {
 	HorizonMinutes  int                             `json:"horizon_minutes"`
 	Status          string                          `json:"status"`
 	BlockingReasons []string                        `json:"blocking_reasons"`
+	Deficits        []cohortReadinessDeficit        `json:"deficits"`
 	Splits          map[string]cohortSplitReadiness `json:"splits"`
 }
 
@@ -49,7 +50,20 @@ type cohortReadinessReport struct {
 	Policy             cohortReadinessPolicy    `json:"policy"`
 	ReadyStrata        int                      `json:"ready_strata"`
 	InsufficientStrata int                      `json:"insufficient_strata"`
+	Deficits           []cohortReadinessDeficit `json:"deficits"`
+	RecommendedNextRun []string                 `json:"recommended_next_run"`
 	Strata             []cohortStratumReadiness `json:"strata"`
+}
+
+type cohortReadinessDeficit struct {
+	EventType      string `json:"event_type"`
+	ModelName      string `json:"model_name"`
+	HorizonMinutes int    `json:"horizon_minutes"`
+	Split          string `json:"split"`
+	Metric         string `json:"metric"`
+	Actual         int    `json:"actual"`
+	Required       int    `json:"required"`
+	Shortfall      int    `json:"shortfall"`
 }
 
 type TrainingMatrixBuildRequest struct {
@@ -364,10 +378,21 @@ func evaluateCohortReadiness(matrixKey string, rows []trainingMatrixRow) cohortR
 	}
 	report := cohortReadinessReport{MatrixKey: matrixKey, Policy: policy}
 	for key, splitRows := range grouped {
-		item := cohortStratumReadiness{EventType: key.eventType, ModelName: key.modelName, HorizonMinutes: key.horizon, Status: "exploratory_ready", BlockingReasons: []string{}, Splits: map[string]cohortSplitReadiness{}}
+		item := cohortStratumReadiness{EventType: key.eventType, ModelName: key.modelName, HorizonMinutes: key.horizon, Status: "exploratory_ready", BlockingReasons: []string{}, Deficits: []cohortReadinessDeficit{}, Splits: map[string]cohortSplitReadiness{}}
 		splitNames := []string{"train", "validation", "test"}
 		if _, exists := splitRows["pending_control_sampling"]; exists {
 			splitNames = append(splitNames, "pending_control_sampling")
+		}
+		addDeficit := func(splitName, metric string, actual, required int) {
+			if actual >= required {
+				return
+			}
+			deficit := cohortReadinessDeficit{
+				EventType: key.eventType, ModelName: key.modelName, HorizonMinutes: key.horizon,
+				Split: splitName, Metric: metric, Actual: actual, Required: required, Shortfall: required - actual,
+			}
+			item.Deficits = append(item.Deficits, deficit)
+			report.Deficits = append(report.Deficits, deficit)
 		}
 		for _, splitName := range splitNames {
 			split := splitRows[splitName]
@@ -381,12 +406,15 @@ func evaluateCohortReadiness(matrixKey string, rows []trainingMatrixRow) cohortR
 			}
 			if split.positive < minimumPositives {
 				item.BlockingReasons = append(item.BlockingReasons, fmt.Sprintf("%s_positive_count_%d_lt_%d", splitName, split.positive, minimumPositives))
+				addDeficit(splitName, "positive_count", split.positive, minimumPositives)
 			}
 			if split.control < minimumControls {
 				item.BlockingReasons = append(item.BlockingReasons, fmt.Sprintf("%s_control_count_%d_lt_%d", splitName, split.control, minimumControls))
+				addDeficit(splitName, "control_count", split.control, minimumControls)
 			}
 			if len(split.positiveGPUs) < minimumGPUs {
 				item.BlockingReasons = append(item.BlockingReasons, fmt.Sprintf("%s_positive_gpus_%d_lt_%d", splitName, len(split.positiveGPUs), minimumGPUs))
+				addDeficit(splitName, "positive_gpus", len(split.positiveGPUs), minimumGPUs)
 			}
 		}
 		if len(item.BlockingReasons) > 0 {
@@ -406,7 +434,70 @@ func evaluateCohortReadiness(matrixKey string, rows []trainingMatrixRow) cohortR
 		}
 		return report.Strata[i].HorizonMinutes < report.Strata[j].HorizonMinutes
 	})
+	sort.Slice(report.Deficits, func(i, j int) bool {
+		left, right := report.Deficits[i], report.Deficits[j]
+		if left.Shortfall != right.Shortfall {
+			return left.Shortfall > right.Shortfall
+		}
+		if left.EventType != right.EventType {
+			return left.EventType < right.EventType
+		}
+		if left.ModelName != right.ModelName {
+			return left.ModelName < right.ModelName
+		}
+		if left.HorizonMinutes != right.HorizonMinutes {
+			return left.HorizonMinutes < right.HorizonMinutes
+		}
+		if left.Split != right.Split {
+			return left.Split < right.Split
+		}
+		return left.Metric < right.Metric
+	})
+	report.RecommendedNextRun = matrixReadinessRecommendations(report)
 	return report
+}
+
+func matrixReadinessRecommendations(report cohortReadinessReport) []string {
+	recommendations := []string{}
+	hasPendingControlSampling, needsTrain, needsEvaluation, needsGPUCoverage, needsControls := false, false, false, false, false
+	for _, stratum := range report.Strata {
+		if pending := stratum.Splits["pending_control_sampling"]; pending.PositiveCount > 0 || pending.ControlCount > 0 {
+			hasPendingControlSampling = true
+		}
+	}
+	for _, deficit := range report.Deficits {
+		if deficit.Split == "train" {
+			needsTrain = true
+		}
+		if deficit.Split == "validation" || deficit.Split == "test" {
+			needsEvaluation = true
+		}
+		if deficit.Metric == "positive_gpus" {
+			needsGPUCoverage = true
+		}
+		if deficit.Metric == "control_count" {
+			needsControls = true
+		}
+	}
+	if hasPendingControlSampling {
+		recommendations = append(recommendations, "rerun manual-feedback training preparation and healthy-control extraction so pending_control_sampling positives receive leakage-safe splits")
+	}
+	if needsControls {
+		recommendations = append(recommendations, "increase eligible healthy controls outside every known fault exclusion window before rebuilding the matrix")
+	}
+	if needsGPUCoverage {
+		recommendations = append(recommendations, "accumulate confirmed faults from more distinct historical GPU identities for each fault/model/horizon stratum")
+	}
+	if needsTrain {
+		recommendations = append(recommendations, "collect enough early time-ordered positives and controls to satisfy the train split gate")
+	}
+	if needsEvaluation {
+		recommendations = append(recommendations, "collect later time-isolated positives and controls so validation and test splits can evaluate generalization")
+	}
+	if report.InsufficientStrata == 0 {
+		recommendations = append(recommendations, "train only the exploratory-ready fault/model/horizon strata, then bind baseline artifact SHA256 before shadow evaluation")
+	}
+	return uniqueSortedStrings(recommendations)
 }
 
 type matrixAudit struct{ duplicates, entityConflicts, pointInTime, pairing, contract int }

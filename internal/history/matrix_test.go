@@ -144,6 +144,12 @@ func TestManualFeedbackTrainingMatrixBuildIsGovernanceOnly(t *testing.T) {
 	if readiness.ReadyStrata != 0 || readiness.InsufficientStrata != 1 || !strings.Contains(strings.Join(readiness.Strata[0].BlockingReasons, " "), "train_positive_count") {
 		t.Fatalf("manual matrix must remain blocked by training gates: %+v", readiness)
 	}
+	if len(readiness.Deficits) == 0 || len(readiness.Strata[0].Deficits) == 0 {
+		t.Fatalf("manual matrix readiness must expose actionable deficits: %+v", readiness)
+	}
+	if len(readiness.RecommendedNextRun) == 0 || !strings.Contains(strings.Join(readiness.RecommendedNextRun, " "), "pending_control_sampling") {
+		t.Fatalf("manual matrix readiness must recommend the next governance action: %+v", readiness.RecommendedNextRun)
+	}
 }
 
 func TestCohortReadinessGatesEachFaultModelAndHorizon(t *testing.T) {
@@ -171,6 +177,9 @@ func TestCohortReadinessGatesEachFaultModelAndHorizon(t *testing.T) {
 	if report.Strata[0].BlockingReasons == nil {
 		t.Fatal("ready stratum blocking_reasons must be an empty array, not null")
 	}
+	if report.Strata[0].Deficits == nil {
+		t.Fatal("ready stratum deficits must be an empty array, not null")
+	}
 	payload, err := json.Marshal(report.Strata[0])
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +187,16 @@ func TestCohortReadinessGatesEachFaultModelAndHorizon(t *testing.T) {
 	if !strings.Contains(string(payload), `"blocking_reasons":[]`) {
 		t.Fatalf("ready stratum JSON must preserve an empty blocking_reasons array: %s", payload)
 	}
+	if !strings.Contains(string(payload), `"deficits":[]`) {
+		t.Fatalf("ready stratum JSON must preserve an empty deficits array: %s", payload)
+	}
 	if report.Strata[1].Status != "insufficient_data" || len(report.Strata[1].BlockingReasons) == 0 {
 		t.Fatalf("expected sparse XID stratum to be blocked: %+v", report.Strata[1])
+	}
+	if len(report.Deficits) == 0 || report.Deficits[0].Shortfall <= 0 {
+		t.Fatalf("expected sparse stratum to expose sorted shortfalls: %+v", report.Deficits)
+	}
+	if len(report.RecommendedNextRun) == 0 {
+		t.Fatalf("expected matrix readiness to recommend next runs: %+v", report)
 	}
 }
