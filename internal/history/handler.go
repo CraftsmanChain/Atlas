@@ -412,6 +412,28 @@ func (h *Handler) HandleManualFeedbackFeatureRequests(w http.ResponseWriter, r *
 	}
 }
 
+func (h *Handler) HandleManualFeedbackFeatureRequestWorker(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		historyJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	var request ManualFeedbackFeatureRequestWorkerRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			historyJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+			return
+		}
+	}
+	build, err := h.service.StartManualFeedbackFeatureRequestWorker(request)
+	if err != nil {
+		historyJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "data": build})
+		return
+	}
+	historyJSON(w, http.StatusAccepted, map[string]any{"data": build})
+}
+
 func (h *Handler) HandleTrainingPreparations(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:

@@ -55,29 +55,31 @@ type SourceStatus struct {
 }
 
 type Service struct {
-	db                    *storage.DB
-	config                config.HistoryConfig
-	timeout               time.Duration
-	now                   func() time.Time
-	mu                    sync.Mutex
-	backfillMu            sync.Mutex
-	backfillRunning       bool
-	datasetMu             sync.Mutex
-	featureMu             sync.Mutex
-	featureRunning        bool
-	preparationMu         sync.Mutex
-	controlFeatureMu      sync.Mutex
-	controlFeatureRunning bool
-	matrixMu              sync.Mutex
-	matrixRunning         bool
-	baselineMu            sync.Mutex
-	baselineRunning       bool
-	replayMu              sync.Mutex
-	replayRunning         bool
-	coverageMu            sync.Mutex
-	coverageRunning       bool
-	shadowMu              sync.Mutex
-	shadowRunning         bool
+	db                           *storage.DB
+	config                       config.HistoryConfig
+	timeout                      time.Duration
+	now                          func() time.Time
+	mu                           sync.Mutex
+	backfillMu                   sync.Mutex
+	backfillRunning              bool
+	datasetMu                    sync.Mutex
+	featureMu                    sync.Mutex
+	featureRunning               bool
+	manualFeedbackFeatureMu      sync.Mutex
+	manualFeedbackFeatureRunning bool
+	preparationMu                sync.Mutex
+	controlFeatureMu             sync.Mutex
+	controlFeatureRunning        bool
+	matrixMu                     sync.Mutex
+	matrixRunning                bool
+	baselineMu                   sync.Mutex
+	baselineRunning              bool
+	replayMu                     sync.Mutex
+	replayRunning                bool
+	coverageMu                   sync.Mutex
+	coverageRunning              bool
+	shadowMu                     sync.Mutex
+	shadowRunning                bool
 }
 
 func NewService(db *storage.DB, cfg config.HistoryConfig, timeout time.Duration) *Service {
@@ -91,6 +93,9 @@ func NewService(db *storage.DB, cfg config.HistoryConfig, timeout time.Duration)
 	}).Error
 	_ = db.Model(&api.TrainingFeatureBuild{}).Where("status IN ?", []string{"queued", "running"}).Updates(map[string]any{
 		"status": "interrupted", "error_message": "Atlas restarted before feature extraction completed", "finished_at": &now,
+	}).Error
+	_ = db.Model(&api.ManualFeedbackFeatureRequestBuild{}).Where("status IN ?", []string{"queued", "running"}).Updates(map[string]any{
+		"status": "interrupted", "error_message": "Atlas restarted before manual feedback feature aggregation completed", "finished_at": &now,
 	}).Error
 	_ = db.Model(&api.TrainingPreparationBuild{}).Where("status = ?", "running").Updates(map[string]any{
 		"status": "interrupted", "error_message": "Atlas restarted before training preparation completed", "finished_at": &now,
