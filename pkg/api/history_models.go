@@ -226,9 +226,17 @@ type ManualFeedbackFeatureRequestBuild struct {
 	MetricFamilyCount        int        `json:"metric_family_count"`
 	MetricFamilies           StringList `json:"metric_families" gorm:"type:text"`
 	BlockingReasons          StringList `json:"blocking_reasons" gorm:"type:text"`
+	CompletedWindows         int        `json:"completed_windows"`
+	FailedWindows            int        `json:"failed_windows"`
+	FeatureColumnCount       int        `json:"feature_column_count"`
+	AverageMetricCoverage    float64    `json:"average_metric_coverage"`
+	MinimumMetricCoverage    float64    `json:"minimum_metric_coverage"`
 	OutputDir                string     `json:"output_dir" gorm:"type:text"`
 	ManifestPath             string     `json:"manifest_path" gorm:"type:text"`
 	ManifestSHA256           string     `json:"manifest_sha256" gorm:"index"`
+	FeaturePath              string     `json:"feature_path,omitempty" gorm:"type:text"`
+	FeatureSHA256            string     `json:"feature_sha256,omitempty" gorm:"index"`
+	QualityReportPath        string     `json:"quality_report_path,omitempty" gorm:"type:text"`
 	NoRawTelemetryStored     bool       `json:"no_raw_telemetry_stored" gorm:"index;not null;default:true"`
 	NoAlertEmitted           bool       `json:"no_alert_emitted" gorm:"index;not null;default:true"`
 	NoActionExecuted         bool       `json:"no_action_executed" gorm:"index;not null;default:true"`

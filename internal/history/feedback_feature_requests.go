@@ -1,17 +1,20 @@
 package history
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"atlas/internal/features"
+	promclient "atlas/internal/prometheus"
 	"atlas/pkg/api"
 )
 
@@ -20,6 +23,10 @@ const manualFeedbackSourceManifestVersion = "prediction-human-feedback-manifest-
 
 type ManualFeedbackFeatureRequestBuildRequest struct {
 	SourceKey string `json:"source_key,omitempty"`
+}
+
+type ManualFeedbackFeatureRequestWorkerRequest struct {
+	BuildID uint `json:"build_id,omitempty"`
 }
 
 type manualFeedbackFeatureManifest struct {
@@ -218,6 +225,231 @@ func (s *Service) BuildManualFeedbackFeatureRequestManifest(request ManualFeedba
 	build.ManifestSHA256 = manifestChecksum
 	build.FinishedAt = &finished
 	return build, nil
+}
+
+func (s *Service) StartManualFeedbackFeatureRequestWorker(request ManualFeedbackFeatureRequestWorkerRequest) (api.ManualFeedbackFeatureRequestBuild, error) {
+	s.manualFeedbackFeatureMu.Lock()
+	defer s.manualFeedbackFeatureMu.Unlock()
+	if s.manualFeedbackFeatureRunning {
+		return api.ManualFeedbackFeatureRequestBuild{}, fmt.Errorf("a manual feedback feature aggregation is already running")
+	}
+	var build api.ManualFeedbackFeatureRequestBuild
+	query := s.db.Where("status = ? AND version = ?", "manifest_ready_pending_offline_worker", manualFeedbackFeatureRequestVersion)
+	if request.BuildID > 0 {
+		query = query.Where("id = ?", request.BuildID)
+	}
+	result := query.Order("created_at DESC, id DESC").Limit(1).Find(&build)
+	if result.Error != nil {
+		return api.ManualFeedbackFeatureRequestBuild{}, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return api.ManualFeedbackFeatureRequestBuild{}, fmt.Errorf("a manifest_ready_pending_offline_worker manual feedback feature request is required")
+	}
+	if build.ManifestPath == "" || build.ManifestSHA256 == "" {
+		return build, fmt.Errorf("manual feedback feature request manifest is missing")
+	}
+	if _, err := s.resolveSource(build.SourceKey); err != nil {
+		return build, err
+	}
+	started := s.now()
+	if err := s.db.Model(&build).Updates(map[string]any{
+		"status": "queued", "started_at": started, "finished_at": nil, "error_message": "",
+	}).Error; err != nil {
+		return build, err
+	}
+	build.Status = "queued"
+	build.StartedAt = started
+	build.FinishedAt = nil
+	build.ErrorMessage = ""
+	s.manualFeedbackFeatureRunning = true
+	go s.executeManualFeedbackFeatureRequestWorker(build.ID)
+	return build, nil
+}
+
+func (s *Service) executeManualFeedbackFeatureRequestWorker(buildID uint) {
+	defer func() {
+		s.manualFeedbackFeatureMu.Lock()
+		s.manualFeedbackFeatureRunning = false
+		s.manualFeedbackFeatureMu.Unlock()
+	}()
+	var build api.ManualFeedbackFeatureRequestBuild
+	if err := s.db.First(&build, buildID).Error; err != nil {
+		return
+	}
+	if err := s.db.Model(&build).Update("status", "running").Error; err != nil {
+		return
+	}
+	if err := s.aggregateManualFeedbackFeatures(&build); err != nil {
+		finished := s.now()
+		_ = s.db.Model(&build).Updates(map[string]any{
+			"status": "failed", "error_message": err.Error(), "finished_at": &finished,
+		}).Error
+	}
+}
+
+func (s *Service) aggregateManualFeedbackFeatures(build *api.ManualFeedbackFeatureRequestBuild) error {
+	if err := verifyFileSHA256(build.ManifestPath, build.ManifestSHA256); err != nil {
+		return fmt.Errorf("manual feedback feature request checksum: %w", err)
+	}
+	manifest, err := readManualFeedbackFeatureManifest(build.ManifestPath)
+	if err != nil {
+		return err
+	}
+	if manifest.RequestKey != build.RequestKey {
+		return fmt.Errorf("manifest request_key %q does not match build request_key %q", manifest.RequestKey, build.RequestKey)
+	}
+	if manifest.SourceKey != build.SourceKey {
+		return fmt.Errorf("manifest source_key %q does not match build source_key %q", manifest.SourceKey, build.SourceKey)
+	}
+	if len(manifest.Records) == 0 {
+		return fmt.Errorf("manual feedback feature request has no records")
+	}
+	if err := os.MkdirAll(build.OutputDir, 0o750); err != nil {
+		return fmt.Errorf("create manual feedback feature directory: %w", err)
+	}
+	source, err := s.resolveSource(build.SourceKey)
+	if err != nil {
+		return err
+	}
+	client, err := s.historyClient(source)
+	if err != nil {
+		return err
+	}
+	featureBuild := api.TrainingFeatureBuild{
+		FeatureDatasetKey: build.RequestKey, Version: featureDatasetVersion,
+		SourceKey: build.SourceKey, SourceDatasetKey: manifest.SourceManifestSHA256,
+		FeatureContractVersion: build.FeatureContractVersion,
+		LookbackMinutes:        build.LookbackMinutes, QueryStepSeconds: build.QueryStepSeconds,
+		EpisodeCount: len(manifest.Records), WindowCount: len(manifest.Records),
+	}
+	rows := make([]extractedFeatureRow, 0, len(manifest.Records))
+	failedWindows := 0
+	for index, record := range manifest.Records {
+		row, queryErr := s.extractManualFeedbackFeatureRecord(client, &featureBuild, record)
+		if queryErr != nil {
+			failedWindows++
+		}
+		rows = append(rows, row)
+		if (index+1)%10 == 0 || index+1 == len(manifest.Records) {
+			_ = s.db.Model(build).Updates(map[string]any{
+				"completed_windows": len(rows) - failedWindows,
+				"failed_windows":    failedWindows,
+			}).Error
+		}
+	}
+	featurePath := filepath.Join(build.OutputDir, "features.jsonl")
+	checksum, err := writeFeatureRows(featurePath, rows)
+	if err != nil {
+		return err
+	}
+	report := buildFeatureQualityReport(featureBuild, rows)
+	report.FeatureDatasetKey = build.RequestKey
+	report.Version = manualFeedbackFeatureRequestVersion
+	report.SourceDatasetKey = manifest.SourceManifestSHA256
+	report.PointInTimeRule = "manual feedback aggregation uses only samples at or before feature_cutoff_at; post-fault windows remain evidence context and are not used as training features"
+	reportPath := filepath.Join(build.OutputDir, "quality_report.json")
+	if err := writeJSONAtomic(reportPath, report); err != nil {
+		return err
+	}
+	status, errorMessage := "features_ready_pending_training_preparation", ""
+	if report.FailedWindows > 0 {
+		status = "features_ready_with_errors_pending_training_preparation"
+	}
+	if report.CompletedWindows == 0 && report.WindowCount > 0 {
+		status = "failed"
+		errorMessage = "all manual feedback Prometheus feature queries failed; inspect extraction_error in features.jsonl"
+	}
+	finished := s.now()
+	return s.db.Model(build).Updates(map[string]any{
+		"status": status, "completed_windows": report.CompletedWindows, "failed_windows": report.FailedWindows,
+		"feature_column_count":    report.FeatureColumnCount,
+		"average_metric_coverage": report.AverageCoverage, "minimum_metric_coverage": report.MinimumCoverage,
+		"feature_path": featurePath, "feature_sha256": checksum, "quality_report_path": reportPath,
+		"no_raw_telemetry_stored": true, "no_alert_emitted": true, "no_action_executed": true,
+		"error_message": errorMessage, "finished_at": &finished,
+	}).Error
+}
+
+func (s *Service) extractManualFeedbackFeatureRecord(client *promclient.Client, build *api.TrainingFeatureBuild, record manualFeedbackFeatureManifestRecord) (extractedFeatureRow, error) {
+	window := manualFeedbackFeatureWindow(record)
+	query := historicalMetricQuery(record.GPUUUID)
+	if strings.TrimSpace(record.GPUUUID) == "" {
+		query = manualFeedbackNodeMetricQuery(record.NodeIP)
+	}
+	if strings.TrimSpace(query) == "" {
+		err := fmt.Errorf("manual feedback record %d missing GPU UUID and node IP", record.FeedbackRequestID)
+		return emptyExtractedFeatureRow(build, window, err.Error()), err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+	series, err := client.QueryRange(ctx, query, window.FeatureCutoffAt.Add(-featureLookback), window.FeatureCutoffAt, featureQueryStep)
+	cancel()
+	if err != nil {
+		return emptyExtractedFeatureRow(build, window, err.Error()), err
+	}
+	row := summarizeFeatureWindow(build, window, canonicalSeries(series))
+	if strings.TrimSpace(record.GPUUUID) == "" {
+		row.GPUUUID = "node:" + record.NodeIP
+	}
+	return row, nil
+}
+
+func manualFeedbackFeatureWindow(record manualFeedbackFeatureManifestRecord) datasetWindow {
+	entity := strings.TrimSpace(record.GPUUUID)
+	if entity == "" {
+		entity = "node:" + record.NodeIP
+	}
+	return datasetWindow{
+		SampleKey:        fmt.Sprintf("manual-feedback-%d", record.FeedbackRequestID),
+		DatasetVersion:   manualFeedbackFeatureRequestVersion,
+		EpisodeKey:       record.RequestKey,
+		NodeIP:           record.NodeIP,
+		GPUUUID:          entity,
+		ModelName:        record.ModelName,
+		HorizonMinutes:   0,
+		FeatureCutoffAt:  record.FeatureCutoffAt,
+		LabelOnsetAt:     record.FaultWindowStartAt,
+		LabelAvailableAt: record.LabelAvailableAt,
+		LabelWeight:      1,
+		Eligibility:      "manual_feedback_confirmed_hardware",
+		RuleDecision:     record.WarningReviewStatus,
+		LabelSource:      "manual_hardware_fault_feedback",
+	}
+}
+
+func manualFeedbackNodeMetricQuery(nodeIP string) string {
+	nodeIP = strings.TrimSpace(nodeIP)
+	if nodeIP == "" {
+		return ""
+	}
+	names := make([]string, 0, len(historicalFeatureMetrics))
+	for _, metric := range historicalFeatureMetrics {
+		names = append(names, regexp.QuoteMeta(metric.Name))
+	}
+	sort.Strings(names)
+	metricExpression := "^(" + strings.Join(names, "|") + ")$"
+	ip := regexp.QuoteMeta(nodeIP)
+	instanceExpression := "(?i)^" + ip + "(:[0-9]+)?$"
+	hostExpression := "(?i)^" + ip + "$"
+	return fmt.Sprintf(`{__name__=~%q,instance=~%q} or {__name__=~%q,Instance=~%q} or {__name__=~%q,node_ip=~%q} or {__name__=~%q,ip=~%q} or {__name__=~%q,host=~%q} or {__name__=~%q,hostname=~%q}`,
+		metricExpression, instanceExpression,
+		metricExpression, instanceExpression,
+		metricExpression, hostExpression,
+		metricExpression, hostExpression,
+		metricExpression, hostExpression,
+		metricExpression, hostExpression)
+}
+
+func readManualFeedbackFeatureManifest(path string) (manualFeedbackFeatureManifest, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return manualFeedbackFeatureManifest{}, fmt.Errorf("open manual feedback feature manifest: %w", err)
+	}
+	defer file.Close()
+	var manifest manualFeedbackFeatureManifest
+	if err := json.NewDecoder(file).Decode(&manifest); err != nil {
+		return manualFeedbackFeatureManifest{}, fmt.Errorf("decode manual feedback feature manifest: %w", err)
+	}
+	return manifest, nil
 }
 
 func (s *Service) currentHumanFeedbackManifestSHA() (string, error) {
