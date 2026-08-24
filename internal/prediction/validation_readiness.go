@@ -70,6 +70,11 @@ type ValidationReadinessReport struct {
 	HumanFeedbackStatus                string                                    `json:"human_feedback_status"`
 	HumanFeedbackConfirmed             int                                       `json:"human_feedback_confirmed_labels"`
 	HumanFeedbackOverrides             int                                       `json:"human_feedback_outcome_overrides"`
+	HumanFeedbackHardwareRequests      int                                       `json:"human_feedback_hardware_fault_requests"`
+	HumanFeedbackHardwarePackReady     int                                       `json:"human_feedback_hardware_pack_ready"`
+	HumanFeedbackHardwareReviewed      int                                       `json:"human_feedback_hardware_warning_reviewed"`
+	HumanFeedbackHardwareWarningMisses int                                       `json:"human_feedback_hardware_warning_misses"`
+	HumanFeedbackHardwareBlocked       int                                       `json:"human_feedback_hardware_blocked"`
 	HumanFeedbackMatchedWindows        int                                       `json:"human_feedback_matched_prediction_windows"`
 	HumanFeedbackPointInTimeViolations int                                       `json:"human_feedback_point_in_time_violations"`
 	OutcomeReportVersion               string                                    `json:"outcome_report_version"`
@@ -253,6 +258,11 @@ func (s *Service) validationReadinessReport(boundRiskRanking *RiskRankingSnapsho
 		HumanFeedbackStatus:                humanFeedback.Status,
 		HumanFeedbackConfirmed:             humanFeedback.HumanConfirmedLabels,
 		HumanFeedbackOverrides:             humanFeedback.HumanOverrideOutcomes,
+		HumanFeedbackHardwareRequests:      humanFeedback.HardwareFaultFeedbackRequests,
+		HumanFeedbackHardwarePackReady:     humanFeedback.HardwareFeedbackPackReady,
+		HumanFeedbackHardwareReviewed:      humanFeedback.HardwareFeedbackWarningReviewed,
+		HumanFeedbackHardwareWarningMisses: humanFeedback.HardwareFeedbackWarningMisses,
+		HumanFeedbackHardwareBlocked:       humanFeedback.HardwareFeedbackBlocked,
 		HumanFeedbackMatchedWindows:        humanFeedback.MatchedPredictionWindows,
 		HumanFeedbackPointInTimeViolations: humanFeedback.PointInTimeViolations,
 		OutcomeReportVersion:               outcomeReport.Version,
@@ -789,6 +799,11 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		HumanFeedbackStatus                string                                    `json:"human_feedback_status"`
 		HumanFeedbackConfirmed             int                                       `json:"human_feedback_confirmed_labels"`
 		HumanFeedbackOverrides             int                                       `json:"human_feedback_outcome_overrides"`
+		HumanFeedbackHardwareRequests      int                                       `json:"human_feedback_hardware_fault_requests"`
+		HumanFeedbackHardwarePackReady     int                                       `json:"human_feedback_hardware_pack_ready"`
+		HumanFeedbackHardwareReviewed      int                                       `json:"human_feedback_hardware_warning_reviewed"`
+		HumanFeedbackHardwareWarningMisses int                                       `json:"human_feedback_hardware_warning_misses"`
+		HumanFeedbackHardwareBlocked       int                                       `json:"human_feedback_hardware_blocked"`
 		HumanFeedbackMatchedWindows        int                                       `json:"human_feedback_matched_prediction_windows"`
 		HumanFeedbackPointInTimeViolations int                                       `json:"human_feedback_point_in_time_violations"`
 		OutcomeReportVersion               string                                    `json:"outcome_report_version"`
@@ -881,7 +896,10 @@ func validationReadinessChecksum(report ValidationReadinessReport) string {
 		EvidencePositive: report.EvidencePositive, EvidenceExcluded: report.EvidenceExcluded,
 		HumanFeedbackVersion: report.HumanFeedbackVersion, HumanFeedbackSHA256: report.HumanFeedbackSHA256,
 		HumanFeedbackStatus: report.HumanFeedbackStatus, HumanFeedbackConfirmed: report.HumanFeedbackConfirmed,
-		HumanFeedbackOverrides: report.HumanFeedbackOverrides, HumanFeedbackMatchedWindows: report.HumanFeedbackMatchedWindows,
+		HumanFeedbackOverrides: report.HumanFeedbackOverrides, HumanFeedbackHardwareRequests: report.HumanFeedbackHardwareRequests,
+		HumanFeedbackHardwarePackReady: report.HumanFeedbackHardwarePackReady, HumanFeedbackHardwareReviewed: report.HumanFeedbackHardwareReviewed,
+		HumanFeedbackHardwareWarningMisses: report.HumanFeedbackHardwareWarningMisses, HumanFeedbackHardwareBlocked: report.HumanFeedbackHardwareBlocked,
+		HumanFeedbackMatchedWindows:        report.HumanFeedbackMatchedWindows,
 		HumanFeedbackPointInTimeViolations: report.HumanFeedbackPointInTimeViolations,
 		OutcomeReportVersion:               report.OutcomeReportVersion, OutcomeStability: report.OutcomeStability, OutcomeMaturity: report.OutcomeMaturity,
 		ChallengerVersion: report.ChallengerVersion, ChallengerStatus: report.ChallengerStatus,

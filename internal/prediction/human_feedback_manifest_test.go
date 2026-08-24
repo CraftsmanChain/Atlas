@@ -104,3 +104,82 @@ func TestHumanFeedbackManifestBlocksMissingFeedbackAndExposesAPI(t *testing.T) {
 		t.Fatalf("feedback manifest API failed: status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
 	}
 }
+
+func TestHumanFeedbackManifestIncludesHardwareFaultFeedback(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+	if err := db.Create(&api.MonitoringHistoryAudit{
+		SourceKey: "current-prometheus", SourceName: "Current Prometheus", SourceType: "prometheus", BaseURL: "http://prometheus",
+		Status: "success", EarliestSampleAt: &start, LatestSampleAt: &end, StartedAt: start, FinishedAt: end,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC) }
+	row, err := service.CreateHardwareFaultFeedback(HardwareFaultFeedbackInput{
+		NodeIP: "10.114.4.30", GPUUUID: "GPU-MANUAL-FAULT", GPUIndex: 4,
+		FaultType: "gpu_hardware_failure", FaultOccurredAt: "2026-08-21T08:00:00Z",
+		PreWindowHours: 4, PostWindowHours: 4, Operator: "ops-g", RepairAction: "reseat",
+		TrainingEligible: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := service.PrepareHardwareFaultFeedbackPack(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.HistoryPackStatus != "manifest_ready_pending_metric_extraction" {
+		t.Fatalf("test feedback pack was not prepared: %+v", prepared)
+	}
+	reviewed, err := service.ReviewHardwareFaultFeedbackWarning(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed.WarningReviewStatus != "manual_feedback_no_prior_shadow_warning" {
+		t.Fatalf("test feedback should become warning-miss evidence: %+v", reviewed)
+	}
+	report, err := service.HumanFeedbackManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "exploratory_ready" || report.HardwareFaultFeedbackRequests != 1 || report.HardwareFeedbackTrainingEligible != 1 || report.HardwareFeedbackPackReady != 1 || report.HardwareFeedbackWarningReviewed != 1 || report.HardwareFeedbackWarningMisses != 1 || report.HardwareFeedbackBlocked != 0 {
+		t.Fatalf("hardware feedback was not reflected in manifest: %+v", report)
+	}
+	if report.HumanConfirmedLabels != 1 || report.ConfirmedPositiveLabels != 1 || report.ConfirmedLabelsWithoutMatch != 1 {
+		t.Fatalf("hardware feedback did not contribute confirmed positive label governance: %+v", report)
+	}
+	if len(report.SampleRecords) != 1 || report.SampleRecords[0].Source != "hardware_fault_feedback" || report.SampleRecords[0].Status != "eligible_warning_miss_feedback" {
+		t.Fatalf("hardware feedback sample record missing: %+v", report.SampleRecords)
+	}
+}
+
+func TestHumanFeedbackManifestBlocksUnpreparedHardwareFaultFeedback(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC) }
+	if _, err := service.CreateHardwareFaultFeedback(HardwareFaultFeedbackInput{
+		NodeIP: "10.114.4.31", GPUUUID: "GPU-BLOCKED-FEEDBACK", GPUIndex: 5,
+		FaultType: "pcie_link_failure", FaultOccurredAt: "2026-08-21T08:00:00Z",
+		Operator: "ops-h", TrainingEligible: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.HumanFeedbackManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "blocked" || report.HardwareFeedbackBlocked != 1 || report.HardwareFeedbackPackReady != 0 || report.HardwareFeedbackWarningReviewed != 0 {
+		t.Fatalf("unprepared hardware feedback should block manifest: %+v", report)
+	}
+	if len(report.BlockingReasons) == 0 || len(report.SampleRecords) != 1 || report.SampleRecords[0].Status != "blocked_hardware_feedback" {
+		t.Fatalf("hardware feedback blockers not exposed: %+v", report)
+	}
+}

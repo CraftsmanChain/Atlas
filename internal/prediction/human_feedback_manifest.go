@@ -23,6 +23,9 @@ type HumanFeedbackRecord struct {
 	Outcome             string     `json:"outcome,omitempty"`
 	QualityTier         string     `json:"quality_tier,omitempty"`
 	Operator            string     `json:"operator,omitempty"`
+	RepairAction        string     `json:"repair_action,omitempty"`
+	HistoryPackStatus   string     `json:"history_pack_status,omitempty"`
+	WarningReviewStatus string     `json:"warning_review_status,omitempty"`
 	OccurredAt          time.Time  `json:"occurred_at,omitempty"`
 	AvailableAt         time.Time  `json:"available_at,omitempty"`
 	PredictionWindowEnd *time.Time `json:"prediction_window_end_at,omitempty"`
@@ -43,6 +46,12 @@ type HumanFeedbackManifest struct {
 	ConfirmedPositiveLabels          int                   `json:"confirmed_positive_labels"`
 	HumanOverrideOutcomes            int                   `json:"human_override_outcomes"`
 	HumanPositiveOutcomes            int                   `json:"human_positive_outcomes"`
+	HardwareFaultFeedbackRequests    int                   `json:"hardware_fault_feedback_requests"`
+	HardwareFeedbackTrainingEligible int                   `json:"hardware_feedback_training_eligible"`
+	HardwareFeedbackPackReady        int                   `json:"hardware_feedback_pack_ready"`
+	HardwareFeedbackWarningReviewed  int                   `json:"hardware_feedback_warning_reviewed"`
+	HardwareFeedbackWarningMisses    int                   `json:"hardware_feedback_warning_misses"`
+	HardwareFeedbackBlocked          int                   `json:"hardware_feedback_blocked"`
 	MatchedPredictionWindows         int                   `json:"matched_prediction_windows"`
 	MatchedPositivePredictionWindows int                   `json:"matched_positive_prediction_windows"`
 	ConfirmedLabelsWithoutMatch      int                   `json:"confirmed_labels_without_prediction_window_match"`
@@ -70,6 +79,10 @@ func (s *Service) HumanFeedbackManifest() (HumanFeedbackManifest, error) {
 	if err := s.db.Where("human_actual_value IS NOT NULL").Order("human_decided_at ASC, id ASC").Find(&outcomes).Error; err != nil {
 		return HumanFeedbackManifest{}, err
 	}
+	var hardwareFeedback []api.HardwareFaultFeedbackRequest
+	if err := s.db.Order("fault_occurred_at ASC, id ASC").Find(&hardwareFeedback).Error; err != nil {
+		return HumanFeedbackManifest{}, err
+	}
 	manifest := HumanFeedbackManifest{
 		Version: HumanFeedbackManifestVersion, FrameworkVersion: FrameworkVersion, LabelContract: LabelContractVersion,
 		OutcomeRuleVersion: OutcomeRuleVersion, Mode: "read_only_human_feedback_governance",
@@ -79,6 +92,7 @@ func (s *Service) HumanFeedbackManifest() (HumanFeedbackManifest, error) {
 			"confirmed hardware labels must keep stable identity, occurred_at, available_at, and operator/repair provenance",
 			"prediction-window matching must respect the prediction cutoff; feedback available at or before the cutoff is treated as a metadata violation",
 			"human outcome overrides are tracked beside rule outcomes and do not erase rule-derived provenance",
+			"manual hardware-fault feedback enters validation only after fault-time identity, pre/post history-pack readiness, and shadow-warning coverage review are explicit",
 		},
 	}
 	for _, label := range labels {
@@ -131,6 +145,48 @@ func (s *Service) HumanFeedbackManifest() (HumanFeedbackManifest, error) {
 			})
 		}
 	}
+	for _, feedback := range hardwareFeedback {
+		manifest.HardwareFaultFeedbackRequests++
+		if feedback.TrainingEligible {
+			manifest.HardwareFeedbackTrainingEligible++
+		}
+		if feedback.HistoryPackStatus == "manifest_ready_pending_metric_extraction" {
+			manifest.HardwareFeedbackPackReady++
+		}
+		if isHardwareWarningReviewed(feedback.WarningReviewStatus) {
+			manifest.HardwareFeedbackWarningReviewed++
+		}
+		if feedback.WarningReviewStatus == "manual_feedback_no_prior_shadow_warning" {
+			manifest.HardwareFeedbackWarningMisses++
+		}
+		reasons := feedbackHardwareBlockers(feedback)
+		if len(reasons) > 0 {
+			manifest.HardwareFeedbackBlocked++
+		}
+		if feedback.TrainingEligible && len(reasons) == 0 {
+			manifest.HumanConfirmedLabels++
+			manifest.ConfirmedPositiveLabels++
+			increment(manifest.ByEventType, feedback.FaultType)
+			increment(manifest.ByModel, feedback.ModelName)
+			manifest.MatchedPredictionWindows += feedback.MatchedWarningCount
+			if feedback.MatchedWarningCount == 0 {
+				manifest.ConfirmedLabelsWithoutMatch++
+			}
+		}
+		manifest.LabelsMissingIdentity += countReason(reasons, "fault-time GPU identity is missing")
+		manifest.LabelsMissingAvailability += countReason(reasons, "feedback available_at is missing")
+		manifest.PointInTimeViolations += countReason(reasons, "feedback was recorded before the reported fault time")
+		if len(manifest.SampleRecords) < 20 {
+			manifest.SampleRecords = append(manifest.SampleRecords, HumanFeedbackRecord{
+				Source: "hardware_fault_feedback", ReferenceID: feedback.ID, EntityKey: firstNonEmpty(feedback.GPUUUID, feedback.ReportedGPUUUID),
+				GPUUUID: feedback.GPUUUID, NodeIP: feedback.NodeIP, ModelName: feedback.ModelName, EventType: feedback.FaultType,
+				QualityTier: "operator_confirmed", Operator: feedback.Operator, RepairAction: feedback.RepairAction,
+				HistoryPackStatus: feedback.HistoryPackStatus, WarningReviewStatus: feedback.WarningReviewStatus,
+				OccurredAt: feedback.FaultOccurredAt, AvailableAt: feedback.CreatedAt, Status: feedbackHardwareStatus(feedback, reasons),
+				BlockingReasons: reasons,
+			})
+		}
+	}
 	manifest.BlockingReasons, manifest.RecommendedNextRun = humanFeedbackBlockers(manifest)
 	manifest.Status = "feedback_ready"
 	if len(manifest.BlockingReasons) > 0 {
@@ -175,6 +231,51 @@ func feedbackOutcomeStatus(reasons []string) string {
 		return "blocked_metadata"
 	}
 	return "eligible_feedback"
+}
+
+func feedbackHardwareBlockers(feedback api.HardwareFaultFeedbackRequest) []string {
+	reasons := []string{}
+	if !feedback.TrainingEligible {
+		return reasons
+	}
+	if strings.TrimSpace(feedback.GPUUUID) == "" || strings.HasPrefix(feedback.IdentityResolutionStatus, "blocked") || feedback.IdentityResolutionStatus == "requires_historical_identity_at_fault_time" {
+		reasons = append(reasons, "fault-time GPU identity is missing")
+	}
+	if feedback.CreatedAt.IsZero() {
+		reasons = append(reasons, "feedback available_at is missing")
+	}
+	if !feedback.CreatedAt.IsZero() && !feedback.FaultOccurredAt.IsZero() && feedback.CreatedAt.Before(feedback.FaultOccurredAt) {
+		reasons = append(reasons, "feedback was recorded before the reported fault time")
+	}
+	if feedback.HistoryPackStatus != "manifest_ready_pending_metric_extraction" {
+		reasons = append(reasons, "pre/post history pack is not manifest-ready")
+	}
+	if !isHardwareWarningReviewed(feedback.WarningReviewStatus) {
+		reasons = append(reasons, "shadow warning coverage review is missing")
+	}
+	return uniqueSorted(append(reasons, feedback.BlockingReasons...))
+}
+
+func isHardwareWarningReviewed(status string) bool {
+	switch status {
+	case "manual_feedback_no_prior_shadow_warning", "manual_feedback_prior_shadow_candidate_found", "manual_feedback_prior_shadow_below_threshold":
+		return true
+	default:
+		return false
+	}
+}
+
+func feedbackHardwareStatus(feedback api.HardwareFaultFeedbackRequest, reasons []string) string {
+	if !feedback.TrainingEligible {
+		return "context_only"
+	}
+	if len(reasons) > 0 {
+		return "blocked_hardware_feedback"
+	}
+	if feedback.WarningReviewStatus == "manual_feedback_no_prior_shadow_warning" {
+		return "eligible_warning_miss_feedback"
+	}
+	return "eligible_hardware_feedback"
 }
 
 func humanDecisionTime(outcome api.PredictionOutcomeEvaluation) time.Time {
@@ -232,9 +333,19 @@ func countReason(reasons []string, reason string) int {
 func humanFeedbackBlockers(manifest HumanFeedbackManifest) ([]string, []string) {
 	reasons := []string{}
 	next := []string{}
-	if manifest.HumanConfirmedLabels == 0 && manifest.HumanOverrideOutcomes == 0 {
+	if manifest.HumanConfirmedLabels == 0 && manifest.HumanOverrideOutcomes == 0 && manifest.HardwareFaultFeedbackRequests == 0 {
 		reasons = append(reasons, "no human hardware feedback has been recorded")
 		next = append(next, "record confirmed hardware failures or reviewed prediction outcomes as they occur")
+	}
+	if manifest.HardwareFeedbackBlocked > 0 {
+		reasons = append(reasons, "manual hardware fault feedback is blocked before validation binding")
+		next = append(next, "resolve fault-time identity, prepare pre/post history packs, and review shadow-warning coverage")
+	}
+	if manifest.HardwareFeedbackTrainingEligible > 0 && manifest.HardwareFeedbackPackReady < manifest.HardwareFeedbackTrainingEligible {
+		next = append(next, "prepare pre/post history pack manifests for every training-eligible hardware feedback request")
+	}
+	if manifest.HardwareFeedbackTrainingEligible > 0 && manifest.HardwareFeedbackWarningReviewed < manifest.HardwareFeedbackTrainingEligible {
+		next = append(next, "review prior shadow-warning coverage for every training-eligible hardware feedback request")
 	}
 	if manifest.LabelsMissingIdentity > 0 {
 		reasons = append(reasons, "human feedback has labels without stable identity")
