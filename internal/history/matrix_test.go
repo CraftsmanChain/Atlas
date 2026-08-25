@@ -150,6 +150,12 @@ func TestManualFeedbackTrainingMatrixBuildIsGovernanceOnly(t *testing.T) {
 	if len(readiness.RecommendedNextRun) == 0 || !strings.Contains(strings.Join(readiness.RecommendedNextRun, " "), "pending_control_sampling") {
 		t.Fatalf("manual matrix readiness must recommend the next governance action: %+v", readiness.RecommendedNextRun)
 	}
+	if readiness.TrainingCandidateGate.Status != "blocked_by_readiness" || readiness.TrainingCandidateGate.BaselineTrainingEnabled {
+		t.Fatalf("manual matrix with no ready strata must block baseline candidates: %+v", readiness.TrainingCandidateGate)
+	}
+	if len(readiness.AccumulationTargets) == 0 || readiness.AccumulationTargets[0].TotalShortfall == 0 {
+		t.Fatalf("manual matrix readiness must summarize sample accumulation targets: %+v", readiness.AccumulationTargets)
+	}
 }
 
 func TestCohortReadinessGatesEachFaultModelAndHorizon(t *testing.T) {
@@ -195,6 +201,12 @@ func TestCohortReadinessGatesEachFaultModelAndHorizon(t *testing.T) {
 	}
 	if len(report.Deficits) == 0 || report.Deficits[0].Shortfall <= 0 {
 		t.Fatalf("expected sparse stratum to expose sorted shortfalls: %+v", report.Deficits)
+	}
+	if report.TrainingCandidateGate.Status != "ready_strata_available" || !report.TrainingCandidateGate.BaselineTrainingEnabled || report.TrainingCandidateGate.ReadyStrata != 1 {
+		t.Fatalf("one ready stratum should enable scoped baseline candidates only: %+v", report.TrainingCandidateGate)
+	}
+	if len(report.AccumulationTargets) != 2 || report.AccumulationTargets[0].TotalShortfall <= 0 || report.AccumulationTargets[1].RecommendedPriority != "ready_for_baseline_candidate" {
+		t.Fatalf("expected readiness targets to separate blocked and ready strata: %+v", report.AccumulationTargets)
 	}
 	if len(report.RecommendedNextRun) == 0 {
 		t.Fatalf("expected matrix readiness to recommend next runs: %+v", report)
