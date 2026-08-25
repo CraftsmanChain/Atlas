@@ -46,13 +46,15 @@ type cohortStratumReadiness struct {
 }
 
 type cohortReadinessReport struct {
-	MatrixKey          string                   `json:"matrix_key"`
-	Policy             cohortReadinessPolicy    `json:"policy"`
-	ReadyStrata        int                      `json:"ready_strata"`
-	InsufficientStrata int                      `json:"insufficient_strata"`
-	Deficits           []cohortReadinessDeficit `json:"deficits"`
-	RecommendedNextRun []string                 `json:"recommended_next_run"`
-	Strata             []cohortStratumReadiness `json:"strata"`
+	MatrixKey             string                      `json:"matrix_key"`
+	Policy                cohortReadinessPolicy       `json:"policy"`
+	ReadyStrata           int                         `json:"ready_strata"`
+	InsufficientStrata    int                         `json:"insufficient_strata"`
+	TrainingCandidateGate cohortTrainingCandidateGate `json:"training_candidate_gate"`
+	AccumulationTargets   []cohortAccumulationTarget  `json:"accumulation_targets"`
+	Deficits              []cohortReadinessDeficit    `json:"deficits"`
+	RecommendedNextRun    []string                    `json:"recommended_next_run"`
+	Strata                []cohortStratumReadiness    `json:"strata"`
 }
 
 type cohortReadinessDeficit struct {
@@ -64,6 +66,28 @@ type cohortReadinessDeficit struct {
 	Actual         int    `json:"actual"`
 	Required       int    `json:"required"`
 	Shortfall      int    `json:"shortfall"`
+}
+
+type cohortTrainingCandidateGate struct {
+	Status                  string   `json:"status"`
+	BaselineTrainingEnabled bool     `json:"baseline_training_enabled"`
+	ReadyStrata             int      `json:"ready_strata"`
+	BlockedStrata           int      `json:"blocked_strata"`
+	BlockingReasons         []string `json:"blocking_reasons"`
+}
+
+type cohortAccumulationTarget struct {
+	EventType            string `json:"event_type"`
+	ModelName            string `json:"model_name"`
+	HorizonMinutes       int    `json:"horizon_minutes"`
+	Status               string `json:"status"`
+	NeededTrainPositives int    `json:"needed_train_positives"`
+	NeededTrainControls  int    `json:"needed_train_controls"`
+	NeededEvalPositives  int    `json:"needed_evaluation_positives"`
+	NeededEvalControls   int    `json:"needed_evaluation_controls"`
+	NeededPositiveGPUs   int    `json:"needed_positive_gpus"`
+	TotalShortfall       int    `json:"total_shortfall"`
+	RecommendedPriority  string `json:"recommended_priority"`
 }
 
 type TrainingMatrixBuildRequest struct {
@@ -453,8 +477,108 @@ func evaluateCohortReadiness(matrixKey string, rows []trainingMatrixRow) cohortR
 		}
 		return left.Metric < right.Metric
 	})
+	report.AccumulationTargets = matrixAccumulationTargets(report)
+	report.TrainingCandidateGate = matrixTrainingCandidateGate(report)
 	report.RecommendedNextRun = matrixReadinessRecommendations(report)
 	return report
+}
+
+func matrixTrainingCandidateGate(report cohortReadinessReport) cohortTrainingCandidateGate {
+	gate := cohortTrainingCandidateGate{
+		Status:                  "blocked_by_readiness",
+		BaselineTrainingEnabled: report.ReadyStrata > 0,
+		ReadyStrata:             report.ReadyStrata,
+		BlockedStrata:           report.InsufficientStrata,
+		BlockingReasons:         []string{},
+	}
+	if report.ReadyStrata > 0 {
+		gate.Status = "ready_strata_available"
+	}
+	if report.ReadyStrata == 0 {
+		gate.BlockingReasons = append(gate.BlockingReasons, "no fault/model/horizon stratum satisfies train validation and test sample gates")
+	}
+	if report.InsufficientStrata > 0 {
+		gate.BlockingReasons = append(gate.BlockingReasons, fmt.Sprintf("%d strata remain below readiness thresholds", report.InsufficientStrata))
+	}
+	if len(report.Deficits) > 0 {
+		gate.BlockingReasons = append(gate.BlockingReasons, "matrix still has sample accumulation deficits")
+	}
+	gate.BlockingReasons = uniqueSortedStrings(gate.BlockingReasons)
+	return gate
+}
+
+func matrixAccumulationTargets(report cohortReadinessReport) []cohortAccumulationTarget {
+	type key struct {
+		eventType string
+		modelName string
+		horizon   int
+	}
+	targets := map[key]*cohortAccumulationTarget{}
+	ensure := func(eventType, modelName string, horizon int, status string) *cohortAccumulationTarget {
+		itemKey := key{eventType: eventType, modelName: modelName, horizon: horizon}
+		target := targets[itemKey]
+		if target == nil {
+			target = &cohortAccumulationTarget{EventType: eventType, ModelName: modelName, HorizonMinutes: horizon, Status: status, RecommendedPriority: "ready"}
+			targets[itemKey] = target
+		}
+		if target.Status == "" || target.Status == "exploratory_ready" {
+			target.Status = status
+		}
+		return target
+	}
+	for _, stratum := range report.Strata {
+		ensure(stratum.EventType, stratum.ModelName, stratum.HorizonMinutes, stratum.Status)
+	}
+	for _, deficit := range report.Deficits {
+		target := ensure(deficit.EventType, deficit.ModelName, deficit.HorizonMinutes, "insufficient_data")
+		target.TotalShortfall += deficit.Shortfall
+		switch deficit.Metric {
+		case "positive_count":
+			if deficit.Split == "train" {
+				target.NeededTrainPositives += deficit.Shortfall
+			} else if deficit.Split == "validation" || deficit.Split == "test" {
+				target.NeededEvalPositives += deficit.Shortfall
+			}
+		case "control_count":
+			if deficit.Split == "train" {
+				target.NeededTrainControls += deficit.Shortfall
+			} else if deficit.Split == "validation" || deficit.Split == "test" {
+				target.NeededEvalControls += deficit.Shortfall
+			}
+		case "positive_gpus":
+			if deficit.Shortfall > target.NeededPositiveGPUs {
+				target.NeededPositiveGPUs = deficit.Shortfall
+			}
+		}
+	}
+	result := make([]cohortAccumulationTarget, 0, len(targets))
+	for _, target := range targets {
+		switch {
+		case target.TotalShortfall == 0:
+			target.RecommendedPriority = "ready_for_baseline_candidate"
+		case target.NeededPositiveGPUs > 0 || target.NeededTrainPositives+target.NeededEvalPositives > 0:
+			target.RecommendedPriority = "collect_confirmed_faults"
+		case target.NeededTrainControls+target.NeededEvalControls > 0:
+			target.RecommendedPriority = "collect_healthy_controls"
+		default:
+			target.RecommendedPriority = "review_readiness_blockers"
+		}
+		result = append(result, *target)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		left, right := result[i], result[j]
+		if left.TotalShortfall != right.TotalShortfall {
+			return left.TotalShortfall > right.TotalShortfall
+		}
+		if left.EventType != right.EventType {
+			return left.EventType < right.EventType
+		}
+		if left.ModelName != right.ModelName {
+			return left.ModelName < right.ModelName
+		}
+		return left.HorizonMinutes < right.HorizonMinutes
+	})
+	return result
 }
 
 func matrixReadinessRecommendations(report cohortReadinessReport) []string {
