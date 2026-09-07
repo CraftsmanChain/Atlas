@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	FrameworkVersion       = "prediction-framework-v0.27.23"
+	FrameworkVersion       = "prediction-framework-v0.27.24"
 	FeatureContractVersion = "atlas-prediction-features-v1"
 	LabelContractVersion   = "atlas-failure-label-v1"
 	readinessFreshnessSLA  = 30 * time.Minute
@@ -122,6 +122,8 @@ type Service struct {
 	now                 func() time.Time
 	labelMu             sync.Mutex
 	outcomeMu           sync.Mutex
+	challengerMu        sync.Mutex
+	challengerCache     *heaRankChallengerCache
 }
 
 func NewService(db *storage.DB) *Service {

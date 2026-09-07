@@ -265,6 +265,7 @@ func (h *Handler) invalidateValidationCache() {
 	h.validationCacheMu.Lock()
 	h.dualTrackCache = nil
 	h.validationCacheMu.Unlock()
+	h.service.invalidateHeaRankChallengerCache()
 }
 
 func etagMatches(header, sha string) bool {
