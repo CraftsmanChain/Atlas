@@ -509,6 +509,9 @@ func manualFeedbackFeatureBlockers(row api.HardwareFaultFeedbackRequest) []strin
 	if !row.TrainingEligible {
 		return reasons
 	}
+	if row.TriageStatus == "pending_monitoring_confirmation" {
+		reasons = append(reasons, fmt.Sprintf("feedback %d monitoring confirmation is pending", row.ID))
+	}
 	if manualFeedbackTargetScope(row) == "gpu" && (strings.TrimSpace(row.GPUUUID) == "" || strings.HasPrefix(row.IdentityResolutionStatus, "blocked") || row.IdentityResolutionStatus == "requires_historical_identity_at_fault_time") {
 		reasons = append(reasons, fmt.Sprintf("feedback %d missing fault-time GPU identity", row.ID))
 	}

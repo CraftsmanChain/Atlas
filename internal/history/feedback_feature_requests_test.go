@@ -212,3 +212,16 @@ func TestBuildManualFeedbackFeatureRequestManifestBlocksUnpreparedFeedback(t *te
 		t.Fatalf("blocked manifest should not expose training windows: payload=%+v build=%+v", payload, build)
 	}
 }
+
+func TestManualFeedbackFeatureBlockersRejectPendingMonitoringConfirmation(t *testing.T) {
+	row := api.HardwareFaultFeedbackRequest{
+		ID: 7, TargetScope: "node", TrainingEligible: true,
+		TriageStatus:      "pending_monitoring_confirmation",
+		HistoryPackStatus: "manifest_ready_pending_metric_extraction", HistoryPackSHA256: "sha256",
+		WarningReviewStatus: "manual_feedback_no_prior_shadow_warning",
+	}
+	blockers := manualFeedbackFeatureBlockers(row)
+	if len(blockers) != 1 || !strings.Contains(blockers[0], "monitoring confirmation is pending") {
+		t.Fatalf("pending monitoring confirmation must block feature requests: %v", blockers)
+	}
+}

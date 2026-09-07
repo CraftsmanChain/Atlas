@@ -111,6 +111,28 @@ func TestHardwareFaultFeedbackRejectsMissingOperator(t *testing.T) {
 	}
 }
 
+func TestParseFeedbackTimeTreatsUnzonedInputAsAsiaShanghai(t *testing.T) {
+	parsed, err := parseFeedbackTime("2026-08-11T23:29")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, offset := parsed.Zone()
+	if offset != 8*60*60 || parsed.Hour() != 23 || parsed.UTC().Hour() != 15 {
+		t.Fatalf("local feedback time shifted unexpectedly: local=%s utc=%s offset=%d", parsed, parsed.UTC(), offset)
+	}
+	date, precision, start, end, err := parseFeedbackTimeWindow("2026-08-11", "date", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if precision != "date" || !date.Equal(start) || end.Sub(start) != 24*time.Hour-time.Nanosecond {
+		t.Fatalf("date window mismatch: date=%s start=%s end=%s precision=%s", date, start, end, precision)
+	}
+	_, dateOffset := date.Zone()
+	if dateOffset != 8*60*60 {
+		t.Fatalf("date-only feedback must use Asia/Shanghai: %s", date)
+	}
+}
+
 func TestHardwareFaultFeedbackUsesCurrentIdentityWhenNoReplacementReported(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
@@ -253,7 +275,7 @@ func TestBaseboardFaultFeedbackAllowsNodeScopeAndDatePrecision(t *testing.T) {
 	if row.TargetScope != "baseboard" || row.GPUUUID != "" || row.GPUIndex != 0 || row.IdentityResolutionStatus != "node_or_board_scope" {
 		t.Fatalf("baseboard feedback should not be forced into single-GPU identity: %+v", row)
 	}
-	if row.FaultTimePrecision != "date" || row.FaultOccurredAt != time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC) || row.FaultWindowStartAt == nil || row.FaultWindowEndAt == nil {
+	if row.FaultTimePrecision != "date" || !row.FaultOccurredAt.Equal(time.Date(2026, 8, 15, 0, 0, 0, 0, feedbackLocalLocation)) || row.FaultWindowStartAt == nil || row.FaultWindowEndAt == nil {
 		t.Fatalf("date precision window not persisted: %+v", row)
 	}
 	if len(row.AffectedGPUIndexes) != 4 || !strings.Contains(row.HistoryPackScope, "target_scope=baseboard") || !strings.Contains(row.HistoryPackScope, "time_precision=date") {

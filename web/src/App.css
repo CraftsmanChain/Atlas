@@ -170,6 +170,8 @@ main { min-height:100vh; margin-left:var(--sidebar-width); }.topbar { position:s
 .settings-form label small { color:var(--faint); font:9px ui-monospace,monospace; font-weight:500; }
 .settings-form input,.settings-form select,.settings-form textarea { width:100%; padding:10px 11px; border:1px solid var(--border); border-radius:6px; outline:0; color:var(--text); background:var(--bg); font:12px/1.4 inherit; }
 .settings-form textarea { min-height:74px; resize:vertical; }
+.settings-form textarea.feedback-import-textarea { min-height:220px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+.feedback-import-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
 .settings-form input:focus,.settings-form select:focus,.settings-form textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
 .settings-form .primary-action { display:inline-flex; align-items:center; gap:7px; margin-top:3px; }
 .form-success { margin:0; color:var(--green); font-size:10px; }

@@ -238,6 +238,9 @@ func feedbackHardwareBlockers(feedback api.HardwareFaultFeedbackRequest) []strin
 	if !feedback.TrainingEligible {
 		return reasons
 	}
+	if feedback.TriageStatus == "pending_monitoring_confirmation" {
+		reasons = append(reasons, "monitoring confirmation is pending")
+	}
 	if feedbackHumanTargetScope(feedback) == "gpu" && (strings.TrimSpace(feedback.GPUUUID) == "" || strings.HasPrefix(feedback.IdentityResolutionStatus, "blocked") || feedback.IdentityResolutionStatus == "requires_historical_identity_at_fault_time") {
 		reasons = append(reasons, "fault-time GPU identity is missing")
 	}

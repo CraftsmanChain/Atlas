@@ -419,6 +419,28 @@ func (h *Handler) HandleHardwareFaultFeedback(w http.ResponseWriter, r *http.Req
 	}
 }
 
+func (h *Handler) HandleHardwareFaultFeedbackImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	var input HardwareFaultFeedbackImportInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		predictionJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+		return
+	}
+	report, err := h.service.ImportHardwareFaultFeedback(input)
+	if err != nil {
+		predictionJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	status := http.StatusOK
+	if input.Commit && report.ImportedRows > 0 {
+		status = http.StatusCreated
+	}
+	predictionJSON(w, status, map[string]any{"data": report})
+}
+
 func (h *Handler) HandleHardwareFaultFeedbackAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
