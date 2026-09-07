@@ -5,10 +5,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
 	"atlas/pkg/api"
+	"gorm.io/gorm"
 )
 
 const HeaRankChallengerReportVersion = "hearank-challenger-report-v13"
@@ -21,7 +23,13 @@ const (
 	HeaRankMinimumSignalRows        = 3
 	HeaRankMinimumSignalNodes       = 2
 	HeaRankOperationalSignalMaxAge  = 24 * time.Hour
+	heaRankChallengerCacheTTL       = 30 * time.Second
 )
+
+type heaRankChallengerCache struct {
+	report    HeaRankChallengerReport
+	expiresAt time.Time
+}
 
 type ChallengerMetricSet struct {
 	Policy               string       `json:"policy"`
@@ -64,8 +72,18 @@ type HeaRankChallengerReport struct {
 }
 
 func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
+	s.challengerMu.Lock()
+	defer s.challengerMu.Unlock()
+	now := s.now()
+	if s.challengerCache != nil && now.Before(s.challengerCache.expiresAt) {
+		return s.challengerCache.report, nil
+	}
+
 	var rows []api.PredictionOutcomeEvaluation
-	if err := s.db.Order("prediction_evaluated_at ASC, id ASC").Find(&rows).Error; err != nil {
+	if err := s.db.Select(
+		"id", "node_ip", "horizon_minutes", "probability", "predicted_positive",
+		"prediction_evaluated_at", "window_end_at", "maturity_status", "final_actual_value",
+	).Order("prediction_evaluated_at ASC, id ASC").Find(&rows).Error; err != nil {
 		return HeaRankChallengerReport{}, err
 	}
 	evaluationRows := challengerEvaluationRows(rows, 0)
@@ -82,7 +100,7 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 		MinimumSevenDayNodes:     HeaRankMinimumSevenDayNodes,
 		MinimumSevenDayPositives: HeaRankMinimumSevenDayPositives,
 		SampleSummary:            outcomeMaturity(rows),
-		GeneratedAt:              s.now(),
+		GeneratedAt:              now,
 		Interpretation: []string{
 			"This is a node-risk challenger scaffold, not a released HeaRank model.",
 			"All policies are evaluated on mature scored outcomes only; pending and censored rows are excluded.",
@@ -97,8 +115,9 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 			"Accumulate eligible historical evidence before interpreting policies whose signal coverage is no_signal or exploratory.",
 		},
 	}
-	report.AllMatured = challengerMetricSets(rows, labels, healthScores, ruleHits, 0)
-	report.SevenDay = challengerMetricSets(rows, labels, healthScores, ruleHits, report.TargetHorizonMinutes)
+	histories := challengerHistoriesForCutoffs(rows, evaluationRows, labels, healthScores, ruleHits)
+	report.AllMatured = challengerMetricSetsWithHistories(rows, histories, 0)
+	report.SevenDay = challengerMetricSetsWithHistories(rows, histories, report.TargetHorizonMinutes)
 	rows7d, nodes7d, positives7d := validationReadinessSevenDaySummary(report.SevenDay)
 	report.ConfidenceStatus, report.BlockingReasons = heaRankConfidence(rows7d, nodes7d, positives7d)
 	if rows7d == 0 {
@@ -110,27 +129,87 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 	}
 	report.PolicyComparisons = challengerPolicyComparisons(report.SevenDay, report.ConfidenceStatus)
 	report.ReportSHA256 = heaRankChallengerChecksum(report)
+	// Do not retain an empty bootstrap snapshot: the first imported outcomes or
+	// human labels should become visible immediately without waiting for TTL.
+	if len(rows) > 0 {
+		s.challengerCache = &heaRankChallengerCache{report: report, expiresAt: now.Add(heaRankChallengerCacheTTL)}
+	}
 	return report, nil
 }
 
+func (s *Service) invalidateHeaRankChallengerCache() {
+	s.challengerMu.Lock()
+	s.challengerCache = nil
+	s.challengerMu.Unlock()
+}
+
 func (s *Service) loadChallengerEvidence(rows []api.PredictionOutcomeEvaluation) ([]api.FailureLabel, []api.GPUHealthScore, []api.GPUHealthRuleHit, error) {
-	windowStart, windowEnd, found := challengerEvidenceQueryWindow(rows)
+	_, windowEnd, found := challengerEvidenceQueryWindow(rows)
 	if !found {
 		return nil, nil, nil, nil
 	}
 	var labels []api.FailureLabel
-	if err := s.db.Where("occurred_at < ? AND available_at < ?", windowEnd, windowEnd).Order("available_at ASC, id ASC").Find(&labels).Error; err != nil {
+	if err := s.db.Select("id", "node_ip", "model_name", "event_type", "label_value", "quality_tier", "occurred_at", "available_at", "excluded").Where("occurred_at < ? AND available_at < ?", windowEnd, windowEnd).Order("available_at ASC, id ASC").Find(&labels).Error; err != nil {
 		return nil, nil, nil, err
 	}
+	operationalWindows := challengerOperationalEvidenceWindows(rows)
 	var healthScores []api.GPUHealthScore
-	if err := s.db.Where("evaluated_at >= ? AND evaluated_at < ?", windowStart, windowEnd).Order("evaluated_at ASC, id ASC").Find(&healthScores).Error; err != nil {
+	healthQuery := challengerOperationalEvidenceQuery(s.db.Select("id", "gpu_uuid", "node_ip", "model_name", "score", "evaluated_at"), operationalWindows)
+	if err := healthQuery.Order("evaluated_at ASC, id ASC").Find(&healthScores).Error; err != nil {
 		return nil, nil, nil, err
 	}
 	var ruleHits []api.GPUHealthRuleHit
-	if err := s.db.Where("evaluated_at >= ? AND evaluated_at < ?", windowStart, windowEnd).Order("evaluated_at ASC, id ASC").Find(&ruleHits).Error; err != nil {
+	ruleHitQuery := challengerOperationalEvidenceQuery(s.db.Select("id", "health_score_id", "gpu_uuid", "severity", "evaluated_at"), operationalWindows)
+	if err := ruleHitQuery.Order("evaluated_at ASC, id ASC").Find(&ruleHits).Error; err != nil {
 		return nil, nil, nil, err
 	}
 	return labels, healthScores, ruleHits, nil
+}
+
+type challengerEvidenceWindow struct {
+	Start time.Time
+	End   time.Time
+}
+
+func challengerOperationalEvidenceWindows(rows []api.PredictionOutcomeEvaluation) []challengerEvidenceWindow {
+	cutoffs := make([]time.Time, 0, len(rows))
+	seen := map[time.Time]struct{}{}
+	for _, row := range rows {
+		cutoff := row.PredictionEvaluatedAt
+		if cutoff.IsZero() {
+			continue
+		}
+		if _, found := seen[cutoff]; found {
+			continue
+		}
+		seen[cutoff] = struct{}{}
+		cutoffs = append(cutoffs, cutoff)
+	}
+	sort.Slice(cutoffs, func(i, j int) bool { return cutoffs[i].Before(cutoffs[j]) })
+	windows := make([]challengerEvidenceWindow, 0, len(cutoffs))
+	for _, cutoff := range cutoffs {
+		window := challengerEvidenceWindow{Start: cutoff.Add(-HeaRankOperationalSignalMaxAge), End: cutoff}
+		if len(windows) == 0 || window.Start.After(windows[len(windows)-1].End) {
+			windows = append(windows, window)
+			continue
+		}
+		if window.End.After(windows[len(windows)-1].End) {
+			windows[len(windows)-1].End = window.End
+		}
+	}
+	return windows
+}
+
+func challengerOperationalEvidenceQuery(query *gorm.DB, windows []challengerEvidenceWindow) *gorm.DB {
+	var scoped *gorm.DB
+	for index, window := range windows {
+		if index == 0 {
+			scoped = query.Where("evaluated_at >= ? AND evaluated_at < ?", window.Start, window.End)
+			continue
+		}
+		scoped = scoped.Or("evaluated_at >= ? AND evaluated_at < ?", window.Start, window.End)
+	}
+	return scoped
 }
 
 func challengerEvidenceQueryWindow(rows []api.PredictionOutcomeEvaluation) (time.Time, time.Time, bool) {
@@ -238,6 +317,10 @@ func heaRankConfidence(rows, nodes, positives int) (string, []string) {
 
 func challengerMetricSets(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit, horizonMinutes int) []ChallengerMetricSet {
 	histories := challengerHistoriesForCutoffs(rows, challengerEvaluationRows(rows, horizonMinutes), labels, healthScores, ruleHits)
+	return challengerMetricSetsWithHistories(rows, histories, horizonMinutes)
+}
+
+func challengerMetricSetsWithHistories(rows []api.PredictionOutcomeEvaluation, histories map[time.Time]challengerHistory, horizonMinutes int) []ChallengerMetricSet {
 	return []ChallengerMetricSet{
 		challengerMetricSet(rows, histories, horizonMinutes, "logistic_probability", "current shadow probability aggregated by node", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
 			if row.Probability == nil {

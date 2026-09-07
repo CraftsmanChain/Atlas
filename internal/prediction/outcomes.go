@@ -159,6 +159,7 @@ func (s *Service) RunOutcomeSync(ctx context.Context, interval time.Duration) {
 func (s *Service) SyncOutcomes() error {
 	s.outcomeMu.Lock()
 	defer s.outcomeMu.Unlock()
+	defer s.invalidateHeaRankChallengerCache()
 
 	now := s.now()
 	var predictions []api.HardwareRiskPrediction
@@ -715,5 +716,6 @@ func (s *Service) OverrideOutcome(id uint, input OutcomeOverride) (api.Predictio
 	}).Error; err != nil {
 		return row, err
 	}
+	s.invalidateHeaRankChallengerCache()
 	return row, s.db.First(&row, id).Error
 }

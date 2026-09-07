@@ -53,6 +53,7 @@ func (s *Service) RunLabelSync(ctx context.Context, interval time.Duration) {
 func (s *Service) SyncLabels() error {
 	s.labelMu.Lock()
 	defer s.labelMu.Unlock()
+	defer s.invalidateHeaRankChallengerCache()
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		var events []api.GPUFaultEvent
 		if err := tx.Order("id").Find(&events).Error; err != nil {
