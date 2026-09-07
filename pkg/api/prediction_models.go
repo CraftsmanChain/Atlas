@@ -204,6 +204,19 @@ type HardwareFaultFeedbackRequest struct {
 	RepairAction             string     `json:"repair_action,omitempty" gorm:"index"`
 	HardwareReplaced         bool       `json:"hardware_replaced" gorm:"index"`
 	EvidenceNote             string     `json:"evidence_note,omitempty" gorm:"type:text"`
+	SourceSystem             string     `json:"source_system,omitempty" gorm:"index"`
+	SourceRecordID           string     `json:"source_record_id,omitempty" gorm:"index"`
+	SourceRowSHA256          string     `json:"source_row_sha256,omitempty" gorm:"index"`
+	SourceHostSerial         string     `json:"source_host_serial,omitempty" gorm:"index"`
+	SourceHostname           string     `json:"source_hostname,omitempty" gorm:"index"`
+	SourceStatus             string     `json:"source_status,omitempty" gorm:"index"`
+	SourceReportedAt         *time.Time `json:"source_reported_at,omitempty" gorm:"index"`
+	SourceResolvedAt         *time.Time `json:"source_resolved_at,omitempty" gorm:"index"`
+	SourceRawRecord          string     `json:"source_raw_record,omitempty" gorm:"type:text"`
+	AssetResolutionStatus    string     `json:"asset_resolution_status,omitempty" gorm:"index"`
+	AssetResolutionNote      string     `json:"asset_resolution_note,omitempty" gorm:"type:text"`
+	TriageStatus             string     `json:"triage_status,omitempty" gorm:"index"`
+	EpisodeKey               string     `json:"episode_key,omitempty" gorm:"index"`
 	TrainingEligible         bool       `json:"training_eligible" gorm:"index"`
 	HistoryPackStatus        string     `json:"history_pack_status" gorm:"index;not null"`
 	HistoryPackScope         string     `json:"history_pack_scope" gorm:"type:text"`

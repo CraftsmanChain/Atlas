@@ -11,29 +11,42 @@ import (
 	"gorm.io/gorm"
 )
 
-const HardwareFaultFeedbackRequestVersion = "hardware-fault-feedback-request-v1"
+const HardwareFaultFeedbackRequestVersion = "hardware-fault-feedback-request-v2"
 
 type HardwareFaultFeedbackInput struct {
-	NodeIP             string   `json:"node_ip"`
-	TargetScope        string   `json:"target_scope"`
-	GPUUUID            string   `json:"gpu_uuid"`
-	ReportedGPUUUID    string   `json:"reported_gpu_uuid"`
-	GPUIndex           int      `json:"gpu_index"`
-	AffectedGPUIndexes []string `json:"affected_gpu_indexes"`
-	GPUAssetID         uint     `json:"gpu_asset_id"`
-	FaultType          string   `json:"fault_type"`
-	FaultOccurredAt    string   `json:"fault_occurred_at"`
-	FaultTimePrecision string   `json:"fault_time_precision"`
-	FaultWindowStartAt string   `json:"fault_window_start_at"`
-	FaultWindowEndAt   string   `json:"fault_window_end_at"`
-	PreWindowHours     int      `json:"pre_window_hours"`
-	PostWindowHours    int      `json:"post_window_hours"`
-	Operator           string   `json:"operator"`
-	Description        string   `json:"description"`
-	RepairAction       string   `json:"repair_action"`
-	HardwareReplaced   bool     `json:"hardware_replaced"`
-	EvidenceNote       string   `json:"evidence_note"`
-	TrainingEligible   bool     `json:"training_eligible"`
+	NodeIP                string   `json:"node_ip"`
+	TargetScope           string   `json:"target_scope"`
+	GPUUUID               string   `json:"gpu_uuid"`
+	ReportedGPUUUID       string   `json:"reported_gpu_uuid"`
+	GPUIndex              int      `json:"gpu_index"`
+	AffectedGPUIndexes    []string `json:"affected_gpu_indexes"`
+	GPUAssetID            uint     `json:"gpu_asset_id"`
+	FaultType             string   `json:"fault_type"`
+	FaultOccurredAt       string   `json:"fault_occurred_at"`
+	FaultTimePrecision    string   `json:"fault_time_precision"`
+	FaultWindowStartAt    string   `json:"fault_window_start_at"`
+	FaultWindowEndAt      string   `json:"fault_window_end_at"`
+	PreWindowHours        int      `json:"pre_window_hours"`
+	PostWindowHours       int      `json:"post_window_hours"`
+	Operator              string   `json:"operator"`
+	Description           string   `json:"description"`
+	RepairAction          string   `json:"repair_action"`
+	HardwareReplaced      bool     `json:"hardware_replaced"`
+	EvidenceNote          string   `json:"evidence_note"`
+	SourceSystem          string   `json:"source_system"`
+	SourceRecordID        string   `json:"source_record_id"`
+	SourceRowSHA256       string   `json:"source_row_sha256"`
+	SourceHostSerial      string   `json:"source_host_serial"`
+	SourceHostname        string   `json:"source_hostname"`
+	SourceStatus          string   `json:"source_status"`
+	SourceReportedAt      string   `json:"source_reported_at"`
+	SourceResolvedAt      string   `json:"source_resolved_at"`
+	SourceRawRecord       string   `json:"source_raw_record"`
+	AssetResolutionStatus string   `json:"asset_resolution_status"`
+	AssetResolutionNote   string   `json:"asset_resolution_note"`
+	TriageStatus          string   `json:"triage_status"`
+	EpisodeKey            string   `json:"episode_key"`
+	TrainingEligible      bool     `json:"training_eligible"`
 }
 
 func (s *Service) HardwareFaultFeedbackRequests(limit int) ([]api.HardwareFaultFeedbackRequest, error) {
@@ -56,6 +69,11 @@ func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) 
 	faultType := strings.TrimSpace(input.FaultType)
 	repairAction := strings.TrimSpace(input.RepairAction)
 	operator := strings.TrimSpace(input.Operator)
+	sourceSystem := strings.TrimSpace(input.SourceSystem)
+	sourceRecordID := strings.TrimSpace(input.SourceRecordID)
+	if (sourceSystem == "") != (sourceRecordID == "") {
+		return api.HardwareFaultFeedbackRequest{}, fmt.Errorf("source_system and source_record_id must be provided together")
+	}
 	if nodeIP == "" {
 		return api.HardwareFaultFeedbackRequest{}, fmt.Errorf("node_ip is required")
 	}
@@ -71,6 +89,22 @@ func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) 
 	occurredAt, precision, windowStart, windowEnd, err := parseFeedbackTimeWindow(input.FaultOccurredAt, input.FaultTimePrecision, input.FaultWindowStartAt, input.FaultWindowEndAt)
 	if err != nil {
 		return api.HardwareFaultFeedbackRequest{}, err
+	}
+	sourceReportedAt, err := parseOptionalFeedbackTime(input.SourceReportedAt, "source_reported_at")
+	if err != nil {
+		return api.HardwareFaultFeedbackRequest{}, err
+	}
+	sourceResolvedAt, err := parseOptionalFeedbackTime(input.SourceResolvedAt, "source_resolved_at")
+	if err != nil {
+		return api.HardwareFaultFeedbackRequest{}, err
+	}
+	if sourceSystem != "" {
+		var existing api.HardwareFaultFeedbackRequest
+		if err := s.db.Where("source_system = ? AND source_record_id = ?", sourceSystem, sourceRecordID).First(&existing).Error; err == nil {
+			return existing, nil
+		} else if err != gorm.ErrRecordNotFound {
+			return api.HardwareFaultFeedbackRequest{}, err
+		}
 	}
 	preWindow := input.PreWindowHours
 	if preWindow <= 0 {
@@ -88,6 +122,9 @@ func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) 
 	identityStatus := "current_identity_selected"
 	identityNote := "selected GPU identity can be used for the fault-time history pack"
 	blockingReasons := api.StringList{"offline pre/post monitoring history pack has not been collected yet"}
+	if strings.TrimSpace(input.TriageStatus) == "pending_monitoring_confirmation" {
+		blockingReasons = append(blockingReasons, "reported fault time and classification require monitoring confirmation before training")
+	}
 	if targetScope != "gpu" {
 		identityStatus = "node_or_board_scope"
 		identityNote = "feedback targets a node, baseboard, slot group, or multiple GPUs; GPU identity is optional and offline training must use node/slot scoped features"
@@ -104,8 +141,13 @@ func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) 
 		}
 		gpuUUID = ""
 	}
+	requestKey := fmt.Sprintf("fault-feedback-%d", now.UnixNano())
+	if sourceSystem != "" {
+		sum := sha256.Sum256([]byte(sourceSystem + "\x00" + sourceRecordID))
+		requestKey = fmt.Sprintf("fault-feedback-source-%x", sum[:16])
+	}
 	row := api.HardwareFaultFeedbackRequest{
-		RequestKey:               fmt.Sprintf("fault-feedback-%d", now.UnixNano()),
+		RequestKey:               requestKey,
 		Status:                   "history_pack_requested",
 		NodeIP:                   nodeIP,
 		TargetScope:              targetScope,
@@ -126,6 +168,19 @@ func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) 
 		RepairAction:             repairAction,
 		HardwareReplaced:         replacementFeedback,
 		EvidenceNote:             strings.TrimSpace(input.EvidenceNote),
+		SourceSystem:             sourceSystem,
+		SourceRecordID:           sourceRecordID,
+		SourceRowSHA256:          strings.TrimSpace(input.SourceRowSHA256),
+		SourceHostSerial:         strings.TrimSpace(input.SourceHostSerial),
+		SourceHostname:           strings.TrimSpace(input.SourceHostname),
+		SourceStatus:             strings.TrimSpace(input.SourceStatus),
+		SourceReportedAt:         sourceReportedAt,
+		SourceResolvedAt:         sourceResolvedAt,
+		SourceRawRecord:          strings.TrimSpace(input.SourceRawRecord),
+		AssetResolutionStatus:    strings.TrimSpace(input.AssetResolutionStatus),
+		AssetResolutionNote:      strings.TrimSpace(input.AssetResolutionNote),
+		TriageStatus:             strings.TrimSpace(input.TriageStatus),
+		EpisodeKey:               strings.TrimSpace(input.EpisodeKey),
 		TrainingEligible:         input.TrainingEligible,
 		HistoryPackStatus:        "queued_offline_collection",
 		IdentityResolutionStatus: identityStatus,
@@ -161,6 +216,12 @@ func (s *Service) CreateHardwareFaultFeedback(input HardwareFaultFeedbackInput) 
 	}
 	row.HistoryPackScope = feedbackHistoryScope(row)
 	if err := s.db.Create(&row).Error; err != nil {
+		if sourceSystem != "" {
+			var existing api.HardwareFaultFeedbackRequest
+			if lookupErr := s.db.Where("source_system = ? AND source_record_id = ?", sourceSystem, sourceRecordID).First(&existing).Error; lookupErr == nil {
+				return existing, nil
+			}
+		}
 		return row, err
 	}
 	return row, nil
@@ -318,13 +379,27 @@ func parseFeedbackTime(value string) (time.Time, error) {
 	if text == "" {
 		return time.Time{}, fmt.Errorf("fault_occurred_at is required")
 	}
-	layouts := []string{time.RFC3339, "2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02"}
+	if parsed, err := time.Parse(time.RFC3339, text); err == nil {
+		return parsed, nil
+	}
+	layouts := []string{"2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02", "2006/01/02 15:04:05", "2006/01/02 15:04"}
 	for _, layout := range layouts {
-		if parsed, err := time.Parse(layout, text); err == nil {
+		if parsed, err := time.ParseInLocation(layout, text, feedbackLocalLocation); err == nil {
 			return parsed, nil
 		}
 	}
 	return time.Time{}, fmt.Errorf("fault_occurred_at must be RFC3339, local datetime, or YYYY-MM-DD")
+}
+
+func parseOptionalFeedbackTime(value, field string) (*time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	parsed, err := parseFeedbackTime(value)
+	if err != nil {
+		return nil, fmt.Errorf("%s is invalid: %w", field, err)
+	}
+	return &parsed, nil
 }
 
 func parseFeedbackTimeWindow(value, precisionValue, startValue, endValue string) (time.Time, string, time.Time, time.Time, error) {
@@ -346,7 +421,7 @@ func parseFeedbackTimeWindow(value, precisionValue, startValue, endValue string)
 		}
 		return occurredAt, precision, occurredAt, occurredAt, nil
 	case "date":
-		occurredAt, err := time.Parse("2006-01-02", strings.TrimSpace(value))
+		occurredAt, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(value), feedbackLocalLocation)
 		if err != nil {
 			return time.Time{}, "", time.Time{}, time.Time{}, fmt.Errorf("date precision fault_occurred_at must be YYYY-MM-DD")
 		}
@@ -369,6 +444,8 @@ func parseFeedbackTimeWindow(value, precisionValue, startValue, endValue string)
 		return time.Time{}, "", time.Time{}, time.Time{}, fmt.Errorf("fault_time_precision must be exact, date, or window")
 	}
 }
+
+var feedbackLocalLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 func isFeedbackDateOnly(value string) bool {
 	text := strings.TrimSpace(value)
@@ -452,6 +529,14 @@ func hardwareFeedbackPackChecksum(row api.HardwareFaultFeedbackRequest, audit ap
 		"repair_action":              row.RepairAction,
 		"hardware_replaced":          row.HardwareReplaced,
 		"training_eligible":          row.TrainingEligible,
+		"source_system":              row.SourceSystem,
+		"source_record_id":           row.SourceRecordID,
+		"source_row_sha256":          row.SourceRowSHA256,
+		"source_reported_at":         row.SourceReportedAt,
+		"source_resolved_at":         row.SourceResolvedAt,
+		"asset_resolution_status":    row.AssetResolutionStatus,
+		"triage_status":              row.TriageStatus,
+		"episode_key":                row.EpisodeKey,
 		"identity_resolution_status": row.IdentityResolutionStatus,
 		"history_pack_scope":         row.HistoryPackScope,
 		"source_key":                 audit.SourceKey,
