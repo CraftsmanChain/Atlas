@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -579,6 +580,24 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	if err != nil || !refreshedReport.GeneratedAt.Equal(now.Add(time.Second)) || refreshedReport.ReportSHA256 != report.ReportSHA256 {
 		t.Fatalf("explicit invalidation should rebuild the same immutable report content: before=%+v refreshed=%+v err=%v", report, refreshedReport, err)
 	}
+	service.invalidateHeaRankChallengerCache()
+	clock := []time.Time{now.Add(2 * time.Second), now.Add(2*time.Minute + 2*time.Second), now.Add(2*time.Minute + 3*time.Second)}
+	clockIndex := 0
+	service.now = func() time.Time {
+		value := clock[clockIndex]
+		if clockIndex < len(clock)-1 {
+			clockIndex++
+		}
+		return value
+	}
+	slowReport, err := service.HeaRankChallengerReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachedAfterSlowReport, err := service.HeaRankChallengerReport()
+	if err != nil || !cachedAfterSlowReport.GeneratedAt.Equal(slowReport.GeneratedAt) {
+		t.Fatalf("cache TTL must start after a slow computation completes: before=%+v cached=%+v err=%v", slowReport, cachedAfterSlowReport, err)
+	}
 	later := now.Add(time.Hour)
 	service.now = func() time.Time { return later }
 	laterReport, err := service.HeaRankChallengerReport()
@@ -781,6 +800,71 @@ func TestHeaRankModelLabelDensityUsesHistoricalCohortOnly(t *testing.T) {
 	density := modelLabelDensityByNodeBefore(labels, scores, cutoff)
 	if density["10.0.0.1"] != 1 || density["10.0.0.2"] != 1 || len(density) != 2 {
 		t.Fatalf("model cohort density must use only labels and observed GPUs strictly before the cutoff: %+v", density)
+	}
+}
+
+func TestHeaRankIndexedEvidenceMatchesReferencePolicies(t *testing.T) {
+	cutoff := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	healthy, degraded, critical := 90, 65, 20
+	scores := []api.GPUHealthScore{
+		{ID: 5, NodeIP: "10.0.0.1", GPUUUID: "GPU-A", ModelName: "", Score: nil, EvaluatedAt: cutoff.Add(-30 * time.Minute)},
+		{ID: 4, NodeIP: "10.0.0.1", GPUUUID: "GPU-A", ModelName: "H100", Score: &degraded, EvaluatedAt: cutoff.Add(-time.Hour)},
+		{ID: 1, NodeIP: "10.0.0.1", GPUUUID: "GPU-A", ModelName: "H100", Score: &healthy, EvaluatedAt: cutoff.Add(-2 * time.Hour)},
+		{ID: 2, NodeIP: "10.0.0.2", GPUUUID: "GPU-B", ModelName: "H100", Score: &critical, EvaluatedAt: cutoff.Add(-23 * time.Hour)},
+		{ID: 3, NodeIP: "10.0.0.3", GPUUUID: "GPU-C", ModelName: "A100", Score: &critical, EvaluatedAt: cutoff},
+	}
+	hits := []api.GPUHealthRuleHit{
+		{ID: 3, HealthScoreID: 4, GPUUUID: "GPU-A", Severity: "attention", EvaluatedAt: cutoff.Add(-time.Hour)},
+		{ID: 1, HealthScoreID: 1, GPUUUID: "GPU-A", Severity: "critical", EvaluatedAt: cutoff.Add(-2 * time.Hour)},
+		{ID: 2, HealthScoreID: 4, GPUUUID: "GPU-A", Severity: "warning", EvaluatedAt: cutoff.Add(-time.Hour)},
+		{ID: 4, HealthScoreID: 2, GPUUUID: "GPU-B", Severity: "critical", EvaluatedAt: cutoff.Add(-23 * time.Hour)},
+	}
+	labels := []api.FailureLabel{
+		{NodeIP: "10.0.0.1", ModelName: "H100", EventType: "row_remap_failure", LabelValue: 1, QualityTier: "confirmed", OccurredAt: cutoff.Add(-3 * time.Hour), AvailableAt: cutoff.Add(-2 * time.Hour)},
+		{NodeIP: "10.0.0.3", ModelName: "A100", EventType: "xid_repeated", LabelValue: 1, QualityTier: "strong_proxy", OccurredAt: cutoff.Add(-time.Hour), AvailableAt: cutoff},
+	}
+	index := newChallengerEvidenceIndex(scores, hits)
+	for _, candidateCutoff := range []time.Time{cutoff.Add(-90 * time.Minute), cutoff, cutoff.Add(time.Hour)} {
+		healthRisk, ruleRisk, modelDensity := challengerOperationalPriorsBefore(index, labels, candidateCutoff)
+		if expected := healthRiskByNodeBefore(scores, candidateCutoff); !reflect.DeepEqual(healthRisk, expected) {
+			t.Fatalf("indexed health prior differs at %s: got=%+v expected=%+v", candidateCutoff, healthRisk, expected)
+		}
+		if expected := ruleHitRiskByNodeBefore(hits, scores, candidateCutoff); !reflect.DeepEqual(ruleRisk, expected) {
+			t.Fatalf("indexed rule prior differs at %s: got=%+v expected=%+v", candidateCutoff, ruleRisk, expected)
+		}
+		if expected := modelLabelDensityByNodeBefore(labels, scores, candidateCutoff); !reflect.DeepEqual(modelDensity, expected) {
+			t.Fatalf("indexed model-density prior differs at %s: got=%+v expected=%+v", candidateCutoff, modelDensity, expected)
+		}
+	}
+}
+
+func BenchmarkHeaRankIndexedHistoriesProductionShape(b *testing.B) {
+	base := time.Date(2026, 8, 13, 6, 0, 0, 0, time.UTC)
+	scoreValue, probability, actual := 80, 0.4, 0
+	scores := make([]api.GPUHealthScore, 0, 105840)
+	for sample := 0; sample < 147; sample++ {
+		evaluatedAt := base.Add(time.Duration(sample-146) * 10 * time.Minute)
+		for gpu := 0; gpu < 720; gpu++ {
+			scores = append(scores, api.GPUHealthScore{
+				ID: uint(len(scores) + 1), NodeIP: "node-" + strconv.Itoa(gpu/8), GPUUUID: "gpu-" + strconv.Itoa(gpu),
+				ModelName: "H100", Score: &scoreValue, EvaluatedAt: evaluatedAt,
+			})
+		}
+	}
+	rows := make([]api.PredictionOutcomeEvaluation, 768)
+	for index := range rows {
+		rows[index] = api.PredictionOutcomeEvaluation{
+			ID: uint(index + 1), NodeIP: "node-" + strconv.Itoa(index/8), HorizonMinutes: 10080,
+			Probability: &probability, PredictedPositive: true, PredictionEvaluatedAt: base.Add(time.Duration(index) * 3 * time.Second),
+			WindowEndAt: base.Add(-time.Hour), MaturityStatus: "matured", FinalActualValue: &actual,
+		}
+	}
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		histories := challengerHistoriesForCutoffs(rows, rows, nil, scores, nil)
+		if len(histories) != len(rows) {
+			b.Fatalf("unexpected history count: %d", len(histories))
+		}
 	}
 }
 

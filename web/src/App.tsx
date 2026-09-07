@@ -1153,7 +1153,7 @@ function Models({ tx, view, lang, assets }: { tx: Tx; view: string; lang: string
     return () => { cancelled = true; };
   }, [isPredictionView]);
   useEffect(() => {
-    if (!isPredictionView) return;
+    if (!isPredictionView || warningTab === 'human-feedback' || warningTab === 'feedback-pack') return;
     let cancelled = false;
     const loadReport = async <T,>(url: string, apply: (data: T | null) => void) => {
       const response = await fetch(url);
@@ -1178,7 +1178,7 @@ function Models({ tx, view, lang, assets }: { tx: Tx; view: string; lang: string
     };
     void loadValidationReports();
     return () => { cancelled = true; };
-  }, [isPredictionView]);
+  }, [isPredictionView, warningTab]);
   useEffect(() => {
     if (!isPredictionView) return;
     let cancelled = false;
@@ -1948,7 +1948,7 @@ function Models({ tx, view, lang, assets }: { tx: Tx; view: string; lang: string
         <CardHead code="FAULT EARLY WARNING" title={tx('故障预警', 'Failure Early Warning')} action={<Badge value="三级功能选项" kind="info" />} />
         <div className="issue-categories quality-ledger">{warningTabs.map(item => <button key={item.id} type="button" className={warningTab === item.id ? 'active' : ''} onClick={() => setWarningTab(item.id)}><span className="issue-category-icon"><BrainCircuit size={20} /></span><b>{item.label}</b><strong>{warningTab === item.id ? tx('当前', 'ACTIVE') : 'OPEN'}</strong><small>{item.note}</small></button>)}</div>
       </Card>
-      {predictionReportError && <Card className="span-12"><p className="form-error">{tx('部分验证报告暂不可用，核心故障预警数据仍可继续使用：', 'Some validation reports are temporarily unavailable; core early-warning data remains usable: ')}{predictionReportError}</p></Card>}
+      {warningTab !== 'human-feedback' && warningTab !== 'feedback-pack' && predictionReportError && <Card className="span-12"><p className="form-error">{tx('部分验证报告暂不可用，核心故障预警数据仍可继续使用：', 'Some validation reports are temporarily unavailable; core early-warning data remains usable: ')}{predictionReportError}</p></Card>}
       {warningTab === 'human-feedback' ? <Card id="prediction-human-feedback" className="span-12">
         <CardHead code="HARDWARE FAULT INTAKE" title={tx('硬件故障人工反馈', 'Human Hardware-fault Feedback')} action={<Badge value="CREATE HISTORY PACK REQUEST" kind="info" />} />
         <p className="node-access-note">{tx('这里录入“哪台机器、故障对象范围、什么硬件故障、什么时候发生”。单 GPU 故障需要选卡；GPU 底板、槽位组、多卡或整节点故障只要求节点 IP，可选填写受影响 GPU。提交后只创建离线前后监控历史数据包采集请求；不会自动维修、隔离、调度或发线上告警。', 'Record the failed node, target scope, hardware fault type, and timing. Single-GPU faults require a GPU selection; GPU baseboard, slot-group, multi-GPU, or node faults require only the node IP with optional affected GPU indexes. Submitting only creates an offline pre/post monitoring-history pack request; it performs no repair, isolation, scheduling, or operational alerting.')}</p>
@@ -2364,13 +2364,14 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const releaseModule = { id: 'release', name: tx('发布与产物同步', 'Release & Artifact Sync'), version: 'v0.1.0', status: tx('Rsync 增量同步', 'RSYNC TRANSFER'), desc: tx('发布链路统一使用 rsync 同步源码包、前端产物、二进制和数据库备份脚本，支持校验和、断点保留和传输进度；远端构建、备份、原子切换及回滚流程保持不变。', 'Release pipelines use rsync for source archives, web assets, binaries, and database-backup scripts with checksums, partial-transfer retention, and visible progress; remote builds, backups, atomic switching, and rollback remain unchanged.'), history: [tx('v0.1.0 · 默认远端源码发布和 legacy 二进制发布全部由 scp 切换为 rsync，并增加本机/远端依赖预检', 'v0.1.0 · Replaced scp with rsync in both remote-source and legacy-binary release paths, adding local and remote dependency preflight checks')] };
   const modules = [...baseModules, releaseModule].map(module => module.id === 'prediction' ? {
     ...module,
-    version: 'v0.27.24',
+    version: 'v0.27.25',
     status: tx('故障预警工作台', 'EARLY-WARNING WORKBENCH'),
     desc: tx(
       '当前故障预警能力保持 GPU-only、read-only shadow：已具备训练数据、标签 Manifest、训练样本 Evidence Bundle、模型治理卡、影子门禁、成熟 outcome、Ranking@K、naive baseline、HeaRank 7d node-risk challenger、数据/校准漂移、训练侧和 live-shadow 特征分布快照，并把故障前后数据反馈包列为重点入口；不触发告警、调度、维修或自动隔离。',
       'Early warning remains GPU-only and read-only shadow: training data, label manifest, training-sample Evidence Bundle, model governance cards, shadow gates, mature outcomes, Ranking@K, naive baselines, a HeaRank 7d node-risk challenger, data/calibration drift, and training/live-shadow feature-distribution snapshots are available, with the pre/post-fault feedback pack promoted as a priority entry; no alert, scheduling, repair or automatic isolation is triggered.',
     ),
     history: [
+      tx('v0.27.25 · HeaRank Challenger 按 GPU 建立时序索引，对严格 point-in-time cutoff 使用二分查询，并从计算完成时开始缓存；人工反馈和数据包页不再自动加载重型验证报告', 'v0.27.25 · HeaRank Challenger builds per-GPU time-series indexes, uses binary search for strict point-in-time cutoffs, and starts cache expiry after computation; human-feedback and feedback-pack tabs no longer auto-load heavy validation reports'),
       tx('v0.27.24 · HeaRank Challenger 精简数据库列读取、复用一次 point-in-time 历史聚合并增加 30 秒防击穿缓存；重型验证报告改为独立容错加载，不再阻塞故障预警核心页面', 'v0.27.24 · HeaRank Challenger projects only required database columns, reuses one point-in-time history aggregation, and adds a 30-second stampede-safe cache; heavy validation reports now load independently and cannot block the core early-warning page'),
       tx('v0.27.23 · MATRIX GATED readiness 新增训练候选 Gate 与样本积累目标面板：直接显示能否进入 baseline 候选、还需补多少故障/对照/GPU 覆盖，并按 fault/model/horizon 给出优先级', 'v0.27.23 · MATRIX GATED readiness adds a training-candidate gate and sample-accumulation targets: it shows whether baseline candidates are allowed, how many faults/controls/GPU identities are still needed, and priority by fault/model/horizon'),
       tx('v0.27.22 · 训练矩阵 readiness manifest 新增结构化缺口与下一步动作：页面展示最大 shortfall、分层缺口和推荐后续运行，不再依赖解析 blocker 字符串判断还差什么', 'v0.27.22 · training-matrix readiness manifests now expose structured deficits and recommended next runs: the UI shows largest shortfalls, per-stratum gaps, and next actions without parsing blocker strings'),
