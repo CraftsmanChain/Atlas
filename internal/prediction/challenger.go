@@ -132,7 +132,7 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 	// Do not retain an empty bootstrap snapshot: the first imported outcomes or
 	// human labels should become visible immediately without waiting for TTL.
 	if len(rows) > 0 {
-		s.challengerCache = &heaRankChallengerCache{report: report, expiresAt: now.Add(heaRankChallengerCacheTTL)}
+		s.challengerCache = &heaRankChallengerCache{report: report, expiresAt: s.now().Add(heaRankChallengerCacheTTL)}
 	}
 	return report, nil
 }
@@ -418,12 +418,13 @@ func challengerHistoriesByCutoff(rows []api.PredictionOutcomeEvaluation, labels 
 
 func challengerHistoriesForCutoffs(historyRows, cutoffRows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit) map[time.Time]challengerHistory {
 	histories := make(map[time.Time]challengerHistory, len(cutoffRows))
+	evidence := newChallengerEvidenceIndex(healthScores, ruleHits)
 	for _, row := range cutoffRows {
 		cutoff := row.PredictionEvaluatedAt
 		if _, found := histories[cutoff]; found {
 			continue
 		}
-		histories[cutoff] = challengerHistoryWithEvidenceBefore(historyRows, labels, healthScores, ruleHits, cutoff)
+		histories[cutoff] = challengerHistoryWithIndexedEvidenceBefore(historyRows, labels, evidence, cutoff)
 	}
 	return histories
 }
@@ -447,7 +448,191 @@ func challengerHistoryWithLabelsBefore(rows []api.PredictionOutcomeEvaluation, l
 }
 
 func challengerHistoryWithEvidenceBefore(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit, cutoff time.Time) challengerHistory {
-	history := challengerHistory{PositiveCounts: map[string]int{}, RecencyWeighted: map[string]float64{}, SeverityWeightedLabels: map[string]float64{}, HealthRiskByNode: healthRiskByNodeBefore(healthScores, cutoff), RuleHitRiskByNode: ruleHitRiskByNodeBefore(ruleHits, healthScores, cutoff), ModelLabelDensityByNode: modelLabelDensityByNodeBefore(labels, healthScores, cutoff)}
+	return challengerHistoryWithIndexedEvidenceBefore(rows, labels, newChallengerEvidenceIndex(healthScores, ruleHits), cutoff)
+}
+
+type challengerRuleEvidence struct {
+	id               uint
+	node             string
+	evaluatedAt      time.Time
+	scoreEvaluatedAt time.Time
+	risk             float64
+}
+
+type challengerEvidenceIndex struct {
+	healthByNodeGPU map[string][]api.GPUHealthScore
+	healthByGPU     map[string][]api.GPUHealthScore
+	rulesByNodeGPU  map[string][]challengerRuleEvidence
+}
+
+func newChallengerEvidenceIndex(healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit) challengerEvidenceIndex {
+	index := challengerEvidenceIndex{
+		healthByNodeGPU: map[string][]api.GPUHealthScore{},
+		healthByGPU:     map[string][]api.GPUHealthScore{},
+		rulesByNodeGPU:  map[string][]challengerRuleEvidence{},
+	}
+	scoreByID := make(map[uint]api.GPUHealthScore, len(healthScores))
+	for _, score := range healthScores {
+		scoreByID[score.ID] = score
+		node, gpu := normalNode(score.NodeIP), strings.ToLower(strings.TrimSpace(score.GPUUUID))
+		if node == "" || gpu == "" || score.EvaluatedAt.IsZero() {
+			continue
+		}
+		index.healthByNodeGPU[node+"|"+gpu] = append(index.healthByNodeGPU[node+"|"+gpu], score)
+		index.healthByGPU[gpu] = append(index.healthByGPU[gpu], score)
+	}
+	for _, hit := range ruleHits {
+		score, found := scoreByID[hit.HealthScoreID]
+		node, gpu := normalNode(score.NodeIP), strings.ToLower(strings.TrimSpace(hit.GPUUUID))
+		if !found || node == "" || gpu == "" || hit.EvaluatedAt.IsZero() {
+			continue
+		}
+		key := node + "|" + gpu
+		index.rulesByNodeGPU[key] = append(index.rulesByNodeGPU[key], challengerRuleEvidence{
+			id: hit.ID, node: node, evaluatedAt: hit.EvaluatedAt, scoreEvaluatedAt: score.EvaluatedAt, risk: ruleHitSeverityWeight(hit.Severity),
+		})
+	}
+	for _, series := range index.healthByNodeGPU {
+		sort.Slice(series, func(i, j int) bool { return healthScoreBefore(series[i], series[j]) })
+	}
+	for _, series := range index.healthByGPU {
+		sort.Slice(series, func(i, j int) bool { return healthScoreBefore(series[i], series[j]) })
+	}
+	for _, series := range index.rulesByNodeGPU {
+		sort.Slice(series, func(i, j int) bool {
+			if series[i].evaluatedAt.Equal(series[j].evaluatedAt) {
+				return series[i].id < series[j].id
+			}
+			return series[i].evaluatedAt.Before(series[j].evaluatedAt)
+		})
+	}
+	return index
+}
+
+func healthScoreBefore(left, right api.GPUHealthScore) bool {
+	if left.EvaluatedAt.Equal(right.EvaluatedAt) {
+		return left.ID < right.ID
+	}
+	return left.EvaluatedAt.Before(right.EvaluatedAt)
+}
+
+func latestScoredHealthScoreBefore(series []api.GPUHealthScore, cutoff time.Time) (api.GPUHealthScore, bool) {
+	position := sort.Search(len(series), func(index int) bool { return !series[index].EvaluatedAt.Before(cutoff) })
+	for position > 0 {
+		score := series[position-1]
+		if !operationalSignalFresh(score.EvaluatedAt, cutoff) {
+			break
+		}
+		if score.Score != nil {
+			return score, true
+		}
+		position--
+	}
+	return api.GPUHealthScore{}, false
+}
+
+func latestModeledHealthScoreBefore(series []api.GPUHealthScore, cutoff time.Time) (api.GPUHealthScore, bool) {
+	position := sort.Search(len(series), func(index int) bool { return !series[index].EvaluatedAt.Before(cutoff) })
+	for position > 0 {
+		score := series[position-1]
+		if !operationalSignalFresh(score.EvaluatedAt, cutoff) {
+			break
+		}
+		if strings.TrimSpace(score.ModelName) != "" {
+			return score, true
+		}
+		position--
+	}
+	return api.GPUHealthScore{}, false
+}
+
+func challengerOperationalPriorsBefore(evidence challengerEvidenceIndex, labels []api.FailureLabel, cutoff time.Time) (map[string]float64, map[string]float64, map[string]float64) {
+	healthRiskByNode := map[string]float64{}
+	for _, series := range evidence.healthByNodeGPU {
+		score, found := latestScoredHealthScoreBefore(series, cutoff)
+		if !found {
+			continue
+		}
+		risk := math.Max(0, math.Min(100, 100-float64(*score.Score)))
+		node := normalNode(score.NodeIP)
+		if risk > healthRiskByNode[node] {
+			healthRiskByNode[node] = risk
+		}
+	}
+
+	latestByGPU := map[string]api.GPUHealthScore{}
+	for gpu, series := range evidence.healthByGPU {
+		if score, found := latestModeledHealthScoreBefore(series, cutoff); found {
+			latestByGPU[gpu] = score
+		}
+	}
+	modelDensityByNode := modelLabelDensityFromLatestScores(labels, latestByGPU, cutoff)
+	return healthRiskByNode, ruleHitRiskByNodeFromIndex(evidence.rulesByNodeGPU, cutoff), modelDensityByNode
+}
+
+func ruleHitRiskByNodeFromIndex(seriesByGPU map[string][]challengerRuleEvidence, cutoff time.Time) map[string]float64 {
+	riskByNode := map[string]float64{}
+	for _, series := range seriesByGPU {
+		end := sort.Search(len(series), func(index int) bool { return !series[index].evaluatedAt.Before(cutoff) })
+		for end > 0 {
+			batchAt := series[end-1].evaluatedAt
+			if !operationalSignalFresh(batchAt, cutoff) {
+				break
+			}
+			start := end - 1
+			for start > 0 && series[start-1].evaluatedAt.Equal(batchAt) {
+				start--
+			}
+			risk := 0.0
+			node := ""
+			for _, hit := range series[start:end] {
+				if operationalSignalFresh(hit.scoreEvaluatedAt, cutoff) {
+					risk += hit.risk
+					node = hit.node
+				}
+			}
+			if risk > 0 {
+				if risk > riskByNode[node] {
+					riskByNode[node] = risk
+				}
+				break
+			}
+			end = start
+		}
+	}
+	return riskByNode
+}
+
+func modelLabelDensityFromLatestScores(labels []api.FailureLabel, latestByGPU map[string]api.GPUHealthScore, cutoff time.Time) map[string]float64 {
+	observedGPUsByModel := map[string]int{}
+	for _, score := range latestByGPU {
+		observedGPUsByModel[normalModel(score.ModelName)]++
+	}
+	labelsByModel := map[string]int{}
+	for _, label := range labels {
+		if eligibleSeverityHistoryLabel(label, cutoff) && strings.TrimSpace(label.ModelName) != "" {
+			labelsByModel[normalModel(label.ModelName)]++
+		}
+	}
+	densityByModel := map[string]float64{}
+	for model, count := range labelsByModel {
+		if observed := observedGPUsByModel[model]; observed > 0 {
+			densityByModel[model] = float64(count) / float64(observed)
+		}
+	}
+	densityByNode := map[string]float64{}
+	for _, score := range latestByGPU {
+		node := normalNode(score.NodeIP)
+		if density := densityByModel[normalModel(score.ModelName)]; density > densityByNode[node] {
+			densityByNode[node] = density
+		}
+	}
+	return densityByNode
+}
+
+func challengerHistoryWithIndexedEvidenceBefore(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, evidence challengerEvidenceIndex, cutoff time.Time) challengerHistory {
+	healthRisk, ruleRisk, modelDensity := challengerOperationalPriorsBefore(evidence, labels, cutoff)
+	history := challengerHistory{PositiveCounts: map[string]int{}, RecencyWeighted: map[string]float64{}, SeverityWeightedLabels: map[string]float64{}, HealthRiskByNode: healthRisk, RuleHitRiskByNode: ruleRisk, ModelLabelDensityByNode: modelDensity}
 	for _, candidate := range rows {
 		if candidate.MaturityStatus != "matured" || candidate.FinalActualValue == nil || *candidate.FinalActualValue != 1 || strings.TrimSpace(candidate.NodeIP) == "" || !candidate.WindowEndAt.Before(cutoff) {
 			continue
