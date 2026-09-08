@@ -77,7 +77,7 @@ func TestBuildManualFeedbackFeatureRequestManifestFreezesPackReadyReviewedFeedba
 	handler := NewHandler(service)
 	response := httptest.NewRecorder()
 	handler.HandleManualFeedbackFeatureRequests(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/history/feedback-feature-requests?limit=1", nil))
-	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte("manual-feedback-feature-request-v2")) {
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte("manual-feedback-feature-request-v3")) {
 		t.Fatalf("feedback feature request API failed: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
@@ -233,6 +233,62 @@ func TestBuildManualFeedbackFeatureRequestManifestBlocksUnpreparedFeedback(t *te
 	}
 	if payload.WindowCount != 0 || len(payload.Records) != 0 || len(build.BlockingReasons) == 0 {
 		t.Fatalf("blocked manifest should not expose training windows: payload=%+v build=%+v", payload, build)
+	}
+}
+
+func TestBuildManualFeedbackFeatureRequestManifestSkipsNonTrainingLedgerEvidence(t *testing.T) {
+	db, err := storage.InitDB(fmt.Sprintf("file:manual-feedback-feature-request-skip-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)
+	end := start.Add(7 * 24 * time.Hour)
+	if err := db.Create(&api.MonitoringHistoryAudit{
+		SourceKey: "current-prometheus", SourceName: "Current Prometheus", SourceType: "prometheus", BaseURL: "http://prometheus",
+		Status: "success", EarliestSampleAt: &start, LatestSampleAt: &end, StartedAt: start, FinishedAt: end,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	predictionService := prediction.NewService(db)
+	eligible, err := predictionService.CreateHardwareFaultFeedback(prediction.HardwareFaultFeedbackInput{
+		NodeIP: "10.114.4.30", GPUUUID: "GPU-ELIGIBLE", GPUIndex: 3,
+		FaultType: "gpu_hardware_failure", FaultOccurredAt: "2026-08-21T08:00:00Z",
+		Operator: "ops", TrainingEligible: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&api.HistoricalGPUIdentityInterval{
+		IntervalKey: "identity-eligible", SourceKey: "current-prometheus", NodeIP: eligible.NodeIP, GPUIndex: eligible.GPUIndex, GPUUUID: eligible.GPUUUID,
+		FirstSeenAt: start, LastSeenAt: end, ObservationCount: 20, EvidenceStrength: "strong",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := predictionService.ReviewHardwareFaultFeedback(eligible.ID, prediction.HardwareFaultFeedbackReviewInput{
+		Decision: "confirmed_hardware", Reviewer: "ops", ReviewNote: "monitoring and repair evidence agree", EvidenceKeys: []string{"repair:ticket"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := predictionService.PrepareHardwareFaultFeedbackPack(eligible.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := predictionService.ReviewHardwareFaultFeedbackWarning(eligible.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := predictionService.CreateHardwareFaultFeedback(prediction.HardwareFaultFeedbackInput{
+		NodeIP: "10.114.4.31", TargetScope: "node", GPUIndex: -1,
+		FaultType: "node_hardware_failure", FaultOccurredAt: "2026-08-21T09:00:00Z",
+		Operator: "ops", TrainingEligible: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, config.HistoryConfig{DatasetDir: t.TempDir()}, time.Second)
+	build, err := service.BuildManualFeedbackFeatureRequestManifest(ManualFeedbackFeatureRequestBuildRequest{SourceKey: "current-prometheus"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if build.Status != "manifest_ready_pending_offline_worker" || build.WindowCount != 4 || build.TrainingEligibleRequests != 1 || build.BlockedRequests != 0 || len(build.BlockingReasons) != 0 {
+		t.Fatalf("non-training ledger evidence must not block eligible GPU windows: %+v", build)
 	}
 }
 

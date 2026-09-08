@@ -18,7 +18,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const manualFeedbackFeatureRequestVersion = "manual-feedback-feature-request-v2"
+const manualFeedbackFeatureRequestVersion = "manual-feedback-feature-request-v3"
 const manualFeedbackSourceManifestVersion = "prediction-human-feedback-manifest-v2"
 
 var manualFeedbackHorizons = []int{60, 360, 1440, 10080}
@@ -117,8 +117,14 @@ func (s *Service) BuildManualFeedbackFeatureRequestManifest(request ManualFeedba
 	episodeDecisions := map[string]string{}
 	conflictingEpisodes := map[string]bool{}
 	for _, review := range latestReviews {
-		if review.EpisodeKey == "" { continue }
-		if decision, ok := episodeDecisions[review.EpisodeKey]; ok && decision != review.Decision { conflictingEpisodes[review.EpisodeKey] = true } else { episodeDecisions[review.EpisodeKey] = review.Decision }
+		if review.EpisodeKey == "" {
+			continue
+		}
+		if decision, ok := episodeDecisions[review.EpisodeKey]; ok && decision != review.Decision {
+			conflictingEpisodes[review.EpisodeKey] = true
+		} else {
+			episodeDecisions[review.EpisodeKey] = review.Decision
+		}
 	}
 	records := make([]manualFeedbackFeatureManifestRecord, 0, len(feedback)*len(manualFeedbackHorizons))
 	seenEpisodes := map[string]bool{}
@@ -153,9 +159,18 @@ func (s *Service) BuildManualFeedbackFeatureRequestManifest(request ManualFeedba
 		if row.WarningReviewStatus == "manual_feedback_no_prior_shadow_warning" {
 			build.WarningMissRequests++
 		}
+		// A reviewed ledger can intentionally contain node/baseboard incidents,
+		// context-only events, and unresolved GPU identities. Those records remain
+		// useful audit evidence, but they are outside this GPU training manifest.
+		// Only rows explicitly admitted to training may block this build.
+		if !row.TrainingEligible {
+			continue
+		}
 		review, hasReview := latestReviews[row.ID]
 		rowBlockers := manualFeedbackFeatureBlockers(row, review, hasReview)
-		if hasReview && conflictingEpisodes[review.EpisodeKey] { rowBlockers = append(rowBlockers, fmt.Sprintf("feedback %d episode %s has conflicting latest reviews", row.ID, review.EpisodeKey)) }
+		if hasReview && conflictingEpisodes[review.EpisodeKey] {
+			rowBlockers = append(rowBlockers, fmt.Sprintf("feedback %d episode %s has conflicting latest reviews", row.ID, review.EpisodeKey))
+		}
 		if len(rowBlockers) > 0 {
 			build.BlockedRequests++
 			blockers = append(blockers, rowBlockers...)
@@ -178,7 +193,9 @@ func (s *Service) BuildManualFeedbackFeatureRequestManifest(request ManualFeedba
 			blockers = append(blockers, fmt.Sprintf("feedback %d source_key %s does not match build source_key %s", row.ID, rowSource, sourceKey))
 			continue
 		}
-		if seenEpisodes[review.EpisodeKey] { continue }
+		if seenEpisodes[review.EpisodeKey] {
+			continue
+		}
 		seenEpisodes[review.EpisodeKey] = true
 		faultStart, faultEnd := manualFeedbackReviewedFaultWindow(row, review)
 		for _, horizon := range manualFeedbackHorizons {
@@ -544,9 +561,6 @@ func (s *Service) currentHumanFeedbackManifestSHA() (string, error) {
 
 func manualFeedbackFeatureBlockers(row api.HardwareFaultFeedbackRequest, review api.HardwareFaultFeedbackReview, hasReview bool) []string {
 	reasons := []string{}
-	if !row.TrainingEligible {
-		return []string{fmt.Sprintf("feedback %d is not training-eligible", row.ID)}
-	}
 	if !hasReview {
 		reasons = append(reasons, fmt.Sprintf("feedback %d has no immutable operator review", row.ID))
 		return reasons
