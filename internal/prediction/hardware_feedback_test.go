@@ -248,6 +248,80 @@ func TestPrepareHardwareFaultFeedbackPackBlocksWhenFaultTimeIdentityMissing(t *t
 	}
 }
 
+func TestReviewedFeedbackPackAndWarningUseImmutableCorrectedFacts(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	reported := time.Date(2026, 8, 12, 8, 0, 0, 0, time.UTC)
+	confirmed := reported.Add(-45 * 24 * time.Hour)
+	auditStart := confirmed.Add(-10 * 24 * time.Hour)
+	auditEnd := reported.Add(2 * 24 * time.Hour)
+	if err := db.Create(&api.MonitoringHistoryAudit{
+		SourceKey: "current-prometheus", SourceName: "Current Prometheus", SourceType: "prometheus", BaseURL: "http://prometheus",
+		Status: "success", EarliestSampleAt: &auditStart, LatestSampleAt: &auditEnd, StartedAt: auditStart, FinishedAt: auditEnd,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&api.HistoricalGPUIdentityInterval{
+		IntervalKey: "reviewed-pack-identity", SourceKey: "current-prometheus", NodeIP: "10.114.4.48", GPUIndex: 2, GPUUUID: "GPU-FAULT-TIME",
+		FirstSeenAt: confirmed.Add(-24 * time.Hour), LastSeenAt: confirmed.Add(24 * time.Hour), ObservationCount: 100, EvidenceStrength: "strong",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	row, err := service.CreateHardwareFaultFeedback(HardwareFaultFeedbackInput{
+		NodeIP: "10.114.4.48", TargetScope: "multi_gpu", GPUIndex: -1, FaultType: "gpu_hardware_failure",
+		FaultOccurredAt: reported.Format(time.RFC3339), PreWindowHours: 168, PostWindowHours: 24, Operator: "importer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := service.ReviewHardwareFaultFeedback(row.ID, HardwareFaultFeedbackReviewInput{
+		Decision: "confirmed_hardware", Reviewer: "reviewer", ReviewNote: "monitoring and repair evidence agree",
+		ConfirmedOnsetAt: confirmed.Format(time.RFC3339), ConfirmedWindowStartAt: confirmed.Format(time.RFC3339), ConfirmedWindowEndAt: confirmed.Format(time.RFC3339),
+		ConfirmedNodeIP: row.NodeIP, ConfirmedGPUUUID: "GPU-FAULT-TIME", ConfirmedGPUIndex: intPointer(2), ConfirmedFaultType: "gpu_memory_failure",
+		TargetScope: "gpu", EpisodeKey: "reviewed-pack-episode", EvidenceKeys: []string{"candidate:reviewed-pack"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := service.PrepareHardwareFaultFeedbackPack(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.HistoryPackStatus != "manifest_ready_pending_metric_extraction" || prepared.HistoryPackSHA256 == "" {
+		t.Fatalf("reviewed pack was not prepared: %+v", prepared)
+	}
+	if !strings.Contains(prepared.HistoryPackScope, "target_scope=gpu") || !strings.Contains(prepared.HistoryPackScope, "gpu_uuid=GPU-FAULT-TIME") || !strings.Contains(prepared.HistoryPackScope, "fault="+confirmed.Format(time.RFC3339)) || !strings.Contains(prepared.HistoryPackScope, "review_sha256="+review.ReviewSHA256) {
+		t.Fatalf("pack provenance did not use immutable reviewed facts: %s", prepared.HistoryPackScope)
+	}
+	var stored api.HardwareFaultFeedbackRequest
+	if err := db.First(&stored, row.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.TargetScope != "multi_gpu" || stored.GPUUUID != "" || !stored.FaultOccurredAt.Equal(reported) {
+		t.Fatalf("source facts were overwritten by reviewed pack preparation: %+v", stored)
+	}
+	threshold, probability := .5, .9
+	spec := api.PredictionModelSpec{ModelKey: "reviewed-pack", Version: "1", HardwareClass: "gpu", EntityType: "gpu", Task: "failure_probability", HorizonMinutes: 1440, Algorithm: "test", Runtime: "test", Mode: "shadow", Status: "shadow_candidate", FeatureContractVersion: FeatureContractVersion, LabelContractVersion: LabelContractVersion, DecisionThreshold: &threshold}
+	if err := db.Create(&spec).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&api.HardwareRiskPrediction{ModelSpecID: spec.ID, ModelVersion: spec.Version, HardwareClass: "gpu", EntityType: "gpu", EntityKey: "GPU-FAULT-TIME", GPUUUID: "GPU-FAULT-TIME", NodeIP: row.NodeIP, HorizonMinutes: 1440, Probability: &probability, RiskLevel: "unvalidated", Status: "shadow_observation", EvaluatedAt: confirmed.Add(-time.Hour), ObservedAt: confirmed.Add(-time.Hour), ExpiresAt: confirmed.Add(time.Hour)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	reviewed, err := service.ReviewHardwareFaultFeedbackWarning(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed.WarningReviewStatus != "manual_feedback_prior_shadow_candidate_found" || reviewed.MatchedWarningCount != 1 || !strings.Contains(reviewed.WarningReviewNote, review.ReviewSHA256) {
+		t.Fatalf("warning review did not use immutable reviewed GPU/onset: %+v", reviewed)
+	}
+}
+
+func intPointer(value int) *int { return &value }
+
 func TestBaseboardFaultFeedbackAllowsNodeScopeAndDatePrecision(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {

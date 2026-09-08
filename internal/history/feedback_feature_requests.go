@@ -557,7 +557,7 @@ func manualFeedbackFeatureBlockers(row api.HardwareFaultFeedbackRequest, review 
 	if review.ConfirmedOnsetAt == nil || review.ReviewSHA256 == "" || review.EpisodeKey == "" {
 		reasons = append(reasons, fmt.Sprintf("feedback %d review is missing onset, episode, or immutable SHA", row.ID))
 	}
-	if manualFeedbackTargetScope(row) == "gpu" && (strings.TrimSpace(row.GPUUUID) == "" || strings.HasPrefix(row.IdentityResolutionStatus, "blocked") || row.IdentityResolutionStatus == "requires_historical_identity_at_fault_time") {
+	if review.TargetScope == "gpu" && strings.TrimSpace(review.ConfirmedGPUUUID) == "" {
 		reasons = append(reasons, fmt.Sprintf("feedback %d missing fault-time GPU identity", row.ID))
 	}
 	if row.HistoryPackStatus != "manifest_ready_pending_metric_extraction" || strings.TrimSpace(row.HistoryPackSHA256) == "" {

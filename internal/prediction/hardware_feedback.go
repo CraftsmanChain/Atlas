@@ -235,16 +235,24 @@ func (s *Service) ReviewHardwareFaultFeedbackWarning(id uint) (api.HardwareFault
 	if err := s.db.First(&row, id).Error; err != nil {
 		return row, err
 	}
-	gpuScoped := feedbackTargetScope(row) == "gpu"
-	if gpuScoped && (strings.TrimSpace(row.GPUUUID) == "" || row.IdentityResolutionStatus == "requires_historical_identity_at_fault_time") {
+	effective, review, hasReview, err := s.effectiveHardwareFaultFeedback(row)
+	if err != nil {
+		return row, err
+	}
+	gpuScoped := feedbackTargetScope(effective) == "gpu"
+	if gpuScoped && (strings.TrimSpace(effective.GPUUUID) == "" || effective.IdentityResolutionStatus == "requires_historical_identity_at_fault_time") {
 		prepared, err := s.PrepareHardwareFaultFeedbackPack(id)
 		if err != nil {
 			return row, err
 		}
 		row = prepared
+		effective, review, hasReview, err = s.effectiveHardwareFaultFeedback(row)
+		if err != nil {
+			return row, err
+		}
 	}
 	windowHours := warningReviewWindowHours(row)
-	if gpuScoped && (strings.TrimSpace(row.GPUUUID) == "" || strings.HasPrefix(row.IdentityResolutionStatus, "blocked")) {
+	if gpuScoped && (strings.TrimSpace(effective.GPUUUID) == "" || strings.HasPrefix(effective.IdentityResolutionStatus, "blocked")) {
 		row.WarningReviewStatus = "blocked_identity_required"
 		row.WarningReviewWindowHours = windowHours
 		row.MatchedWarningCount = 0
@@ -255,12 +263,12 @@ func (s *Service) ReviewHardwareFaultFeedbackWarning(id uint) (api.HardwareFault
 		}
 		return row, nil
 	}
-	start := row.FaultOccurredAt.Add(-time.Duration(windowHours) * time.Hour)
-	end := row.FaultOccurredAt
+	start := effective.FaultOccurredAt.Add(-time.Duration(windowHours) * time.Hour)
+	end := effective.FaultOccurredAt
 	var predictions []api.HardwareRiskPrediction
-	query := s.db.Where("node_ip = ? AND evaluated_at >= ? AND evaluated_at <= ?", row.NodeIP, start, end)
+	query := s.db.Where("node_ip = ? AND evaluated_at >= ? AND evaluated_at <= ?", effective.NodeIP, start, end)
 	if gpuScoped {
-		query = query.Where("gpu_uuid = ?", row.GPUUUID)
+		query = query.Where("gpu_uuid = ?", effective.GPUUUID)
 	}
 	if err := query.
 		Order("evaluated_at DESC, id DESC").
@@ -288,13 +296,16 @@ func (s *Service) ReviewHardwareFaultFeedbackWarning(id uint) (api.HardwareFault
 	switch {
 	case len(predictions) == 0:
 		row.WarningReviewStatus = "manual_feedback_no_prior_shadow_warning"
-		row.WarningReviewNote = fmt.Sprintf("manual hardware-fault feedback found no read-only shadow warning candidate for scope=%s node=%s gpu_uuid=%s within %dh before fault; keep as false-negative/coverage review evidence only", feedbackTargetScope(row), row.NodeIP, row.GPUUUID, windowHours)
+		row.WarningReviewNote = fmt.Sprintf("manual hardware-fault feedback found no read-only shadow warning candidate for scope=%s node=%s gpu_uuid=%s within %dh before reviewed fault onset; keep as false-negative/coverage review evidence only", feedbackTargetScope(effective), effective.NodeIP, effective.GPUUUID, windowHours)
 	case positive > 0:
 		row.WarningReviewStatus = "manual_feedback_prior_shadow_candidate_found"
 		row.WarningReviewNote = fmt.Sprintf("manual hardware-fault feedback matched %d read-only shadow record(s), including %d above-threshold candidate(s); review outcome alignment before training", len(predictions), positive)
 	default:
 		row.WarningReviewStatus = "manual_feedback_prior_shadow_below_threshold"
 		row.WarningReviewNote = fmt.Sprintf("manual hardware-fault feedback matched %d shadow record(s), %d with persisted probability, but none was above the model decision threshold; review feature coverage and threshold behavior", len(predictions), probabilityScored)
+	}
+	if hasReview {
+		row.WarningReviewNote += fmt.Sprintf("; immutable_review_sha256=%s", review.ReviewSHA256)
 	}
 	if err := s.db.Save(&row).Error; err != nil {
 		return row, err
@@ -310,49 +321,70 @@ func (s *Service) PrepareHardwareFaultFeedbackPack(id uint) (api.HardwareFaultFe
 	if err := s.db.First(&row, id).Error; err != nil {
 		return row, err
 	}
-	faultStart, faultEnd := feedbackFaultWindow(row)
+	effective, review, hasReview, err := s.effectiveHardwareFaultFeedback(row)
+	if err != nil {
+		return row, err
+	}
+	faultStart, faultEnd := feedbackFaultWindow(effective)
 	start := faultStart.Add(-time.Duration(row.PreWindowHours) * time.Hour)
 	end := faultEnd.Add(time.Duration(row.PostWindowHours) * time.Hour)
 	blockers := api.StringList{}
-	gpuScoped := feedbackTargetScope(row) == "gpu"
-	needsHistoricalIdentity := gpuScoped && (row.IdentityResolutionStatus == "requires_historical_identity_at_fault_time" || strings.TrimSpace(row.GPUUUID) == "")
+	gpuScoped := feedbackTargetScope(effective) == "gpu"
+	needsHistoricalIdentity := gpuScoped && (effective.IdentityResolutionStatus == "requires_historical_identity_at_fault_time" || strings.TrimSpace(effective.GPUUUID) == "")
 	if needsHistoricalIdentity {
 		var interval api.HistoricalGPUIdentityInterval
-		err := s.db.Where("node_ip = ? AND gpu_index = ? AND first_seen_at <= ? AND last_seen_at >= ?", row.NodeIP, row.GPUIndex, row.FaultOccurredAt, row.FaultOccurredAt).
+		err := s.db.Where("node_ip = ? AND gpu_index = ? AND first_seen_at <= ? AND last_seen_at >= ?", effective.NodeIP, effective.GPUIndex, effective.FaultOccurredAt, effective.FaultOccurredAt).
 			Order("observation_count DESC, last_seen_at DESC, id DESC").
 			First(&interval).Error
 		if err == nil {
-			row.GPUUUID = interval.GPUUUID
-			row.ModelName = firstNonEmpty(row.ModelName, interval.ModelName)
-			row.IdentityResolutionStatus = "historical_identity_resolved"
-			row.IdentityResolutionNote = fmt.Sprintf("resolved from historical identity interval #%d source=%s first=%s last=%s", interval.ID, interval.SourceKey, interval.FirstSeenAt.Format(time.RFC3339), interval.LastSeenAt.Format(time.RFC3339))
+			effective.GPUUUID = interval.GPUUUID
+			effective.ModelName = firstNonEmpty(effective.ModelName, interval.ModelName)
+			effective.IdentityResolutionStatus = "historical_identity_resolved"
+			effective.IdentityResolutionNote = fmt.Sprintf("resolved from historical identity interval #%d source=%s first=%s last=%s", interval.ID, interval.SourceKey, interval.FirstSeenAt.Format(time.RFC3339), interval.LastSeenAt.Format(time.RFC3339))
+			if !hasReview {
+				row.GPUUUID, row.ModelName = effective.GPUUUID, effective.ModelName
+				row.IdentityResolutionStatus, row.IdentityResolutionNote = effective.IdentityResolutionStatus, effective.IdentityResolutionNote
+			}
 		} else if err == gorm.ErrRecordNotFound {
-			row.IdentityResolutionStatus = "blocked_no_fault_time_identity"
-			row.IdentityResolutionNote = "no historical GPU identity interval covers the reported fault time for this node and GPU index"
+			effective.IdentityResolutionStatus = "blocked_no_fault_time_identity"
+			effective.IdentityResolutionNote = "no historical GPU identity interval covers the reviewed fault time for this node and GPU index"
+			if !hasReview {
+				row.IdentityResolutionStatus, row.IdentityResolutionNote = effective.IdentityResolutionStatus, effective.IdentityResolutionNote
+			}
 			blockers = append(blockers, "no historical GPU identity interval covers fault time")
 		} else {
 			return row, err
 		}
 	}
-	if gpuScoped && strings.TrimSpace(row.GPUUUID) == "" {
+	if gpuScoped && strings.TrimSpace(effective.GPUUUID) == "" {
 		blockers = append(blockers, "resolved failed GPU UUID is required before history pack extraction")
 	}
+	if hasReview && gpuScoped && strings.TrimSpace(effective.GPUUUID) != "" {
+		var identityCount int64
+		if err := s.db.Model(&api.HistoricalGPUIdentityInterval{}).Where("node_ip = ? AND gpu_uuid = ? AND first_seen_at <= ? AND last_seen_at >= ?", effective.NodeIP, effective.GPUUUID, effective.FaultOccurredAt, effective.FaultOccurredAt).Count(&identityCount).Error; err != nil {
+			return row, err
+		}
+		if identityCount == 0 {
+			blockers = append(blockers, "no historical GPU identity interval covers reviewed fault onset")
+		}
+	}
 	var audit api.MonitoringHistoryAudit
-	err := s.db.Where("status = ? AND earliest_sample_at <= ? AND latest_sample_at >= ?", "success", start, end).
+	err = s.db.Where("status = ? AND earliest_sample_at <= ? AND latest_sample_at >= ?", "success", start, end).
 		Order("finished_at DESC, id DESC").
 		First(&audit).Error
-	if err == nil {
-		if audit.SourceKey != "" && !strings.Contains(row.HistoryPackScope, "source_key=") {
-			row.HistoryPackScope = row.HistoryPackScope + fmt.Sprintf(" source_key=%s", audit.SourceKey)
-		}
-	} else if err == gorm.ErrRecordNotFound {
+	if err == gorm.ErrRecordNotFound {
 		blockers = append(blockers, fmt.Sprintf("no successful historical monitoring audit covers %s to %s", start.Format(time.RFC3339), end.Format(time.RFC3339)))
-	} else {
+	} else if err != nil {
 		return row, err
 	}
-	row.HistoryPackScope = feedbackHistoryScope(row)
+	effective.HistoryPackScope = feedbackHistoryScope(effective)
+	if hasReview {
+		effective.HistoryPackScope += fmt.Sprintf(" review_sha256=%s", review.ReviewSHA256)
+	}
+	row.HistoryPackScope = effective.HistoryPackScope
 	if audit.SourceKey != "" {
 		row.HistoryPackScope += fmt.Sprintf(" source_key=%s", audit.SourceKey)
+		effective.HistoryPackScope = row.HistoryPackScope
 	}
 	if len(blockers) > 0 {
 		row.Status = "blocked"
@@ -365,7 +397,7 @@ func (s *Service) PrepareHardwareFaultFeedbackPack(id uint) (api.HardwareFaultFe
 	} else {
 		row.Status = "history_pack_manifest_ready"
 		row.HistoryPackStatus = "manifest_ready_pending_metric_extraction"
-		row.HistoryPackSHA256 = hardwareFeedbackPackChecksum(row, audit)
+		row.HistoryPackSHA256 = hardwareFeedbackPackChecksum(effective, audit)
 		row.BlockingReasons = api.StringList{}
 	}
 	if err := s.db.Save(&row).Error; err != nil {
