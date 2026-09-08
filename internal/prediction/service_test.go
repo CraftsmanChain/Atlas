@@ -29,7 +29,7 @@ func TestFrameworkSeedsHorizonContractsWithoutPretendingToScore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(overview.Models) != 3 || overview.ScoringEnabled || overview.ProbabilityEmitted || !overview.NoActionExecuted {
+	if len(overview.Models) != 4 || overview.ScoringEnabled || overview.ProbabilityEmitted || !overview.NoActionExecuted {
 		t.Fatalf("unsafe or incomplete framework overview: %+v", overview)
 	}
 	if overview.Results.Total != 0 || overview.Results.ProbabilityEmitted {

@@ -442,10 +442,6 @@ func (h *Handler) HandleHardwareFaultFeedbackImport(w http.ResponseWriter, r *ht
 }
 
 func (h *Handler) HandleHardwareFaultFeedbackAction(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/prediction/hardware-fault-feedback/")
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) != 2 {
@@ -455,6 +451,42 @@ func (h *Handler) HandleHardwareFaultFeedbackAction(w http.ResponseWriter, r *ht
 	id, err := strconv.Atoi(parts[0])
 	if err != nil || id <= 0 {
 		predictionJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid feedback request id"})
+		return
+	}
+	if parts[1] == "reviews" && r.Method == http.MethodGet {
+		rows, listErr := h.service.HardwareFaultFeedbackReviews(uint(id))
+		if listErr != nil {
+			predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": listErr.Error()})
+			return
+		}
+		predictionJSON(w, http.StatusOK, map[string]any{"data": rows, "meta": map[string]any{"version": HardwareFaultFeedbackReviewVersion, "total": len(rows)}})
+		return
+	}
+	if parts[1] == "match-candidates" && r.Method == http.MethodGet {
+		report, matchErr := h.service.HardwareFaultEvidenceMatches(uint(id))
+		if matchErr != nil {
+			predictionJSON(w, http.StatusBadRequest, map[string]any{"error": matchErr.Error()})
+			return
+		}
+		predictionJSON(w, http.StatusOK, map[string]any{"data": report})
+		return
+	}
+	if r.Method != http.MethodPost {
+		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if parts[1] == "review" {
+		var input HardwareFaultFeedbackReviewInput
+		if decodeErr := json.NewDecoder(r.Body).Decode(&input); decodeErr != nil {
+			predictionJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+			return
+		}
+		review, reviewErr := h.service.ReviewHardwareFaultFeedback(uint(id), input)
+		if reviewErr != nil {
+			predictionJSON(w, http.StatusBadRequest, map[string]any{"error": reviewErr.Error()})
+			return
+		}
+		predictionJSON(w, http.StatusCreated, map[string]any{"data": review})
 		return
 	}
 	var row api.HardwareFaultFeedbackRequest
@@ -472,6 +504,34 @@ func (h *Handler) HandleHardwareFaultFeedbackAction(w http.ResponseWriter, r *ht
 		return
 	}
 	predictionJSON(w, http.StatusOK, map[string]any{"data": row})
+}
+
+func (h *Handler) HandleHardwareFaultEpisodeReport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	report, err := h.service.HardwareFaultEpisodes()
+	if err != nil {
+		predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	w.Header().Set("ETag", `"`+report.ReportSHA256+`"`)
+	predictionJSON(w, http.StatusOK, map[string]any{"data": report})
+}
+
+func (h *Handler) HandleHardwareFaultValueReport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	report, err := h.service.HardwareFaultValueReport()
+	if err != nil {
+		predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	w.Header().Set("ETag", `"`+report.ReportSHA256+`"`)
+	predictionJSON(w, http.StatusOK, map[string]any{"data": report})
 }
 
 func (h *Handler) HandleDataDriftReport(w http.ResponseWriter, r *http.Request) {

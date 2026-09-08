@@ -232,3 +232,32 @@ type HardwareFaultFeedbackRequest struct {
 	CreatedAt                time.Time  `json:"created_at"`
 	UpdatedAt                time.Time  `json:"updated_at"`
 }
+
+// HardwareFaultFeedbackReview is an append-only operator decision over an
+// imported fault record. Raw ledger provenance remains on the request; every
+// revision is hash-chained so a later decision cannot silently rewrite the
+// evidence used by an earlier training manifest.
+type HardwareFaultFeedbackReview struct {
+	ID                     uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	FeedbackRequestID      uint       `json:"feedback_request_id" gorm:"uniqueIndex:idx_feedback_review_revision,priority:1;index;not null"`
+	Revision               int        `json:"revision" gorm:"uniqueIndex:idx_feedback_review_revision,priority:2;not null"`
+	Decision               string     `json:"decision" gorm:"index;not null"`
+	Reviewer               string     `json:"reviewer" gorm:"index;not null"`
+	ReviewNote             string     `json:"review_note" gorm:"type:text;not null"`
+	ConfirmedOnsetAt       *time.Time `json:"confirmed_onset_at,omitempty" gorm:"index"`
+	ConfirmedWindowStartAt *time.Time `json:"confirmed_window_start_at,omitempty" gorm:"index"`
+	ConfirmedWindowEndAt   *time.Time `json:"confirmed_window_end_at,omitempty" gorm:"index"`
+	ConfirmedNodeIP        string     `json:"confirmed_node_ip,omitempty" gorm:"index"`
+	ConfirmedGPUUUID       string     `json:"confirmed_gpu_uuid,omitempty" gorm:"column:confirmed_gpu_uuid;index"`
+	ConfirmedGPUIndex      int        `json:"confirmed_gpu_index" gorm:"column:confirmed_gpu_index;index"`
+	ConfirmedFaultType     string     `json:"confirmed_fault_type,omitempty" gorm:"index"`
+	TargetScope            string     `json:"target_scope" gorm:"index;not null"`
+	EpisodeKey             string     `json:"episode_key,omitempty" gorm:"index"`
+	EvidenceKeys           StringList `json:"evidence_keys" gorm:"type:text"`
+	TrainingEligible       bool       `json:"training_eligible" gorm:"index"`
+	PreviousReviewSHA256   string     `json:"previous_review_sha256,omitempty" gorm:"index"`
+	ReviewSHA256           string     `json:"review_sha256" gorm:"uniqueIndex;size:64;not null"`
+	NoActionExecuted       bool       `json:"no_action_executed" gorm:"index;not null;default:true"`
+	ReviewedAt             time.Time  `json:"reviewed_at" gorm:"index;not null"`
+	CreatedAt              time.Time  `json:"created_at"`
+}
