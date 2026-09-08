@@ -324,7 +324,9 @@ func (s *Service) HardwareFaultEpisodes() (HardwareFaultEpisodeReport, error) {
 		if !episode.ReviewConflict {
 			episode.TrainingEligible = episode.TrainingEligible && review.TrainingEligible
 		}
-		if onset := derefTime(review.ConfirmedOnsetAt); !onset.IsZero() && (episode.OnsetAt.IsZero() || onset.Before(episode.OnsetAt)) { episode.OnsetAt = onset }
+		if onset := derefTime(review.ConfirmedOnsetAt); !onset.IsZero() && (episode.OnsetAt.IsZero() || onset.Before(episode.OnsetAt)) {
+			episode.OnsetAt = onset
+		}
 	}
 	keys := make([]string, 0, len(byEpisode))
 	for key := range byEpisode {
@@ -444,15 +446,30 @@ func (s *Service) HardwareFaultValueReport() (HardwareFaultValueReport, error) {
 }
 
 func trainingEpisodeReviews(reviews []api.HardwareFaultFeedbackReview, episodes []HardwareFaultEpisode) []api.HardwareFaultFeedbackReview {
-	eligible := map[string]bool{}; for _, episode := range episodes { eligible[episode.EpisodeKey] = episode.TrainingEligible && !episode.ReviewConflict }
+	eligible := map[string]bool{}
+	for _, episode := range episodes {
+		eligible[episode.EpisodeKey] = episode.TrainingEligible && !episode.ReviewConflict
+	}
 	selected := map[string]api.HardwareFaultFeedbackReview{}
 	for _, review := range reviews {
-		if !eligible[review.EpisodeKey] || !review.TrainingEligible { continue }
+		if !eligible[review.EpisodeKey] || !review.TrainingEligible {
+			continue
+		}
 		current, ok := selected[review.EpisodeKey]
-		if !ok || (review.ConfirmedOnsetAt != nil && (current.ConfirmedOnsetAt == nil || review.ConfirmedOnsetAt.Before(*current.ConfirmedOnsetAt))) { selected[review.EpisodeKey] = review }
+		if !ok || (review.ConfirmedOnsetAt != nil && (current.ConfirmedOnsetAt == nil || review.ConfirmedOnsetAt.Before(*current.ConfirmedOnsetAt))) {
+			selected[review.EpisodeKey] = review
+		}
 	}
-	keys := make([]string,0,len(selected)); for key := range selected { keys=append(keys,key) }; sort.Strings(keys)
-	result := make([]api.HardwareFaultFeedbackReview,0,len(keys)); for _, key := range keys { result=append(result,selected[key]) }; return result
+	keys := make([]string, 0, len(selected))
+	for key := range selected {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]api.HardwareFaultFeedbackReview, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, selected[key])
+	}
+	return result
 }
 
 func (s *Service) hardwareFaultValuePredictions(reviews []api.HardwareFaultFeedbackReview) ([]api.HardwareRiskPrediction, error) {
@@ -518,6 +535,45 @@ func (s *Service) latestHardwareFeedbackReview(feedbackID uint) (api.HardwareFau
 	var row api.HardwareFaultFeedbackReview
 	result := s.db.Where("feedback_request_id = ?", feedbackID).Order("revision DESC, id DESC").Limit(1).Find(&row)
 	return row, result.RowsAffected > 0, result.Error
+}
+
+// effectiveHardwareFaultFeedback projects immutable reviewed facts onto a copy
+// used for pack preparation and warning coverage queries. The persisted source
+// row remains unchanged; the review SHA binds derived workflow artifacts to the
+// exact corrected onset, scope, and GPU identity used downstream.
+func (s *Service) effectiveHardwareFaultFeedback(row api.HardwareFaultFeedbackRequest) (api.HardwareFaultFeedbackRequest, api.HardwareFaultFeedbackReview, bool, error) {
+	review, ok, err := s.latestHardwareFeedbackReview(row.ID)
+	if err != nil || !ok {
+		return row, review, ok, err
+	}
+	effective := row
+	effective.NodeIP = firstNonEmpty(review.ConfirmedNodeIP, row.NodeIP)
+	effective.TargetScope = normalizeFeedbackTargetScope(firstNonEmpty(review.TargetScope, row.TargetScope))
+	effective.GPUUUID = firstNonEmpty(review.ConfirmedGPUUUID, row.GPUUUID)
+	effective.GPUIndex = review.ConfirmedGPUIndex
+	effective.FaultType = firstNonEmpty(review.ConfirmedFaultType, row.FaultType)
+	effective.EpisodeKey = firstNonEmpty(review.EpisodeKey, row.EpisodeKey)
+	if review.ConfirmedOnsetAt != nil {
+		effective.FaultOccurredAt = *review.ConfirmedOnsetAt
+	}
+	if review.ConfirmedWindowStartAt != nil {
+		value := *review.ConfirmedWindowStartAt
+		effective.FaultWindowStartAt = &value
+	}
+	if review.ConfirmedWindowEndAt != nil {
+		value := *review.ConfirmedWindowEndAt
+		effective.FaultWindowEndAt = &value
+	}
+	if effective.FaultWindowStartAt != nil && effective.FaultWindowEndAt != nil && effective.FaultWindowStartAt.Equal(*effective.FaultWindowEndAt) {
+		effective.FaultTimePrecision = "exact"
+	} else {
+		effective.FaultTimePrecision = "window"
+	}
+	if effective.TargetScope == "gpu" && effective.GPUUUID != "" {
+		effective.IdentityResolutionStatus = "immutable_review_identity_confirmed"
+		effective.IdentityResolutionNote = fmt.Sprintf("fault-time identity bound by immutable review %s", review.ReviewSHA256)
+	}
+	return effective, review, true, nil
 }
 
 func feedbackReviewChecksum(review api.HardwareFaultFeedbackReview) string {
