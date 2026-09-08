@@ -148,6 +148,7 @@ type TrainingDatasetBuild struct {
 	Version                string     `json:"version" gorm:"index;not null"`
 	Status                 string     `json:"status" gorm:"index;not null"`
 	SourceKey              string     `json:"source_key" gorm:"index;not null"`
+	PredictionTarget       string     `json:"prediction_target" gorm:"index;not null;default:'gpu_hardware_failure'"`
 	Horizons               StringList `json:"horizons" gorm:"type:text"`
 	CandidateCount         int        `json:"candidate_count"`
 	EligibleCandidateCount int        `json:"eligible_candidate_count"`
@@ -178,6 +179,7 @@ type TrainingFeatureBuild struct {
 	SourceKey              string     `json:"source_key" gorm:"index;not null"`
 	SourceDatasetBuildID   uint       `json:"source_dataset_build_id" gorm:"index;not null"`
 	SourceDatasetKey       string     `json:"source_dataset_key" gorm:"index;not null"`
+	PredictionTarget       string     `json:"prediction_target" gorm:"index;not null;default:'gpu_hardware_failure'"`
 	FeatureContractVersion string     `json:"feature_contract_version" gorm:"index;not null"`
 	LookbackMinutes        int        `json:"lookback_minutes"`
 	QueryStepSeconds       int        `json:"query_step_seconds"`

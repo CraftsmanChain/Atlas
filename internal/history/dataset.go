@@ -16,10 +16,15 @@ import (
 	"atlas/pkg/api"
 )
 
-const datasetBuildVersion = "gpu-fault-cohort-manifest-v2"
+const (
+	datasetBuildVersion        = "gpu-fault-cohort-manifest-v3"
+	hardwareFailureTarget      = "gpu_hardware_failure"
+	highPriorityXIDEventTarget = "high_priority_xid_event"
+)
 
 type DatasetBuildRequest struct {
-	SourceKey string `json:"source_key"`
+	SourceKey        string `json:"source_key"`
+	PredictionTarget string `json:"prediction_target,omitempty"`
 }
 
 type datasetEpisode struct {
@@ -43,6 +48,7 @@ type datasetEpisode struct {
 	RuleDecision         string    `json:"rule_decision"`
 	RuleConfidence       float64   `json:"rule_confidence"`
 	LabelSource          string    `json:"label_source"`
+	PredictionTarget     string    `json:"prediction_target"`
 }
 
 type datasetWindow struct {
@@ -64,12 +70,14 @@ type datasetWindow struct {
 	RuleDecision     string    `json:"rule_decision"`
 	LabelSource      string    `json:"label_source"`
 	LabelWeight      float64   `json:"label_weight"`
+	PredictionTarget string    `json:"prediction_target"`
 }
 
 type datasetManifest struct {
 	DatasetKey             string           `json:"dataset_key"`
 	Version                string           `json:"version"`
 	SourceKey              string           `json:"source_key"`
+	PredictionTarget       string           `json:"prediction_target"`
 	CreatedAt              time.Time        `json:"created_at"`
 	PointInTimeRule        string           `json:"point_in_time_rule"`
 	FeaturePolicy          string           `json:"feature_policy"`
@@ -101,6 +109,13 @@ func (s *Service) BuildDatasetManifest(request DatasetBuildRequest) (api.Trainin
 	if err != nil {
 		return api.TrainingDatasetBuild{}, err
 	}
+	predictionTarget := strings.TrimSpace(request.PredictionTarget)
+	if predictionTarget == "" {
+		predictionTarget = hardwareFailureTarget
+	}
+	if predictionTarget != hardwareFailureTarget && predictionTarget != highPriorityXIDEventTarget {
+		return api.TrainingDatasetBuild{}, fmt.Errorf("prediction_target must be %s or %s", hardwareFailureTarget, highPriorityXIDEventTarget)
+	}
 	var identityRun api.HistoryBackfillRun
 	result := s.db.Where("source_key = ? AND job_type = ? AND status = ?",
 		source.ID, "gpu_identity_interval", "completed").
@@ -118,8 +133,8 @@ func (s *Service) BuildDatasetManifest(request DatasetBuildRequest) (api.Trainin
 	key := datasetBuildVersion + "-" + strconv.FormatInt(started.UTC().UnixNano(), 10)
 	outputDir := filepath.Join(s.config.DatasetDir, "cohorts", key)
 	build := api.TrainingDatasetBuild{
-		DatasetKey: key, Version: datasetBuildVersion, Status: "running", SourceKey: source.ID,
-		Horizons:  datasetHorizonLabels(CurrentTrainingCohortPolicy().PositiveHorizonsMinutes),
+		DatasetKey: key, Version: datasetBuildVersion, Status: "running", SourceKey: source.ID, PredictionTarget: predictionTarget,
+		Horizons:  datasetHorizonLabels(datasetPredictionHorizons(predictionTarget)),
 		OutputDir: outputDir, StartedAt: started,
 	}
 	if err := s.db.Create(&build).Error; err != nil {
@@ -164,7 +179,7 @@ func (s *Service) buildDatasetManifest(build *api.TrainingDatasetBuild) error {
 	build.CandidateCount = len(candidates)
 	episodesByKey := map[string]*datasetEpisode{}
 	for _, candidate := range candidates {
-		eligibility := candidateDatasetEligibility(candidate)
+		eligibility := candidateDatasetEligibilityForTarget(candidate, build.PredictionTarget)
 		switch eligibility {
 		case "context_only":
 			build.ContextOnlyCount++
@@ -180,7 +195,7 @@ func (s *Service) buildDatasetManifest(build *api.TrainingDatasetBuild) error {
 			continue
 		}
 		build.EligibleCandidateCount++
-		episodeKey := datasetEpisodeKey(candidate)
+		episodeKey := datasetEpisodeKey(candidate, build.PredictionTarget)
 		episode := episodesByKey[episodeKey]
 		if episode == nil {
 			modelName := candidate.ModelName
@@ -196,8 +211,8 @@ func (s *Service) buildDatasetManifest(build *api.TrainingDatasetBuild) error {
 				LabelOnsetAt:  candidate.OnsetAt, LabelAvailableAt: candidate.OnsetAt,
 				OriginalReviewStatus: candidate.ReviewStatus,
 				TrainingDisposition:  candidate.TrainingDisposition,
-				RuleDecision:         candidate.RuleDecision, RuleConfidence: datasetLabelWeight(candidate),
-				LabelSource: datasetLabelSource(candidate),
+				RuleDecision:         candidate.RuleDecision, RuleConfidence: datasetLabelWeightForTarget(candidate, build.PredictionTarget),
+				LabelSource: datasetLabelSourceForTarget(candidate, build.PredictionTarget), PredictionTarget: build.PredictionTarget,
 			}
 			episodesByKey[episodeKey] = episode
 		}
@@ -207,10 +222,10 @@ func (s *Service) buildDatasetManifest(build *api.TrainingDatasetBuild) error {
 		episode.CandidateIDs = append(episode.CandidateIDs, candidate.ID)
 		episode.EventTypes = appendUnique(episode.EventTypes, candidate.EventType)
 		episode.EventCodes = appendUnique(episode.EventCodes, candidate.EventCode)
-		if weight := datasetLabelWeight(candidate); weight > episode.RuleConfidence {
+		if weight := datasetLabelWeightForTarget(candidate, build.PredictionTarget); weight > episode.RuleConfidence {
 			episode.RuleConfidence = weight
 		}
-		if datasetLabelSource(candidate) == "human_override" {
+		if datasetLabelSourceForTarget(candidate, build.PredictionTarget) == "human_override" {
 			episode.LabelSource = "human_override"
 		}
 		if candidate.OnsetAt.Before(episode.LabelOnsetAt) {
@@ -235,17 +250,18 @@ func (s *Service) buildDatasetManifest(build *api.TrainingDatasetBuild) error {
 		return fmt.Errorf("create dataset output directory: %w", err)
 	}
 	windowPath := filepath.Join(build.OutputDir, "sample_windows.jsonl")
-	checksum, windowCount, err := writeDatasetWindows(windowPath, episodes)
+	horizons := datasetPredictionHorizons(build.PredictionTarget)
+	checksum, windowCount, err := writeDatasetWindows(windowPath, episodes, horizons)
 	if err != nil {
 		return err
 	}
 	manifestPath := filepath.Join(build.OutputDir, "manifest.json")
 	manifest := datasetManifest{
-		DatasetKey: build.DatasetKey, Version: datasetBuildVersion, SourceKey: build.SourceKey,
-		CreatedAt: s.now(), HorizonsMinutes: CurrentTrainingCohortPolicy().PositiveHorizonsMinutes,
+		DatasetKey: build.DatasetKey, Version: datasetBuildVersion, SourceKey: build.SourceKey, PredictionTarget: build.PredictionTarget,
+		CreatedAt: s.now(), HorizonsMinutes: horizons,
 		PointInTimeRule: "feature_cutoff_at must be strictly earlier than label_onset_at",
 		FeaturePolicy:   "this manifest contains extraction cutoffs only; no feature value or probability is fabricated",
-		LabelPolicy:     "identity-supported and operator-accepted proxies are extractable but remain non-confirmed labels",
+		LabelPolicy:     datasetLabelPolicy(build.PredictionTarget),
 		CandidateCount:  build.CandidateCount, EligibleCandidateCount: build.EligibleCandidateCount,
 		EpisodeCount: len(episodes), WindowCount: windowCount,
 		WindowManifest: filepath.Base(windowPath), WindowManifestSHA256: checksum, Episodes: episodes,
@@ -266,6 +282,26 @@ func (s *Service) buildDatasetManifest(build *api.TrainingDatasetBuild) error {
 }
 
 func candidateDatasetEligibility(candidate api.HistoricalFaultCandidate) string {
+	return candidateDatasetEligibilityForTarget(candidate, hardwareFailureTarget)
+}
+
+func candidateDatasetEligibilityForTarget(candidate api.HistoricalFaultCandidate, predictionTarget string) string {
+	if predictionTarget == highPriorityXIDEventTarget {
+		if candidate.ReviewStatus == "excluded" {
+			return "excluded"
+		}
+		if candidate.IdentityEvidenceStatus == "alert_identity_missing" || strings.TrimSpace(candidate.GPUUUID) == "" {
+			return "alert_identity_missing"
+		}
+		if candidate.TrainingDisposition == "context_only" {
+			return "context_only"
+		}
+		isXIDOrDropout := strings.HasPrefix(candidate.EventType, "xid_") || candidate.EventType == "gpu_dropout"
+		if candidate.SourceMetric == "ALERTS" && isXIDOrDropout && (candidate.OperationalPriority == "high" || candidate.OperationalPriority == "critical") {
+			return "operational_event_positive"
+		}
+		return "context_only"
+	}
 	if candidate.ReviewStatus == "excluded" || candidate.TrainingDisposition == "excluded" {
 		return "excluded"
 	}
@@ -290,6 +326,20 @@ func candidateDatasetEligibility(candidate api.HistoricalFaultCandidate) string 
 	return "pending_review"
 }
 
+func datasetLabelPolicy(predictionTarget string) string {
+	if predictionTarget == highPriorityXIDEventTarget {
+		return "identity-supported high/critical XID and GPU-dropout alert onsets are operational-event positives, including reset-recovered events; they do not assert permanent hardware damage"
+	}
+	return "identity-supported and operator-accepted hardware proxies are extractable but remain non-confirmed labels"
+}
+
+func datasetLabelSourceForTarget(candidate api.HistoricalFaultCandidate, predictionTarget string) string {
+	if predictionTarget == highPriorityXIDEventTarget {
+		return "versioned_high_priority_alert_rule"
+	}
+	return datasetLabelSource(candidate)
+}
+
 func datasetLabelSource(candidate api.HistoricalFaultCandidate) string {
 	if candidate.ReviewStatus == "accepted_proxy" && candidate.ReviewedAt != nil {
 		return "human_override"
@@ -304,19 +354,26 @@ func datasetLabelWeight(candidate api.HistoricalFaultCandidate) float64 {
 	return candidate.RuleConfidence
 }
 
-func datasetEpisodeKey(candidate api.HistoricalFaultCandidate) string {
+func datasetLabelWeightForTarget(candidate api.HistoricalFaultCandidate, predictionTarget string) float64 {
+	if predictionTarget == highPriorityXIDEventTarget {
+		return 1
+	}
+	return datasetLabelWeight(candidate)
+}
+
+func datasetEpisodeKey(candidate api.HistoricalFaultCandidate, predictionTarget string) string {
 	identity := strconv.FormatUint(uint64(candidate.ID), 10)
 	if candidate.IdentityEvidenceStatus == "replacement_after_event" {
 		identity = strings.Join([]string{
 			candidate.NodeIP, candidate.PCIBusID, candidate.IdentityEvidence["successor_uuid"],
 		}, "|")
 	}
-	sum := sha256.Sum256([]byte(buildDatasetEpisodeKeyMaterial(candidate.SourceKey, identity)))
+	sum := sha256.Sum256([]byte(buildDatasetEpisodeKeyMaterial(candidate.SourceKey, predictionTarget, identity)))
 	return hex.EncodeToString(sum[:])
 }
 
-func buildDatasetEpisodeKeyMaterial(sourceKey, identity string) string {
-	return datasetBuildVersion + "|" + sourceKey + "|" + identity
+func buildDatasetEpisodeKeyMaterial(sourceKey, predictionTarget, identity string) string {
+	return datasetBuildVersion + "|" + sourceKey + "|" + predictionTarget + "|" + identity
 }
 
 func datasetHorizonLabels(values []int) api.StringList {
@@ -325,6 +382,10 @@ func datasetHorizonLabels(values []int) api.StringList {
 		result = append(result, strconv.Itoa(value)+"m")
 	}
 	return result
+}
+
+func datasetPredictionHorizons(_ string) []int {
+	return []int{60, 360, 1440, 10080}
 }
 
 func appendUnique(values []string, value string) []string {
@@ -339,7 +400,7 @@ func appendUnique(values []string, value string) []string {
 	return append(values, value)
 }
 
-func writeDatasetWindows(path string, episodes []datasetEpisode) (string, int, error) {
+func writeDatasetWindows(path string, episodes []datasetEpisode, horizons []int) (string, int, error) {
 	temporary := path + ".tmp"
 	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
 	if err != nil {
@@ -350,7 +411,7 @@ func writeDatasetWindows(path string, episodes []datasetEpisode) (string, int, e
 	encoder := json.NewEncoder(writer)
 	count := 0
 	for _, episode := range episodes {
-		for _, horizon := range CurrentTrainingCohortPolicy().PositiveHorizonsMinutes {
+		for _, horizon := range horizons {
 			cutoff := episode.LabelOnsetAt.Add(-time.Duration(horizon) * time.Minute)
 			row := datasetWindow{
 				SampleKey:      datasetWindowKey(episode.EpisodeKey, horizon),
@@ -358,7 +419,8 @@ func writeDatasetWindows(path string, episodes []datasetEpisode) (string, int, e
 				CandidateIDs: episode.CandidateIDs, NodeIP: episode.NodeIP, GPUUUID: episode.GPUUUID,
 				PCIBusID: episode.PCIBusID, ModelName: episode.ModelName,
 				EventTypes: episode.EventTypes, QualityTier: episode.QualityTier,
-				HorizonMinutes: horizon, FeatureCutoffAt: cutoff,
+				PredictionTarget: episode.PredictionTarget,
+				HorizonMinutes:   horizon, FeatureCutoffAt: cutoff,
 				LabelOnsetAt: episode.LabelOnsetAt, LabelAvailableAt: episode.LabelAvailableAt,
 				Eligibility: episode.Eligibility, RuleDecision: episode.RuleDecision,
 				LabelSource: episode.LabelSource, LabelWeight: episode.RuleConfidence,

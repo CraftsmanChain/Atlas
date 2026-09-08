@@ -332,10 +332,10 @@ func (s *Service) extractControlFeature(client *promclient.Client, build *api.Tr
 	window := datasetWindow{
 		SampleKey: task.key, EpisodeKey: request.EpisodeKey, NodeIP: request.NodeIP,
 		GPUUUID: request.GPUUUID, ModelName: request.ModelName, HorizonMinutes: request.HorizonMinutes,
-		FeatureCutoffAt: request.FeatureCutoffAt,
+		FeatureCutoffAt: request.FeatureCutoffAt, PredictionTarget: request.PredictionTarget,
 	}
 	featureBuild := api.TrainingFeatureBuild{
-		SourceDatasetKey: build.SourcePreparedDatasetKey, FeatureContractVersion: build.FeatureContractVersion,
+		SourceDatasetKey: build.SourcePreparedDatasetKey, PredictionTarget: request.PredictionTarget, FeatureContractVersion: build.FeatureContractVersion,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	series, err := client.QueryRange(ctx, historicalMetricQuery(request.GPUUUID),

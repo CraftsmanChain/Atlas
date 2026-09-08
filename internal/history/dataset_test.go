@@ -2,6 +2,7 @@ package history
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -70,7 +71,7 @@ func TestDatasetManifestDeduplicatesReplacementEpisodeAndEnforcesEligibility(t *
 		t.Fatal(err)
 	}
 	if build.Status != "completed" || build.CandidateCount != 5 || build.EligibleCandidateCount != 2 ||
-		build.EpisodeCount != 1 || build.WindowCount != 11 || build.PendingReviewCount != 1 ||
+		build.EpisodeCount != 1 || build.WindowCount != 4 || build.PendingReviewCount != 1 ||
 		build.IdentityMissingCount != 1 || build.ContextOnlyCount != 1 {
 		t.Fatalf("unexpected dataset build: %+v", build)
 	}
@@ -98,7 +99,7 @@ func TestDatasetManifestDeduplicatesReplacementEpisodeAndEnforcesEligibility(t *
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if count != 11 {
+	if count != 4 {
 		t.Fatalf("sample-window rows=%d", count)
 	}
 }
@@ -116,6 +117,46 @@ func TestDatasetManifestRequiresCurrentIdentityBackfill(t *testing.T) {
 	}, time.Second)
 	if _, err := service.BuildDatasetManifest(DatasetBuildRequest{SourceKey: "primary"}); err == nil {
 		t.Fatal("expected current identity-backfill gate to block dataset construction")
+	}
+}
+
+func TestDatasetManifestBuildsHighPriorityXIDOperationalTarget(t *testing.T) {
+	db, err := storage.InitDB(fmt.Sprintf("file:xid-operational-dataset-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	rows := []api.HistoricalFaultCandidate{
+		{CandidateKey: "xid109", SourceKey: "primary", BackfillRunID: 1, EntityType: "gpu", GPUUUID: "GPU-109", NodeIP: "10.0.0.9", ModelName: "NVIDIA H100", EventType: "xid_109_context_switch_timeout", EventCode: "109", OperationalPriority: "high", HardwareCertainty: "investigation_required", TrainingDisposition: "proxy_positive_after_review", ReviewStatus: "available_for_override", IdentityEvidenceStatus: "same_gpu_observed_after_event", SourceMetric: "ALERTS", OnsetAt: now.Add(-time.Hour), DetectionWindowEndAt: now},
+		{CandidateKey: "xid31", SourceKey: "primary", BackfillRunID: 1, EntityType: "gpu", GPUUUID: "GPU-31", NodeIP: "10.0.0.10", ModelName: "NVIDIA H100", EventType: "xid_31", EventCode: "31", OperationalPriority: "low", HardwareCertainty: "operational_signal", TrainingDisposition: "context_only", ReviewStatus: "not_required", IdentityEvidenceStatus: "same_gpu_observed_after_event", SourceMetric: "ALERTS", OnsetAt: now, DetectionWindowEndAt: now},
+	}
+	for index := range rows {
+		if err := db.Create(&rows[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	finished := now
+	if err := db.Create(&api.HistoryBackfillRun{SourceKey: "primary", JobType: "gpu_identity_interval", Status: "completed", QueryVersion: identityBackfillQueryVersion, RangeStart: now.Add(-24 * time.Hour), RangeEnd: now, StartedAt: now.Add(-time.Minute), FinishedAt: &finished}).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, config.HistoryConfig{DatasetDir: t.TempDir(), Sources: []config.HistorySourceConfig{{ID: "primary", Type: "prometheus", BaseURL: "http://127.0.0.1:9090", Enabled: true}}}, time.Second)
+	service.now = func() time.Time { return now }
+	build, err := service.BuildDatasetManifest(DatasetBuildRequest{SourceKey: "primary", PredictionTarget: highPriorityXIDEventTarget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if build.PredictionTarget != highPriorityXIDEventTarget || build.EligibleCandidateCount != 1 || build.ContextOnlyCount != 1 || build.EpisodeCount != 1 || build.WindowCount != 4 {
+		t.Fatalf("unexpected operational XID dataset: %+v", build)
+	}
+	body, err := os.ReadFile(build.WindowManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte(`"prediction_target":"high_priority_xid_event"`)) || !bytes.Contains(body, []byte(`"label_weight":1`)) {
+		t.Fatalf("operational target provenance missing: %s", string(body))
+	}
+	if datasetEpisodeKey(rows[0], highPriorityXIDEventTarget) == datasetEpisodeKey(rows[0], hardwareFailureTarget) {
+		t.Fatal("episode identities must be isolated across prediction targets")
 	}
 }
 

@@ -56,7 +56,8 @@ func TestHistoricalFeatureBuildBatchesMetricsAndEnforcesCutoff(t *testing.T) {
 	window := datasetWindow{
 		SampleKey: "sample-1", DatasetVersion: datasetBuildVersion, EpisodeKey: "episode-1",
 		NodeIP: "10.0.0.1", GPUUUID: "GPU.TEST-1", ModelName: "NVIDIA H100",
-		HorizonMinutes: 60, FeatureCutoffAt: cutoff, LabelOnsetAt: cutoff.Add(time.Hour),
+		PredictionTarget: highPriorityXIDEventTarget,
+		HorizonMinutes:   60, FeatureCutoffAt: cutoff, LabelOnsetAt: cutoff.Add(time.Hour),
 		Eligibility: "rule_positive_proxy", RuleDecision: "positive_proxy",
 		LabelSource: "versioned_rule", LabelWeight: 0.9,
 	}
@@ -79,7 +80,7 @@ func TestHistoricalFeatureBuildBatchesMetricsAndEnforcesCutoff(t *testing.T) {
 	finished := cutoff
 	sourceBuild := api.TrainingDatasetBuild{
 		DatasetKey: "source-cohort", Version: datasetBuildVersion, Status: "completed",
-		SourceKey: "primary", WindowCount: 1, OutputDir: cohortDir,
+		SourceKey: "primary", PredictionTarget: highPriorityXIDEventTarget, WindowCount: 1, OutputDir: cohortDir,
 		WindowManifestPath: windowPath, WindowManifestSHA256: hex.EncodeToString(checksum[:]),
 		StartedAt: cutoff.Add(-time.Minute), FinishedAt: &finished,
 	}
@@ -125,7 +126,7 @@ func TestHistoricalFeatureBuildBatchesMetricsAndEnforcesCutoff(t *testing.T) {
 	if row.Features["gpu_util_max_24h"] != 20 || row.Features["gpu_util_last_24h"] != 20 {
 		t.Fatalf("post-cutoff sample leaked or fallback priority failed: %+v", row.Features)
 	}
-	if !row.FeatureCutoffAt.Before(row.LabelOnsetAt) || build.FeatureSHA256 == "" || build.QualityReportPath == "" {
+	if !row.FeatureCutoffAt.Before(row.LabelOnsetAt) || row.PredictionTarget != highPriorityXIDEventTarget || build.PredictionTarget != highPriorityXIDEventTarget || build.FeatureSHA256 == "" || build.QualityReportPath == "" {
 		t.Fatalf("feature artifact lost point-in-time provenance: %+v %+v", row, build)
 	}
 }

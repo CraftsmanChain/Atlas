@@ -257,7 +257,7 @@ func TestCurrentLabelEligibilitySeparatesXID109OperationsFromTraining(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	xid109 := api.HistoricalFaultCandidate{CandidateKey: "xid109", SourceKey: "primary", BackfillRunID: 1, EntityType: "gpu", EventType: "xid_109_context_switch_timeout", OperationalPriority: "high", TrainingDisposition: "proxy_positive_after_review", ReviewStatus: "available_for_override", IdentityEvidenceStatus: "same_gpu_observed_after_event", RuleDecisionVersion: historicalRuleDecisionVersion, OnsetAt: time.Now(), DetectionWindowEndAt: time.Now()}
+	xid109 := api.HistoricalFaultCandidate{CandidateKey: "xid109", SourceKey: "primary", BackfillRunID: 1, EntityType: "gpu", GPUUUID: "GPU-109", EventType: "xid_109_context_switch_timeout", OperationalPriority: "high", TrainingDisposition: "proxy_positive_after_review", ReviewStatus: "available_for_override", IdentityEvidenceStatus: "same_gpu_observed_after_event", RuleDecisionVersion: historicalRuleDecisionVersion, SourceMetric: "ALERTS", OnsetAt: time.Now(), DetectionWindowEndAt: time.Now()}
 	xid94 := api.HistoricalFaultCandidate{CandidateKey: "xid94", SourceKey: "primary", BackfillRunID: 1, EntityType: "gpu", EventType: "xid_94_contained_ecc", EventCode: "94", OperationalPriority: "high", HardwareCertainty: "investigation_required", TrainingDisposition: "proxy_positive_after_review", ReviewStatus: "available_for_override", IdentityEvidenceStatus: "same_gpu_observed_after_event", RuleDecisionVersion: historicalRuleDecisionVersion, Labels: api.StringMap{"DCGM_FI_DRIVER_VERSION": "560.35.03"}, OnsetAt: time.Now(), DetectionWindowEndAt: time.Now()}
 	if err := db.Create(&xid109).Error; err != nil {
 		t.Fatal(err)
@@ -272,6 +272,13 @@ func TestCurrentLabelEligibilitySeparatesXID109OperationsFromTraining(t *testing
 	}
 	if eligible["e109"] || !eligible["e94"] {
 		t.Fatalf("unexpected current label eligibility: %+v", eligible)
+	}
+	operational, err := service.currentLabelEligibleEpisodes([]datasetWindow{{EpisodeKey: "e109-operational", CandidateIDs: []uint{xid109.ID}, PredictionTarget: highPriorityXIDEventTarget}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !operational["e109-operational"] {
+		t.Fatalf("XID 109 must be eligible for the operational-event target: %+v", operational)
 	}
 	episodes, err := service.currentLabelEpisodes([]datasetWindow{{EpisodeKey: "e109", CandidateIDs: []uint{xid109.ID}}, {EpisodeKey: "e94", CandidateIDs: []uint{xid94.ID}}})
 	if err != nil {

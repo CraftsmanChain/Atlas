@@ -73,6 +73,7 @@ type healthyControlRequest struct {
 	LabelValue        int       `json:"label_value"`
 	Eligibility       string    `json:"eligibility"`
 	ContaminationRule string    `json:"contamination_rule"`
+	PredictionTarget  string    `json:"prediction_target"`
 }
 
 type preparationManifest struct {
@@ -310,6 +311,7 @@ func (s *Service) writeManualFeedbackTrainingPreparation(build *api.TrainingPrep
 				DriverVersion: selectedControl.interval.DriverVersion, HorizonMinutes: item.Sample.HorizonMinutes,
 				FeatureCutoffAt: selectedControl.cutoff, LookbackMinutes: int(featureLookback / time.Minute),
 				Split: item.Split, LabelValue: 0, Eligibility: "pending_telemetry_and_load_validation",
+				PredictionTarget:  item.Sample.PredictionTarget,
 				ContaminationRule: "outside every known fault interval [-168h,+72h] with stable GPU identity for the full lookback",
 			})
 		}
@@ -583,14 +585,18 @@ func (s *Service) currentLabelEpisodes(windows []datasetWindow) (map[string]curr
 			if !exists {
 				continue
 			}
-			eligibility := candidateDatasetEligibility(candidate)
-			if eligibility == "rule_positive_proxy" || eligibility == "operator_accepted_proxy" {
+			predictionTarget := window.PredictionTarget
+			if predictionTarget == "" {
+				predictionTarget = hardwareFailureTarget
+			}
+			eligibility := candidateDatasetEligibilityForTarget(candidate, predictionTarget)
+			if eligibility == "rule_positive_proxy" || eligibility == "operator_accepted_proxy" || eligibility == "operational_event_positive" {
 				episode.Eligible = true
 				episode.Metadata.EventTypes = appendUnique(episode.Metadata.EventTypes, candidate.EventType)
 				episode.Metadata.EventCodes = appendUnique(episode.Metadata.EventCodes, candidate.EventCode)
 				episode.Metadata.DriverVersions = appendUnique(episode.Metadata.DriverVersions, firstNonEmpty(candidate.Labels["DCGM_FI_DRIVER_VERSION"], candidate.Labels["driver_version"]))
 				episode.Metadata.RuleDecisionVersions = appendUnique(episode.Metadata.RuleDecisionVersions, candidate.RuleDecisionVersion)
-				episode.Metadata.LabelSources = appendUnique(episode.Metadata.LabelSources, datasetLabelSource(candidate))
+				episode.Metadata.LabelSources = appendUnique(episode.Metadata.LabelSources, datasetLabelSourceForTarget(candidate, predictionTarget))
 				episode.Metadata.HardwareCertainties = appendUnique(episode.Metadata.HardwareCertainties, candidate.HardwareCertainty)
 				episode.Metadata.IdentityEvidence = appendUnique(episode.Metadata.IdentityEvidence, candidate.IdentityEvidenceStatus)
 			}
