@@ -38,6 +38,10 @@ func TestFrameworkSeedsHorizonContractsWithoutPretendingToScore(t *testing.T) {
 	if len(overview.PredictionTargets) != 2 || overview.PredictionTargets[0].Target != "gpu_hardware_failure" || overview.PredictionTargets[1].Target != "high_priority_xid_event" || overview.PredictionTargets[1].HardwareProbability {
 		t.Fatalf("hardware failure and high-priority XID targets must remain distinct: %+v", overview.PredictionTargets)
 	}
+	hardwareTarget := overview.PredictionTargets[0]
+	if hardwareTarget.Status != "ledger_features_gated_by_sample_size" || len(hardwareTarget.PositiveEvidence) != 3 || hardwareTarget.PositiveEvidence[2] != "explicitly operator-accepted hardware evidence" {
+		t.Fatalf("hardware target must require explicit reviewed evidence: %+v", hardwareTarget)
+	}
 	for _, model := range overview.Models {
 		if model.Status != "data_readiness" || model.Algorithm != "unselected" || model.ArtifactURI != "" || model.DecisionThreshold != nil {
 			t.Fatalf("untrained model was represented as released: %+v", model)

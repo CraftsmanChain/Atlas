@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	FrameworkVersion       = "prediction-framework-v0.27.34"
+	FrameworkVersion       = "prediction-framework-v0.27.35"
 	FeatureContractVersion = "atlas-prediction-features-v1"
 	LabelContractVersion   = "atlas-failure-label-v1"
 	readinessFreshnessSLA  = 30 * time.Minute
@@ -371,8 +371,8 @@ func (s *Service) Overview() (Overview, error) {
 		},
 		PredictionTargets: []PredictionTargetContract{
 			{
-				Target: "gpu_hardware_failure", Status: "feedback_features_in_progress", HorizonsMinutes: []int{60, 360, 1440, 10080},
-				PositiveEvidence:    []string{"operator-confirmed hardware failure", "component replacement with validated recovery", "evidence-backed deterministic GPU fault"},
+				Target: "gpu_hardware_failure", Status: "ledger_features_gated_by_sample_size", HorizonsMinutes: []int{60, 360, 1440, 10080},
+				PositiveEvidence:    []string{"operator-confirmed hardware failure", "component replacement with validated recovery", "explicitly operator-accepted hardware evidence"},
 				ExcludedEvidence:    []string{"restart/reset recovery without hardware corroboration", "high-priority XID alone", "low-priority XID alone", "telemetry missing only"},
 				RecoveryStates:      []string{"persistent", "replacement_confirmed"},
 				OutputMeaning:       "risk ranking for a confirmed GPU hardware-failure outcome; not a calibrated probability until all release gates pass",
