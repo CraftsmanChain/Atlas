@@ -101,6 +101,15 @@ func InitDBWithDriver(driver, dsn string) (*DB, error) {
 		sqlDB.SetMaxOpenConns(20)
 		sqlDB.SetMaxIdleConns(5)
 		sqlDB.SetConnMaxLifetime(30 * time.Minute)
+	} else {
+		// SQLite is used by tests and local migration workflows. A single
+		// connection plus a bounded busy timeout prevents asynchronous history
+		// workers from racing their status pollers with SQLITE_LOCKED errors.
+		sqlDB.SetMaxOpenConns(1)
+		sqlDB.SetMaxIdleConns(1)
+		if _, err := sqlDB.Exec("PRAGMA busy_timeout = 5000"); err != nil {
+			return nil, fmt.Errorf("configure sqlite busy timeout: %w", err)
+		}
 	}
 
 	log.Printf("Database connection established. driver=%s", driver)

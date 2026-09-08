@@ -45,6 +45,8 @@ func TestDatasetManifestDeduplicatesReplacementEpisodeAndEnforcesEligibility(t *
 	}
 	rows[0].ModelName, rows[0].IdentityIntervalID = "", identity.ID
 	rows[1].ModelName, rows[1].IdentityIntervalID = "", identity.ID
+	rows[0].ReviewStatus = "accepted_proxy"
+	rows[1].ReviewStatus = "accepted_proxy"
 	for index := range rows {
 		if err := db.Create(&rows[index]).Error; err != nil {
 			t.Fatal(err)
@@ -101,6 +103,24 @@ func TestDatasetManifestDeduplicatesReplacementEpisodeAndEnforcesEligibility(t *
 	}
 	if count != 4 {
 		t.Fatalf("sample-window rows=%d", count)
+	}
+}
+
+func TestHardwareDatasetDoesNotTreatAutomaticXIDProxyAsHardwareFailure(t *testing.T) {
+	now := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	candidate := datasetCandidate("automatic-xid", "xid_79_gpu_fallen_off_bus", now,
+		"same_gpu_observed_after_event", "positive_after_identity_review", "available_for_override")
+	candidate.RuleDecision = "positive_proxy"
+	candidate.RuleConfidence = 0.99
+	if got := candidateDatasetEligibilityForTarget(candidate, hardwareFailureTarget); got != "context_only" {
+		t.Fatalf("automatic XID proxy must not become a hardware-failure positive, got %q", got)
+	}
+	if got := candidateDatasetEligibilityForTarget(candidate, highPriorityXIDEventTarget); got != "operational_event_positive" {
+		t.Fatalf("high-priority XID must remain eligible for its operational target, got %q", got)
+	}
+	candidate.ReviewStatus = "accepted_proxy"
+	if got := candidateDatasetEligibilityForTarget(candidate, hardwareFailureTarget); got != "operator_accepted_proxy" {
+		t.Fatalf("explicit operator acceptance must remain eligible, got %q", got)
 	}
 }
 

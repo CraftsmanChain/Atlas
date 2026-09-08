@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	datasetBuildVersion        = "gpu-fault-cohort-manifest-v3"
+	datasetBuildVersion        = "gpu-fault-cohort-manifest-v4"
 	hardwareFailureTarget      = "gpu_hardware_failure"
 	highPriorityXIDEventTarget = "high_priority_xid_event"
 )
@@ -321,7 +321,9 @@ func candidateDatasetEligibilityForTarget(candidate api.HistoricalFaultCandidate
 		return "pending_review"
 	}
 	if candidate.RuleDecision == "positive_proxy" {
-		return "rule_positive_proxy"
+		// Automatic alert rules are valid positives for the separate XID
+		// target, but they do not prove persistent hardware damage.
+		return "context_only"
 	}
 	return "pending_review"
 }
@@ -330,7 +332,7 @@ func datasetLabelPolicy(predictionTarget string) string {
 	if predictionTarget == highPriorityXIDEventTarget {
 		return "identity-supported high/critical XID and GPU-dropout alert onsets are operational-event positives, including reset-recovered events; they do not assert permanent hardware damage"
 	}
-	return "identity-supported and operator-accepted hardware proxies are extractable but remain non-confirmed labels"
+	return "only explicitly operator-accepted hardware evidence is extractable from alert candidates; automatic XID proxies remain context-only and real ledger positives use the separate manual-feedback pipeline"
 }
 
 func datasetLabelSourceForTarget(candidate api.HistoricalFaultCandidate, predictionTarget string) string {
