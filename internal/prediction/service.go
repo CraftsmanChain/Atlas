@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	FrameworkVersion       = "prediction-framework-v0.27.33"
+	FrameworkVersion       = "prediction-framework-v0.27.34"
 	FeatureContractVersion = "atlas-prediction-features-v1"
 	LabelContractVersion   = "atlas-failure-label-v1"
 	readinessFreshnessSLA  = 30 * time.Minute
@@ -379,7 +379,7 @@ func (s *Service) Overview() (Overview, error) {
 				HardwareProbability: false, ReadOnlyShadowRequired: true,
 			},
 			{
-				Target: "high_priority_xid_event", Status: "label_contract_ready", HorizonsMinutes: []int{60, 360, 1440, 10080},
+				Target: "high_priority_xid_event", Status: "cohort_pipeline_ready", HorizonsMinutes: []int{60, 360, 1440, 10080},
 				PositiveEvidence:    []string{"high-priority XID alert onset", "XID 120/154 recovery latch", "GPU dropout alert onset"},
 				ExcludedEvidence:    []string{"low-priority XID 0/13/31/43/45 unless escalated by corroborating evidence", "events at or before the feature cutoff"},
 				RecoveryStates:      []string{"reset_recovered", "persistent", "replacement_confirmed"},

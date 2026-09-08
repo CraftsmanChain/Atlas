@@ -40,13 +40,17 @@ func TestBuildManualFeedbackFeatureRequestManifestFreezesPackReadyReviewedFeedba
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Model(&row).Update("model_name", "STALE IMPORTED MODEL").Error; err != nil {
+		t.Fatal(err)
+	}
+	row.ModelName = "STALE IMPORTED MODEL"
 	if _, err := predictionService.PrepareHardwareFaultFeedbackPack(row.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := predictionService.ReviewHardwareFaultFeedbackWarning(row.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&api.HistoricalGPUIdentityInterval{IntervalKey: "manifest-review-identity", SourceKey: "current-prometheus", NodeIP: row.NodeIP, GPUIndex: row.GPUIndex, GPUUUID: row.GPUUUID, FirstSeenAt: start, LastSeenAt: end, ObservationCount: 20, EvidenceStrength: "strong"}).Error; err != nil {
+	if err := db.Create(&api.HistoricalGPUIdentityInterval{IntervalKey: "manifest-review-identity", SourceKey: "current-prometheus", NodeIP: row.NodeIP, GPUIndex: row.GPUIndex, GPUUUID: row.GPUUUID, ModelName: "NVIDIA H100 80GB HBM3", FirstSeenAt: start, LastSeenAt: end, ObservationCount: 20, EvidenceStrength: "strong"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err := predictionService.ReviewHardwareFaultFeedback(row.ID, prediction.HardwareFaultFeedbackReviewInput{
@@ -71,13 +75,13 @@ func TestBuildManualFeedbackFeatureRequestManifestFreezesPackReadyReviewedFeedba
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(body, []byte("GPU-MANUAL-FAULT")) || bytes.Contains(body, []byte("values")) {
+	if !bytes.Contains(body, []byte("GPU-MANUAL-FAULT")) || !bytes.Contains(body, []byte("NVIDIA H100 80GB HBM3")) || !bytes.Contains(body, []byte("immutable_review_identity_confirmed")) || bytes.Contains(body, []byte("values")) {
 		t.Fatalf("manifest should contain feedback metadata but no raw telemetry values: %s", string(body))
 	}
 	handler := NewHandler(service)
 	response := httptest.NewRecorder()
 	handler.HandleManualFeedbackFeatureRequests(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/history/feedback-feature-requests?limit=1", nil))
-	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte("manual-feedback-feature-request-v3")) {
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte("manual-feedback-feature-request-v4")) {
 		t.Fatalf("feedback feature request API failed: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
@@ -260,7 +264,7 @@ func TestBuildManualFeedbackFeatureRequestManifestSkipsNonTrainingLedgerEvidence
 	}
 	if err := db.Create(&api.HistoricalGPUIdentityInterval{
 		IntervalKey: "identity-eligible", SourceKey: "current-prometheus", NodeIP: eligible.NodeIP, GPUIndex: eligible.GPUIndex, GPUUUID: eligible.GPUUUID,
-		FirstSeenAt: start, LastSeenAt: end, ObservationCount: 20, EvidenceStrength: "strong",
+		ModelName: "NVIDIA H100 80GB HBM3", FirstSeenAt: start, LastSeenAt: end, ObservationCount: 20, EvidenceStrength: "strong",
 	}).Error; err != nil {
 		t.Fatal(err)
 	}

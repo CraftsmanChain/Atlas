@@ -78,6 +78,7 @@ type extractedFeatureRow struct {
 	SampleKey             string             `json:"sample_key"`
 	FeatureDatasetVersion string             `json:"feature_dataset_version"`
 	SourceDatasetKey      string             `json:"source_dataset_key"`
+	PredictionTarget      string             `json:"prediction_target"`
 	EpisodeKey            string             `json:"episode_key"`
 	NodeIP                string             `json:"node_ip"`
 	GPUUUID               string             `json:"gpu_uuid"`
@@ -101,6 +102,7 @@ type featureQualityReport struct {
 	FeatureDatasetKey     string         `json:"feature_dataset_key"`
 	Version               string         `json:"version"`
 	SourceDatasetKey      string         `json:"source_dataset_key"`
+	PredictionTarget      string         `json:"prediction_target"`
 	FeatureContract       string         `json:"feature_contract_version"`
 	PointInTimeRule       string         `json:"point_in_time_rule"`
 	LookbackMinutes       int            `json:"lookback_minutes"`
@@ -162,7 +164,7 @@ func (s *Service) StartFeatureBuild(request FeatureBuildRequest) (api.TrainingFe
 	build := api.TrainingFeatureBuild{
 		FeatureDatasetKey: key, Version: featureDatasetVersion, Status: "queued",
 		SourceKey: sourceBuild.SourceKey, SourceDatasetBuildID: sourceBuild.ID,
-		SourceDatasetKey: sourceBuild.DatasetKey, FeatureContractVersion: features.CatalogVersion,
+		SourceDatasetKey: sourceBuild.DatasetKey, PredictionTarget: sourceBuild.PredictionTarget, FeatureContractVersion: features.CatalogVersion,
 		LookbackMinutes: int(featureLookback / time.Minute), QueryStepSeconds: int(featureQueryStep / time.Second),
 		MetricCount: len(canonicalHistoricalMetrics()), OutputDir: filepath.Join(s.config.DatasetDir, "features", key),
 		StartedAt: started,
@@ -504,7 +506,8 @@ func emptyExtractedFeatureRow(build *api.TrainingFeatureBuild, window datasetWin
 	row := extractedFeatureRow{
 		SampleKey: window.SampleKey, FeatureDatasetVersion: featureDatasetVersion,
 		SourceDatasetKey: build.SourceDatasetKey, EpisodeKey: window.EpisodeKey,
-		NodeIP: window.NodeIP, GPUUUID: window.GPUUUID, ModelName: window.ModelName,
+		PredictionTarget: window.PredictionTarget,
+		NodeIP:           window.NodeIP, GPUUUID: window.GPUUUID, ModelName: window.ModelName,
 		HorizonMinutes: window.HorizonMinutes, FeatureCutoffAt: window.FeatureCutoffAt,
 		LabelOnsetAt: window.LabelOnsetAt, LabelWeight: window.LabelWeight,
 		FeatureContract: features.CatalogVersion, LookbackMinutes: int(featureLookback / time.Minute),
@@ -557,7 +560,7 @@ func writeFeatureRows(path string, rows []extractedFeatureRow) (string, error) {
 func buildFeatureQualityReport(build api.TrainingFeatureBuild, rows []extractedFeatureRow) featureQualityReport {
 	report := featureQualityReport{
 		FeatureDatasetKey: build.FeatureDatasetKey, Version: featureDatasetVersion,
-		SourceDatasetKey: build.SourceDatasetKey, FeatureContract: features.CatalogVersion,
+		SourceDatasetKey: build.SourceDatasetKey, PredictionTarget: build.PredictionTarget, FeatureContract: features.CatalogVersion,
 		PointInTimeRule: "every Prometheus sample timestamp must be <= feature_cutoff_at and strictly before label_onset_at",
 		LookbackMinutes: int(featureLookback / time.Minute), QueryStepSeconds: int(featureQueryStep / time.Second),
 		EpisodeCount: build.EpisodeCount, WindowCount: len(rows), MetricCount: len(canonicalHistoricalMetrics()),

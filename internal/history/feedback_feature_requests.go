@@ -16,9 +16,10 @@ import (
 	"atlas/internal/features"
 	promclient "atlas/internal/prometheus"
 	"atlas/pkg/api"
+	"gorm.io/gorm"
 )
 
-const manualFeedbackFeatureRequestVersion = "manual-feedback-feature-request-v3"
+const manualFeedbackFeatureRequestVersion = "manual-feedback-feature-request-v4"
 const manualFeedbackSourceManifestVersion = "prediction-human-feedback-manifest-v2"
 
 var manualFeedbackHorizons = []int{60, 360, 1440, 10080}
@@ -193,23 +194,32 @@ func (s *Service) BuildManualFeedbackFeatureRequestManifest(request ManualFeedba
 			blockers = append(blockers, fmt.Sprintf("feedback %d source_key %s does not match build source_key %s", row.ID, rowSource, sourceKey))
 			continue
 		}
+		faultStart, faultEnd := manualFeedbackReviewedFaultWindow(row, review)
+		modelName, err := s.manualFeedbackReviewedModelName(row, review, faultStart, rowSource)
+		if err != nil {
+			return build, err
+		}
+		if review.TargetScope == "gpu" && modelName == "" {
+			build.BlockedRequests++
+			blockers = append(blockers, fmt.Sprintf("feedback %d missing fault-time GPU model identity", row.ID))
+			continue
+		}
 		if seenEpisodes[review.EpisodeKey] {
 			continue
 		}
 		seenEpisodes[review.EpisodeKey] = true
-		faultStart, faultEnd := manualFeedbackReviewedFaultWindow(row, review)
 		for _, horizon := range manualFeedbackHorizons {
 			records = append(records, manualFeedbackFeatureManifestRecord{
 				FeedbackRequestID: row.ID, RequestKey: row.RequestKey, NodeIP: review.ConfirmedNodeIP, TargetScope: review.TargetScope, GPUUUID: review.ConfirmedGPUUUID,
 				ReviewID: review.ID, ReviewSHA256: review.ReviewSHA256, EpisodeKey: review.EpisodeKey, HorizonMinutes: horizon,
-				ReportedGPUUUID: row.ReportedGPUUUID, GPUIndex: review.ConfirmedGPUIndex, AffectedGPUIndexes: append([]string(nil), row.AffectedGPUIndexes...), ModelName: row.ModelName, FaultType: review.ConfirmedFaultType,
+				ReportedGPUUUID: row.ReportedGPUUUID, GPUIndex: review.ConfirmedGPUIndex, AffectedGPUIndexes: append([]string(nil), row.AffectedGPUIndexes...), ModelName: modelName, FaultType: review.ConfirmedFaultType,
 				FaultOccurredAt: faultStart, FaultTimePrecision: manualFeedbackTimePrecision(row), FaultWindowStartAt: faultStart, FaultWindowEndAt: faultEnd, LabelAvailableAt: review.ReviewedAt,
 				PreWindowStartAt: faultStart.Add(-time.Duration(row.PreWindowHours) * time.Hour),
 				PostWindowEndAt:  faultEnd.Add(time.Duration(row.PostWindowHours) * time.Hour),
 				FeatureCutoffAt:  faultStart.Add(-time.Duration(horizon) * time.Minute), PreWindowHours: row.PreWindowHours, PostWindowHours: row.PostWindowHours,
 				HistoryPackSHA256: row.HistoryPackSHA256, HistoryPackScope: row.HistoryPackScope,
 				WarningReviewStatus: row.WarningReviewStatus, MatchedWarningCount: row.MatchedWarningCount,
-				RepairAction: row.RepairAction, TrainingEligible: row.TrainingEligible, IdentityStatus: row.IdentityResolutionStatus,
+				RepairAction: row.RepairAction, TrainingEligible: row.TrainingEligible, IdentityStatus: "immutable_review_identity_confirmed",
 				NoAlertEmitted: true, NoActionExecuted: true, NoRawTelemetryStored: true,
 			})
 		}
@@ -270,6 +280,25 @@ func (s *Service) BuildManualFeedbackFeatureRequestManifest(request ManualFeedba
 	build.ManifestSHA256 = manifestChecksum
 	build.FinishedAt = &finished
 	return build, nil
+}
+
+func (s *Service) manualFeedbackReviewedModelName(row api.HardwareFaultFeedbackRequest, review api.HardwareFaultFeedbackReview, onset time.Time, sourceKey string) (string, error) {
+	query := s.db.Where("node_ip = ? AND gpu_uuid = ? AND first_seen_at <= ? AND last_seen_at >= ?", review.ConfirmedNodeIP, review.ConfirmedGPUUUID, onset, onset)
+	if sourceKey != "" {
+		query = query.Where("source_key = ?", sourceKey)
+	}
+	if review.ConfirmedGPUIndex >= 0 {
+		query = query.Where("gpu_index = ?", review.ConfirmedGPUIndex)
+	}
+	var interval api.HistoricalGPUIdentityInterval
+	err := query.Order("observation_count DESC, last_seen_at DESC, id DESC").First(&interval).Error
+	if err == gorm.ErrRecordNotFound {
+		return strings.TrimSpace(row.ModelName), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return firstNonEmpty(strings.TrimSpace(interval.ModelName), strings.TrimSpace(row.ModelName)), nil
 }
 
 func (s *Service) StartManualFeedbackFeatureRequestWorker(request ManualFeedbackFeatureRequestWorkerRequest) (api.ManualFeedbackFeatureRequestBuild, error) {
@@ -363,6 +392,7 @@ func (s *Service) aggregateManualFeedbackFeatures(build *api.ManualFeedbackFeatu
 	featureBuild := api.TrainingFeatureBuild{
 		FeatureDatasetKey: build.RequestKey, Version: featureDatasetVersion,
 		SourceKey: build.SourceKey, SourceDatasetKey: manifest.SourceManifestSHA256,
+		PredictionTarget:       hardwareFailureTarget,
 		FeatureContractVersion: build.FeatureContractVersion,
 		LookbackMinutes:        build.LookbackMinutes, QueryStepSeconds: build.QueryStepSeconds,
 		EpisodeCount: uniqueManualFeedbackEpisodeCount(manifest.Records), WindowCount: len(manifest.Records),
@@ -450,6 +480,7 @@ func manualFeedbackFeatureWindow(record manualFeedbackFeatureManifestRecord) dat
 		NodeIP:           record.NodeIP,
 		GPUUUID:          entity,
 		ModelName:        record.ModelName,
+		PredictionTarget: hardwareFailureTarget,
 		HorizonMinutes:   record.HorizonMinutes,
 		FeatureCutoffAt:  record.FeatureCutoffAt,
 		LabelOnsetAt:     record.FaultWindowStartAt,
