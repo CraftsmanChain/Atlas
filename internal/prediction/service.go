@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	FrameworkVersion       = "prediction-framework-v0.27.32"
+	FrameworkVersion       = "prediction-framework-v0.27.33"
 	FeatureContractVersion = "atlas-prediction-features-v1"
 	LabelContractVersion   = "atlas-failure-label-v1"
 	readinessFreshnessSLA  = 30 * time.Minute
@@ -38,6 +38,18 @@ type LabelPolicy struct {
 	EntityIsolation       string         `json:"entity_isolation"`
 	MinimumCensoringHours int            `json:"minimum_censoring_hours"`
 	QualityTiers          map[string]int `json:"quality_tiers"`
+}
+
+type PredictionTargetContract struct {
+	Target                 string   `json:"target"`
+	Status                 string   `json:"status"`
+	HorizonsMinutes        []int    `json:"horizons_minutes"`
+	PositiveEvidence       []string `json:"positive_evidence"`
+	ExcludedEvidence       []string `json:"excluded_evidence"`
+	RecoveryStates         []string `json:"recovery_states"`
+	OutputMeaning          string   `json:"output_meaning"`
+	HardwareProbability    bool     `json:"hardware_probability"`
+	ReadOnlyShadowRequired bool     `json:"read_only_shadow_required"`
 }
 
 type ReleaseGates struct {
@@ -95,25 +107,26 @@ type RetentionPolicy struct {
 }
 
 type Overview struct {
-	FrameworkVersion       string                    `json:"framework_version"`
-	Phase                  string                    `json:"phase"`
-	Mode                   string                    `json:"mode"`
-	ScoringEnabled         bool                      `json:"scoring_enabled"`
-	ProbabilityEmitted     bool                      `json:"probability_emitted"`
-	NoActionExecuted       bool                      `json:"no_action_executed"`
-	FeatureContractVersion string                    `json:"feature_contract_version"`
-	LabelContractVersion   string                    `json:"label_contract_version"`
-	FeatureCatalogVersion  string                    `json:"feature_catalog_version"`
-	HorizonsMinutes        []int                     `json:"horizons_minutes"`
-	EntityContracts        []EntityContract          `json:"entity_contracts"`
-	LabelPolicy            LabelPolicy               `json:"label_policy"`
-	ReleaseGates           ReleaseGates              `json:"release_gates"`
-	Models                 []api.PredictionModelSpec `json:"models"`
-	Readiness              ReadinessSummary          `json:"readiness"`
-	Results                ResultSummary             `json:"results"`
-	Labels                 LabelSummary              `json:"labels"`
-	Retention              RetentionPolicy           `json:"retention"`
-	GeneratedAt            time.Time                 `json:"generated_at"`
+	FrameworkVersion       string                     `json:"framework_version"`
+	Phase                  string                     `json:"phase"`
+	Mode                   string                     `json:"mode"`
+	ScoringEnabled         bool                       `json:"scoring_enabled"`
+	ProbabilityEmitted     bool                       `json:"probability_emitted"`
+	NoActionExecuted       bool                       `json:"no_action_executed"`
+	FeatureContractVersion string                     `json:"feature_contract_version"`
+	LabelContractVersion   string                     `json:"label_contract_version"`
+	FeatureCatalogVersion  string                     `json:"feature_catalog_version"`
+	HorizonsMinutes        []int                      `json:"horizons_minutes"`
+	EntityContracts        []EntityContract           `json:"entity_contracts"`
+	LabelPolicy            LabelPolicy                `json:"label_policy"`
+	PredictionTargets      []PredictionTargetContract `json:"prediction_targets"`
+	ReleaseGates           ReleaseGates               `json:"release_gates"`
+	Models                 []api.PredictionModelSpec  `json:"models"`
+	Readiness              ReadinessSummary           `json:"readiness"`
+	Results                ResultSummary              `json:"results"`
+	Labels                 LabelSummary               `json:"labels"`
+	Retention              RetentionPolicy            `json:"retention"`
+	GeneratedAt            time.Time                  `json:"generated_at"`
 }
 
 type Service struct {
@@ -355,6 +368,24 @@ func (s *Service) Overview() (Overview, error) {
 			EntityIsolation:       "Train, calibration, and evaluation splits isolate GPU UUIDs and preserve time order.",
 			MinimumCensoringHours: 24,
 			QualityTiers:          map[string]int{"confirmed": 3, "strong_proxy": 2, "weak_proxy": 1, "excluded": 0},
+		},
+		PredictionTargets: []PredictionTargetContract{
+			{
+				Target: "gpu_hardware_failure", Status: "feedback_features_in_progress", HorizonsMinutes: []int{60, 360, 1440, 10080},
+				PositiveEvidence:    []string{"operator-confirmed hardware failure", "component replacement with validated recovery", "evidence-backed deterministic GPU fault"},
+				ExcludedEvidence:    []string{"restart/reset recovery without hardware corroboration", "high-priority XID alone", "low-priority XID alone", "telemetry missing only"},
+				RecoveryStates:      []string{"persistent", "replacement_confirmed"},
+				OutputMeaning:       "risk ranking for a confirmed GPU hardware-failure outcome; not a calibrated probability until all release gates pass",
+				HardwareProbability: false, ReadOnlyShadowRequired: true,
+			},
+			{
+				Target: "high_priority_xid_event", Status: "label_contract_ready", HorizonsMinutes: []int{60, 360, 1440, 10080},
+				PositiveEvidence:    []string{"high-priority XID alert onset", "XID 120/154 recovery latch", "GPU dropout alert onset"},
+				ExcludedEvidence:    []string{"low-priority XID 0/13/31/43/45 unless escalated by corroborating evidence", "events at or before the feature cutoff"},
+				RecoveryStates:      []string{"reset_recovered", "persistent", "replacement_confirmed"},
+				OutputMeaning:       "risk ranking for a future high-priority XID operational event; it does not claim that hardware is permanently damaged",
+				HardwareProbability: false, ReadOnlyShadowRequired: true,
+			},
 		},
 		ReleaseGates: ReleaseGates{
 			MinimumPrecision: 0.7, MinimumRecall: 0.5,
