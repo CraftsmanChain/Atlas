@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	FrameworkVersion       = "prediction-framework-v0.27.26"
+	FrameworkVersion       = "prediction-framework-v0.27.31"
 	FeatureContractVersion = "atlas-prediction-features-v1"
 	LabelContractVersion   = "atlas-failure-label-v1"
 	readinessFreshnessSLA  = 30 * time.Minute
@@ -149,6 +149,7 @@ func BuiltinModels() []api.PredictionModelSpec {
 		modelSpec("gpu.failure.within_1h", 60),
 		modelSpec("gpu.failure.within_6h", 360),
 		modelSpec("gpu.failure.within_24h", 1440),
+		modelSpec("gpu.failure.within_7d", 10080),
 	}
 }
 

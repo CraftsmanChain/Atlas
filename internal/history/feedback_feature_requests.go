@@ -18,8 +18,10 @@ import (
 	"atlas/pkg/api"
 )
 
-const manualFeedbackFeatureRequestVersion = "manual-feedback-feature-request-v1"
-const manualFeedbackSourceManifestVersion = "prediction-human-feedback-manifest-v1"
+const manualFeedbackFeatureRequestVersion = "manual-feedback-feature-request-v2"
+const manualFeedbackSourceManifestVersion = "prediction-human-feedback-manifest-v2"
+
+var manualFeedbackHorizons = []int{60, 360, 1440, 10080}
 
 type ManualFeedbackFeatureRequestBuildRequest struct {
 	SourceKey string `json:"source_key,omitempty"`
@@ -50,6 +52,10 @@ type manualFeedbackFeatureManifest struct {
 type manualFeedbackFeatureManifestRecord struct {
 	FeedbackRequestID    uint      `json:"feedback_request_id"`
 	RequestKey           string    `json:"feedback_request_key"`
+	ReviewID             uint      `json:"review_id"`
+	ReviewSHA256         string    `json:"review_sha256"`
+	EpisodeKey           string    `json:"episode_key"`
+	HorizonMinutes       int       `json:"horizon_minutes"`
 	NodeIP               string    `json:"node_ip"`
 	TargetScope          string    `json:"target_scope"`
 	GPUUUID              string    `json:"gpu_uuid"`
@@ -100,7 +106,22 @@ func (s *Service) BuildManualFeedbackFeatureRequestManifest(request ManualFeedba
 	if err := s.db.Order("fault_occurred_at ASC, id ASC").Find(&feedback).Error; err != nil {
 		return api.ManualFeedbackFeatureRequestBuild{}, err
 	}
-	records := make([]manualFeedbackFeatureManifestRecord, 0, len(feedback))
+	var reviews []api.HardwareFaultFeedbackReview
+	if err := s.db.Order("feedback_request_id ASC, revision ASC, id ASC").Find(&reviews).Error; err != nil {
+		return api.ManualFeedbackFeatureRequestBuild{}, err
+	}
+	latestReviews := make(map[uint]api.HardwareFaultFeedbackReview, len(reviews))
+	for _, review := range reviews {
+		latestReviews[review.FeedbackRequestID] = review
+	}
+	episodeDecisions := map[string]string{}
+	conflictingEpisodes := map[string]bool{}
+	for _, review := range latestReviews {
+		if review.EpisodeKey == "" { continue }
+		if decision, ok := episodeDecisions[review.EpisodeKey]; ok && decision != review.Decision { conflictingEpisodes[review.EpisodeKey] = true } else { episodeDecisions[review.EpisodeKey] = review.Decision }
+	}
+	records := make([]manualFeedbackFeatureManifestRecord, 0, len(feedback)*len(manualFeedbackHorizons))
+	seenEpisodes := map[string]bool{}
 	build := api.ManualFeedbackFeatureRequestBuild{
 		RequestKey:             fmt.Sprintf("manual-feedback-features-%d", started.UnixNano()),
 		Version:                manualFeedbackFeatureRequestVersion,
@@ -132,7 +153,9 @@ func (s *Service) BuildManualFeedbackFeatureRequestManifest(request ManualFeedba
 		if row.WarningReviewStatus == "manual_feedback_no_prior_shadow_warning" {
 			build.WarningMissRequests++
 		}
-		rowBlockers := manualFeedbackFeatureBlockers(row)
+		review, hasReview := latestReviews[row.ID]
+		rowBlockers := manualFeedbackFeatureBlockers(row, review, hasReview)
+		if hasReview && conflictingEpisodes[review.EpisodeKey] { rowBlockers = append(rowBlockers, fmt.Sprintf("feedback %d episode %s has conflicting latest reviews", row.ID, review.EpisodeKey)) }
 		if len(rowBlockers) > 0 {
 			build.BlockedRequests++
 			blockers = append(blockers, rowBlockers...)
@@ -155,19 +178,24 @@ func (s *Service) BuildManualFeedbackFeatureRequestManifest(request ManualFeedba
 			blockers = append(blockers, fmt.Sprintf("feedback %d source_key %s does not match build source_key %s", row.ID, rowSource, sourceKey))
 			continue
 		}
-		faultStart, faultEnd := manualFeedbackFaultWindow(row)
-		records = append(records, manualFeedbackFeatureManifestRecord{
-			FeedbackRequestID: row.ID, RequestKey: row.RequestKey, NodeIP: row.NodeIP, TargetScope: manualFeedbackTargetScope(row), GPUUUID: row.GPUUUID,
-			ReportedGPUUUID: row.ReportedGPUUUID, GPUIndex: row.GPUIndex, AffectedGPUIndexes: append([]string(nil), row.AffectedGPUIndexes...), ModelName: row.ModelName, FaultType: row.FaultType,
-			FaultOccurredAt: row.FaultOccurredAt, FaultTimePrecision: manualFeedbackTimePrecision(row), FaultWindowStartAt: faultStart, FaultWindowEndAt: faultEnd, LabelAvailableAt: row.CreatedAt,
-			PreWindowStartAt: faultStart.Add(-time.Duration(row.PreWindowHours) * time.Hour),
-			PostWindowEndAt:  faultEnd.Add(time.Duration(row.PostWindowHours) * time.Hour),
-			FeatureCutoffAt:  faultStart, PreWindowHours: row.PreWindowHours, PostWindowHours: row.PostWindowHours,
-			HistoryPackSHA256: row.HistoryPackSHA256, HistoryPackScope: row.HistoryPackScope,
-			WarningReviewStatus: row.WarningReviewStatus, MatchedWarningCount: row.MatchedWarningCount,
-			RepairAction: row.RepairAction, TrainingEligible: row.TrainingEligible, IdentityStatus: row.IdentityResolutionStatus,
-			NoAlertEmitted: true, NoActionExecuted: true, NoRawTelemetryStored: true,
-		})
+		if seenEpisodes[review.EpisodeKey] { continue }
+		seenEpisodes[review.EpisodeKey] = true
+		faultStart, faultEnd := manualFeedbackReviewedFaultWindow(row, review)
+		for _, horizon := range manualFeedbackHorizons {
+			records = append(records, manualFeedbackFeatureManifestRecord{
+				FeedbackRequestID: row.ID, RequestKey: row.RequestKey, NodeIP: review.ConfirmedNodeIP, TargetScope: review.TargetScope, GPUUUID: review.ConfirmedGPUUUID,
+				ReviewID: review.ID, ReviewSHA256: review.ReviewSHA256, EpisodeKey: review.EpisodeKey, HorizonMinutes: horizon,
+				ReportedGPUUUID: row.ReportedGPUUUID, GPUIndex: review.ConfirmedGPUIndex, AffectedGPUIndexes: append([]string(nil), row.AffectedGPUIndexes...), ModelName: row.ModelName, FaultType: review.ConfirmedFaultType,
+				FaultOccurredAt: faultStart, FaultTimePrecision: manualFeedbackTimePrecision(row), FaultWindowStartAt: faultStart, FaultWindowEndAt: faultEnd, LabelAvailableAt: review.ReviewedAt,
+				PreWindowStartAt: faultStart.Add(-time.Duration(row.PreWindowHours) * time.Hour),
+				PostWindowEndAt:  faultEnd.Add(time.Duration(row.PostWindowHours) * time.Hour),
+				FeatureCutoffAt:  faultStart.Add(-time.Duration(horizon) * time.Minute), PreWindowHours: row.PreWindowHours, PostWindowHours: row.PostWindowHours,
+				HistoryPackSHA256: row.HistoryPackSHA256, HistoryPackScope: row.HistoryPackScope,
+				WarningReviewStatus: row.WarningReviewStatus, MatchedWarningCount: row.MatchedWarningCount,
+				RepairAction: row.RepairAction, TrainingEligible: row.TrainingEligible, IdentityStatus: row.IdentityResolutionStatus,
+				NoAlertEmitted: true, NoActionExecuted: true, NoRawTelemetryStored: true,
+			})
+		}
 	}
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].FaultOccurredAt.Equal(records[j].FaultOccurredAt) {
@@ -201,7 +229,7 @@ func (s *Service) BuildManualFeedbackFeatureRequestManifest(request ManualFeedba
 		RequestKey: build.RequestKey, Version: build.Version, SourceKey: build.SourceKey,
 		SourceManifestVersion: build.SourceManifestVersion, SourceManifestSHA256: build.SourceManifestSHA256,
 		FeatureContractVersion: build.FeatureContractVersion,
-		PointInTimeRule:        "feature_cutoff_at equals the reported fault time; all feature samples must be strictly earlier than or equal to feature_cutoff_at and never later than the label availability time",
+		PointInTimeRule:        "feature_cutoff_at equals confirmed_onset_at minus horizon_minutes; all feature samples must be at or before the cutoff and strictly before the confirmed label onset",
 		ExecutionPolicy:        "offline worker only; read-only monitoring source access; no repair, scheduling, isolation, alert, or workload action",
 		TelemetryPolicy:        "manifest stores request metadata and future aggregate feature paths only; raw multi-year telemetry remains in the monitoring source",
 		LookbackMinutes:        build.LookbackMinutes, QueryStepSeconds: build.QueryStepSeconds,
@@ -320,7 +348,7 @@ func (s *Service) aggregateManualFeedbackFeatures(build *api.ManualFeedbackFeatu
 		SourceKey: build.SourceKey, SourceDatasetKey: manifest.SourceManifestSHA256,
 		FeatureContractVersion: build.FeatureContractVersion,
 		LookbackMinutes:        build.LookbackMinutes, QueryStepSeconds: build.QueryStepSeconds,
-		EpisodeCount: len(manifest.Records), WindowCount: len(manifest.Records),
+		EpisodeCount: uniqueManualFeedbackEpisodeCount(manifest.Records), WindowCount: len(manifest.Records),
 	}
 	rows := make([]extractedFeatureRow, 0, len(manifest.Records))
 	failedWindows := 0
@@ -399,13 +427,13 @@ func manualFeedbackFeatureWindow(record manualFeedbackFeatureManifestRecord) dat
 		entity = "node:" + record.NodeIP
 	}
 	return datasetWindow{
-		SampleKey:        fmt.Sprintf("manual-feedback-%d", record.FeedbackRequestID),
+		SampleKey:        fmt.Sprintf("manual-feedback-%d-h%d", record.FeedbackRequestID, record.HorizonMinutes),
 		DatasetVersion:   manualFeedbackFeatureRequestVersion,
-		EpisodeKey:       record.RequestKey,
+		EpisodeKey:       record.EpisodeKey,
 		NodeIP:           record.NodeIP,
 		GPUUUID:          entity,
 		ModelName:        record.ModelName,
-		HorizonMinutes:   0,
+		HorizonMinutes:   record.HorizonMinutes,
 		FeatureCutoffAt:  record.FeatureCutoffAt,
 		LabelOnsetAt:     record.FaultWindowStartAt,
 		LabelAvailableAt: record.LabelAvailableAt,
@@ -465,6 +493,7 @@ func (s *Service) currentHumanFeedbackManifestSHA() (string, error) {
 		TrainingEligible    bool      `json:"training_eligible,omitempty"`
 		HistoryPackStatus   string    `json:"history_pack_status,omitempty"`
 		WarningReviewStatus string    `json:"warning_review_status,omitempty"`
+		ReviewSHA256        string    `json:"review_sha256,omitempty"`
 	}
 	var labels []api.FailureLabel
 	if err := s.db.Where("quality_tier = ? OR confirmation_resolution_id > ? OR confirmed_at IS NOT NULL", "confirmed", 0).
@@ -479,6 +508,14 @@ func (s *Service) currentHumanFeedbackManifestSHA() (string, error) {
 	if err := s.db.Order("fault_occurred_at ASC, id ASC").Find(&feedback).Error; err != nil {
 		return "", err
 	}
+	var feedbackReviews []api.HardwareFaultFeedbackReview
+	if err := s.db.Order("feedback_request_id ASC, revision ASC, id ASC").Find(&feedbackReviews).Error; err != nil {
+		return "", err
+	}
+	latestReviewSHA := map[uint]string{}
+	for _, review := range feedbackReviews {
+		latestReviewSHA[review.FeedbackRequestID] = review.ReviewSHA256
+	}
 	records := make([]sourceRecord, 0, len(labels)+len(outcomes)+len(feedback))
 	for _, row := range labels {
 		records = append(records, sourceRecord{Source: "failure_label", ID: row.ID, GPUUUID: row.GPUUUID, NodeIP: row.NodeIP, FaultType: row.EventType, OccurredAt: row.OccurredAt, Status: row.QualityTier})
@@ -491,6 +528,7 @@ func (s *Service) currentHumanFeedbackManifestSHA() (string, error) {
 			Source: "hardware_fault_feedback", ID: row.ID, RequestKey: row.RequestKey, GPUUUID: row.GPUUUID, NodeIP: row.NodeIP,
 			FaultType: row.FaultType, OccurredAt: row.FaultOccurredAt, Status: row.Status, TrainingEligible: row.TrainingEligible,
 			HistoryPackStatus: row.HistoryPackStatus, WarningReviewStatus: row.WarningReviewStatus,
+			ReviewSHA256: latestReviewSHA[row.ID],
 		})
 	}
 	payload, err := json.Marshal(struct {
@@ -504,13 +542,20 @@ func (s *Service) currentHumanFeedbackManifestSHA() (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func manualFeedbackFeatureBlockers(row api.HardwareFaultFeedbackRequest) []string {
+func manualFeedbackFeatureBlockers(row api.HardwareFaultFeedbackRequest, review api.HardwareFaultFeedbackReview, hasReview bool) []string {
 	reasons := []string{}
 	if !row.TrainingEligible {
+		return []string{fmt.Sprintf("feedback %d is not training-eligible", row.ID)}
+	}
+	if !hasReview {
+		reasons = append(reasons, fmt.Sprintf("feedback %d has no immutable operator review", row.ID))
 		return reasons
 	}
-	if row.TriageStatus == "pending_monitoring_confirmation" {
-		reasons = append(reasons, fmt.Sprintf("feedback %d monitoring confirmation is pending", row.ID))
+	if review.Decision != "confirmed_hardware" || !review.TrainingEligible || len(review.EvidenceKeys) == 0 {
+		reasons = append(reasons, fmt.Sprintf("feedback %d latest review is not evidence-backed confirmed hardware", row.ID))
+	}
+	if review.ConfirmedOnsetAt == nil || review.ReviewSHA256 == "" || review.EpisodeKey == "" {
+		reasons = append(reasons, fmt.Sprintf("feedback %d review is missing onset, episode, or immutable SHA", row.ID))
 	}
 	if manualFeedbackTargetScope(row) == "gpu" && (strings.TrimSpace(row.GPUUUID) == "" || strings.HasPrefix(row.IdentityResolutionStatus, "blocked") || row.IdentityResolutionStatus == "requires_historical_identity_at_fault_time") {
 		reasons = append(reasons, fmt.Sprintf("feedback %d missing fault-time GPU identity", row.ID))
@@ -522,6 +567,31 @@ func manualFeedbackFeatureBlockers(row api.HardwareFaultFeedbackRequest) []strin
 		reasons = append(reasons, fmt.Sprintf("feedback %d shadow warning coverage review is missing", row.ID))
 	}
 	return reasons
+}
+
+func manualFeedbackReviewedFaultWindow(row api.HardwareFaultFeedbackRequest, review api.HardwareFaultFeedbackReview) (time.Time, time.Time) {
+	start, end := manualFeedbackFaultWindow(row)
+	if review.ConfirmedWindowStartAt != nil {
+		start = *review.ConfirmedWindowStartAt
+	}
+	if review.ConfirmedWindowEndAt != nil {
+		end = *review.ConfirmedWindowEndAt
+	}
+	if review.ConfirmedOnsetAt != nil {
+		start = *review.ConfirmedOnsetAt
+	}
+	if end.Before(start) {
+		end = start
+	}
+	return start, end
+}
+
+func uniqueManualFeedbackEpisodeCount(records []manualFeedbackFeatureManifestRecord) int {
+	keys := map[string]struct{}{}
+	for _, record := range records {
+		keys[record.EpisodeKey] = struct{}{}
+	}
+	return len(keys)
 }
 
 func manualFeedbackTargetScope(row api.HardwareFaultFeedbackRequest) string {

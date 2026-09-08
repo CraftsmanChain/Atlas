@@ -255,9 +255,18 @@ func (s *Service) executeIdentityBackfill(runID uint, source config.HistorySourc
 			run.RecordsCreated++
 			continue
 		}
+		firstSeen := existing.FirstSeenAt
+		if firstSeen.IsZero() || aggregate.row.FirstSeenAt.Before(firstSeen) {
+			firstSeen = aggregate.row.FirstSeenAt
+		}
+		lastSeen := existing.LastSeenAt
+		if aggregate.row.LastSeenAt.After(lastSeen) {
+			lastSeen = aggregate.row.LastSeenAt
+		}
+		observationCount := mergeIdentityObservationCount(existing, aggregate.row)
 		if err := s.db.Model(&existing).Updates(map[string]any{
-			"backfill_run_id": run.ID, "first_seen_at": aggregate.row.FirstSeenAt,
-			"last_seen_at": aggregate.row.LastSeenAt, "observation_count": aggregate.row.ObservationCount,
+			"backfill_run_id": run.ID, "first_seen_at": firstSeen,
+			"last_seen_at": lastSeen, "observation_count": observationCount,
 			"hostname": aggregate.row.Hostname, "model_name": aggregate.row.ModelName,
 			"driver_version": aggregate.row.DriverVersion,
 		}).Error; err != nil {
@@ -266,14 +275,9 @@ func (s *Service) executeIdentityBackfill(runID uint, source config.HistorySourc
 		}
 		run.RecordsUpdated++
 	}
-	// A completed scan is authoritative for this source. Remove intervals
-	// produced by older query versions only after every new interval has been
-	// persisted, so a query failure never destroys the last usable result.
-	if err := s.db.Where("source_key = ? AND backfill_run_id <> ?", source.ID, run.ID).
-		Delete(&api.HistoricalGPUIdentityInterval{}).Error; err != nil {
-		s.failBackfill(&run, err)
-		return
-	}
+	// Identity is historical evidence, not a current-state snapshot. Intervals
+	// outside this scan range must remain available; deleting rows not touched
+	// by an incremental run would silently truncate the identity timeline.
 	if err := s.deriveIdentityTransitions(source.ID); err != nil {
 		s.failBackfill(&run, err)
 		return
@@ -290,6 +294,16 @@ func (s *Service) executeIdentityBackfill(runID uint, source config.HistorySourc
 		"records_updated": run.RecordsUpdated, "records_annotated": run.RecordsAnnotated,
 		"finished_at": &finished,
 	}).Error
+}
+
+func mergeIdentityObservationCount(existing, incoming api.HistoricalGPUIdentityInterval) int {
+	if incoming.FirstSeenAt.After(existing.LastSeenAt) {
+		return existing.ObservationCount + incoming.ObservationCount
+	}
+	if incoming.ObservationCount > existing.ObservationCount {
+		return incoming.ObservationCount
+	}
+	return existing.ObservationCount
 }
 
 func (s *Service) deriveIdentityTransitions(sourceKey string) error {

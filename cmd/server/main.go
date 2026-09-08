@@ -286,6 +286,8 @@ func main() {
 	mux.HandleFunc("/api/v1/prediction/human-feedback-manifest", predictionHandler.HandleHumanFeedbackManifest)
 	mux.HandleFunc("/api/v1/prediction/hardware-fault-feedback", predictionHandler.HandleHardwareFaultFeedback)
 	mux.HandleFunc("/api/v1/prediction/hardware-fault-feedback/import", predictionHandler.HandleHardwareFaultFeedbackImport)
+	mux.HandleFunc("/api/v1/prediction/hardware-fault-feedback/episodes", predictionHandler.HandleHardwareFaultEpisodeReport)
+	mux.HandleFunc("/api/v1/prediction/hardware-fault-feedback/value-report", predictionHandler.HandleHardwareFaultValueReport)
 	mux.HandleFunc("/api/v1/prediction/hardware-fault-feedback/", predictionHandler.HandleHardwareFaultFeedbackAction)
 	mux.HandleFunc("/api/v1/prediction/data-drift-report", predictionHandler.HandleDataDriftReport)
 	mux.HandleFunc("/api/v1/prediction/calibration-drift-report", predictionHandler.HandleCalibrationDriftReport)

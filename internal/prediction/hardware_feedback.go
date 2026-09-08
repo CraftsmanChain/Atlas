@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const HardwareFaultFeedbackRequestVersion = "hardware-fault-feedback-request-v2"
+const HardwareFaultFeedbackRequestVersion = "hardware-fault-feedback-request-v3"
 
 type HardwareFaultFeedbackInput struct {
 	NodeIP                string   `json:"node_ip"`

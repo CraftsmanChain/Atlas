@@ -10,7 +10,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const HumanFeedbackManifestVersion = "prediction-human-feedback-manifest-v1"
+const HumanFeedbackManifestVersion = "prediction-human-feedback-manifest-v2"
 
 type HumanFeedbackRecord struct {
 	Source              string     `json:"source"`
@@ -83,6 +83,14 @@ func (s *Service) HumanFeedbackManifest() (HumanFeedbackManifest, error) {
 	if err := s.db.Order("fault_occurred_at ASC, id ASC").Find(&hardwareFeedback).Error; err != nil {
 		return HumanFeedbackManifest{}, err
 	}
+	var hardwareReviews []api.HardwareFaultFeedbackReview
+	if err := s.db.Order("feedback_request_id ASC, revision ASC, id ASC").Find(&hardwareReviews).Error; err != nil {
+		return HumanFeedbackManifest{}, err
+	}
+	latestHardwareReviews := map[uint]api.HardwareFaultFeedbackReview{}
+	for _, review := range hardwareReviews {
+		latestHardwareReviews[review.FeedbackRequestID] = review
+	}
 	manifest := HumanFeedbackManifest{
 		Version: HumanFeedbackManifestVersion, FrameworkVersion: FrameworkVersion, LabelContract: LabelContractVersion,
 		OutcomeRuleVersion: OutcomeRuleVersion, Mode: "read_only_human_feedback_governance",
@@ -146,8 +154,9 @@ func (s *Service) HumanFeedbackManifest() (HumanFeedbackManifest, error) {
 		}
 	}
 	for _, feedback := range hardwareFeedback {
+		review, hasReview := latestHardwareReviews[feedback.ID]
 		manifest.HardwareFaultFeedbackRequests++
-		if feedback.TrainingEligible {
+		if hasReview && review.TrainingEligible {
 			manifest.HardwareFeedbackTrainingEligible++
 		}
 		if feedback.HistoryPackStatus == "manifest_ready_pending_metric_extraction" {
@@ -159,14 +168,14 @@ func (s *Service) HumanFeedbackManifest() (HumanFeedbackManifest, error) {
 		if feedback.WarningReviewStatus == "manual_feedback_no_prior_shadow_warning" {
 			manifest.HardwareFeedbackWarningMisses++
 		}
-		reasons := feedbackHardwareBlockers(feedback)
+		reasons := feedbackHardwareReviewBlockers(feedback, review, hasReview)
 		if len(reasons) > 0 {
 			manifest.HardwareFeedbackBlocked++
 		}
-		if feedback.TrainingEligible && len(reasons) == 0 {
+		if hasReview && review.TrainingEligible && len(reasons) == 0 {
 			manifest.HumanConfirmedLabels++
 			manifest.ConfirmedPositiveLabels++
-			increment(manifest.ByEventType, feedback.FaultType)
+			increment(manifest.ByEventType, review.ConfirmedFaultType)
 			increment(manifest.ByModel, feedback.ModelName)
 			manifest.MatchedPredictionWindows += feedback.MatchedWarningCount
 			if feedback.MatchedWarningCount == 0 {
@@ -178,11 +187,11 @@ func (s *Service) HumanFeedbackManifest() (HumanFeedbackManifest, error) {
 		manifest.PointInTimeViolations += countReason(reasons, "feedback was recorded before the reported fault time")
 		if len(manifest.SampleRecords) < 20 {
 			manifest.SampleRecords = append(manifest.SampleRecords, HumanFeedbackRecord{
-				Source: "hardware_fault_feedback", ReferenceID: feedback.ID, EntityKey: firstNonEmpty(feedback.GPUUUID, feedback.ReportedGPUUUID),
-				GPUUUID: feedback.GPUUUID, NodeIP: feedback.NodeIP, ModelName: feedback.ModelName, EventType: feedback.FaultType,
+				Source: "hardware_fault_feedback", ReferenceID: feedback.ID, EntityKey: firstNonEmpty(review.ConfirmedGPUUUID, feedback.GPUUUID, feedback.ReportedGPUUUID),
+				GPUUUID: firstNonEmpty(review.ConfirmedGPUUUID, feedback.GPUUUID), NodeIP: firstNonEmpty(review.ConfirmedNodeIP, feedback.NodeIP), ModelName: feedback.ModelName, EventType: firstNonEmpty(review.ConfirmedFaultType, feedback.FaultType),
 				QualityTier: "operator_confirmed", Operator: feedback.Operator, RepairAction: feedback.RepairAction,
 				HistoryPackStatus: feedback.HistoryPackStatus, WarningReviewStatus: feedback.WarningReviewStatus,
-				OccurredAt: feedback.FaultOccurredAt, AvailableAt: feedback.CreatedAt, Status: feedbackHardwareStatus(feedback, reasons),
+				OccurredAt: firstNonZeroTime(review.ConfirmedOnsetAt, feedback.FaultOccurredAt), AvailableAt: review.ReviewedAt, Status: feedbackHardwareStatus(feedback, reasons),
 				BlockingReasons: reasons,
 			})
 		}
@@ -196,6 +205,30 @@ func (s *Service) HumanFeedbackManifest() (HumanFeedbackManifest, error) {
 	}
 	manifest.ManifestSHA256 = humanFeedbackManifestChecksum(manifest)
 	return manifest, nil
+}
+
+func firstNonZeroTime(value *time.Time, fallback time.Time) time.Time {
+	if value != nil && !value.IsZero() {
+		return *value
+	}
+	return fallback
+}
+
+func feedbackHardwareReviewBlockers(feedback api.HardwareFaultFeedbackRequest, review api.HardwareFaultFeedbackReview, hasReview bool) []string {
+	if !hasReview {
+		return []string{"immutable operator review is missing"}
+	}
+	if review.Decision != "confirmed_hardware" || !review.TrainingEligible {
+		return []string{}
+	}
+	reasons := feedbackHardwareBlockers(feedback)
+	if review.ReviewSHA256 == "" || review.ConfirmedOnsetAt == nil || review.EpisodeKey == "" {
+		reasons = append(reasons, "immutable review provenance is incomplete")
+	}
+	if len(review.EvidenceKeys) == 0 {
+		reasons = append(reasons, "monitoring or repair evidence is missing")
+	}
+	return uniqueSorted(reasons)
 }
 
 func feedbackLabelBlockers(label api.FailureLabel) []string {

@@ -162,6 +162,7 @@ func migrateSchema(db *gorm.DB) error {
 		&api.HardwareRiskPrediction{},
 		&api.PredictionOutcomeEvaluation{},
 		&api.HardwareFaultFeedbackRequest{},
+		&api.HardwareFaultFeedbackReview{},
 		&api.MonitoringHistoryAudit{},
 		&api.HistoryBackfillRun{},
 		&api.HistoricalFaultCandidate{},

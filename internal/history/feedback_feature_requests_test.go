@@ -46,6 +46,14 @@ func TestBuildManualFeedbackFeatureRequestManifestFreezesPackReadyReviewedFeedba
 	if _, err := predictionService.ReviewHardwareFaultFeedbackWarning(row.ID); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Create(&api.HistoricalGPUIdentityInterval{IntervalKey: "manifest-review-identity", SourceKey: "current-prometheus", NodeIP: row.NodeIP, GPUIndex: row.GPUIndex, GPUUUID: row.GPUUUID, FirstSeenAt: start, LastSeenAt: end, ObservationCount: 20, EvidenceStrength: "strong"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := predictionService.ReviewHardwareFaultFeedback(row.ID, prediction.HardwareFaultFeedbackReviewInput{
+		Decision: "confirmed_hardware", Reviewer: "ops-g", ReviewNote: "repair record and monitoring evidence agree", EvidenceKeys: []string{"repair:reseat"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	outputRoot := t.TempDir()
 	service := NewService(db, config.HistoryConfig{DatasetDir: outputRoot}, time.Second)
 	service.now = func() time.Time { return time.Date(2026, 8, 24, 11, 0, 0, 0, time.UTC) }
@@ -53,7 +61,7 @@ func TestBuildManualFeedbackFeatureRequestManifestFreezesPackReadyReviewedFeedba
 	if err != nil {
 		t.Fatal(err)
 	}
-	if build.Status != "manifest_ready_pending_offline_worker" || build.WindowCount != 1 || build.BlockedRequests != 0 || build.ManifestSHA256 == "" || build.SourceManifestSHA256 == "" {
+	if build.Status != "manifest_ready_pending_offline_worker" || build.WindowCount != 4 || build.BlockedRequests != 0 || build.ManifestSHA256 == "" || build.SourceManifestSHA256 == "" {
 		t.Fatalf("unexpected feature request build: %+v", build)
 	}
 	if build.WarningMissRequests != 1 || !build.NoRawTelemetryStored || !build.NoAlertEmitted || !build.NoActionExecuted {
@@ -69,7 +77,7 @@ func TestBuildManualFeedbackFeatureRequestManifestFreezesPackReadyReviewedFeedba
 	handler := NewHandler(service)
 	response := httptest.NewRecorder()
 	handler.HandleManualFeedbackFeatureRequests(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/history/feedback-feature-requests?limit=1", nil))
-	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte("manual-feedback-feature-request-v1")) {
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte("manual-feedback-feature-request-v2")) {
 		t.Fatalf("feedback feature request API failed: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
@@ -126,6 +134,11 @@ func TestManualFeedbackFeatureRequestWorkerAggregatesFeatures(t *testing.T) {
 	if _, err := predictionService.ReviewHardwareFaultFeedbackWarning(row.ID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := predictionService.ReviewHardwareFaultFeedback(row.ID, prediction.HardwareFaultFeedbackReviewInput{
+		Decision: "confirmed_hardware", Reviewer: "admin", ReviewNote: "monitoring and replacement record confirmed", EvidenceKeys: []string{"monitor:xid79", "repair:baseboard"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	service := NewService(db, config.HistoryConfig{
 		DatasetDir: t.TempDir(), MaxConcurrency: 2,
 		Sources: []config.HistorySourceConfig{{
@@ -153,7 +166,7 @@ func TestManualFeedbackFeatureRequestWorkerAggregatesFeatures(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if build.Status != "features_ready_pending_training_preparation" || build.CompletedWindows != 1 || build.FailedWindows != 0 || build.FeatureSHA256 == "" || build.QualityReportPath == "" {
+	if build.Status != "features_ready_pending_training_preparation" || build.CompletedWindows != 4 || build.FailedWindows != 0 || build.FeatureSHA256 == "" || build.QualityReportPath == "" {
 		t.Fatalf("manual feedback worker did not produce feature artifacts: %+v", build)
 	}
 	featureFile, err := os.Open(build.FeaturePath)
@@ -161,15 +174,25 @@ func TestManualFeedbackFeatureRequestWorkerAggregatesFeatures(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer featureFile.Close()
-	var feature extractedFeatureRow
-	if err := json.NewDecoder(featureFile).Decode(&feature); err != nil {
-		t.Fatal(err)
+	decoder := json.NewDecoder(featureFile)
+	seen := map[int]bool{}
+	for i := 0; i < 4; i++ {
+		var feature extractedFeatureRow
+		if err := decoder.Decode(&feature); err != nil {
+			t.Fatal(err)
+		}
+		seen[feature.HorizonMinutes] = true
+		if feature.SampleKey != fmt.Sprintf("manual-feedback-%d-h%d", row.ID, feature.HorizonMinutes) || !feature.LabelOnsetAt.Equal(cutoff) {
+			t.Fatalf("unexpected manual feedback provenance: %+v", feature)
+		}
+		if !feature.FeatureCutoffAt.Equal(cutoff.Add(-time.Duration(feature.HorizonMinutes)*time.Minute)) || !feature.FeatureCutoffAt.Before(feature.LabelOnsetAt) {
+			t.Fatalf("horizon cutoff is not point-in-time safe: %+v", feature)
+		}
 	}
-	if feature.SampleKey != fmt.Sprintf("manual-feedback-%d", row.ID) || feature.Features["gpu_util_max_24h"] != 30 || feature.Features["xid_current_last_24h"] != 79 {
-		t.Fatalf("unexpected manual feedback features: %+v", feature)
-	}
-	if !feature.FeatureCutoffAt.Equal(cutoff) || !feature.LabelOnsetAt.Equal(cutoff) {
-		t.Fatalf("manual feedback provenance or cutoff missing: %+v", feature)
+	for _, horizon := range []int{60, 360, 1440, 10080} {
+		if !seen[horizon] {
+			t.Fatalf("missing horizon %d: %v", horizon, seen)
+		}
 	}
 }
 
@@ -213,15 +236,15 @@ func TestBuildManualFeedbackFeatureRequestManifestBlocksUnpreparedFeedback(t *te
 	}
 }
 
-func TestManualFeedbackFeatureBlockersRejectPendingMonitoringConfirmation(t *testing.T) {
+func TestManualFeedbackFeatureBlockersRejectMissingImmutableReview(t *testing.T) {
 	row := api.HardwareFaultFeedbackRequest{
 		ID: 7, TargetScope: "node", TrainingEligible: true,
 		TriageStatus:      "pending_monitoring_confirmation",
 		HistoryPackStatus: "manifest_ready_pending_metric_extraction", HistoryPackSHA256: "sha256",
 		WarningReviewStatus: "manual_feedback_no_prior_shadow_warning",
 	}
-	blockers := manualFeedbackFeatureBlockers(row)
-	if len(blockers) != 1 || !strings.Contains(blockers[0], "monitoring confirmation is pending") {
-		t.Fatalf("pending monitoring confirmation must block feature requests: %v", blockers)
+	blockers := manualFeedbackFeatureBlockers(row, api.HardwareFaultFeedbackReview{}, false)
+	if len(blockers) != 1 || !strings.Contains(blockers[0], "no immutable operator review") {
+		t.Fatalf("missing immutable review must block feature requests: %v", blockers)
 	}
 }

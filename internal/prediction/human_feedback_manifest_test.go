@@ -143,6 +143,14 @@ func TestHumanFeedbackManifestIncludesHardwareFaultFeedback(t *testing.T) {
 	if reviewed.WarningReviewStatus != "manual_feedback_no_prior_shadow_warning" {
 		t.Fatalf("test feedback should become warning-miss evidence: %+v", reviewed)
 	}
+	if err := db.Create(&api.HistoricalGPUIdentityInterval{IntervalKey: "human-feedback-review-identity", SourceKey: "current-prometheus", NodeIP: row.NodeIP, GPUIndex: row.GPUIndex, GPUUUID: row.GPUUUID, FirstSeenAt: start, LastSeenAt: end, ObservationCount: 20, EvidenceStrength: "strong"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ReviewHardwareFaultFeedback(row.ID, HardwareFaultFeedbackReviewInput{
+		Decision: "confirmed_hardware", Reviewer: "ops-g", ReviewNote: "repair evidence confirmed", EvidenceKeys: []string{"repair:reseat"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	report, err := service.HumanFeedbackManifest()
 	if err != nil {
 		t.Fatal(err)

@@ -196,7 +196,7 @@ func TestIdentityBackfillFindsReplacementAndAnnotatesCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.Total != 2 || summary.ByTransition["gpu_uuid_changed"] != 1 {
+	if summary.Total != 3 || summary.ByTransition["gpu_uuid_changed"] != 1 {
 		t.Fatalf("unexpected identity summary=%+v intervals=%+v", summary, intervals)
 	}
 	if err := db.First(&candidate, candidate.ID).Error; err != nil {
@@ -209,8 +209,8 @@ func TestIdentityBackfillFindsReplacementAndAnnotatesCandidate(t *testing.T) {
 	}
 	var staleCount int64
 	db.Model(&api.HistoricalGPUIdentityInterval{}).Where("interval_key = ?", stale.IntervalKey).Count(&staleCount)
-	if staleCount != 0 {
-		t.Fatalf("stale v1 interval was not replaced")
+	if staleCount != 1 {
+		t.Fatalf("historical interval outside the scan range must be preserved")
 	}
 	if err := db.First(&missingIdentity, missingIdentity.ID).Error; err != nil {
 		t.Fatal(err)
@@ -233,6 +233,18 @@ func TestIdentityBackfillFindsReplacementAndAnnotatesCandidate(t *testing.T) {
 	if candidate.RuleDecision != "positive_proxy" || candidate.ReviewStatus != "excluded" ||
 		candidate.ReviewedBy != "tester" {
 		t.Fatalf("rule refresh overwrote human decision: %+v", candidate)
+	}
+}
+
+func TestIdentityIntervalMergePreservesHistoricalBounds(t *testing.T) {
+	existing := api.HistoricalGPUIdentityInterval{FirstSeenAt: time.Date(2025, 8, 28, 0, 0, 0, 0, time.UTC), LastSeenAt: time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC), ObservationCount: 1000}
+	incremental := api.HistoricalGPUIdentityInterval{FirstSeenAt: time.Date(2026, 7, 30, 6, 0, 0, 0, time.UTC), LastSeenAt: time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC), ObservationCount: 160}
+	if got := mergeIdentityObservationCount(existing, incremental); got != 1160 {
+		t.Fatalf("non-overlapping incremental observations should accumulate: %d", got)
+	}
+	overlap := api.HistoricalGPUIdentityInterval{FirstSeenAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), LastSeenAt: time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC), ObservationCount: 200}
+	if got := mergeIdentityObservationCount(existing, overlap); got != 1000 {
+		t.Fatalf("overlapping replay must not double count observations: %d", got)
 	}
 }
 
