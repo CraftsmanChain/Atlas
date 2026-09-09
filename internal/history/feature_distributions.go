@@ -457,6 +457,16 @@ func uniqueBaselineFeatureColumns(artifact baselineArtifact) []string {
 			columns = append(columns, column)
 		}
 	}
+	for _, model := range artifact.BoostedModels {
+		for _, column := range model.FeatureColumns {
+			column = strings.TrimSpace(column)
+			if column == "" || seen[column] {
+				continue
+			}
+			seen[column] = true
+			columns = append(columns, column)
+		}
+	}
 	sort.Strings(columns)
 	return columns
 }

@@ -148,6 +148,14 @@ func TestShadowRegistryRejectsTamperedArtifact(t *testing.T) {
 	}
 }
 
+func TestShadowRegistryRejectsAlgorithmWithoutRuntime(t *testing.T) {
+	service := &Service{}
+	_, err := service.registerShadowBuild(api.BaselineModelBuild{Algorithm: "gradient_boosted_stumps"})
+	if err == nil || err.Error() != `algorithm "gradient_boosted_stumps" has no approved shadow runtime` {
+		t.Fatalf("unsupported runtime was not rejected: %v", err)
+	}
+}
+
 func TestShadowRegistryRejectsPredictionTargetMismatch(t *testing.T) {
 	db, err := storage.InitDB(filepath.Join(t.TempDir(), "atlas.db"))
 	if err != nil {

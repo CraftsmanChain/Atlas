@@ -2,7 +2,14 @@ package history
 
 import (
 	"fmt"
+	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
+
+	"atlas/pkg/api"
+	"atlas/pkg/config"
+	"atlas/pkg/storage"
 )
 
 func TestLogisticBaselineSeparatesSignalAndPreservesMissingAsMean(t *testing.T) {
@@ -28,6 +35,114 @@ func TestLogisticBaselineSeparatesSignalAndPreservesMissingAsMean(t *testing.T) 
 	missing := scoreRows(model, []trainingMatrixRow{{Features: map[string]float64{}}})[0].score
 	if missing <= 0 || missing >= 1 {
 		t.Fatalf("missing-value mean imputation produced invalid probability %v", missing)
+	}
+}
+
+func TestShallowGBDTLearnsNonlinearThresholdsDeterministically(t *testing.T) {
+	rows := make([]trainingMatrixRow, 0, 120)
+	for index := 0; index < 120; index++ {
+		value := -3.0 + 6*float64(index)/119
+		label := 0
+		if value < -1.2 || value > 1.2 {
+			label = 1
+		}
+		rows = append(rows, trainingMatrixRow{LabelValue: label, TrainingWeight: 1, Features: map[string]float64{"gpu_temp_mean_24h": value}})
+	}
+	first := fitShallowGBDT(rows, []string{"gpu_temp_mean_24h"}, 60)
+	second := fitShallowGBDT(rows, []string{"gpu_temp_mean_24h"}, 60)
+	if !reflect.DeepEqual(first, second) {
+		t.Fatal("shallow GBDT training must be deterministic")
+	}
+	metrics := evaluateScores(scoreShallowGBDTRowsWithoutCalibration(first, rows), 0.5)
+	if len(first.Trees) == 0 || metrics.ROCAUC < 0.95 || metrics.Precision < 0.9 || metrics.Recall < 0.9 {
+		t.Fatalf("nonlinear threshold signal was not learned: trees=%d metrics=%+v", len(first.Trees), metrics)
+	}
+}
+
+func TestShallowGBDTSelectionPreservesMetricFamilyDiversity(t *testing.T) {
+	columns := []string{"correctable_remapped_rows_delta_15m", "correctable_remapped_rows_delta_1h", "gpu_temp_mean_15m", "gpu_temp_mean_1h"}
+	rows := make([]trainingMatrixRow, 0, 40)
+	for index := 0; index < 40; index++ {
+		features := map[string]float64{}
+		for columnIndex, column := range columns {
+			features[column] = float64((index + columnIndex) % 7)
+		}
+		rows = append(rows, trainingMatrixRow{LabelValue: index % 2, Features: features})
+	}
+	selection := selectShallowGBDTFeatures(rows, columns)
+	selected := selectedFeatureNames(selection)
+	if selection.Status != "passed" || len(selected) != len(columns) {
+		t.Fatalf("expected all diverse safe features, got %+v", selection)
+	}
+	if selected[0] == selected[1] || !reflect.DeepEqual(selection, selectShallowGBDTFeatures(rows, columns)) {
+		t.Fatalf("selection must be diverse and deterministic: %+v", selection)
+	}
+}
+
+func TestResolveBaselineAlgorithmDefaultsAndRejectsUnknownRuntime(t *testing.T) {
+	algorithm, version, err := resolveBaselineAlgorithm("")
+	if err != nil || algorithm != logisticRegressionAlgorithm || version != baselineModelVersion {
+		t.Fatalf("legacy request default changed: algorithm=%q version=%q err=%v", algorithm, version, err)
+	}
+	algorithm, version, err = resolveBaselineAlgorithm(shallowGBDTAlgorithm)
+	if err != nil || algorithm != shallowGBDTAlgorithm || version != shallowGBDTModelVersion {
+		t.Fatalf("challenger resolution failed: algorithm=%q version=%q err=%v", algorithm, version, err)
+	}
+	if _, _, err := resolveBaselineAlgorithm("xgboost_external"); err == nil {
+		t.Fatal("unknown algorithm must be rejected before a build is queued")
+	}
+}
+
+func TestBuildShallowGBDTProducesOfflineOnlyImmutableArtifact(t *testing.T) {
+	db, err := storage.InitDB(fmt.Sprintf("file:shallow-gbdt-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	rows := make([]trainingMatrixRow, 0, 120)
+	for _, split := range []string{"train", "validation", "test"} {
+		for index := 0; index < 40; index++ {
+			value := -3.0 + 6*float64(index)/39
+			label := 0
+			if value < -1.2 || value > 1.2 {
+				label = 1
+			}
+			rows = append(rows, trainingMatrixRow{RowKey: fmt.Sprintf("%s-%d", split, index), GPUUUID: fmt.Sprintf("GPU-%s-%d", split, index), ModelName: "H100", HorizonMinutes: 60, PredictionTarget: highPriorityXIDEventTarget, Split: split, LabelValue: label, TrainingWeight: 1, Features: map[string]float64{"gpu_temp_mean_24h": value}, LabelMetadata: trainingLabelMetadata{EventTypes: []string{"xid_94_contained_ecc"}}})
+		}
+	}
+	matrixPath := filepath.Join(root, "matrix.jsonl")
+	matrixSHA, err := writeJSONLines(matrixPath, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matrix := api.TrainingMatrixBuild{TrainingMatrixKey: "matrix-v7-test", Version: trainingMatrixVersion, Status: "completed", FeatureContractVersion: "1.9.0", MatrixPath: matrixPath, MatrixSHA256: matrixSHA, StartedAt: time.Now()}
+	if err := db.Create(&matrix).Error; err != nil {
+		t.Fatal(err)
+	}
+	build := api.BaselineModelBuild{BaselineModelKey: "gbdt-test", Version: shallowGBDTModelVersion, Status: "running", Algorithm: shallowGBDTAlgorithm, SourceMatrixBuildID: matrix.ID, SourceTrainingMatrixKey: matrix.TrainingMatrixKey, FeatureContractVersion: matrix.FeatureContractVersion, OutputDir: filepath.Join(root, "model"), StartedAt: time.Now()}
+	if err := db.Create(&build).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, config.HistoryConfig{DatasetDir: root}, time.Second)
+	if err := service.buildBaselineModels(&build); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&build, build.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if build.Status != "completed" || build.TrainedModelCount != 1 || build.ShadowCandidateCount != 0 || build.ArtifactSHA256 == "" {
+		t.Fatalf("unexpected challenger build: %+v", build)
+	}
+	var artifact baselineArtifact
+	if err := readJSONFile(build.ArtifactPath, &artifact); err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.BaselineModelReport(build.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Algorithm != shallowGBDTAlgorithm || len(artifact.Models) != 0 || len(artifact.BoostedModels) != 1 || report.Mode != "offline_challenger_evaluation_only" {
+		t.Fatalf("challenger runtime boundary was not preserved: artifact=%+v report_mode=%s", artifact, report.Mode)
 	}
 }
 
