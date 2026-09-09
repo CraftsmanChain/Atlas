@@ -233,7 +233,7 @@ func (s *Service) buildShadowScoring(run *api.PredictionShadowScoringRun) error 
 				item.BlockingReasons = append(item.BlockingReasons, "metric_stale:"+metric)
 				continue
 			}
-			featurestats.AddTrailing24hStatistics(features, metric, points)
+			featurestats.AddTrailingRangeStatistics(features, metric, points, end)
 		}
 		for _, column := range model.FeatureColumns {
 			if _, exists := features[column]; !exists {

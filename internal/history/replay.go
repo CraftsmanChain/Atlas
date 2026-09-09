@@ -128,7 +128,7 @@ func (s *Service) StartFeatureReplay(request FeatureReplayRequest) (api.Predicti
 		ReplayKey: key, Version: featureReplayVersion, Status: "queued",
 		ModelSpecID: spec.ID, ModelKey: spec.ModelKey, ModelVersion: spec.Version,
 		SourceBaselineBuildID: baseline.ID, SourceMatrixBuildID: matrix.ID, SourceKey: featureBuild.SourceKey,
-		TransformationContractVersion: featurestats.Trailing24hContractVersion,
+		TransformationContractVersion: featurestats.TrailingRangeContractVersion,
 		RequestedSampleCount:          request.SampleCount,
 		OutputDir:                     filepath.Join(s.config.DatasetDir, "feature-replays", key), StartedAt: started,
 	}
@@ -211,7 +211,7 @@ func (s *Service) buildFeatureReplay(run *api.PredictionFeatureReplayRun) error 
 	report := featureReplayReport{
 		Version: featureReplayVersion, ReplayKey: run.ReplayKey, ModelKey: spec.ModelKey,
 		ModelVersion: spec.Version, SourceMatrixKey: matrix.TrainingMatrixKey,
-		TransformationContractVersion: featurestats.Trailing24hContractVersion,
+		TransformationContractVersion: featurestats.TrailingRangeContractVersion,
 		AbsoluteTolerance:             replayAbsoluteTolerance, RelativeTolerance: replayRelativeTolerance,
 		Columns: map[string]*replayColumnResult{}, Samples: make([]replaySampleResult, 0, len(selected)), CreatedAt: s.now(),
 	}
@@ -294,13 +294,13 @@ func (s *Service) replayOneRow(client *promclient.Client, row trainingMatrixRow,
 	replayed := map[string]float64{}
 	sources := map[string]struct{}{}
 	for _, column := range columns {
-		source, _, _ := featurestats.ParseTrailing24hColumn(column)
+		source, _, _, _ := featurestats.ParseTrailingRangeColumn(column)
 		sources[source] = struct{}{}
 	}
 	for source := range sources {
 		points := pointsInWindow(canonical[source], row.FeatureCutoffAt.Add(-featureLookback), row.FeatureCutoffAt)
 		if len(points) > 0 {
-			featurestats.AddTrailing24hStatistics(replayed, source, points)
+			featurestats.AddTrailingRangeStatistics(replayed, source, points, row.FeatureCutoffAt)
 		}
 	}
 	for _, column := range columns {

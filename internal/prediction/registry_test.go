@@ -96,6 +96,23 @@ func TestShadowRegistryPromotesOnlyIntegrityCheckedCandidate(t *testing.T) {
 	if audits[0].Status != "live_coverage_required" || audits[0].ReplayVerifiedCount != 2 {
 		t.Fatalf("periodic contract audit reset replay evidence: %+v", audits[0])
 	}
+	if err := db.Model(&audits[0]).Updates(map[string]any{
+		"transformation_contract_version": "trailing-24h-range-statistics-v1",
+		"status":                          "live_coverage_required",
+		"replay_verified_count":           2,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SyncFeatureParityAudits(); err != nil {
+		t.Fatal(err)
+	}
+	audits, err = service.FeatureParityAudits(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if audits[0].Status != "replay_required" || audits[0].ReplayVerifiedCount != 0 {
+		t.Fatalf("new transformation contract reused stale replay evidence: %+v", audits[0])
+	}
 }
 
 func TestShadowRegistryRejectsTamperedArtifact(t *testing.T) {

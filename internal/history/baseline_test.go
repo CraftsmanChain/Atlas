@@ -128,14 +128,27 @@ func TestBaselineCalibrationRequiresReliabilityAndPositiveSkill(t *testing.T) {
 }
 
 func TestBaselineReleaseReadinessRequiresStabilityAndCalibration(t *testing.T) {
-	if status := baselineReleaseReadiness("robust_candidate", "passed"); status != "shadow_candidate" {
+	passing := baselineMetrics{Precision: 0.70, Recall: 0.50}
+	if status := baselineReleaseReadiness("robust_candidate", "passed", passing); status != "shadow_candidate" {
 		t.Fatalf("ready status=%s", status)
 	}
-	if status := baselineReleaseReadiness("robust_candidate", "calibration_required"); status != "blocked_calibration" {
+	if status := baselineReleaseReadiness("robust_candidate", "calibration_required", passing); status != "blocked_calibration" {
 		t.Fatalf("calibration block status=%s", status)
 	}
-	if status := baselineReleaseReadiness("inconclusive", "passed"); status != "blocked_stability" {
+	if status := baselineReleaseReadiness("inconclusive", "passed", passing); status != "blocked_stability" {
 		t.Fatalf("stability block status=%s", status)
+	}
+	if status := baselineReleaseReadiness("robust_candidate", "passed", baselineMetrics{Precision: 0.69, Recall: 1}); status != "blocked_operating_point" {
+		t.Fatalf("precision/recall block status=%s", status)
+	}
+}
+
+func TestOperationalThresholdPrefersReleaseGateBeforeF1Fallback(t *testing.T) {
+	scores := []scoredLabel{{score: 0.10, label: 0}, {score: 0.20, label: 0}, {score: 0.60, label: 1}, {score: 0.90, label: 1}}
+	threshold := operationalThreshold(scores)
+	metrics := evaluateScores(scores, threshold)
+	if metrics.Precision < baselineMinimumPrecision || metrics.Recall < baselineMinimumRecall {
+		t.Fatalf("threshold %.2f missed operational gate: %+v", threshold, metrics)
 	}
 }
 
