@@ -28,6 +28,15 @@
 - Run `make release-scripts-check` when release scripts or a platform release version changes.
 - Report environmental failures separately from code failures and leave the worktree clean after an authorized commit.
 
+## Prediction delivery continuity
+
+- For every hardware-failure or XID prediction task, first read the living roadmap at `../Atlas-Docs/docs/hardware-failure-prediction-capability-roadmap.md` and use its current capability boundary, execution queue, milestones, and daily workflow as the default context.
+- Keep the real hardware-failure objective primary. Scoped XID, GPU-model, fault-family, anomaly, and ranking work is valid only when its contribution to the main objective or an independently useful production-shadow subtarget is explicit.
+- Update the living roadmap during every prediction iteration with production facts, build IDs, immutable SHA evidence, metrics, failures, milestone status, and next work. Also update `../Atlas-Docs/docs/platform-capability-modules.md` and the product milestone UI when milestone state changes.
+- After implementation, run the repository verification required above, review staged diffs, commit and push Atlas and Atlas-Docs separately, and leave both worktrees clean.
+- Do not deploy production directly. Every completed release handoff must include `SKIP_GIT_PUSH=1 VERSION_NAME=vX.Y.Z bash scripts/deploy_remote_source.sh` with the actual continuous platform version, plus the commit SHA and post-deploy verification/experiment sequence.
+- When the operator says the release is updated or asks to continue, verify `/api/v1/status` (`version`, `commit`, `build_time`) and `/health`, then continue the already-authorized read-only checks and offline/shadow artifact builds without asking them to restate this workflow.
+
 ## Git
 
 - Review `git status` and the staged diff before committing.
