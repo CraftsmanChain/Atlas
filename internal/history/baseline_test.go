@@ -88,8 +88,38 @@ func TestResolveBaselineAlgorithmDefaultsAndRejectsUnknownRuntime(t *testing.T) 
 	if err != nil || algorithm != shallowGBDTAlgorithm || version != shallowGBDTModelVersion {
 		t.Fatalf("challenger resolution failed: algorithm=%q version=%q err=%v", algorithm, version, err)
 	}
+	algorithm, version, err = resolveBaselineAlgorithm(anomalyLogisticAlgorithm)
+	if err != nil || algorithm != anomalyLogisticAlgorithm || version != anomalyLogisticModelVersion {
+		t.Fatalf("cascade resolution failed: algorithm=%q version=%q err=%v", algorithm, version, err)
+	}
 	if _, _, err := resolveBaselineAlgorithm("xgboost_external"); err == nil {
 		t.Fatal("unknown algorithm must be rejected before a build is queued")
+	}
+}
+
+func TestAnomalyLogisticCascadeFitsGateOnTrainingControlsDeterministically(t *testing.T) {
+	rows := make([]trainingMatrixRow, 0, 120)
+	for index := 0; index < 120; index++ {
+		label := 0
+		value := float64(index%20)/100 - 0.1
+		if index >= 80 {
+			label = 1
+			value = 3 + float64(index%10)/10
+		}
+		rows = append(rows, trainingMatrixRow{LabelValue: label, TrainingWeight: 1, Features: map[string]float64{"gpu_temp_mean_24h": value, "gpu_power_mean_24h": value * 2}})
+	}
+	first, filtered, err := fitAnomalyLogisticCascade(rows, []string{"gpu_temp_mean_24h", "gpu_power_mean_24h"}, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := fitAnomalyLogisticCascade(rows, []string{"gpu_temp_mean_24h", "gpu_power_mean_24h"}, 60)
+	if err != nil || !reflect.DeepEqual(first, second) {
+		t.Fatalf("cascade must be deterministic: err=%v first=%+v second=%+v", err, first, second)
+	}
+	filterReport := describeAnomalyFilterSplit(rows, first.Filter)
+	metrics := evaluateScores(scoreAnomalyLogisticRowsWithoutCalibration(first, rows), 0.5)
+	if len(filtered) >= len(rows) || filterReport.PositiveRetention < 0.99 || filterReport.ControlRetention > 0.30 || metrics.ROCAUC < 0.95 {
+		t.Fatalf("unexpected cascade behavior: filtered=%d report=%+v metrics=%+v", len(filtered), filterReport, metrics)
 	}
 }
 
@@ -143,6 +173,56 @@ func TestBuildShallowGBDTProducesOfflineOnlyImmutableArtifact(t *testing.T) {
 	}
 	if artifact.Algorithm != shallowGBDTAlgorithm || len(artifact.Models) != 0 || len(artifact.BoostedModels) != 1 || report.Mode != "offline_challenger_evaluation_only" {
 		t.Fatalf("challenger runtime boundary was not preserved: artifact=%+v report_mode=%s", artifact, report.Mode)
+	}
+}
+
+func TestBuildAnomalyLogisticProducesOfflineOnlyImmutableArtifact(t *testing.T) {
+	db, err := storage.InitDB(fmt.Sprintf("file:anomaly-logistic-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	rows := make([]trainingMatrixRow, 0, 120)
+	for _, split := range []string{"train", "validation", "test"} {
+		for index := 0; index < 40; index++ {
+			label := 0
+			value := float64(index%10)/100 - 0.05
+			if index >= 30 {
+				label, value = 1, 3+float64(index%5)/10
+			}
+			rows = append(rows, trainingMatrixRow{RowKey: fmt.Sprintf("%s-%d", split, index), GPUUUID: fmt.Sprintf("GPU-%s-%d", split, index), ModelName: "H100", HorizonMinutes: 60, PredictionTarget: highPriorityXIDEventTarget, Split: split, LabelValue: label, TrainingWeight: 1, Features: map[string]float64{"gpu_temp_mean_24h": value, "gpu_power_mean_24h": value * 2}})
+		}
+	}
+	matrixPath := filepath.Join(root, "matrix.jsonl")
+	matrixSHA, err := writeJSONLines(matrixPath, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matrix := api.TrainingMatrixBuild{TrainingMatrixKey: "matrix-v7-cascade", Version: trainingMatrixVersion, Status: "completed", FeatureContractVersion: "1.9.0", MatrixPath: matrixPath, MatrixSHA256: matrixSHA, StartedAt: time.Now()}
+	if err := db.Create(&matrix).Error; err != nil {
+		t.Fatal(err)
+	}
+	build := api.BaselineModelBuild{BaselineModelKey: "cascade-test", Version: anomalyLogisticModelVersion, Status: "running", Algorithm: anomalyLogisticAlgorithm, SourceMatrixBuildID: matrix.ID, SourceTrainingMatrixKey: matrix.TrainingMatrixKey, FeatureContractVersion: matrix.FeatureContractVersion, OutputDir: filepath.Join(root, "model"), StartedAt: time.Now()}
+	if err := db.Create(&build).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, config.HistoryConfig{DatasetDir: root}, time.Second)
+	if err := service.buildBaselineModels(&build); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&build, build.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var artifact baselineArtifact
+	if err := readJSONFile(build.ArtifactPath, &artifact); err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.BaselineModelReport(build.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if build.Status != "completed" || build.TrainedModelCount != 1 || build.ShadowCandidateCount != 0 || len(artifact.Models) != 0 || len(artifact.CascadeModels) != 1 || report.Mode != "offline_challenger_evaluation_only" || report.Horizons[0].AnomalyFilter == nil {
+		t.Fatalf("cascade runtime boundary or audit report missing: build=%+v artifact=%+v report=%+v", build, artifact, report)
 	}
 }
 

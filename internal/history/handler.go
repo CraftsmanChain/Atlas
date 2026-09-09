@@ -612,6 +612,36 @@ func (h *Handler) HandleBaselineModel(w http.ResponseWriter, r *http.Request) {
 	historyJSON(w, http.StatusOK, map[string]any{"data": report})
 }
 
+func (h *Handler) HandleModelRace(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		historyJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	referenceID, err := strconv.ParseUint(strings.TrimSpace(r.URL.Query().Get("reference_build_id")), 10, 64)
+	if err != nil || referenceID == 0 {
+		historyJSON(w, http.StatusBadRequest, map[string]any{"error": "valid reference_build_id is required"})
+		return
+	}
+	parts := strings.Split(r.URL.Query().Get("challenger_build_ids"), ",")
+	challengerIDs := make([]uint, 0, len(parts))
+	for _, part := range parts {
+		id, parseErr := strconv.ParseUint(strings.TrimSpace(part), 10, 64)
+		if parseErr != nil || id == 0 {
+			historyJSON(w, http.StatusBadRequest, map[string]any{"error": "challenger_build_ids must be a comma-separated list of valid ids"})
+			return
+		}
+		challengerIDs = append(challengerIDs, uint(id))
+	}
+	comparison, err := h.service.CompareBaselineModels(uint(referenceID), challengerIDs)
+	if err != nil {
+		historyJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("ETag", `"`+comparison.ComparisonSHA256+`"`)
+	historyJSON(w, http.StatusOK, map[string]any{"data": comparison, "meta": map[string]any{"read_only": true, "probability_emitted": false, "alerts_emitted": false, "actions_executed": false}})
+}
+
 func (h *Handler) HandleCandidate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPatch {
 		historyJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
