@@ -2439,7 +2439,7 @@ function Models({ tx, view, lang, assets }: { tx: Tx; view: string; lang: string
       </> : null}
     </div>;
   }
-  if (view === 'algorithms') return <div className="grid"><Card className="span-6"><CardHead code="CANDIDATES" title={tx('候选算法', 'Candidate Algorithms')} /><div className="chips">{['Logistic Regression', 'LightGBM', 'XGBoost', 'ECOD', 'Isolation Forest', 'Survival Analysis'].map(x => <span key={x}>{x}</span>)}</div></Card><Card className="span-6"><CardHead code="GUARDRAILS" title={tx('上线约束', 'Release Gates')} /><div className="rules">{[tx('特征必须早于标签截点，防止未来信息泄漏', 'Features must precede the label cutoff to prevent future leakage'), tx('按时间与 GPU UUID 隔离训练、校准和测试', 'Split train, calibration, and test by time and GPU UUID'), tx('概率必须按时间窗分别校准', 'Calibrate probability independently for each horizon'), tx('未达门槛仅 shadow mode', 'Shadow mode until release gates pass'), tx('LLM 不修改模型概率', 'LLM cannot alter model probability')].map(x => <span key={x}><ShieldCheck size={15} />{x}</span>)}</div></Card></div>;
+  if (view === 'algorithms') return <div className="grid"><Card className="span-6"><CardHead code="CANDIDATES" title={tx('候选算法', 'Candidate Algorithms')} /><div className="chips">{['Logistic Regression', 'Shallow GBDT', 'Cascade Ensemble', 'Learning-to-Rank', 'ECOD / Isolation Forest', 'AFT / Survival Forest', 'Observability-aware'].map(x => <span key={x}>{x}</span>)}</div></Card><Card className="span-6"><CardHead code="GUARDRAILS" title={tx('上线约束', 'Release Gates')} /><div className="rules">{[tx('特征必须早于标签截点，防止未来信息泄漏', 'Features must precede the label cutoff to prevent future leakage'), tx('按时间与 GPU UUID 隔离训练、校准和测试', 'Split train, calibration, and test by time and GPU UUID'), tx('概率必须按时间窗分别校准', 'Calibrate probability independently for each horizon'), tx('未达门槛仅 shadow mode', 'Shadow mode until release gates pass'), tx('LLM 不修改模型概率', 'LLM cannot alter model probability')].map(x => <span key={x}><ShieldCheck size={15} />{x}</span>)}</div></Card></div>;
   return <div className="grid"><Card className="span-12"><CardHead code="DECISION STACK" title={tx('决策分层', 'Decision Stack')} /><div className="model-grid">{layers.map(x => <div key={x[0]}><small>{x[0]}</small><b>{x[1]}</b><code>{x[2]}</code><Badge value={x[3]} kind={x[0] === 'L1' ? 'healthy' : x[0] === 'L3' ? 'info' : 'neutral'} /></div>)}</div></Card></div>;
 }
 function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: string; platformConfig: PlatformConfig; onPlatformConfig: (config: PlatformConfig) => void }) {
@@ -2478,7 +2478,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
       'Early warning remains GPU-only and read-only shadow: training data, label manifest, training-sample Evidence Bundle, model governance cards, shadow gates, mature outcomes, Ranking@K, naive baselines, a HeaRank 7d node-risk challenger, data/calibration drift, and training/live-shadow feature-distribution snapshots are available, with the pre/post-fault feedback pack promoted as a priority entry; no alert, scheduling, repair or automatic isolation is triggered.',
     ),
 		history: [
-			tx('v0.27.39 · v7 矩阵兼容旧 control artifact：缺失目标时只允许从不可变配对正样本继承，显式目标冲突仍阻断并计入 pairing audit', 'v0.27.39 · v7 matrices support legacy control artifacts by inheriting a missing target only from the immutable paired positive; explicit target conflicts remain blocked and counted by the pairing audit'),
+			tx('v0.27.39 · v7 矩阵兼容旧 control artifact：缺失目标时只允许从不可变配对正样本继承，显式目标冲突仍阻断；P4 细化为子目标赛马、真实 episode 积累、硬件风险排序和校准预警四个里程碑', 'v0.27.39 · v7 matrices support legacy control artifacts by inheriting a missing target only from the immutable paired positive while explicit conflicts remain blocked; P4 is split into subtarget racing, real-episode accumulation, hardware risk ranking, and calibrated-warning milestones'),
 			tx('v0.27.38 · v6 训练矩阵不可变保留 prediction_target 并拒绝混合目标；仅高优先级 XID 目标可使用 cutoff 前可纠正 Row Remap 趋势，硬件损坏目标继续禁用全部错误事件指标', 'v0.27.38 · v6 matrices immutably preserve prediction_target and reject mixed targets; only the high-priority-XID target may use pre-cutoff correctable row-remap trends, while hardware-failure models continue excluding all error-event indicators'),
 			tx('v0.27.37 · 基线按 horizon 仅用训练集完成覆盖率过滤、效应排序和维度上限控制；验证/测试标签不参与特征选择，缓解多尺度扩展后的过拟合', 'v0.27.37 · each horizon now uses training data only for coverage filtering, effect ranking, and dimensionality caps; validation/test labels never select features, reducing overfit after multi-scale expansion'),
 			tx('v0.27.36 · 历史与在线影子评分共用 15m/1h/6h/24h 多尺度变换；基线阈值优先满足 precision≥70% 且 recall≥50%，发布门禁不再只检查稳定性和校准', 'v0.27.36 · historical extraction and live shadow scoring share 15m/1h/6h/24h transformations; baseline thresholds prioritize precision≥70% with recall≥50%, and release gates no longer check only stability and calibration'),
@@ -2656,7 +2656,10 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
     ['P2.5', tx('性能验证', 'Performance Validation'), tx('开发中', 'ACTIVE')],
     ['P3', tx('特征与异常检测', 'Features & Anomaly Detection'), tx('开发中', 'ACTIVE')],
     ['P3.5', tx('只读证据与自动分析', 'Read-only Evidence & Analysis'), tx('开发中', 'ACTIVE')],
-    ['P4', tx('硬件故障预警', 'Hardware Early Warning'), tx('开发中', 'ACTIVE')],
+    ['P4.1', tx('型号 / 故障子目标影子赛马', 'Model / Fault Subtarget Shadow Race'), tx('开发中', 'ACTIVE')],
+    ['P4.2', tx('真实硬件故障 Episode 积累', 'Real Hardware-fault Episode Accumulation'), tx('开发中', 'ACTIVE')],
+    ['P4.3', tx('全局硬件故障风险排序', 'Fleet Hardware-failure Risk Ranking'), tx('规划', 'PLANNED')],
+    ['P4.4', tx('校准预警与生产门禁', 'Calibrated Warning & Production Gates'), tx('规划', 'PLANNED')],
   ];
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
