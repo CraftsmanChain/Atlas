@@ -16,7 +16,7 @@ import (
 
 func TestAssembleTrainingMatrixPreservesMissingValuesAndWeightsClasses(t *testing.T) {
 	onset := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	positive := extractedFeatureRow{SampleKey: "p1", GPUUUID: "GPU-A", NodeIP: "10.0.0.1", ModelName: "H100", HorizonMinutes: 60,
+	positive := extractedFeatureRow{SampleKey: "p1", GPUUUID: "GPU-A", NodeIP: "10.0.0.1", ModelName: "H100", HorizonMinutes: 60, PredictionTarget: highPriorityXIDEventTarget,
 		FeatureCutoffAt: onset.Add(-time.Hour), LabelOnsetAt: onset, LabelWeight: 0.8, FeatureContract: "1.9.0", MetricCoverage: 0.8,
 		Features: map[string]float64{"gpu_util_mean_24h": 70, "gpu_temp_mean_24h": 65}}
 	controlFeature := extractedFeatureRow{SampleKey: "window", GPUUUID: "GPU-A", NodeIP: "10.0.0.1", ModelName: "H100", HorizonMinutes: 60,
@@ -24,13 +24,16 @@ func TestAssembleTrainingMatrixPreservesMissingValuesAndWeightsClasses(t *testin
 		Features: map[string]float64{"gpu_util_mean_24h": 75}}
 	metadata := trainingLabelMetadata{EventTypes: []string{"xid_94_contained_ecc"}, DriverVersions: []string{"560.35.03"}, LabelSources: []string{"versioned_rule"}}
 	positives := []preparedTrainingSample{{Sample: positive, LabelMetadata: metadata, LabelValue: 1, TrainingStatus: "eligible", Split: "train"}}
-	controls := []controlFeatureRow{{Request: healthyControlRequest{ControlKey: "c1", PairedSampleKey: "p1", GPUUUID: "GPU-A", NodeIP: "10.0.0.1", ModelName: "H100", HorizonMinutes: 60, FeatureCutoffAt: controlFeature.FeatureCutoffAt, Split: "train"}, Feature: controlFeature, ControlLoadBucket: "high", TrainingStatus: "eligible"}}
+	controls := []controlFeatureRow{{Request: healthyControlRequest{ControlKey: "c1", PairedSampleKey: "p1", GPUUUID: "GPU-A", NodeIP: "10.0.0.1", ModelName: "H100", HorizonMinutes: 60, FeatureCutoffAt: controlFeature.FeatureCutoffAt, Split: "train", PredictionTarget: highPriorityXIDEventTarget}, Feature: controlFeature, ControlLoadBucket: "high", TrainingStatus: "eligible"}}
 	rows, columns, audit := assembleTrainingMatrix(positives, controls, "1.9.0")
 	if len(rows) != 2 || len(columns) != 2 || audit != (matrixAudit{}) {
 		t.Fatalf("unexpected rows=%d columns=%v audit=%+v", len(rows), columns, audit)
 	}
 	applyClassWeights(rows)
 	for _, row := range rows {
+		if row.PredictionTarget != highPriorityXIDEventTarget {
+			t.Fatalf("prediction target was not preserved: %+v", row)
+		}
 		if row.ClassWeight != 1 {
 			t.Fatalf("balanced pair class weight=%v", row.ClassWeight)
 		}
@@ -66,7 +69,7 @@ func TestManualFeedbackTrainingMatrixBuildIsGovernanceOnly(t *testing.T) {
 	}
 	outputRoot := t.TempDir()
 	onset := time.Date(2026, 8, 19, 13, 0, 0, 0, time.UTC)
-	positive := extractedFeatureRow{SampleKey: "manual-positive-1", GPUUUID: "GPU-MANUAL", NodeIP: "10.114.4.36", ModelName: "H100", HorizonMinutes: 1440,
+	positive := extractedFeatureRow{SampleKey: "manual-positive-1", GPUUUID: "GPU-MANUAL", NodeIP: "10.114.4.36", ModelName: "H100", HorizonMinutes: 1440, PredictionTarget: hardwareFailureTarget,
 		FeatureCutoffAt: onset.Add(-24 * time.Hour), LabelOnsetAt: onset, LabelWeight: 1, FeatureContract: "1.9.0", MetricCoverage: 0.85,
 		Features: map[string]float64{"gpu_util_mean_24h": 72, "gpu_temp_mean_24h": 61}}
 	metadata := trainingLabelMetadata{EventTypes: []string{"manual_hardware_fault_feedback"}, LabelSources: []string{"manual_hardware_fault_feedback"}}
@@ -75,7 +78,7 @@ func TestManualFeedbackTrainingMatrixBuildIsGovernanceOnly(t *testing.T) {
 		FeatureCutoffAt: onset.Add(-30 * 24 * time.Hour), FeatureContract: "1.9.0", MetricCoverage: 0.9,
 		Features: map[string]float64{"gpu_util_mean_24h": 70, "gpu_temp_mean_24h": 58}}
 	controls := []controlFeatureRow{{
-		Request: healthyControlRequest{ControlKey: "manual-control-1", PairedSampleKey: "manual-positive-1", GPUUUID: "GPU-MANUAL", NodeIP: "10.114.4.36", ModelName: "H100", HorizonMinutes: 1440, FeatureCutoffAt: controlFeature.FeatureCutoffAt, Split: "pending_control_sampling"},
+		Request: healthyControlRequest{ControlKey: "manual-control-1", PairedSampleKey: "manual-positive-1", GPUUUID: "GPU-MANUAL", NodeIP: "10.114.4.36", ModelName: "H100", HorizonMinutes: 1440, FeatureCutoffAt: controlFeature.FeatureCutoffAt, Split: "pending_control_sampling", PredictionTarget: hardwareFailureTarget},
 		Feature: controlFeature, ControlLoadBucket: "high", TrainingStatus: "eligible",
 	}}
 	prepDir := filepath.Join(outputRoot, "prepared", "manual")
@@ -155,6 +158,22 @@ func TestManualFeedbackTrainingMatrixBuildIsGovernanceOnly(t *testing.T) {
 	}
 	if len(readiness.AccumulationTargets) == 0 || readiness.AccumulationTargets[0].TotalShortfall == 0 {
 		t.Fatalf("manual matrix readiness must summarize sample accumulation targets: %+v", readiness.AccumulationTargets)
+	}
+}
+
+func TestMatrixPredictionTargetRejectsMissingAndMixedTargets(t *testing.T) {
+	if _, err := matrixPredictionTarget([]trainingMatrixRow{{RowKey: "missing"}}); err == nil {
+		t.Fatal("missing prediction target must be rejected")
+	}
+	rows := []trainingMatrixRow{
+		{RowKey: "hardware", PredictionTarget: hardwareFailureTarget},
+		{RowKey: "xid", PredictionTarget: highPriorityXIDEventTarget},
+	}
+	if _, err := matrixPredictionTarget(rows); err == nil {
+		t.Fatal("mixed prediction targets must be rejected")
+	}
+	if target, err := matrixPredictionTarget(rows[1:]); err != nil || target != highPriorityXIDEventTarget {
+		t.Fatalf("single target was not preserved: target=%q err=%v", target, err)
 	}
 }
 

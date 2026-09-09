@@ -147,3 +147,34 @@ func TestShadowRegistryRejectsTamperedArtifact(t *testing.T) {
 		t.Fatalf("tampered artifact was not rejected: %+v", summary)
 	}
 }
+
+func TestShadowRegistryRejectsPredictionTargetMismatch(t *testing.T) {
+	db, err := storage.InitDB(filepath.Join(t.TempDir(), "atlas.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	artifactPath := filepath.Join(directory, "models.json")
+	reportPath := filepath.Join(directory, "evaluation_report.json")
+	artifact := `{"version":"gpu-logistic-baseline-v12","matrix_key":"matrix-v6","scope_event_type":"xid_94_contained_ecc","scope_model_name":"NVIDIA H100 80GB HBM3","prediction_target":"high_priority_xid_event","models":[]}`
+	report := `{"version":"gpu-logistic-baseline-v12","matrix_key":"matrix-v6","scope_event_type":"xid_94_contained_ecc","scope_model_name":"NVIDIA H100 80GB HBM3","prediction_target":"hardware_failure","feature_audit":{"status":"passed","prohibited_selected_count":0},"horizons":[]}`
+	if err := os.WriteFile(artifactPath, []byte(artifact), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reportPath, []byte(report), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checksum, err := sha256File(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := api.BaselineModelBuild{
+		Version: "gpu-logistic-baseline-v12", Status: "completed", SourceTrainingMatrixKey: "matrix-v6",
+		ScopeEventType: "xid_94_contained_ecc", ScopeModelName: "NVIDIA H100 80GB HBM3",
+		FeatureAuditStatus: "passed", ArtifactPath: artifactPath, ArtifactSHA256: checksum, ReportPath: reportPath,
+	}
+	service := NewService(db)
+	if _, err := service.registerShadowBuild(build); err == nil || err.Error() != "prediction target does not match report and artifact" {
+		t.Fatalf("prediction target mismatch was not rejected: %v", err)
+	}
+}

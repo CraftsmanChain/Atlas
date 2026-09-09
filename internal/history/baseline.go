@@ -20,9 +20,9 @@ import (
 )
 
 const (
-	baselineModelVersion             = "gpu-logistic-baseline-v11"
+	baselineModelVersion             = "gpu-logistic-baseline-v12"
 	cohortReadinessGateName          = "fault-model-horizon-readiness-v1"
-	baselineFeatureAuditVersion      = "baseline-feature-leakage-audit-v1"
+	baselineFeatureAuditVersion      = "baseline-feature-leakage-audit-v2"
 	baselineFeatureSelectionVersion  = "train-only-effect-selection-v1"
 	baselineMinimumPrecision         = 0.70
 	baselineMinimumRecall            = 0.50
@@ -145,16 +145,17 @@ type baselineUncertainty struct {
 	Status          string  `json:"status"`
 }
 type baselineArtifact struct {
-	Version        string               `json:"version"`
-	Algorithm      string               `json:"algorithm"`
-	MatrixKey      string               `json:"matrix_key"`
-	ScopeEventType string               `json:"scope_event_type,omitempty"`
-	ScopeModelName string               `json:"scope_model_name,omitempty"`
-	ReadinessGate  string               `json:"readiness_gate,omitempty"`
-	FeaturePolicy  string               `json:"feature_policy"`
-	FeatureAudit   baselineFeatureAudit `json:"feature_audit"`
-	Models         []logisticModel      `json:"models"`
-	CreatedAt      time.Time            `json:"created_at"`
+	Version          string               `json:"version"`
+	Algorithm        string               `json:"algorithm"`
+	MatrixKey        string               `json:"matrix_key"`
+	ScopeEventType   string               `json:"scope_event_type,omitempty"`
+	ScopeModelName   string               `json:"scope_model_name,omitempty"`
+	ReadinessGate    string               `json:"readiness_gate,omitempty"`
+	PredictionTarget string               `json:"prediction_target"`
+	FeaturePolicy    string               `json:"feature_policy"`
+	FeatureAudit     baselineFeatureAudit `json:"feature_audit"`
+	Models           []logisticModel      `json:"models"`
+	CreatedAt        time.Time            `json:"created_at"`
 }
 type baselineReport struct {
 	Version                 string                     `json:"version"`
@@ -163,6 +164,7 @@ type baselineReport struct {
 	ScopeEventType          string                     `json:"scope_event_type,omitempty"`
 	ScopeModelName          string                     `json:"scope_model_name,omitempty"`
 	ReadinessGate           string                     `json:"readiness_gate,omitempty"`
+	PredictionTarget        string                     `json:"prediction_target"`
 	Mode                    string                     `json:"mode"`
 	FeaturePolicy           string                     `json:"feature_policy"`
 	FeatureAudit            baselineFeatureAudit       `json:"feature_audit"`
@@ -187,6 +189,7 @@ type baselineFeatureExclusion struct {
 
 type baselineFeatureAudit struct {
 	Version                 string                     `json:"version"`
+	PredictionTarget        string                     `json:"prediction_target"`
 	Status                  string                     `json:"status"`
 	SourceFeatureCount      int                        `json:"source_feature_count"`
 	SelectedFeatureCount    int                        `json:"selected_feature_count"`
@@ -310,7 +313,11 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 			return err
 		}
 	}
-	featureAudit := auditBaselineFeatures(rows)
+	predictionTarget, err := matrixPredictionTarget(rows)
+	if err != nil {
+		return err
+	}
+	featureAudit := auditBaselineFeaturesForTarget(rows, predictionTarget)
 	if featureAudit.Status != "passed" || featureAudit.ProhibitedSelectedCount != 0 {
 		return fmt.Errorf("baseline feature leakage audit failed: %d prohibited columns selected", featureAudit.ProhibitedSelectedCount)
 	}
@@ -331,8 +338,8 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 		horizons = append(horizons, h)
 	}
 	sort.Ints(horizons)
-	artifact := baselineArtifact{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, FeaturePolicy: baselineFeaturePolicy(), FeatureAudit: featureAudit, CreatedAt: s.now()}
-	report := baselineReport{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, Mode: "offline_evaluation_only", FeaturePolicy: baselineFeaturePolicy(), FeatureAudit: featureAudit, CalibrationPolicy: "validation-only Platt scaling fits slope/intercept; held-out test labels are audit-only; no online probability release", OperatingPointPolicy: "validation-only threshold prioritizes precision >= 0.70 and recall >= 0.50; held-out test must independently pass both gates", FeatureSelectionPolicy: "training-only standardized class separation; >=70% coverage in each class; <=1 feature per 5 minority-class rows, <=48 total and <=4 per source metric; validation and test labels never select features", ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
+	artifact := baselineArtifact{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CreatedAt: s.now()}
+	report := baselineReport{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, Mode: "offline_evaluation_only", FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CalibrationPolicy: "validation-only Platt scaling fits slope/intercept; held-out test labels are audit-only; no online probability release", OperatingPointPolicy: "validation-only threshold prioritizes precision >= 0.70 and recall >= 0.50; held-out test must independently pass both gates", FeatureSelectionPolicy: "training-only standardized class separation; >=70% coverage in each class; <=1 feature per 5 minority-class rows, <=48 total and <=4 per source metric; validation and test labels never select features", ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
 	for _, h := range horizons {
 		train, val, test := splitMatrixRows(byHorizon[h])
 		if !hasBothLabels(train) || !hasBothLabels(val) || !hasBothLabels(test) {
@@ -676,11 +683,14 @@ func macroStratifiedMetrics(horizons []baselineHorizonReport, selectMetrics func
 	return totals
 }
 
-func baselineFeaturePolicy() string {
-	return "exclude sampling-count quality signals plus XID, ECC, row-remap and reset indicators that represent an occurred fault; use only pre-failure thermal, power, utilization, clock, framebuffer and PCIe-replay trends"
+func baselineFeaturePolicy(predictionTarget string) string {
+	if predictionTarget == highPriorityXIDEventTarget {
+		return "for future high-priority XID prediction, allow point-in-time-safe correctable row-remap history as a precursor; exclude sampling counts plus current XID, uncorrectable ECC/row-remap, remap failure and reset indicators"
+	}
+	return "for hardware-failure prediction, exclude sampling counts plus XID, ECC, row-remap and reset indicators that represent an occurred fault; use only pre-failure operational trends"
 }
 func safeBaselineColumns(rows []trainingMatrixRow) []string {
-	return auditBaselineFeatures(rows).SelectedColumns
+	return auditBaselineFeaturesForTarget(rows, hardwareFailureTarget).SelectedColumns
 }
 
 func selectBaselineFeatures(rows []trainingMatrixRow, columns []string) baselineFeatureSelection {
@@ -788,6 +798,10 @@ func selectedFeatureNames(selection baselineFeatureSelection) []string {
 }
 
 func auditBaselineFeatures(rows []trainingMatrixRow) baselineFeatureAudit {
+	return auditBaselineFeaturesForTarget(rows, hardwareFailureTarget)
+}
+
+func auditBaselineFeaturesForTarget(rows []trainingMatrixRow, predictionTarget string) baselineFeatureAudit {
 	set := map[string]bool{}
 	for _, r := range rows {
 		for c := range r.Features {
@@ -799,16 +813,16 @@ func auditBaselineFeatures(rows []trainingMatrixRow) baselineFeatureAudit {
 		all = append(all, c)
 	}
 	sort.Strings(all)
-	audit := baselineFeatureAudit{Version: baselineFeatureAuditVersion, Status: "passed", SourceFeatureCount: len(all), SelectedColumns: []string{}, Exclusions: []baselineFeatureExclusion{}}
+	audit := baselineFeatureAudit{Version: baselineFeatureAuditVersion, PredictionTarget: predictionTarget, Status: "passed", SourceFeatureCount: len(all), SelectedColumns: []string{}, Exclusions: []baselineFeatureExclusion{}}
 	for _, column := range all {
-		if reason := prohibitedBaselineFeatureReason(column); reason != "" {
+		if reason := prohibitedBaselineFeatureReasonForTarget(column, predictionTarget); reason != "" {
 			audit.Exclusions = append(audit.Exclusions, baselineFeatureExclusion{Feature: column, Reason: reason})
 			continue
 		}
 		audit.SelectedColumns = append(audit.SelectedColumns, column)
 	}
 	for _, column := range audit.SelectedColumns {
-		if prohibitedBaselineFeatureReason(column) != "" {
+		if prohibitedBaselineFeatureReasonForTarget(column, predictionTarget) != "" {
 			audit.ProhibitedSelectedCount++
 		}
 	}
@@ -821,15 +835,24 @@ func auditBaselineFeatures(rows []trainingMatrixRow) baselineFeatureAudit {
 }
 
 func prohibitedBaselineFeatureReason(column string) string {
+	return prohibitedBaselineFeatureReasonForTarget(column, hardwareFailureTarget)
+}
+
+func prohibitedBaselineFeatureReasonForTarget(column, predictionTarget string) string {
 	if strings.Contains(column, "_sample_count_") {
 		return "quality_only_sampling_count"
+	}
+	if strings.HasPrefix(column, "correctable_remapped_rows_") {
+		if predictionTarget == highPriorityXIDEventTarget {
+			return ""
+		}
+		return "occurred_fault_row_remap"
 	}
 	prefixes := []struct {
 		prefix string
 		reason string
 	}{
 		{"xid_", "occurred_fault_xid"},
-		{"correctable_remapped_rows_", "occurred_fault_row_remap"},
 		{"uncorrectable_remapped_rows_", "occurred_fault_row_remap"},
 		{"row_remap_failure_", "occurred_fault_row_remap"},
 		{"uncorrected_ecc_", "occurred_fault_ecc"},

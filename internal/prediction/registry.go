@@ -32,11 +32,12 @@ type ShadowRegistrySummary struct {
 }
 
 type registryReport struct {
-	Version        string `json:"version"`
-	MatrixKey      string `json:"matrix_key"`
-	ScopeEventType string `json:"scope_event_type"`
-	ScopeModelName string `json:"scope_model_name"`
-	FeatureAudit   struct {
+	Version          string `json:"version"`
+	MatrixKey        string `json:"matrix_key"`
+	ScopeEventType   string `json:"scope_event_type"`
+	ScopeModelName   string `json:"scope_model_name"`
+	PredictionTarget string `json:"prediction_target"`
+	FeatureAudit     struct {
 		Status                  string `json:"status"`
 		ProhibitedSelectedCount int    `json:"prohibited_selected_count"`
 	} `json:"feature_audit"`
@@ -52,11 +53,12 @@ type registryReport struct {
 }
 
 type registryArtifact struct {
-	Version        string `json:"version"`
-	MatrixKey      string `json:"matrix_key"`
-	ScopeEventType string `json:"scope_event_type"`
-	ScopeModelName string `json:"scope_model_name"`
-	Models         []struct {
+	Version          string `json:"version"`
+	MatrixKey        string `json:"matrix_key"`
+	ScopeEventType   string `json:"scope_event_type"`
+	ScopeModelName   string `json:"scope_model_name"`
+	PredictionTarget string `json:"prediction_target"`
+	Models           []struct {
 		HorizonMinutes int      `json:"horizon_minutes"`
 		FeatureColumns []string `json:"feature_columns"`
 		Threshold      float64  `json:"threshold"`
@@ -146,6 +148,9 @@ func (s *Service) registerShadowBuild(build api.BaselineModelBuild) (int, error)
 	}
 	if report.ScopeEventType != build.ScopeEventType || artifact.ScopeEventType != build.ScopeEventType || report.ScopeModelName != build.ScopeModelName || artifact.ScopeModelName != build.ScopeModelName {
 		return 0, fmt.Errorf("build scope does not match report and artifact")
+	}
+	if report.PredictionTarget != artifact.PredictionTarget {
+		return 0, fmt.Errorf("prediction target does not match report and artifact")
 	}
 	if report.FeatureAudit.Status != "passed" || report.FeatureAudit.ProhibitedSelectedCount != 0 {
 		return 0, fmt.Errorf("report feature leakage audit did not pass")
