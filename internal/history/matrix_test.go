@@ -177,6 +177,28 @@ func TestMatrixPredictionTargetRejectsMissingAndMixedTargets(t *testing.T) {
 	}
 }
 
+func TestTrainingMatrixInheritsMissingLegacyControlTargetFromPair(t *testing.T) {
+	onset := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	positive := preparedTrainingSample{
+		Sample: extractedFeatureRow{SampleKey: "p1", GPUUUID: "GPU-A", HorizonMinutes: 60, PredictionTarget: highPriorityXIDEventTarget,
+			FeatureCutoffAt: onset.Add(-time.Hour), LabelOnsetAt: onset, FeatureContract: "1.9.0", Features: map[string]float64{"gpu_temp_mean_24h": 60}},
+		Split: "train", TrainingStatus: "eligible",
+	}
+	control := controlFeatureRow{
+		Request: healthyControlRequest{ControlKey: "c1", PairedSampleKey: "p1", GPUUUID: "GPU-A", HorizonMinutes: 60, FeatureCutoffAt: onset.Add(-48 * time.Hour), Split: "train"},
+		Feature: extractedFeatureRow{FeatureContract: "1.9.0", Features: map[string]float64{"gpu_temp_mean_24h": 50}}, TrainingStatus: "eligible",
+	}
+	rows, _, audit := assembleTrainingMatrix([]preparedTrainingSample{positive}, []controlFeatureRow{control}, "1.9.0")
+	if audit.pairing != 0 || len(rows) != 2 || rows[1].PredictionTarget != highPriorityXIDEventTarget {
+		t.Fatalf("legacy control target was not safely inherited: audit=%+v rows=%+v", audit, rows)
+	}
+	control.Request.PredictionTarget = hardwareFailureTarget
+	rows, _, audit = assembleTrainingMatrix([]preparedTrainingSample{positive}, []controlFeatureRow{control}, "1.9.0")
+	if audit.pairing != 1 || len(rows) != 1 {
+		t.Fatalf("explicitly mismatched control target must be rejected: audit=%+v rows=%+v", audit, rows)
+	}
+}
+
 func TestCohortReadinessGatesEachFaultModelAndHorizon(t *testing.T) {
 	rows := make([]trainingMatrixRow, 0, 150)
 	add := func(eventType, split string, horizon, positives, controls, positiveGPUs int) {
