@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	trainingMatrixVersion      = "gpu-supervised-training-matrix-v6"
+	trainingMatrixVersion      = "gpu-supervised-training-matrix-v7"
 	manualTrainingMatrixStatus = "manual_feedback_matrix_ready_pending_training_gate"
 )
 
@@ -714,7 +714,15 @@ func assembleTrainingMatrixWithOptions(positives []preparedTrainingSample, contr
 			continue
 		}
 		paired, ok := positiveByKey[item.Request.PairedSampleKey]
-		if !ok || item.Request.Split != paired.Split || item.Request.HorizonMinutes != paired.Sample.HorizonMinutes || normalizeHistoricalGPUUUID(item.Request.GPUUUID) != normalizeHistoricalGPUUUID(paired.Sample.GPUUUID) || item.Request.PredictionTarget != paired.Sample.PredictionTarget {
+		if !ok || item.Request.Split != paired.Split || item.Request.HorizonMinutes != paired.Sample.HorizonMinutes || normalizeHistoricalGPUUUID(item.Request.GPUUUID) != normalizeHistoricalGPUUUID(paired.Sample.GPUUUID) {
+			audit.pairing++
+			continue
+		}
+		predictionTarget := strings.TrimSpace(item.Request.PredictionTarget)
+		if predictionTarget == "" {
+			predictionTarget = paired.Sample.PredictionTarget
+		}
+		if predictionTarget != paired.Sample.PredictionTarget {
 			audit.pairing++
 			continue
 		}
@@ -724,7 +732,7 @@ func assembleTrainingMatrixWithOptions(positives []preparedTrainingSample, contr
 		}
 		add(trainingMatrixRow{RowKey: "control:" + item.Request.ControlKey, SampleKey: item.Request.ControlKey, PairedSampleKey: item.Request.PairedSampleKey, SampleKind: "healthy_control", LabelValue: 0, EvidenceWeight: 1,
 			Split: item.Request.Split, HorizonMinutes: item.Request.HorizonMinutes, GPUUUID: item.Request.GPUUUID, NodeIP: item.Request.NodeIP, ModelName: item.Request.ModelName,
-			PredictionTarget: item.Request.PredictionTarget,
+			PredictionTarget: predictionTarget,
 			FeatureCutoffAt:  item.Request.FeatureCutoffAt, LabelMetadata: paired.LabelMetadata,
 			LoadBucket: item.ControlLoadBucket, MetricCoverage: item.Feature.MetricCoverage, Features: item.Feature.Features})
 	}
