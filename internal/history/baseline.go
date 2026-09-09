@@ -21,6 +21,9 @@ import (
 
 const (
 	baselineModelVersion             = "gpu-logistic-baseline-v12"
+	shallowGBDTModelVersion          = "gpu-shallow-gbdt-challenger-v1"
+	logisticRegressionAlgorithm      = "logistic_regression"
+	shallowGBDTAlgorithm             = "gradient_boosted_stumps"
 	cohortReadinessGateName          = "fault-model-horizon-readiness-v1"
 	baselineFeatureAuditVersion      = "baseline-feature-leakage-audit-v2"
 	baselineFeatureSelectionVersion  = "train-only-effect-selection-v1"
@@ -30,12 +33,17 @@ const (
 	baselineMinorityRowsPerFeature   = 5
 	baselineMaximumSelectedFeatures  = 48
 	baselineMaximumFeaturesPerSource = 4
+	shallowGBDTMaximumFeatures       = 64
+	shallowGBDTMaximumRounds         = 48
+	shallowGBDTLearningRate          = 0.08
+	shallowGBDTMinimumLeafRows       = 5
 )
 
 type BaselineModelBuildRequest struct {
 	SourceMatrixBuildID uint   `json:"source_matrix_build_id"`
 	EventType           string `json:"event_type,omitempty"`
 	ModelName           string `json:"model_name,omitempty"`
+	Algorithm           string `json:"algorithm,omitempty"`
 }
 
 type logisticModel struct {
@@ -45,6 +53,25 @@ type logisticModel struct {
 	Scales           []float64                `json:"scales"`
 	Coefficients     []float64                `json:"coefficients"`
 	Intercept        float64                  `json:"intercept"`
+	Threshold        float64                  `json:"threshold"`
+	Calibration      probabilityCalibration   `json:"calibration"`
+	FeatureSelection baselineFeatureSelection `json:"feature_selection"`
+}
+
+type boostedStump struct {
+	Feature      string  `json:"feature"`
+	Threshold    float64 `json:"threshold"`
+	LeftValue    float64 `json:"left_value"`
+	RightValue   float64 `json:"right_value"`
+	MissingValue float64 `json:"missing_value"`
+}
+
+type shallowGBDTModel struct {
+	HorizonMinutes   int                      `json:"horizon_minutes"`
+	FeatureColumns   []string                 `json:"feature_columns"`
+	Intercept        float64                  `json:"intercept"`
+	LearningRate     float64                  `json:"learning_rate"`
+	Trees            []boostedStump           `json:"trees"`
 	Threshold        float64                  `json:"threshold"`
 	Calibration      probabilityCalibration   `json:"calibration"`
 	FeatureSelection baselineFeatureSelection `json:"feature_selection"`
@@ -155,6 +182,7 @@ type baselineArtifact struct {
 	FeaturePolicy    string               `json:"feature_policy"`
 	FeatureAudit     baselineFeatureAudit `json:"feature_audit"`
 	Models           []logisticModel      `json:"models"`
+	BoostedModels    []shallowGBDTModel   `json:"boosted_models,omitempty"`
 	CreatedAt        time.Time            `json:"created_at"`
 }
 type baselineReport struct {
@@ -248,6 +276,11 @@ func (s *Service) StartBaselineModelBuild(request BaselineModelBuildRequest) (ap
 	}
 	request.EventType = strings.TrimSpace(request.EventType)
 	request.ModelName = strings.TrimSpace(request.ModelName)
+	algorithm, version, err := resolveBaselineAlgorithm(request.Algorithm)
+	if err != nil {
+		return api.BaselineModelBuild{}, err
+	}
+	request.Algorithm = algorithm
 	if (request.EventType == "") != (request.ModelName == "") {
 		return api.BaselineModelBuild{}, fmt.Errorf("event_type and model_name must be provided together")
 	}
@@ -264,12 +297,12 @@ func (s *Service) StartBaselineModelBuild(request BaselineModelBuildRequest) (ap
 		return api.BaselineModelBuild{}, fmt.Errorf("a completed supervised training matrix is required")
 	}
 	started := s.now()
-	key := baselineModelVersion + "-" + strconv.FormatInt(started.UTC().UnixNano(), 10)
+	key := version + "-" + strconv.FormatInt(started.UTC().UnixNano(), 10)
 	readinessGate := ""
 	if request.EventType != "" {
 		readinessGate = cohortReadinessGateName
 	}
-	build := api.BaselineModelBuild{BaselineModelKey: key, Version: baselineModelVersion, Status: "queued", Algorithm: "logistic_regression",
+	build := api.BaselineModelBuild{BaselineModelKey: key, Version: version, Status: "queued", Algorithm: request.Algorithm,
 		SourceMatrixBuildID: matrix.ID, SourceTrainingMatrixKey: matrix.TrainingMatrixKey, FeatureContractVersion: matrix.FeatureContractVersion,
 		ScopeEventType: request.EventType, ScopeModelName: request.ModelName, ReadinessGateVersion: readinessGate,
 		OutputDir: filepath.Join(s.config.DatasetDir, "baseline-models", key), StartedAt: started}
@@ -279,6 +312,17 @@ func (s *Service) StartBaselineModelBuild(request BaselineModelBuildRequest) (ap
 	s.baselineRunning = true
 	go s.executeBaselineModelBuild(build.ID)
 	return build, nil
+}
+
+func resolveBaselineAlgorithm(value string) (string, string, error) {
+	switch strings.TrimSpace(value) {
+	case "", logisticRegressionAlgorithm:
+		return logisticRegressionAlgorithm, baselineModelVersion, nil
+	case shallowGBDTAlgorithm:
+		return shallowGBDTAlgorithm, shallowGBDTModelVersion, nil
+	default:
+		return "", "", fmt.Errorf("unsupported baseline algorithm %q", strings.TrimSpace(value))
+	}
 }
 func (s *Service) executeBaselineModelBuild(id uint) {
 	defer func() { s.baselineMu.Lock(); s.baselineRunning = false; s.baselineMu.Unlock() }()
@@ -338,41 +382,69 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 		horizons = append(horizons, h)
 	}
 	sort.Ints(horizons)
-	artifact := baselineArtifact{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CreatedAt: s.now()}
-	report := baselineReport{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, Mode: "offline_evaluation_only", FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CalibrationPolicy: "validation-only Platt scaling fits slope/intercept; held-out test labels are audit-only; no online probability release", OperatingPointPolicy: "validation-only threshold prioritizes precision >= 0.70 and recall >= 0.50; held-out test must independently pass both gates", FeatureSelectionPolicy: "training-only standardized class separation; >=70% coverage in each class; <=1 feature per 5 minority-class rows, <=48 total and <=4 per source metric; validation and test labels never select features", ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
+	mode := "offline_evaluation_only"
+	featureSelectionPolicy := "training-only standardized class separation; >=70% coverage in each class; <=1 feature per 5 minority-class rows, <=48 total and <=4 per source metric; validation and test labels never select features"
+	if build.Algorithm == shallowGBDTAlgorithm {
+		mode = "offline_challenger_evaluation_only"
+		featureSelectionPolicy = "training-only coverage and variance filter; up to 64 safe features; 48 deterministic logistic-loss boosted stumps learn nonlinear thresholds; validation/test labels never select features; runtime registration is disabled"
+	}
+	artifact := baselineArtifact{Version: build.Version, Algorithm: build.Algorithm, MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CreatedAt: s.now()}
+	report := baselineReport{Version: build.Version, Algorithm: build.Algorithm, MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, Mode: mode, FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CalibrationPolicy: "validation-only Platt scaling fits slope/intercept; held-out test labels are audit-only; no online probability release", OperatingPointPolicy: "validation-only threshold prioritizes precision >= 0.70 and recall >= 0.50; held-out test must independently pass both gates", FeatureSelectionPolicy: featureSelectionPolicy, ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
 	for _, h := range horizons {
 		train, val, test := splitMatrixRows(byHorizon[h])
 		if !hasBothLabels(train) || !hasBothLabels(val) || !hasBothLabels(test) {
 			return fmt.Errorf("horizon %d requires both labels in every split", h)
 		}
 		selection := selectBaselineFeatures(train, columns)
+		if build.Algorithm == shallowGBDTAlgorithm {
+			selection = selectShallowGBDTFeatures(train, columns)
+		}
 		if selection.Status != "passed" || selection.SelectedFeatureCount == 0 {
 			return fmt.Errorf("horizon %d has no train-only selected features", h)
 		}
 		selectedColumns := selectedFeatureNames(selection)
-		model := fitLogistic(train, selectedColumns, h)
-		model.FeatureSelection = selection
 		if len(selectedColumns) > build.FeatureColumnCount {
 			build.FeatureColumnCount = len(selectedColumns)
 		}
-		rawValidationScores := scoreRows(model, val)
-		model.Calibration = fitPlattCalibration(rawValidationScores)
-		validationScores := applyCalibration(rawValidationScores, model.Calibration)
-		model.Threshold = operationalThreshold(validationScores)
-		rawTestScores := scoreRowsWithoutCalibration(model, test)
-		testScores := applyCalibration(rawTestScores, model.Calibration)
-		for i := range testScores {
-			testScores[i].threshold = model.Threshold
+		var rawValidationScores, validationScores, rawTestScores, testScores []scoredLabel
+		threshold := 0.5
+		if build.Algorithm == shallowGBDTAlgorithm {
+			model := fitShallowGBDT(train, selectedColumns, h)
+			model.FeatureSelection = selection
+			rawValidationScores = scoreShallowGBDTRowsWithoutCalibration(model, val)
+			model.Calibration = fitPlattCalibration(rawValidationScores)
+			validationScores = applyCalibration(rawValidationScores, model.Calibration)
+			model.Threshold = operationalThreshold(validationScores)
+			threshold = model.Threshold
+			rawTestScores = scoreShallowGBDTRowsWithoutCalibration(model, test)
+			testScores = applyCalibration(rawTestScores, model.Calibration)
+			artifact.BoostedModels = append(artifact.BoostedModels, model)
+		} else {
+			model := fitLogistic(train, selectedColumns, h)
+			model.FeatureSelection = selection
+			rawValidationScores = scoreRowsWithoutCalibration(model, val)
+			model.Calibration = fitPlattCalibration(rawValidationScores)
+			validationScores = applyCalibration(rawValidationScores, model.Calibration)
+			model.Threshold = operationalThreshold(validationScores)
+			threshold = model.Threshold
+			rawTestScores = scoreRowsWithoutCalibration(model, test)
+			testScores = applyCalibration(rawTestScores, model.Calibration)
+			artifact.Models = append(artifact.Models, model)
 		}
-		artifact.Models = append(artifact.Models, model)
+		for i := range testScores {
+			testScores[i].threshold = threshold
+		}
 		validationUncertainty := bootstrapBaselineUncertainty(val, validationScores, h+1_000_000)
 		testUncertainty := bootstrapBaselineUncertainty(test, testScores, h)
 		crossSplitStatus := crossSplitStability(validationUncertainty, testUncertainty)
 		rawTestCalibration := evaluateBaselineCalibration(rawTestScores)
 		testCalibration := evaluateBaselineCalibration(testScores)
-		testMetrics := evaluateScores(testScores, model.Threshold)
+		testMetrics := evaluateScores(testScores, threshold)
 		releaseReadiness := baselineReleaseReadiness(crossSplitStatus, testCalibration.Status, testMetrics)
-		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, FeatureSelection: selection, Train: describeLabels(train), Validation: evaluateScores(validationScores, model.Threshold), ValidationUncertainty: validationUncertainty, Test: testMetrics, TestUncertainty: testUncertainty, CrossSplitStatus: crossSplitStatus, RawTestCalibration: rawTestCalibration, TestCalibration: testCalibration, ReleaseReadiness: releaseReadiness, TestByModel: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return []string{row.ModelName} }), TestByEventType: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes }), TestByDriverVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.DriverVersions }), TestByLabelSource: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.LabelSources }), TestByHardwareCertainty: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.HardwareCertainties }), TestByRuleVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.RuleDecisionVersions }), Threshold: model.Threshold})
+		if build.Algorithm == shallowGBDTAlgorithm && releaseReadiness == "shadow_candidate" {
+			releaseReadiness = "offline_challenger_candidate_runtime_required"
+		}
+		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, FeatureSelection: selection, Train: describeLabels(train), Validation: evaluateScores(validationScores, threshold), ValidationUncertainty: validationUncertainty, Test: testMetrics, TestUncertainty: testUncertainty, CrossSplitStatus: crossSplitStatus, RawTestCalibration: rawTestCalibration, TestCalibration: testCalibration, ReleaseReadiness: releaseReadiness, TestByModel: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return []string{row.ModelName} }), TestByEventType: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes }), TestByDriverVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.DriverVersions }), TestByLabelSource: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.LabelSources }), TestByHardwareCertainty: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.HardwareCertainties }), TestByRuleVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.RuleDecisionVersions }), Threshold: threshold})
 		if crossSplitStatus == "robust_candidate" {
 			build.StatisticallyStableCount++
 		}
@@ -391,7 +463,7 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 	report.ByTestRuleVersion = macroStratifiedMetrics(report.Horizons, func(row baselineHorizonReport) map[string]baselineMetrics { return row.TestByRuleVersion })
 	report.MacroTest = macroTestMetrics(report.Horizons)
 	build.HorizonCount = len(horizons)
-	build.TrainedModelCount = len(artifact.Models)
+	build.TrainedModelCount = len(artifact.Models) + len(artifact.BoostedModels)
 	build.TestMacroROCAUC = report.MacroTest.ROCAUC
 	build.TestMacroPRAUC = report.MacroTest.PRAUC
 	build.TestMacroPrecision = report.MacroTest.Precision
@@ -797,6 +869,94 @@ func selectedFeatureNames(selection baselineFeatureSelection) []string {
 	return columns
 }
 
+func selectShallowGBDTFeatures(rows []trainingMatrixRow, columns []string) baselineFeatureSelection {
+	type moments struct {
+		positive, control int
+		sum, sumSquares   float64
+	}
+	result := baselineFeatureSelection{Version: "train-only-diversity-selection-v1", Status: "insufficient_features", CandidateFeatureCount: len(columns), Selected: []baselineSelectedFeature{}}
+	positiveTotal, controlTotal := 0, 0
+	for _, row := range rows {
+		if row.LabelValue == 1 {
+			positiveTotal++
+		} else {
+			controlTotal++
+		}
+	}
+	minority := positiveTotal
+	if controlTotal < minority {
+		minority = controlTotal
+	}
+	result.SelectionLimit = minority / 2
+	if result.SelectionLimit > shallowGBDTMaximumFeatures {
+		result.SelectionLimit = shallowGBDTMaximumFeatures
+	}
+	if result.SelectionLimit < 1 || positiveTotal == 0 || controlTotal == 0 {
+		return result
+	}
+
+	bySource := map[string][]baselineSelectedFeature{}
+	for _, column := range columns {
+		m := moments{}
+		for _, row := range rows {
+			value, ok := row.Features[column]
+			if !ok || math.IsNaN(value) || math.IsInf(value, 0) {
+				continue
+			}
+			m.sum += value
+			m.sumSquares += value * value
+			if row.LabelValue == 1 {
+				m.positive++
+			} else {
+				m.control++
+			}
+		}
+		positiveCoverage := float64(m.positive) / float64(positiveTotal)
+		controlCoverage := float64(m.control) / float64(controlTotal)
+		if positiveCoverage < baselineMinimumClassCoverage || controlCoverage < baselineMinimumClassCoverage {
+			continue
+		}
+		observed := m.positive + m.control
+		mean := m.sum / float64(observed)
+		variance := m.sumSquares/float64(observed) - mean*mean
+		if variance <= 1e-18 {
+			continue
+		}
+		source, _, _, ok := featurestats.ParseTrailingRangeColumn(column)
+		if !ok {
+			source = column
+		}
+		bySource[source] = append(bySource[source], baselineSelectedFeature{Feature: column, SourceMetric: source, Score: variance, PositiveCoverage: positiveCoverage, ControlCoverage: controlCoverage})
+	}
+	for source := range bySource {
+		sort.Slice(bySource[source], func(i, j int) bool { return bySource[source][i].Feature < bySource[source][j].Feature })
+		result.EligibleFeatureCount += len(bySource[source])
+	}
+	sources := make([]string, 0, len(bySource))
+	for source := range bySource {
+		sources = append(sources, source)
+	}
+	sort.Strings(sources)
+	for depth := 0; len(result.Selected) < result.SelectionLimit; depth++ {
+		added := false
+		for _, source := range sources {
+			if depth >= len(bySource[source]) || depth >= 8 || len(result.Selected) >= result.SelectionLimit {
+				continue
+			}
+			result.Selected = append(result.Selected, bySource[source][depth])
+			added = true
+		}
+		if !added {
+			break
+		}
+	}
+	result.SelectedFeatureCount = len(result.Selected)
+	if result.SelectedFeatureCount > 0 {
+		result.Status = "passed"
+	}
+	return result
+}
+
 func auditBaselineFeatures(rows []trainingMatrixRow) baselineFeatureAudit {
 	return auditBaselineFeaturesForTarget(rows, hardwareFailureTarget)
 }
@@ -995,6 +1155,126 @@ func fitLogistic(rows []trainingMatrixRow, cols []string, h int) logisticModel {
 	}
 	return logisticModel{HorizonMinutes: h, FeatureColumns: cols, Means: mean, Scales: scale, Coefficients: coef, Intercept: intercept, Threshold: 0.5}
 }
+
+func fitShallowGBDT(rows []trainingMatrixRow, columns []string, horizonMinutes int) shallowGBDTModel {
+	positiveWeight, totalWeight := 0.0, 0.0
+	for _, row := range rows {
+		weight := row.TrainingWeight
+		if weight <= 0 {
+			weight = 1
+		}
+		totalWeight += weight
+		if row.LabelValue == 1 {
+			positiveWeight += weight
+		}
+	}
+	prevalence := positiveWeight / totalWeight
+	if prevalence < 1e-6 {
+		prevalence = 1e-6
+	} else if prevalence > 1-1e-6 {
+		prevalence = 1 - 1e-6
+	}
+	model := shallowGBDTModel{HorizonMinutes: horizonMinutes, FeatureColumns: append([]string(nil), columns...), Intercept: logitProbability(prevalence), LearningRate: shallowGBDTLearningRate, Threshold: 0.5, Trees: []boostedStump{}}
+	logits := make([]float64, len(rows))
+	for index := range logits {
+		logits[index] = model.Intercept
+	}
+	for round := 0; round < shallowGBDTMaximumRounds; round++ {
+		residuals := make([]float64, len(rows))
+		for index, row := range rows {
+			residuals[index] = float64(row.LabelValue) - sigmoid(logits[index])
+		}
+		stump, gain, ok := bestBoostedStump(rows, residuals, columns)
+		if !ok || gain <= 1e-12 {
+			break
+		}
+		model.Trees = append(model.Trees, stump)
+		for index, row := range rows {
+			logits[index] += model.LearningRate * boostedStumpValue(stump, row.Features)
+		}
+	}
+	return model
+}
+
+func bestBoostedStump(rows []trainingMatrixRow, residuals []float64, columns []string) (boostedStump, float64, bool) {
+	type observation struct {
+		value, residual, weight float64
+	}
+	best, bestGain, found := boostedStump{}, 0.0, false
+	for _, column := range columns {
+		observed := make([]observation, 0, len(rows))
+		missingSum, missingWeight := 0.0, 0.0
+		for index, row := range rows {
+			weight := row.TrainingWeight
+			if weight <= 0 {
+				weight = 1
+			}
+			value, ok := row.Features[column]
+			if !ok || math.IsNaN(value) || math.IsInf(value, 0) {
+				missingSum += residuals[index] * weight
+				missingWeight += weight
+				continue
+			}
+			observed = append(observed, observation{value: value, residual: residuals[index], weight: weight})
+		}
+		if len(observed) < shallowGBDTMinimumLeafRows*2 {
+			continue
+		}
+		sort.Slice(observed, func(i, j int) bool { return observed[i].value < observed[j].value })
+		totalSum, totalWeight := 0.0, 0.0
+		for _, item := range observed {
+			totalSum += item.residual * item.weight
+			totalWeight += item.weight
+		}
+		leftSum, leftWeight := 0.0, 0.0
+		for index := 0; index < len(observed)-1; index++ {
+			leftSum += observed[index].residual * observed[index].weight
+			leftWeight += observed[index].weight
+			leftRows, rightRows := index+1, len(observed)-index-1
+			if leftRows < shallowGBDTMinimumLeafRows || rightRows < shallowGBDTMinimumLeafRows || observed[index].value == observed[index+1].value {
+				continue
+			}
+			rightSum, rightWeight := totalSum-leftSum, totalWeight-leftWeight
+			gain := leftSum*leftSum/(leftWeight+1) + rightSum*rightSum/(rightWeight+1)
+			if missingWeight > 0 {
+				gain += missingSum * missingSum / (missingWeight + 1)
+			}
+			if found && gain <= bestGain {
+				continue
+			}
+			bestGain, found = gain, true
+			best = boostedStump{Feature: column, Threshold: (observed[index].value + observed[index+1].value) / 2, LeftValue: leftSum / (leftWeight + 1), RightValue: rightSum / (rightWeight + 1)}
+			if missingWeight > 0 {
+				best.MissingValue = missingSum / (missingWeight + 1)
+			}
+		}
+	}
+	return best, bestGain, found
+}
+
+func boostedStumpValue(stump boostedStump, features map[string]float64) float64 {
+	value, ok := features[stump.Feature]
+	if !ok || math.IsNaN(value) || math.IsInf(value, 0) {
+		return stump.MissingValue
+	}
+	if value <= stump.Threshold {
+		return stump.LeftValue
+	}
+	return stump.RightValue
+}
+
+func scoreShallowGBDTRowsWithoutCalibration(model shallowGBDTModel, rows []trainingMatrixRow) []scoredLabel {
+	result := make([]scoredLabel, len(rows))
+	for index, row := range rows {
+		logit := model.Intercept
+		for _, tree := range model.Trees {
+			logit += model.LearningRate * boostedStumpValue(tree, row.Features)
+		}
+		result[index] = scoredLabel{score: sigmoid(logit), label: row.LabelValue}
+	}
+	return result
+}
+
 func sigmoid(x float64) float64 {
 	if x >= 0 {
 		return 1 / (1 + math.Exp(-x))

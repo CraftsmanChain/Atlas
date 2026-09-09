@@ -122,6 +122,9 @@ func (s *Service) RunShadowModelRegistrySync(ctx context.Context, interval time.
 }
 
 func (s *Service) registerShadowBuild(build api.BaselineModelBuild) (int, error) {
+	if build.Algorithm != "" && build.Algorithm != "logistic_regression" {
+		return 0, fmt.Errorf("algorithm %q has no approved shadow runtime", build.Algorithm)
+	}
 	if build.FeatureAuditStatus != "passed" || build.ProhibitedFeatureCount != 0 {
 		return 0, fmt.Errorf("feature leakage audit did not pass")
 	}
