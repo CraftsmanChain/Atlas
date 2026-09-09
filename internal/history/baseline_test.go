@@ -60,6 +60,44 @@ func TestBaselineFeatureAuditRecordsEveryExcludedColumn(t *testing.T) {
 	}
 }
 
+func TestBaselineFeatureSelectionUsesTrainingCoverageAndCapsDimensionality(t *testing.T) {
+	columns := []string{
+		"gpu_temp_mean_15m", "gpu_temp_max_15m", "gpu_temp_delta_15m",
+		"gpu_temp_slope_per_hour_15m", "gpu_temp_mean_1h", "gpu_temp_max_1h",
+		"gpu_power_mean_15m", "gpu_util_mean_15m", "gpu_clock_mean_15m",
+		"gpu_memory_temp_mean_15m", "gpu_temp_mean_6h_sparse",
+	}
+	rows := make([]trainingMatrixRow, 0, 90)
+	for index := 0; index < 90; index++ {
+		label := 0
+		shift := 0.0
+		if index >= 60 {
+			label, shift = 1, 10
+		}
+		features := map[string]float64{}
+		for columnIndex, column := range columns[:10] {
+			features[column] = shift + float64((index+columnIndex)%5)
+		}
+		if index < 10 {
+			features[columns[10]] = float64(index)
+		}
+		rows = append(rows, trainingMatrixRow{LabelValue: label, Features: features})
+	}
+	selection := selectBaselineFeatures(rows, columns)
+	if selection.Status != "passed" || selection.SelectionLimit != 6 || selection.SelectedFeatureCount != 6 {
+		t.Fatalf("unexpected train-only selection: %+v", selection)
+	}
+	bySource := map[string]int{}
+	selected := map[string]bool{}
+	for _, feature := range selection.Selected {
+		bySource[feature.SourceMetric]++
+		selected[feature.Feature] = true
+	}
+	if bySource["gpu_temp"] > baselineMaximumFeaturesPerSource || selected[columns[10]] {
+		t.Fatalf("selection ignored source or coverage caps: %+v", selection)
+	}
+}
+
 func TestRankAUCTreatsTiesAsHalfCredit(t *testing.T) {
 	scores := []scoredLabel{{score: 0.5, label: 0}, {score: 0.5, label: 1}}
 	if auc := rankAUC(scores); auc != 0.5 {

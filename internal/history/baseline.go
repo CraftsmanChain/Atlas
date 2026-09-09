@@ -15,15 +15,21 @@ import (
 	"strings"
 	"time"
 
+	"atlas/internal/featurestats"
 	"atlas/pkg/api"
 )
 
 const (
-	baselineModelVersion        = "gpu-logistic-baseline-v10"
-	cohortReadinessGateName     = "fault-model-horizon-readiness-v1"
-	baselineFeatureAuditVersion = "baseline-feature-leakage-audit-v1"
-	baselineMinimumPrecision    = 0.70
-	baselineMinimumRecall       = 0.50
+	baselineModelVersion             = "gpu-logistic-baseline-v11"
+	cohortReadinessGateName          = "fault-model-horizon-readiness-v1"
+	baselineFeatureAuditVersion      = "baseline-feature-leakage-audit-v1"
+	baselineFeatureSelectionVersion  = "train-only-effect-selection-v1"
+	baselineMinimumPrecision         = 0.70
+	baselineMinimumRecall            = 0.50
+	baselineMinimumClassCoverage     = 0.70
+	baselineMinorityRowsPerFeature   = 5
+	baselineMaximumSelectedFeatures  = 48
+	baselineMaximumFeaturesPerSource = 4
 )
 
 type BaselineModelBuildRequest struct {
@@ -33,14 +39,33 @@ type BaselineModelBuildRequest struct {
 }
 
 type logisticModel struct {
-	HorizonMinutes int                    `json:"horizon_minutes"`
-	FeatureColumns []string               `json:"feature_columns"`
-	Means          []float64              `json:"means"`
-	Scales         []float64              `json:"scales"`
-	Coefficients   []float64              `json:"coefficients"`
-	Intercept      float64                `json:"intercept"`
-	Threshold      float64                `json:"threshold"`
-	Calibration    probabilityCalibration `json:"calibration"`
+	HorizonMinutes   int                      `json:"horizon_minutes"`
+	FeatureColumns   []string                 `json:"feature_columns"`
+	Means            []float64                `json:"means"`
+	Scales           []float64                `json:"scales"`
+	Coefficients     []float64                `json:"coefficients"`
+	Intercept        float64                  `json:"intercept"`
+	Threshold        float64                  `json:"threshold"`
+	Calibration      probabilityCalibration   `json:"calibration"`
+	FeatureSelection baselineFeatureSelection `json:"feature_selection"`
+}
+
+type baselineSelectedFeature struct {
+	Feature          string  `json:"feature"`
+	SourceMetric     string  `json:"source_metric"`
+	Score            float64 `json:"score"`
+	PositiveCoverage float64 `json:"positive_coverage"`
+	ControlCoverage  float64 `json:"control_coverage"`
+}
+
+type baselineFeatureSelection struct {
+	Version               string                    `json:"version"`
+	Status                string                    `json:"status"`
+	CandidateFeatureCount int                       `json:"candidate_feature_count"`
+	EligibleFeatureCount  int                       `json:"eligible_feature_count"`
+	SelectedFeatureCount  int                       `json:"selected_feature_count"`
+	SelectionLimit        int                       `json:"selection_limit"`
+	Selected              []baselineSelectedFeature `json:"selected"`
 }
 
 type probabilityCalibration struct {
@@ -66,6 +91,7 @@ type baselineMetrics struct {
 }
 type baselineHorizonReport struct {
 	HorizonMinutes          int                        `json:"horizon_minutes"`
+	FeatureSelection        baselineFeatureSelection   `json:"feature_selection"`
 	Train                   baselineMetrics            `json:"train"`
 	Validation              baselineMetrics            `json:"validation"`
 	ValidationUncertainty   baselineUncertainty        `json:"validation_uncertainty"`
@@ -142,6 +168,7 @@ type baselineReport struct {
 	FeatureAudit            baselineFeatureAudit       `json:"feature_audit"`
 	CalibrationPolicy       string                     `json:"calibration_policy"`
 	OperatingPointPolicy    string                     `json:"operating_point_policy"`
+	FeatureSelectionPolicy  string                     `json:"feature_selection_policy"`
 	Horizons                []baselineHorizonReport    `json:"horizons"`
 	MacroTest               baselineMetrics            `json:"macro_test"`
 	ByTestModel             map[string]baselineMetrics `json:"by_test_model"`
@@ -291,7 +318,7 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 	if len(columns) == 0 {
 		return fmt.Errorf("no pre-failure-safe feature columns")
 	}
-	build.FeatureColumnCount = len(columns)
+	build.FeatureColumnCount = 0
 	build.FeatureAuditStatus = featureAudit.Status
 	build.ExcludedFeatureCount = featureAudit.ExcludedFeatureCount
 	build.ProhibitedFeatureCount = featureAudit.ProhibitedSelectedCount
@@ -305,13 +332,22 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 	}
 	sort.Ints(horizons)
 	artifact := baselineArtifact{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, FeaturePolicy: baselineFeaturePolicy(), FeatureAudit: featureAudit, CreatedAt: s.now()}
-	report := baselineReport{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, Mode: "offline_evaluation_only", FeaturePolicy: baselineFeaturePolicy(), FeatureAudit: featureAudit, CalibrationPolicy: "validation-only Platt scaling fits slope/intercept; held-out test labels are audit-only; no online probability release", OperatingPointPolicy: "validation-only threshold prioritizes precision >= 0.70 and recall >= 0.50; held-out test must independently pass both gates", ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
+	report := baselineReport{Version: baselineModelVersion, Algorithm: "logistic_regression", MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, Mode: "offline_evaluation_only", FeaturePolicy: baselineFeaturePolicy(), FeatureAudit: featureAudit, CalibrationPolicy: "validation-only Platt scaling fits slope/intercept; held-out test labels are audit-only; no online probability release", OperatingPointPolicy: "validation-only threshold prioritizes precision >= 0.70 and recall >= 0.50; held-out test must independently pass both gates", FeatureSelectionPolicy: "training-only standardized class separation; >=70% coverage in each class; <=1 feature per 5 minority-class rows, <=48 total and <=4 per source metric; validation and test labels never select features", ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
 	for _, h := range horizons {
 		train, val, test := splitMatrixRows(byHorizon[h])
 		if !hasBothLabels(train) || !hasBothLabels(val) || !hasBothLabels(test) {
 			return fmt.Errorf("horizon %d requires both labels in every split", h)
 		}
-		model := fitLogistic(train, columns, h)
+		selection := selectBaselineFeatures(train, columns)
+		if selection.Status != "passed" || selection.SelectedFeatureCount == 0 {
+			return fmt.Errorf("horizon %d has no train-only selected features", h)
+		}
+		selectedColumns := selectedFeatureNames(selection)
+		model := fitLogistic(train, selectedColumns, h)
+		model.FeatureSelection = selection
+		if len(selectedColumns) > build.FeatureColumnCount {
+			build.FeatureColumnCount = len(selectedColumns)
+		}
 		rawValidationScores := scoreRows(model, val)
 		model.Calibration = fitPlattCalibration(rawValidationScores)
 		validationScores := applyCalibration(rawValidationScores, model.Calibration)
@@ -329,7 +365,7 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 		testCalibration := evaluateBaselineCalibration(testScores)
 		testMetrics := evaluateScores(testScores, model.Threshold)
 		releaseReadiness := baselineReleaseReadiness(crossSplitStatus, testCalibration.Status, testMetrics)
-		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, Train: describeLabels(train), Validation: evaluateScores(validationScores, model.Threshold), ValidationUncertainty: validationUncertainty, Test: testMetrics, TestUncertainty: testUncertainty, CrossSplitStatus: crossSplitStatus, RawTestCalibration: rawTestCalibration, TestCalibration: testCalibration, ReleaseReadiness: releaseReadiness, TestByModel: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return []string{row.ModelName} }), TestByEventType: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes }), TestByDriverVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.DriverVersions }), TestByLabelSource: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.LabelSources }), TestByHardwareCertainty: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.HardwareCertainties }), TestByRuleVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.RuleDecisionVersions }), Threshold: model.Threshold})
+		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, FeatureSelection: selection, Train: describeLabels(train), Validation: evaluateScores(validationScores, model.Threshold), ValidationUncertainty: validationUncertainty, Test: testMetrics, TestUncertainty: testUncertainty, CrossSplitStatus: crossSplitStatus, RawTestCalibration: rawTestCalibration, TestCalibration: testCalibration, ReleaseReadiness: releaseReadiness, TestByModel: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return []string{row.ModelName} }), TestByEventType: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes }), TestByDriverVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.DriverVersions }), TestByLabelSource: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.LabelSources }), TestByHardwareCertainty: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.HardwareCertainties }), TestByRuleVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.RuleDecisionVersions }), Threshold: model.Threshold})
 		if crossSplitStatus == "robust_candidate" {
 			build.StatisticallyStableCount++
 		}
@@ -645,6 +681,110 @@ func baselineFeaturePolicy() string {
 }
 func safeBaselineColumns(rows []trainingMatrixRow) []string {
 	return auditBaselineFeatures(rows).SelectedColumns
+}
+
+func selectBaselineFeatures(rows []trainingMatrixRow, columns []string) baselineFeatureSelection {
+	type classMoments struct {
+		positiveCount, controlCount int
+		positiveSum, controlSum     float64
+		sum, sumSquares             float64
+	}
+	result := baselineFeatureSelection{
+		Version: baselineFeatureSelectionVersion, Status: "insufficient_features",
+		CandidateFeatureCount: len(columns), Selected: []baselineSelectedFeature{},
+	}
+	positiveTotal, controlTotal := 0, 0
+	for _, row := range rows {
+		if row.LabelValue == 1 {
+			positiveTotal++
+		} else {
+			controlTotal++
+		}
+	}
+	minorityCount := positiveTotal
+	if controlTotal < minorityCount {
+		minorityCount = controlTotal
+	}
+	result.SelectionLimit = minorityCount / baselineMinorityRowsPerFeature
+	if result.SelectionLimit > baselineMaximumSelectedFeatures {
+		result.SelectionLimit = baselineMaximumSelectedFeatures
+	}
+	if result.SelectionLimit < 1 || positiveTotal == 0 || controlTotal == 0 {
+		return result
+	}
+
+	ranked := make([]baselineSelectedFeature, 0, len(columns))
+	for _, column := range columns {
+		moments := classMoments{}
+		for _, row := range rows {
+			value, exists := row.Features[column]
+			if !exists || math.IsNaN(value) || math.IsInf(value, 0) {
+				continue
+			}
+			moments.sum += value
+			moments.sumSquares += value * value
+			if row.LabelValue == 1 {
+				moments.positiveCount++
+				moments.positiveSum += value
+			} else {
+				moments.controlCount++
+				moments.controlSum += value
+			}
+		}
+		positiveCoverage := float64(moments.positiveCount) / float64(positiveTotal)
+		controlCoverage := float64(moments.controlCount) / float64(controlTotal)
+		if positiveCoverage < baselineMinimumClassCoverage || controlCoverage < baselineMinimumClassCoverage {
+			continue
+		}
+		observed := moments.positiveCount + moments.controlCount
+		mean := moments.sum / float64(observed)
+		variance := moments.sumSquares/float64(observed) - mean*mean
+		if variance <= 1e-18 {
+			continue
+		}
+		positiveMean := moments.positiveSum / float64(moments.positiveCount)
+		controlMean := moments.controlSum / float64(moments.controlCount)
+		source, _, _, ok := featurestats.ParseTrailingRangeColumn(column)
+		if !ok {
+			source = column
+		}
+		ranked = append(ranked, baselineSelectedFeature{
+			Feature: column, SourceMetric: source,
+			Score:            math.Abs(positiveMean-controlMean) / math.Sqrt(variance),
+			PositiveCoverage: positiveCoverage, ControlCoverage: controlCoverage,
+		})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].Score == ranked[j].Score {
+			return ranked[i].Feature < ranked[j].Feature
+		}
+		return ranked[i].Score > ranked[j].Score
+	})
+	result.EligibleFeatureCount = len(ranked)
+	bySource := map[string]int{}
+	for _, candidate := range ranked {
+		if len(result.Selected) >= result.SelectionLimit {
+			break
+		}
+		if bySource[candidate.SourceMetric] >= baselineMaximumFeaturesPerSource {
+			continue
+		}
+		result.Selected = append(result.Selected, candidate)
+		bySource[candidate.SourceMetric]++
+	}
+	result.SelectedFeatureCount = len(result.Selected)
+	if result.SelectedFeatureCount > 0 {
+		result.Status = "passed"
+	}
+	return result
+}
+
+func selectedFeatureNames(selection baselineFeatureSelection) []string {
+	columns := make([]string, 0, len(selection.Selected))
+	for _, selected := range selection.Selected {
+		columns = append(columns, selected.Feature)
+	}
+	return columns
 }
 
 func auditBaselineFeatures(rows []trainingMatrixRow) baselineFeatureAudit {
