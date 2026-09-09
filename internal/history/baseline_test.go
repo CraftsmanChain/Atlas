@@ -60,6 +60,24 @@ func TestBaselineFeatureAuditRecordsEveryExcludedColumn(t *testing.T) {
 	}
 }
 
+func TestBaselineFeatureAuditAllowsOnlyCorrectablePrecursorsForXIDTarget(t *testing.T) {
+	rows := []trainingMatrixRow{{Features: map[string]float64{
+		"correctable_remapped_rows_delta_24h":   1,
+		"uncorrectable_remapped_rows_delta_24h": 1,
+		"uncorrected_ecc_delta_24h":             1,
+		"xid_current_last_24h":                  94,
+		"gpu_reset_required_last_24h":           1,
+	}}}
+	xidAudit := auditBaselineFeaturesForTarget(rows, highPriorityXIDEventTarget)
+	if len(xidAudit.SelectedColumns) != 1 || xidAudit.SelectedColumns[0] != "correctable_remapped_rows_delta_24h" || xidAudit.PredictionTarget != highPriorityXIDEventTarget {
+		t.Fatalf("XID precursor policy mismatch: %+v", xidAudit)
+	}
+	hardwareAudit := auditBaselineFeaturesForTarget(rows, hardwareFailureTarget)
+	if len(hardwareAudit.SelectedColumns) != 0 {
+		t.Fatalf("hardware target admitted occurred-fault indicators: %+v", hardwareAudit)
+	}
+}
+
 func TestBaselineFeatureSelectionUsesTrainingCoverageAndCapsDimensionality(t *testing.T) {
 	columns := []string{
 		"gpu_temp_mean_15m", "gpu_temp_max_15m", "gpu_temp_delta_15m",

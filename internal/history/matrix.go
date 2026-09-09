@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	trainingMatrixVersion      = "gpu-supervised-training-matrix-v5"
+	trainingMatrixVersion      = "gpu-supervised-training-matrix-v6"
 	manualTrainingMatrixStatus = "manual_feedback_matrix_ready_pending_training_gate"
 )
 
@@ -95,25 +95,26 @@ type TrainingMatrixBuildRequest struct {
 }
 
 type trainingMatrixRow struct {
-	RowKey          string                `json:"row_key"`
-	SampleKey       string                `json:"sample_key"`
-	PairedSampleKey string                `json:"paired_sample_key,omitempty"`
-	SampleKind      string                `json:"sample_kind"`
-	LabelValue      int                   `json:"label_value"`
-	EvidenceWeight  float64               `json:"evidence_weight"`
-	ClassWeight     float64               `json:"class_weight"`
-	TrainingWeight  float64               `json:"training_weight"`
-	Split           string                `json:"split"`
-	HorizonMinutes  int                   `json:"horizon_minutes"`
-	GPUUUID         string                `json:"gpu_uuid"`
-	NodeIP          string                `json:"node_ip"`
-	ModelName       string                `json:"model_name"`
-	FeatureCutoffAt time.Time             `json:"feature_cutoff_at"`
-	LabelOnsetAt    *time.Time            `json:"label_onset_at,omitempty"`
-	LabelMetadata   trainingLabelMetadata `json:"label_metadata"`
-	LoadBucket      string                `json:"load_bucket"`
-	MetricCoverage  float64               `json:"metric_coverage"`
-	Features        map[string]float64    `json:"features"`
+	RowKey           string                `json:"row_key"`
+	SampleKey        string                `json:"sample_key"`
+	PairedSampleKey  string                `json:"paired_sample_key,omitempty"`
+	SampleKind       string                `json:"sample_kind"`
+	LabelValue       int                   `json:"label_value"`
+	EvidenceWeight   float64               `json:"evidence_weight"`
+	ClassWeight      float64               `json:"class_weight"`
+	TrainingWeight   float64               `json:"training_weight"`
+	Split            string                `json:"split"`
+	HorizonMinutes   int                   `json:"horizon_minutes"`
+	GPUUUID          string                `json:"gpu_uuid"`
+	NodeIP           string                `json:"node_ip"`
+	ModelName        string                `json:"model_name"`
+	PredictionTarget string                `json:"prediction_target"`
+	FeatureCutoffAt  time.Time             `json:"feature_cutoff_at"`
+	LabelOnsetAt     *time.Time            `json:"label_onset_at,omitempty"`
+	LabelMetadata    trainingLabelMetadata `json:"label_metadata"`
+	LoadBucket       string                `json:"load_bucket"`
+	MetricCoverage   float64               `json:"metric_coverage"`
+	Features         map[string]float64    `json:"features"`
 }
 
 type matrixManifest struct {
@@ -122,6 +123,7 @@ type matrixManifest struct {
 	SourcePreparedDataset  string                `json:"source_prepared_dataset_key"`
 	SourceControlDataset   string                `json:"source_control_dataset_key"`
 	FeatureContractVersion string                `json:"feature_contract_version"`
+	PredictionTarget       string                `json:"prediction_target"`
 	FeatureColumns         []string              `json:"feature_columns"`
 	Counts                 map[string]int        `json:"counts"`
 	PointInTimePolicy      string                `json:"point_in_time_policy"`
@@ -132,6 +134,27 @@ type matrixManifest struct {
 	MatrixFile             string                `json:"matrix_file"`
 	MatrixSHA256           string                `json:"matrix_sha256"`
 	CreatedAt              time.Time             `json:"created_at"`
+}
+
+func matrixPredictionTarget(rows []trainingMatrixRow) (string, error) {
+	target := ""
+	for _, row := range rows {
+		current := strings.TrimSpace(row.PredictionTarget)
+		if current != hardwareFailureTarget && current != highPriorityXIDEventTarget {
+			return "", fmt.Errorf("matrix row %q has invalid prediction target %q", row.RowKey, current)
+		}
+		if target == "" {
+			target = current
+			continue
+		}
+		if current != target {
+			return "", fmt.Errorf("training matrix mixes prediction targets %q and %q", target, current)
+		}
+	}
+	if target == "" {
+		return "", fmt.Errorf("training matrix prediction target is required")
+	}
+	return target, nil
 }
 
 func (s *Service) TrainingMatrixBuilds(limit int) ([]api.TrainingMatrixBuild, error) {
@@ -310,10 +333,14 @@ func (s *Service) buildTrainingMatrix(build *api.TrainingMatrixBuild) error {
 		return err
 	}
 	manifestPath := filepath.Join(build.OutputDir, "manifest.json")
+	predictionTarget, err := matrixPredictionTarget(rows)
+	if err != nil {
+		return err
+	}
 	manifest := matrixManifest{
 		TrainingMatrixKey: build.TrainingMatrixKey, Version: build.Version,
 		SourcePreparedDataset: build.SourcePreparedDatasetKey, SourceControlDataset: build.SourceControlDatasetKey,
-		FeatureContractVersion: build.FeatureContractVersion, FeatureColumns: columns,
+		FeatureContractVersion: build.FeatureContractVersion, PredictionTarget: predictionTarget, FeatureColumns: columns,
 		Counts: map[string]int{"samples": build.SampleCount, "positives": build.PositiveCount, "controls": build.ControlCount,
 			"train_positive": build.TrainPositiveCount, "train_control": build.TrainControlCount,
 			"validation_positive": build.ValidationPositiveCount, "validation_control": build.ValidationControlCount,
@@ -678,7 +705,8 @@ func assembleTrainingMatrixWithOptions(positives []preparedTrainingSample, contr
 		}
 		add(trainingMatrixRow{RowKey: "positive:" + item.Sample.SampleKey, SampleKey: item.Sample.SampleKey, SampleKind: "positive", LabelValue: 1, EvidenceWeight: weight,
 			Split: item.Split, HorizonMinutes: item.Sample.HorizonMinutes, GPUUUID: item.Sample.GPUUUID, NodeIP: item.Sample.NodeIP, ModelName: item.Sample.ModelName,
-			FeatureCutoffAt: item.Sample.FeatureCutoffAt, LabelOnsetAt: &onset, LabelMetadata: item.LabelMetadata,
+			PredictionTarget: item.Sample.PredictionTarget,
+			FeatureCutoffAt:  item.Sample.FeatureCutoffAt, LabelOnsetAt: &onset, LabelMetadata: item.LabelMetadata,
 			LoadBucket: gpuLoadBucket(item.Sample.Features["gpu_util_mean_24h"]), MetricCoverage: item.Sample.MetricCoverage, Features: item.Sample.Features})
 	}
 	for _, item := range controls {
@@ -686,7 +714,7 @@ func assembleTrainingMatrixWithOptions(positives []preparedTrainingSample, contr
 			continue
 		}
 		paired, ok := positiveByKey[item.Request.PairedSampleKey]
-		if !ok || item.Request.Split != paired.Split || item.Request.HorizonMinutes != paired.Sample.HorizonMinutes || normalizeHistoricalGPUUUID(item.Request.GPUUUID) != normalizeHistoricalGPUUUID(paired.Sample.GPUUUID) {
+		if !ok || item.Request.Split != paired.Split || item.Request.HorizonMinutes != paired.Sample.HorizonMinutes || normalizeHistoricalGPUUUID(item.Request.GPUUUID) != normalizeHistoricalGPUUUID(paired.Sample.GPUUUID) || item.Request.PredictionTarget != paired.Sample.PredictionTarget {
 			audit.pairing++
 			continue
 		}
@@ -696,7 +724,8 @@ func assembleTrainingMatrixWithOptions(positives []preparedTrainingSample, contr
 		}
 		add(trainingMatrixRow{RowKey: "control:" + item.Request.ControlKey, SampleKey: item.Request.ControlKey, PairedSampleKey: item.Request.PairedSampleKey, SampleKind: "healthy_control", LabelValue: 0, EvidenceWeight: 1,
 			Split: item.Request.Split, HorizonMinutes: item.Request.HorizonMinutes, GPUUUID: item.Request.GPUUUID, NodeIP: item.Request.NodeIP, ModelName: item.Request.ModelName,
-			FeatureCutoffAt: item.Request.FeatureCutoffAt, LabelMetadata: paired.LabelMetadata,
+			PredictionTarget: item.Request.PredictionTarget,
+			FeatureCutoffAt:  item.Request.FeatureCutoffAt, LabelMetadata: paired.LabelMetadata,
 			LoadBucket: item.ControlLoadBucket, MetricCoverage: item.Feature.MetricCoverage, Features: item.Feature.Features})
 	}
 	columnList := make([]string, 0, len(columns))
