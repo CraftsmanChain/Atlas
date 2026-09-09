@@ -52,6 +52,7 @@ Use explicit evidence labels in knowledge documents:
 - Run `make test` for Go changes.
 - Run `npm run lint` and `npm run build` in `web` for frontend changes.
 - Run `make release-scripts-check` when release scripts or a platform release version changes.
+- Run `make agent-context-check` when `AGENTS.md`, `RTK.md`, the LLM Wiki, roadmap links, or their validation script changes.
 - Report environmental failures separately from code failures and leave the worktree clean after an authorized commit.
 
 Verification must be proportional to the change:
@@ -76,7 +77,7 @@ Verification must be proportional to the change:
 ## Efficient execution loop
 
 1. **Recover context:** read the Wiki capsule, relevant source document and current worktree status.
-2. **Verify freshness:** after an operator update, query production status/health and the exact APIs needed for this task.
+2. **Verify freshness:** after an operator update, query production status/health and the exact APIs needed for this task. Prefer `scripts/export_llm_context.sh` when its allowlisted runtime/matrix/model snapshot covers the question; it is read-only and must never be expanded to secrets, raw incidents or feature values.
 3. **State the delta:** identify the current fact, desired outcome, safety boundary and measurable exit criterion.
 4. **Inspect before editing:** trace the real API/data/runtime path and search tests and consumers, not just the first matching file.
 5. **Implement the smallest complete vertical slice:** contract, implementation, safety guard, UI/consumer and tests when applicable.
