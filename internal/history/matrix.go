@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	trainingMatrixVersion      = "gpu-supervised-training-matrix-v4"
+	trainingMatrixVersion      = "gpu-supervised-training-matrix-v5"
 	manualTrainingMatrixStatus = "manual_feedback_matrix_ready_pending_training_gate"
 )
 

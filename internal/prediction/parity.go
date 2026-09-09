@@ -64,7 +64,7 @@ func (s *Service) auditFeatureParity(spec api.PredictionModelSpec) error {
 		ModelSpecID: spec.ID, ModelKey: spec.ModelKey, ModelVersion: spec.Version,
 		SourceBaselineBuildID: spec.SourceBaselineBuildID, ArtifactSHA256: spec.ArtifactSHA256,
 		FeatureContractVersion:        spec.FeatureContractVersion,
-		TransformationContractVersion: featurestats.Trailing24hContractVersion,
+		TransformationContractVersion: featurestats.TrailingRangeContractVersion,
 		TrainingFeatureCount:          len(columns), ScoringAllowed: false, AuditedAt: s.now(),
 		SourceMetrics: api.StringList{}, ContractMatchedColumns: api.StringList{},
 		MissingSourceColumns: api.StringList{}, UnsupportedTransformColumns: api.StringList{},
@@ -72,7 +72,7 @@ func (s *Service) auditFeatureParity(spec api.PredictionModelSpec) error {
 	}
 	sources := map[string]struct{}{}
 	for _, column := range columns {
-		source, _, supported := featurestats.ParseTrailing24hColumn(column)
+		source, _, _, supported := featurestats.ParseTrailingRangeColumn(column)
 		if !supported {
 			audit.UnsupportedTransformColumns = append(audit.UnsupportedTransformColumns, column)
 			continue
@@ -117,6 +117,7 @@ func (s *Service) auditFeatureParity(spec api.PredictionModelSpec) error {
 		return result.Error
 	}
 	if result.RowsAffected > 0 && audit.Status == "replay_required" && existing.ArtifactSHA256 == audit.ArtifactSHA256 &&
+		existing.TransformationContractVersion == audit.TransformationContractVersion &&
 		(existing.Status == "live_coverage_required" || existing.Status == "blocked_replay" || existing.Status == "shadow_runtime_required" || existing.Status == "blocked_live_coverage") {
 		audit.Status = existing.Status
 		audit.ReplayVerifiedCount = existing.ReplayVerifiedCount

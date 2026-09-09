@@ -19,7 +19,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const manualFeedbackFeatureRequestVersion = "manual-feedback-feature-request-v4"
+const manualFeedbackFeatureRequestVersion = "manual-feedback-feature-request-v5"
 const manualFeedbackSourceManifestVersion = "prediction-human-feedback-manifest-v2"
 
 var manualFeedbackHorizons = []int{60, 360, 1440, 10080}

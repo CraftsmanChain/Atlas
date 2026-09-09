@@ -81,7 +81,7 @@ func TestBuildManualFeedbackFeatureRequestManifestFreezesPackReadyReviewedFeedba
 	handler := NewHandler(service)
 	response := httptest.NewRecorder()
 	handler.HandleManualFeedbackFeatureRequests(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/history/feedback-feature-requests?limit=1", nil))
-	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte("manual-feedback-feature-request-v4")) {
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte("manual-feedback-feature-request-v5")) {
 		t.Fatalf("feedback feature request API failed: status=%d body=%s", response.Code, response.Body.String())
 	}
 }

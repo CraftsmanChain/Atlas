@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	featureDatasetVersion = "gpu-historical-features-v2"
+	featureDatasetVersion = "gpu-historical-features-v3"
 	featureLookback       = 24 * time.Hour
 	featureQueryStep      = 5 * time.Minute
 )
@@ -495,7 +495,7 @@ func summarizeFeatureWindow(build *api.TrainingFeatureBuild, window datasetWindo
 			continue
 		}
 		row.AvailableMetrics++
-		featurestats.AddTrailing24hStatistics(row.Features, metric, points)
+		featurestats.AddTrailingRangeStatistics(row.Features, metric, points, window.FeatureCutoffAt)
 	}
 	row.MetricCoverage = float64(row.AvailableMetrics) / float64(row.ExpectedMetrics)
 	return row
@@ -614,10 +614,7 @@ func expectedHistoricalMetrics(modelName string) []string {
 }
 
 func historicalFeatureColumns() []string {
-	suffixes := []string{
-		"last_24h", "mean_24h", "min_24h", "max_24h", "stddev_24h",
-		"delta_24h", "slope_per_hour_24h", "sample_count_24h",
-	}
+	suffixes := featurestats.TrailingRangeStatistics()
 	columns := make([]string, 0, len(canonicalHistoricalMetrics())*len(suffixes))
 	for _, metric := range canonicalHistoricalMetrics() {
 		for _, suffix := range suffixes {

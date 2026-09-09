@@ -126,6 +126,9 @@ func TestHistoricalFeatureBuildBatchesMetricsAndEnforcesCutoff(t *testing.T) {
 	if row.Features["gpu_util_max_24h"] != 20 || row.Features["gpu_util_last_24h"] != 20 {
 		t.Fatalf("post-cutoff sample leaked or fallback priority failed: %+v", row.Features)
 	}
+	if row.Features["gpu_util_max_1h"] != 20 || row.Features["gpu_util_mean_15m"] != 20 {
+		t.Fatalf("multi-scale point-in-time features missing: %+v", row.Features)
+	}
 	if !row.FeatureCutoffAt.Before(row.LabelOnsetAt) || row.PredictionTarget != highPriorityXIDEventTarget || build.PredictionTarget != highPriorityXIDEventTarget || build.FeatureSHA256 == "" || build.QualityReportPath == "" {
 		t.Fatalf("feature artifact lost point-in-time provenance: %+v %+v", row, build)
 	}
