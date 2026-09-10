@@ -9,12 +9,13 @@ import (
 	"strconv"
 	"time"
 
+	"atlas/internal/featurestats"
 	promclient "atlas/internal/prometheus"
 	"atlas/pkg/api"
 )
 
 const (
-	liveCoverageVersion       = "gpu-live-24h-coverage-v1"
+	liveCoverageVersion       = "gpu-live-multiresolution-coverage-v2"
 	liveCoverageFreshnessSLA  = 15 * time.Minute
 	liveCoverageMinimumRatio  = 0.70
 	liveCoverageFleetRatio    = 0.80
@@ -23,10 +24,13 @@ const (
 )
 
 type coverageMetricReport struct {
-	SampleCount int        `json:"sample_count"`
-	Coverage    float64    `json:"coverage"`
-	LatestAt    *time.Time `json:"latest_at,omitempty"`
-	Status      string     `json:"status"`
+	SampleCount     int        `json:"sample_count"`
+	Coverage        float64    `json:"coverage"`
+	LatestAt        *time.Time `json:"latest_at,omitempty"`
+	LongSampleCount int        `json:"long_sample_count,omitempty"`
+	LongCoverage    float64    `json:"long_coverage,omitempty"`
+	LongLatestAt    *time.Time `json:"long_latest_at,omitempty"`
+	Status          string     `json:"status"`
 }
 
 type coverageGPUReport struct {
@@ -39,17 +43,35 @@ type coverageGPUReport struct {
 }
 
 type liveCoverageReport struct {
-	Version       string              `json:"version"`
-	AuditKey      string              `json:"audit_key"`
-	ModelKey      string              `json:"model_key"`
-	ModelVersion  string              `json:"model_version"`
-	WindowMinutes int                 `json:"window_minutes"`
-	StepSeconds   int                 `json:"step_seconds"`
-	MinimumRatio  float64             `json:"minimum_ratio"`
-	FreshnessSLA  int                 `json:"freshness_sla_seconds"`
-	SourceMetrics []string            `json:"source_metrics"`
-	GPUs          []coverageGPUReport `json:"gpus"`
-	CreatedAt     time.Time           `json:"created_at"`
+	Version           string              `json:"version"`
+	AuditKey          string              `json:"audit_key"`
+	ModelKey          string              `json:"model_key"`
+	ModelVersion      string              `json:"model_version"`
+	WindowMinutes     int                 `json:"window_minutes"`
+	StepSeconds       int                 `json:"step_seconds"`
+	MinimumRatio      float64             `json:"minimum_ratio"`
+	FreshnessSLA      int                 `json:"freshness_sla_seconds"`
+	SourceMetrics     []string            `json:"source_metrics"`
+	LongRangeRequired bool                `json:"long_range_required"`
+	LongWindowMinutes int                 `json:"long_window_minutes,omitempty"`
+	LongStepSeconds   int                 `json:"long_step_seconds,omitempty"`
+	GPUs              []coverageGPUReport `json:"gpus"`
+	CreatedAt         time.Time           `json:"created_at"`
+}
+
+func parityRequiresLongRange(parity api.PredictionFeatureParityAudit) bool {
+	return len(longRangeSourceMetrics(parity.ContractMatchedColumns)) > 0
+}
+
+func longRangeSourceMetrics(columns []string) map[string]struct{} {
+	result := map[string]struct{}{}
+	for _, column := range columns {
+		source, _, duration, supported := featurestats.ParseTrailingRangeColumn(column)
+		if supported && duration > featureLookback {
+			result[source] = struct{}{}
+		}
+	}
+	return result
 }
 
 func (s *Service) LiveCoverageAudits(limit int) ([]api.PredictionLiveCoverageAudit, error) {
@@ -161,7 +183,10 @@ func (s *Service) buildLiveCoverageAudit(audit *api.PredictionLiveCoverageAudit)
 	}
 	end := s.now()
 	start := end.Add(-featureLookback)
+	longRangeSources := longRangeSourceMetrics(parity.ContractMatchedColumns)
+	requiresLongRange := len(longRangeSources) > 0
 	byGPU := map[string]map[string][]promclient.RangePoint{}
+	longByGPU := map[string]map[string][]promclient.RangePoint{}
 	for offset := 0; offset < len(assets); offset += liveCoverageUUIDChunkSize {
 		limit := offset + liveCoverageUUIDChunkSize
 		if limit > len(assets) {
@@ -180,8 +205,25 @@ func (s *Service) buildLiveCoverageAudit(audit *api.PredictionLiveCoverageAudit)
 		for uuid, values := range canonicalSeriesByGPU(series) {
 			byGPU[uuid] = values
 		}
+		if requiresLongRange {
+			ctx, cancel = context.WithTimeout(context.Background(), s.timeout)
+			longSeries, longErr := client.QueryRange(ctx, historicalMetricQueryUUIDs(uuids), end.Add(-featureLongLookback), end, featureLongQueryStep)
+			cancel()
+			if longErr != nil {
+				return fmt.Errorf("long coverage query chunk %d: %w", offset/liveCoverageUUIDChunkSize, longErr)
+			}
+			for uuid, values := range canonicalSeriesByGPU(longSeries) {
+				longByGPU[uuid] = values
+			}
+		}
 	}
-	report := liveCoverageReport{Version: liveCoverageVersion, AuditKey: audit.AuditKey, ModelKey: spec.ModelKey, ModelVersion: spec.Version, WindowMinutes: audit.WindowMinutes, StepSeconds: audit.QueryStepSeconds, MinimumRatio: liveCoverageMinimumRatio, FreshnessSLA: audit.FreshnessSLASeconds, SourceMetrics: append([]string(nil), parity.SourceMetrics...), GPUs: make([]coverageGPUReport, 0, len(assets)), CreatedAt: s.now()}
+	report := liveCoverageReport{Version: liveCoverageVersion, AuditKey: audit.AuditKey, ModelKey: spec.ModelKey, ModelVersion: spec.Version, WindowMinutes: audit.WindowMinutes, StepSeconds: audit.QueryStepSeconds, MinimumRatio: liveCoverageMinimumRatio, FreshnessSLA: audit.FreshnessSLASeconds, SourceMetrics: append([]string(nil), parity.SourceMetrics...), LongRangeRequired: requiresLongRange, GPUs: make([]coverageGPUReport, 0, len(assets)), CreatedAt: s.now()}
+	if requiresLongRange {
+		report.LongWindowMinutes = int(featureLongLookback / time.Minute)
+		report.LongStepSeconds = int(featureLongQueryStep / time.Second)
+	}
+	longExpected := int(featureLongLookback/featureLongQueryStep) + 1
+	longMinimum := int(math.Ceil(float64(longExpected) * liveCoverageMinimumRatio))
 	for _, asset := range assets {
 		gpu := coverageGPUReport{GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, GPUIndex: asset.GPUIndex, Status: "eligible", Metrics: map[string]coverageMetricReport{}}
 		values := byGPU[normalizeHistoricalGPUUUID(asset.CurrentUUID)]
@@ -202,9 +244,30 @@ func (s *Service) buildLiveCoverageAudit(audit *api.PredictionLiveCoverageAudit)
 				} else if end.Sub(latest) > liveCoverageFreshnessSLA {
 					item.Status = "stale"
 					audit.StaleMetricPairCount++
-				} else {
-					audit.PassingMetricPairCount++
 				}
+			}
+			_, metricRequiresLongRange := longRangeSources[metric]
+			if item.Status == "passed" && metricRequiresLongRange {
+				longPoints := pointsInWindow(longByGPU[normalizeHistoricalGPUUUID(asset.CurrentUUID)][metric], end.Add(-featureLongLookback), end)
+				item.LongSampleCount = len(longPoints)
+				item.LongCoverage = math.Min(1, float64(len(longPoints))/float64(longExpected))
+				if len(longPoints) == 0 {
+					item.Status = "long_missing"
+					audit.MissingMetricPairCount++
+				} else {
+					latest := longPoints[len(longPoints)-1].Timestamp
+					item.LongLatestAt = &latest
+					if len(longPoints) < longMinimum {
+						item.Status = "long_sparse"
+						audit.SparseMetricPairCount++
+					} else if end.Sub(latest) > featureLongQueryStep+liveCoverageFreshnessSLA {
+						item.Status = "long_stale"
+						audit.StaleMetricPairCount++
+					}
+				}
+			}
+			if item.Status == "passed" {
+				audit.PassingMetricPairCount++
 			}
 			if item.Status != "passed" {
 				gpu.Status = "blocked"
