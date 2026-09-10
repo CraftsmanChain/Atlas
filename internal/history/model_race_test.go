@@ -45,7 +45,7 @@ func TestCompareBaselineModelsRequiresSameVerifiedMatrixAndProducesStableDigest(
 		if err != nil {
 			t.Fatal(err)
 		}
-		report := baselineReport{Version: version, Algorithm: algorithm, MatrixKey: matrix.TrainingMatrixKey, PredictionTarget: highPriorityXIDEventTarget, MacroTest: baselineMetrics{ROCAUC: roc, PRAUC: pr}, Horizons: []baselineHorizonReport{{HorizonMinutes: 60, Test: baselineMetrics{ROCAUC: roc, PRAUC: pr}, ReleaseReadiness: "blocked_stability"}}}
+		report := baselineReport{Version: version, Algorithm: algorithm, MatrixKey: matrix.TrainingMatrixKey, PredictionTarget: highPriorityXIDEventTarget, MacroTest: baselineMetrics{ROCAUC: roc, PRAUC: pr}, Horizons: []baselineHorizonReport{{HorizonMinutes: 60, FeatureSelection: baselineFeatureSelection{SelectedFeatureCount: 2, Selected: []baselineSelectedFeature{{Feature: "gpu_temp_mean_1h", SourceMetric: "gpu_temp"}, {Feature: "pcie_replay_counter_delta_1h", SourceMetric: "pcie_replay_counter"}}}, Test: baselineMetrics{ROCAUC: roc, PRAUC: pr}, ReleaseReadiness: "blocked_stability"}}}
 		if err := writeJSONAtomic(reportPath, report); err != nil {
 			t.Fatal(err)
 		}
@@ -67,6 +67,9 @@ func TestCompareBaselineModelsRequiresSameVerifiedMatrixAndProducesStableDigest(
 	}
 	if first.ComparisonSHA256 == "" || first.ComparisonSHA256 != second.ComparisonSHA256 || first.MatrixSHA256 != matrixSHA || len(first.Deltas) != 1 || first.Deltas[0].ROCAUC < 0.049 {
 		t.Fatalf("unexpected comparison: %+v", first)
+	}
+	if first.Version != modelRaceComparisonVersion || len(first.Builds) != 2 || first.Builds[0].SelectedSourceMetricCount != 2 || len(first.Horizons) != 1 || first.Horizons[0].SelectedFeatureCount[fmt.Sprint(reference.ID)] != 2 || len(first.Horizons[0].SelectedSourceMetrics[fmt.Sprint(reference.ID)]) != 2 {
+		t.Fatalf("selected source metrics must be preserved in comparison: %+v", first)
 	}
 	if _, err := service.CompareBaselineModels(reference.ID, []uint{reference.ID}); err == nil || !strings.Contains(err.Error(), "unique") {
 		t.Fatalf("duplicate ids must be rejected, got %v", err)
