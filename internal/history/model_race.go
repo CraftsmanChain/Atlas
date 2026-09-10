@@ -11,17 +11,19 @@ import (
 	"atlas/pkg/api"
 )
 
-const modelRaceComparisonVersion = "gpu-model-race-comparison-v1"
+const modelRaceComparisonVersion = "gpu-model-race-comparison-v2"
 
 type modelRaceBuildSummary struct {
-	BuildID        uint            `json:"build_id"`
-	ModelKey       string          `json:"model_key"`
-	Version        string          `json:"version"`
-	Algorithm      string          `json:"algorithm"`
-	ArtifactSHA256 string          `json:"artifact_sha256"`
-	MacroTest      baselineMetrics `json:"macro_test"`
-	StableCount    int             `json:"stable_count"`
-	CandidateCount int             `json:"candidate_count"`
+	BuildID                   uint            `json:"build_id"`
+	ModelKey                  string          `json:"model_key"`
+	Version                   string          `json:"version"`
+	Algorithm                 string          `json:"algorithm"`
+	ArtifactSHA256            string          `json:"artifact_sha256"`
+	MacroTest                 baselineMetrics `json:"macro_test"`
+	StableCount               int             `json:"stable_count"`
+	CandidateCount            int             `json:"candidate_count"`
+	SelectedSourceMetricCount int             `json:"selected_source_metric_count"`
+	SelectedSourceMetrics     []string        `json:"selected_source_metrics"`
 }
 
 type modelRaceDelta struct {
@@ -34,9 +36,11 @@ type modelRaceDelta struct {
 }
 
 type modelRaceHorizon struct {
-	HorizonMinutes int                        `json:"horizon_minutes"`
-	Metrics        map[string]baselineMetrics `json:"metrics_by_build_id"`
-	Readiness      map[string]string          `json:"readiness_by_build_id"`
+	HorizonMinutes        int                        `json:"horizon_minutes"`
+	Metrics               map[string]baselineMetrics `json:"metrics_by_build_id"`
+	Readiness             map[string]string          `json:"readiness_by_build_id"`
+	SelectedFeatureCount  map[string]int             `json:"selected_feature_count_by_build_id"`
+	SelectedSourceMetrics map[string][]string        `json:"selected_source_metrics_by_build_id"`
 }
 
 type ModelRaceComparison struct {
@@ -126,7 +130,8 @@ func (s *Service) CompareBaselineModels(referenceBuildID uint, challengerBuildID
 	}
 	for index, build := range builds {
 		report := reports[index]
-		comparison.Builds = append(comparison.Builds, modelRaceBuildSummary{BuildID: build.ID, ModelKey: build.BaselineModelKey, Version: build.Version, Algorithm: build.Algorithm, ArtifactSHA256: build.ArtifactSHA256, MacroTest: report.MacroTest, StableCount: build.StatisticallyStableCount, CandidateCount: build.ShadowCandidateCount})
+		selectedSources := selectedSourceMetrics(report.Horizons)
+		comparison.Builds = append(comparison.Builds, modelRaceBuildSummary{BuildID: build.ID, ModelKey: build.BaselineModelKey, Version: build.Version, Algorithm: build.Algorithm, ArtifactSHA256: build.ArtifactSHA256, MacroTest: report.MacroTest, StableCount: build.StatisticallyStableCount, CandidateCount: build.ShadowCandidateCount, SelectedSourceMetricCount: len(selectedSources), SelectedSourceMetrics: selectedSources})
 		if index > 0 {
 			comparison.Deltas = append(comparison.Deltas, modelRaceDelta{BuildID: build.ID, ReferenceID: referenceBuildID, ROCAUC: report.MacroTest.ROCAUC - baseReport.MacroTest.ROCAUC, PRAUC: report.MacroTest.PRAUC - baseReport.MacroTest.PRAUC, Precision: report.MacroTest.Precision - baseReport.MacroTest.Precision, Recall: report.MacroTest.Recall - baseReport.MacroTest.Recall})
 		}
@@ -135,11 +140,14 @@ func (s *Service) CompareBaselineModels(referenceBuildID uint, challengerBuildID
 		}
 	}
 	for horizonIndex, baseHorizon := range baseReport.Horizons {
-		horizon := modelRaceHorizon{HorizonMinutes: baseHorizon.HorizonMinutes, Metrics: map[string]baselineMetrics{}, Readiness: map[string]string{}}
+		horizon := modelRaceHorizon{HorizonMinutes: baseHorizon.HorizonMinutes, Metrics: map[string]baselineMetrics{}, Readiness: map[string]string{}, SelectedFeatureCount: map[string]int{}, SelectedSourceMetrics: map[string][]string{}}
 		for buildIndex, build := range builds {
 			key := fmt.Sprintf("%d", build.ID)
-			horizon.Metrics[key] = reports[buildIndex].Horizons[horizonIndex].Test
-			horizon.Readiness[key] = reports[buildIndex].Horizons[horizonIndex].ReleaseReadiness
+			reportHorizon := reports[buildIndex].Horizons[horizonIndex]
+			horizon.Metrics[key] = reportHorizon.Test
+			horizon.Readiness[key] = reportHorizon.ReleaseReadiness
+			horizon.SelectedFeatureCount[key] = reportHorizon.FeatureSelection.SelectedFeatureCount
+			horizon.SelectedSourceMetrics[key] = selectedSourceMetrics([]baselineHorizonReport{reportHorizon})
 		}
 		comparison.Horizons = append(comparison.Horizons, horizon)
 	}
@@ -152,6 +160,23 @@ func (s *Service) CompareBaselineModels(referenceBuildID uint, challengerBuildID
 	digest := sha256.Sum256(encoded)
 	comparison.ComparisonSHA256 = hex.EncodeToString(digest[:])
 	return comparison, nil
+}
+
+func selectedSourceMetrics(horizons []baselineHorizonReport) []string {
+	set := map[string]struct{}{}
+	for _, horizon := range horizons {
+		for _, feature := range horizon.FeatureSelection.Selected {
+			if feature.SourceMetric != "" {
+				set[feature.SourceMetric] = struct{}{}
+			}
+		}
+	}
+	result := make([]string, 0, len(set))
+	for metric := range set {
+		result = append(result, metric)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func sameHorizonSet(left, right []baselineHorizonReport) bool {
