@@ -1,6 +1,7 @@
 package prediction
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -150,9 +151,12 @@ func TestShadowRegistryRejectsTamperedArtifact(t *testing.T) {
 
 func TestShadowRegistryRejectsAlgorithmWithoutRuntime(t *testing.T) {
 	service := &Service{}
-	_, err := service.registerShadowBuild(api.BaselineModelBuild{Algorithm: "gradient_boosted_stumps"})
-	if err == nil || err.Error() != `algorithm "gradient_boosted_stumps" has no approved shadow runtime` {
-		t.Fatalf("unsupported runtime was not rejected: %v", err)
+	for _, algorithm := range []string{"gradient_boosted_stumps", "anomaly_filtered_logistic", "anomaly_augmented_logistic"} {
+		_, err := service.registerShadowBuild(api.BaselineModelBuild{Algorithm: algorithm})
+		want := fmt.Sprintf("algorithm %q has no approved shadow runtime", algorithm)
+		if err == nil || err.Error() != want {
+			t.Fatalf("unsupported runtime %q was not rejected: %v", algorithm, err)
+		}
 	}
 }
 

@@ -92,8 +92,55 @@ func TestResolveBaselineAlgorithmDefaultsAndRejectsUnknownRuntime(t *testing.T) 
 	if err != nil || algorithm != anomalyLogisticAlgorithm || version != anomalyLogisticModelVersion {
 		t.Fatalf("cascade resolution failed: algorithm=%q version=%q err=%v", algorithm, version, err)
 	}
+	algorithm, version, err = resolveBaselineAlgorithm(anomalyAugmentedAlgorithm)
+	if err != nil || algorithm != anomalyAugmentedAlgorithm || version != anomalyAugmentedModelVersion {
+		t.Fatalf("augmented resolution failed: algorithm=%q version=%q err=%v", algorithm, version, err)
+	}
 	if _, _, err := resolveBaselineAlgorithm("xgboost_external"); err == nil {
 		t.Fatal("unknown algorithm must be rejected before a build is queued")
+	}
+}
+
+func TestAnomalyAugmentedLogisticPreservesRowsAndLearnsSymmetricAnomalies(t *testing.T) {
+	rows := make([]trainingMatrixRow, 0, 160)
+	for index := 0; index < 160; index++ {
+		label := 0
+		value := float64(index%20)/100 - 0.1
+		if index >= 80 {
+			label = 1
+			value = 3
+			if index%2 == 0 {
+				value = -3
+			}
+		}
+		rows = append(rows, trainingMatrixRow{LabelValue: label, TrainingWeight: 1, Features: map[string]float64{"gpu_temp_mean_24h": value}})
+	}
+	model, err := fitAnomalyAugmentedLogistic(rows, []string{"gpu_temp_mean_24h"}, nil, 1440)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics := evaluateScores(scoreAnomalyAugmentedRowsWithoutCalibration(model, rows), 0.5)
+	if metrics.ROCAUC < 0.95 || metrics.Precision < 0.9 || metrics.Recall < 0.9 {
+		t.Fatalf("continuous anomaly feature did not learn symmetric deviations: %+v", metrics)
+	}
+	if _, mutated := rows[0].Features[anomalySyntheticFeature]; mutated {
+		t.Fatal("anomaly augmentation must not mutate immutable matrix rows")
+	}
+	second, err := fitAnomalyAugmentedLogistic(rows, []string{"gpu_temp_mean_24h"}, nil, 1440)
+	if err != nil || !reflect.DeepEqual(model, second) {
+		t.Fatalf("augmented training must be deterministic: err=%v", err)
+	}
+}
+
+func TestAugmentedArtifactDistributionColumnsExcludeSyntheticFeature(t *testing.T) {
+	artifact := baselineArtifact{AugmentedModels: []anomalyAugmentedLogisticModel{{
+		Anomaly:    anomalyFilterModel{FeatureColumns: []string{"gpu_temp_mean_24h"}},
+		Classifier: logisticModel{FeatureColumns: []string{"gpu_power_mean_24h", anomalySyntheticFeature}},
+	}}}
+	columns := uniqueBaselineFeatureColumns(artifact)
+	want := []string{"gpu_power_mean_24h", "gpu_temp_mean_24h"}
+	if !reflect.DeepEqual(columns, want) {
+		t.Fatalf("synthetic feature cannot be materialized from the immutable matrix: got=%v want=%v", columns, want)
 	}
 }
 
@@ -223,6 +270,56 @@ func TestBuildAnomalyLogisticProducesOfflineOnlyImmutableArtifact(t *testing.T) 
 	}
 	if build.Status != "completed" || build.TrainedModelCount != 1 || build.ShadowCandidateCount != 0 || len(artifact.Models) != 0 || len(artifact.CascadeModels) != 1 || report.Mode != "offline_challenger_evaluation_only" || report.Horizons[0].AnomalyFilter == nil {
 		t.Fatalf("cascade runtime boundary or audit report missing: build=%+v artifact=%+v report=%+v", build, artifact, report)
+	}
+}
+
+func TestBuildAnomalyAugmentedProducesOfflineOnlyImmutableArtifact(t *testing.T) {
+	db, err := storage.InitDB(fmt.Sprintf("file:anomaly-augmented-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	rows := make([]trainingMatrixRow, 0, 120)
+	for _, split := range []string{"train", "validation", "test"} {
+		for index := 0; index < 40; index++ {
+			label := 0
+			value := float64(index%10)/100 - 0.05
+			if index >= 30 {
+				label, value = 1, 3+float64(index%5)/10
+			}
+			rows = append(rows, trainingMatrixRow{RowKey: fmt.Sprintf("%s-%d", split, index), GPUUUID: fmt.Sprintf("GPU-%s-%d", split, index), ModelName: "H100", HorizonMinutes: 1440, PredictionTarget: highPriorityXIDEventTarget, Split: split, LabelValue: label, TrainingWeight: 1, Features: map[string]float64{"gpu_temp_mean_24h": value, "gpu_power_mean_24h": value * 2}})
+		}
+	}
+	matrixPath := filepath.Join(root, "matrix.jsonl")
+	matrixSHA, err := writeJSONLines(matrixPath, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matrix := api.TrainingMatrixBuild{TrainingMatrixKey: "matrix-v7-augmented", Version: trainingMatrixVersion, Status: "completed", FeatureContractVersion: "1.9.0", MatrixPath: matrixPath, MatrixSHA256: matrixSHA, StartedAt: time.Now()}
+	if err := db.Create(&matrix).Error; err != nil {
+		t.Fatal(err)
+	}
+	build := api.BaselineModelBuild{BaselineModelKey: "augmented-test", Version: anomalyAugmentedModelVersion, Status: "running", Algorithm: anomalyAugmentedAlgorithm, SourceMatrixBuildID: matrix.ID, SourceTrainingMatrixKey: matrix.TrainingMatrixKey, FeatureContractVersion: matrix.FeatureContractVersion, OutputDir: filepath.Join(root, "model"), StartedAt: time.Now()}
+	if err := db.Create(&build).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, config.HistoryConfig{DatasetDir: root}, time.Second)
+	if err := service.buildBaselineModels(&build); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&build, build.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var artifact baselineArtifact
+	if err := readJSONFile(build.ArtifactPath, &artifact); err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.BaselineModelReport(build.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if build.Status != "completed" || build.TrainedModelCount != 1 || build.ShadowCandidateCount != 0 || len(artifact.Models) != 0 || len(artifact.AugmentedModels) != 1 || report.Mode != "offline_challenger_evaluation_only" || report.Horizons[0].AnomalyAugmentation == nil {
+		t.Fatalf("augmented runtime boundary or audit report missing: build=%+v artifact=%+v report=%+v", build, artifact, report)
 	}
 }
 
