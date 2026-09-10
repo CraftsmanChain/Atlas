@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	featureDatasetVersion = "gpu-historical-features-v3"
+	featureDatasetVersion = "gpu-historical-features-v4"
 	featureLookback       = 24 * time.Hour
 	featureQueryStep      = 5 * time.Minute
 )
@@ -72,6 +72,23 @@ var historicalFeatureMetrics = []historicalMetric{
 	{Name: "nvidia_smi_ecc_errors_uncorrected_volatile_total", Canonical: "uncorrected_ecc_volatile"},
 	{Name: "nvidia_smi_pcie_link_width_current", Canonical: "pcie_link_width_current"},
 	{Name: "nvidia_smi_reset_status_reset_required", Canonical: "gpu_reset_required"},
+	{Name: "atlas:gpu_metric_family_count", Canonical: "gpu_metric_family_count"},
+	{Name: "atlas:gpu_metric_family_count_delta_5m", Canonical: "gpu_metric_family_count_delta_5m"},
+	{Name: "nvidia_smi_pcie_link_gen_current", Canonical: "pcie_link_gen_current"},
+	{Name: "nvidia_smi_remapped_rows_pending", Canonical: "pending_remapped_rows"},
+	{Name: "nvidia_smi_ecc_errors_corrected_aggregate_total", Canonical: "corrected_ecc_aggregate"},
+	{Name: "DCGM_FI_DEV_CLOCK_THROTTLE_REASONS", Canonical: "clock_throttle_reasons"},
+	{Name: "DCGM_FI_DEV_GPU_NVLINK_ERRORS", Canonical: "nvlink_errors"},
+	{Name: "DCGM_FI_DEV_POWER_VIOLATION", Canonical: "power_violation_ns"},
+	{Name: "DCGM_FI_DEV_RELIABILITY_VIOLATION", Canonical: "reliability_violation_ns"},
+	{Name: "DCGM_FI_DEV_THERMAL_VIOLATION", Canonical: "thermal_violation_ns"},
+}
+
+var coreHistoricalMetrics = map[string]bool{
+	"gpu_temp": true, "memory_temp": true, "power_usage": true,
+	"gpu_util": true, "mem_copy_util": true, "sm_clock": true,
+	"mem_clock": true, "fb_used": true, "fb_free": true,
+	"pcie_replay_counter": true,
 }
 
 type extractedFeatureRow struct {
@@ -94,6 +111,9 @@ type extractedFeatureRow struct {
 	AvailableMetrics      int                `json:"available_metrics"`
 	ExpectedMetrics       int                `json:"expected_metrics"`
 	MissingMetrics        []string           `json:"missing_metrics"`
+	OptionalMetrics       int                `json:"optional_metrics"`
+	AvailableOptional     int                `json:"available_optional_metrics"`
+	MissingOptional       []string           `json:"missing_optional_metrics"`
 	Features              map[string]float64 `json:"features"`
 	ExtractionError       string             `json:"extraction_error,omitempty"`
 }
@@ -112,6 +132,8 @@ type featureQualityReport struct {
 	CompletedWindows      int            `json:"completed_windows"`
 	FailedWindows         int            `json:"failed_windows"`
 	MetricCount           int            `json:"metric_count"`
+	RequiredMetricCount   int            `json:"required_metric_count"`
+	OptionalMetricCount   int            `json:"optional_metric_count"`
 	FeatureColumnCount    int            `json:"feature_column_count"`
 	FeatureColumns        []string       `json:"feature_columns"`
 	AverageCoverage       float64        `json:"average_metric_coverage"`
@@ -488,21 +510,33 @@ func normalizeHistoricalPoints(name string, points []promclient.RangePoint) []pr
 func summarizeFeatureWindow(build *api.TrainingFeatureBuild, window datasetWindow, all map[string][]promclient.RangePoint) extractedFeatureRow {
 	row := emptyExtractedFeatureRow(build, window, "")
 	start := window.FeatureCutoffAt.Add(-featureLookback)
+	required := stringSet(requiredHistoricalMetrics(window.ModelName))
 	for _, metric := range expectedHistoricalMetrics(window.ModelName) {
 		points := pointsInWindow(all[metric], start, window.FeatureCutoffAt)
 		if len(points) == 0 {
-			row.MissingMetrics = append(row.MissingMetrics, metric)
+			if required[metric] {
+				row.MissingMetrics = append(row.MissingMetrics, metric)
+			} else {
+				row.MissingOptional = append(row.MissingOptional, metric)
+			}
 			continue
 		}
-		row.AvailableMetrics++
+		if required[metric] {
+			row.AvailableMetrics++
+		} else {
+			row.AvailableOptional++
+		}
 		featurestats.AddTrailingRangeStatistics(row.Features, metric, points, window.FeatureCutoffAt)
 	}
-	row.MetricCoverage = float64(row.AvailableMetrics) / float64(row.ExpectedMetrics)
+	if row.ExpectedMetrics > 0 {
+		row.MetricCoverage = float64(row.AvailableMetrics) / float64(row.ExpectedMetrics)
+	}
 	return row
 }
 
 func emptyExtractedFeatureRow(build *api.TrainingFeatureBuild, window datasetWindow, extractionError string) extractedFeatureRow {
-	metrics := expectedHistoricalMetrics(window.ModelName)
+	metrics := requiredHistoricalMetrics(window.ModelName)
+	optional := optionalHistoricalMetrics(window.ModelName)
 	row := extractedFeatureRow{
 		SampleKey: window.SampleKey, FeatureDatasetVersion: featureDatasetVersion,
 		SourceDatasetKey: build.SourceDatasetKey, EpisodeKey: window.EpisodeKey,
@@ -511,11 +545,12 @@ func emptyExtractedFeatureRow(build *api.TrainingFeatureBuild, window datasetWin
 		HorizonMinutes: window.HorizonMinutes, FeatureCutoffAt: window.FeatureCutoffAt,
 		LabelOnsetAt: window.LabelOnsetAt, LabelWeight: window.LabelWeight,
 		FeatureContract: features.CatalogVersion, LookbackMinutes: int(featureLookback / time.Minute),
-		QueryStepSeconds: int(featureQueryStep / time.Second), ExpectedMetrics: len(metrics),
+		QueryStepSeconds: int(featureQueryStep / time.Second), ExpectedMetrics: len(metrics), OptionalMetrics: len(optional),
 		Features: map[string]float64{}, ExtractionError: extractionError,
 	}
 	if extractionError != "" {
 		row.MissingMetrics = metrics
+		row.MissingOptional = optional
 	}
 	return row
 }
@@ -564,6 +599,7 @@ func buildFeatureQualityReport(build api.TrainingFeatureBuild, rows []extractedF
 		PointInTimeRule: "every Prometheus sample timestamp must be <= feature_cutoff_at and strictly before label_onset_at",
 		LookbackMinutes: int(featureLookback / time.Minute), QueryStepSeconds: int(featureQueryStep / time.Second),
 		EpisodeCount: build.EpisodeCount, WindowCount: len(rows), MetricCount: len(canonicalHistoricalMetrics()),
+		RequiredMetricCount: len(requiredHistoricalMetrics("NVIDIA H100")), OptionalMetricCount: len(optionalHistoricalMetrics("NVIDIA H100")),
 		MetricAvailableCounts: map[string]int{}, MinimumCoverage: 1, CreatedAt: time.Now(),
 	}
 	for _, row := range rows {
@@ -575,14 +611,7 @@ func buildFeatureQualityReport(build api.TrainingFeatureBuild, rows []extractedF
 		report.AverageCoverage += row.MetricCoverage
 		report.MinimumCoverage = math.Min(report.MinimumCoverage, row.MetricCoverage)
 		for _, metric := range expectedHistoricalMetrics(row.ModelName) {
-			missing := false
-			for _, missingMetric := range row.MissingMetrics {
-				if metric == missingMetric {
-					missing = true
-					break
-				}
-			}
-			if !missing {
+			if historicalMetricPresent(row.Features, metric) {
 				report.MetricAvailableCounts[metric]++
 			}
 		}
@@ -611,6 +640,42 @@ func expectedHistoricalMetrics(modelName string) []string {
 		result = append(result, metric)
 	}
 	return result
+}
+
+func requiredHistoricalMetrics(modelName string) []string {
+	model := strings.ToUpper(strings.TrimSpace(modelName))
+	result := make([]string, 0, len(coreHistoricalMetrics))
+	for _, metric := range expectedHistoricalMetrics(modelName) {
+		if !coreHistoricalMetrics[metric] {
+			continue
+		}
+		if strings.Contains(model, "4090") && metric == "memory_temp" {
+			continue
+		}
+		result = append(result, metric)
+	}
+	return result
+}
+
+func optionalHistoricalMetrics(modelName string) []string {
+	required := stringSet(requiredHistoricalMetrics(modelName))
+	result := make([]string, 0)
+	for _, metric := range expectedHistoricalMetrics(modelName) {
+		if !required[metric] {
+			result = append(result, metric)
+		}
+	}
+	return result
+}
+
+func historicalMetricPresent(values map[string]float64, metric string) bool {
+	prefix := metric + "_"
+	for column := range values {
+		if strings.HasPrefix(column, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func historicalFeatureColumns() []string {

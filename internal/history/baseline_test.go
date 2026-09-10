@@ -192,7 +192,7 @@ func TestBuildShallowGBDTProducesOfflineOnlyImmutableArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	matrix := api.TrainingMatrixBuild{TrainingMatrixKey: "matrix-v7-test", Version: trainingMatrixVersion, Status: "completed", FeatureContractVersion: "1.9.0", MatrixPath: matrixPath, MatrixSHA256: matrixSHA, StartedAt: time.Now()}
+	matrix := api.TrainingMatrixBuild{TrainingMatrixKey: "matrix-v7-test", Version: trainingMatrixVersion, Status: "completed", FeatureContractVersion: "1.10.0", MatrixPath: matrixPath, MatrixSHA256: matrixSHA, StartedAt: time.Now()}
 	if err := db.Create(&matrix).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestBuildAnomalyLogisticProducesOfflineOnlyImmutableArtifact(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	matrix := api.TrainingMatrixBuild{TrainingMatrixKey: "matrix-v7-cascade", Version: trainingMatrixVersion, Status: "completed", FeatureContractVersion: "1.9.0", MatrixPath: matrixPath, MatrixSHA256: matrixSHA, StartedAt: time.Now()}
+	matrix := api.TrainingMatrixBuild{TrainingMatrixKey: "matrix-v7-cascade", Version: trainingMatrixVersion, Status: "completed", FeatureContractVersion: "1.10.0", MatrixPath: matrixPath, MatrixSHA256: matrixSHA, StartedAt: time.Now()}
 	if err := db.Create(&matrix).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func TestBuildAnomalyAugmentedProducesOfflineOnlyImmutableArtifact(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	matrix := api.TrainingMatrixBuild{TrainingMatrixKey: "matrix-v7-augmented", Version: trainingMatrixVersion, Status: "completed", FeatureContractVersion: "1.9.0", MatrixPath: matrixPath, MatrixSHA256: matrixSHA, StartedAt: time.Now()}
+	matrix := api.TrainingMatrixBuild{TrainingMatrixKey: "matrix-v7-augmented", Version: trainingMatrixVersion, Status: "completed", FeatureContractVersion: "1.10.0", MatrixPath: matrixPath, MatrixSHA256: matrixSHA, StartedAt: time.Now()}
 	if err := db.Create(&matrix).Error; err != nil {
 		t.Fatal(err)
 	}

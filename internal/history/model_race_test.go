@@ -24,7 +24,7 @@ func TestCompareBaselineModelsRequiresSameVerifiedMatrixAndProducesStableDigest(
 	if err != nil {
 		t.Fatal(err)
 	}
-	matrix := api.TrainingMatrixBuild{TrainingMatrixKey: "matrix-v7-race", Version: trainingMatrixVersion, Status: "completed", FeatureContractVersion: "1.9.0", MatrixPath: matrixPath, MatrixSHA256: matrixSHA, StartedAt: time.Now()}
+	matrix := api.TrainingMatrixBuild{TrainingMatrixKey: "matrix-v7-race", Version: trainingMatrixVersion, Status: "completed", FeatureContractVersion: "1.10.0", MatrixPath: matrixPath, MatrixSHA256: matrixSHA, StartedAt: time.Now()}
 	if err := db.Create(&matrix).Error; err != nil {
 		t.Fatal(err)
 	}
