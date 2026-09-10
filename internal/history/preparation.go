@@ -521,21 +521,10 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 }
 
 func positiveTelemetryContinuity(row extractedFeatureRow) float64 {
-	if row.QueryStepSeconds <= 0 || row.LookbackMinutes <= 0 {
-		return 0
-	}
-	expected := row.LookbackMinutes*60/row.QueryStepSeconds + 1
-	minimum := float64(expected)
-	for _, metric := range []string{"gpu_temp", "power_usage", "gpu_util"} {
-		count, exists := row.Features[metric+"_sample_count_24h"]
-		if !exists {
-			return 0
-		}
-		if count < minimum {
-			minimum = count
-		}
-	}
-	return math.Min(1, minimum/float64(expected))
+	// The continuity columns are explicitly trailing-24h, even when a 7d
+	// target also carries a separate 30d coarse-resolution feature plane.
+	// Long-range completeness is enforced independently by LongMetricCoverage.
+	return coreTelemetryContinuity(row)
 }
 
 func (s *Service) currentLabelEligibleEpisodes(windows []datasetWindow) (map[string]bool, error) {
