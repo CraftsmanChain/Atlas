@@ -540,13 +540,29 @@ func (h *Handler) HandleTrainingMatrix(w http.ResponseWriter, r *http.Request) {
 	}
 	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/prediction/history/training-matrices/"), "/")
 	parts := strings.Split(path, "/")
-	if len(parts) != 2 || parts[1] != "readiness" {
-		historyJSON(w, http.StatusNotFound, map[string]any{"error": "training matrix readiness not found"})
+	if len(parts) != 2 || (parts[1] != "readiness" && parts[1] != "signal-audit") {
+		historyJSON(w, http.StatusNotFound, map[string]any{"error": "training matrix report not found"})
 		return
 	}
 	id, err := strconv.ParseUint(parts[0], 10, 64)
 	if err != nil || id == 0 {
 		historyJSON(w, http.StatusBadRequest, map[string]any{"error": "valid training matrix id is required"})
+		return
+	}
+	if parts[1] == "signal-audit" {
+		report, auditErr := h.service.TrainingMatrixSignalAudit(uint(id))
+		if auditErr != nil {
+			historyJSON(w, http.StatusNotFound, map[string]any{"error": auditErr.Error()})
+			return
+		}
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("ETag", `"`+report.AuditSHA256+`"`)
+		w.Header().Set("X-Atlas-Training-Signal-Audit-Version", report.Version)
+		w.Header().Set("X-Atlas-Training-Signal-Audit-SHA256", report.AuditSHA256)
+		historyJSON(w, http.StatusOK, map[string]any{
+			"data": report,
+			"meta": map[string]any{"read_only": true, "probability_emitted": false, "alerts_emitted": false, "actions_executed": false},
+		})
 		return
 	}
 	report, err := h.service.TrainingMatrixReadiness(uint(id))

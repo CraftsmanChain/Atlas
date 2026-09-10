@@ -13,6 +13,20 @@ skip_npm_install="${SKIP_NPM_INSTALL:-0}"
 version_name="${VERSION_NAME:-prod}"
 release_strategy="${RELEASE_STRATEGY:-remote-source}"
 rsync_rsh="${RSYNC_RSH:-ssh}"
+deployment_stage="${ATLAS_DEPLOYMENT_STAGE:-development}"
+
+case "$deployment_stage" in
+  development)
+    database_backup_enabled=0
+    ;;
+  production)
+    database_backup_enabled=1
+    ;;
+  *)
+    echo "ATLAS_DEPLOYMENT_STAGE must be development or production, got: $deployment_stage" >&2
+    exit 1
+    ;;
+esac
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "$repo_root" ]]; then
@@ -45,6 +59,7 @@ usage() {
   BRANCH=main
   VERSION_NAME=prod
   SKIP_NPM_INSTALL=1
+  ATLAS_DEPLOYMENT_STAGE=development # development 跳过数据库备份；production 发布前执行备份
   RELEASE_STRATEGY=remote-source   # 可设为 legacy-binary 使用旧二进制上传流程
   RSYNC_RSH=ssh                    # rsync 使用的远端 shell，可附加受控 SSH 参数
 EOF
@@ -231,6 +246,12 @@ fi
 install -m 755 '$remote_root/atlas-server.new' '$remote_root/atlas-server'
 install -m 755 '$remote_root/atlas-db-migrate.new' '$remote_root/atlas-db-migrate'
 install -m 755 '$remote_root/postgres_backup.sh.new' '$remote_root/scripts/postgres_backup.sh'
+if [[ '$database_backup_enabled' == '1' ]]; then
+  echo 'Backing up PostgreSQL before production release'
+  '$remote_root/scripts/postgres_backup.sh'
+else
+  echo 'Skipping PostgreSQL backup for development release'
+fi
 rm -f '$remote_root/atlas-server.new'
 rm -f '$remote_root/atlas-db-migrate.new' '$remote_root/postgres_backup.sh.new'
 rm -rf '$remote_root/web/dist'
@@ -285,6 +306,7 @@ if [[ "$mode" == "deploy" || "$mode" == "all" ]]; then
         GIT_REMOTE="$git_remote" \
         EXTRA_GIT_REMOTE="$extra_git_remote" \
         SKIP_NPM_INSTALL="$skip_npm_install" \
+        ATLAS_DEPLOYMENT_STAGE="$deployment_stage" \
         bash "$repo_root/scripts/deploy_remote_source.sh"; then
       verify_remote_after_deploy
     else

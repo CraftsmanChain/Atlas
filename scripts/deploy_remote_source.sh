@@ -9,6 +9,12 @@ branch="${BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
 git_remote="${GIT_REMOTE:-origin}"
 extra_git_remote="${EXTRA_GIT_REMOTE:-github}"
 rsync_rsh="${RSYNC_RSH:-ssh}"
+deployment_stage="${ATLAS_DEPLOYMENT_STAGE:-development}"
+
+if [[ "$deployment_stage" != "development" && "$deployment_stage" != "production" ]]; then
+  echo "ATLAS_DEPLOYMENT_STAGE must be development or production, got: $deployment_stage" >&2
+  exit 1
+fi
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
@@ -74,7 +80,7 @@ sync_to_remote "$temporary_dir/remote_build_release.sh" "$remote_root/scripts/re
 sync_to_remote "$repo_root/scripts/postgres_backup.sh" "$remote_root/scripts/postgres_backup.sh"
 
 ssh "$remote_ssh" "chmod 755 '$remote_root/scripts/remote_build_release.sh' '$remote_root/scripts/postgres_backup.sh' &&
-ATLAS_REMOTE_ROOT='$remote_root' '$remote_root/scripts/remote_build_release.sh' '$release_id' '$version_name' '$commit'"
+ATLAS_REMOTE_ROOT='$remote_root' ATLAS_DEPLOYMENT_STAGE='$deployment_stage' '$remote_root/scripts/remote_build_release.sh' '$release_id' '$version_name' '$commit'"
 
 echo "Verifying deployed service"
 status="$(curl -fsS --max-time 8 "${remote_url%/}/api/v1/status")"

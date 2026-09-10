@@ -9,6 +9,20 @@ service_name="${ATLAS_SERVICE_NAME:-atlas.service}"
 build_image="${ATLAS_GO_BUILD_IMAGE:-docker.m.daocloud.io/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac}"
 go_proxy="${ATLAS_GOPROXY:-https://goproxy.cn|https://proxy.golang.org|direct}"
 go_sumdb="${ATLAS_GOSUMDB:-sum.golang.google.cn}"
+deployment_stage="${ATLAS_DEPLOYMENT_STAGE:-development}"
+
+case "$deployment_stage" in
+  development)
+    database_backup_enabled=0
+    ;;
+  production)
+    database_backup_enabled=1
+    ;;
+  *)
+    echo "ATLAS_DEPLOYMENT_STAGE must be development or production, got: $deployment_stage" >&2
+    exit 1
+    ;;
+esac
 
 if [[ ! "$release_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "Invalid release id: $release_id" >&2
@@ -28,7 +42,11 @@ if ! flock -n 9; then
   exit 1
 fi
 
-for required in "$source_archive" "$web_archive" "$backup_script"; do
+required_inputs=("$source_archive" "$web_archive")
+if [[ "$database_backup_enabled" == "1" ]]; then
+  required_inputs+=("$backup_script")
+fi
+for required in "${required_inputs[@]}"; do
   if [[ ! -f "$required" ]]; then
     echo "Required release input is missing: $required" >&2
     exit 1
@@ -70,8 +88,12 @@ test -x "$release_dir/output/atlas-server"
 test -x "$release_dir/output/atlas-db-migrate"
 test -f "$release_dir/web/dist/index.html"
 
-echo "Backing up PostgreSQL before release"
-"$backup_script"
+if [[ "$database_backup_enabled" == "1" ]]; then
+  echo "Backing up PostgreSQL before production release"
+  "$backup_script"
+else
+  echo "Skipping PostgreSQL backup for development release"
+fi
 
 timestamp="$(date +%Y%m%d%H%M%S)"
 server_backup="$remote_root/atlas-server.bak.$timestamp"
