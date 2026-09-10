@@ -204,6 +204,22 @@ func TestPositiveTelemetryContinuityRejectsSparseCoreSamples(t *testing.T) {
 	}
 }
 
+func TestPositiveTelemetryContinuityKeeps24hDenominatorForLongRangeRows(t *testing.T) {
+	row := extractedFeatureRow{
+		HorizonMinutes:   int(longRangeHorizon / time.Minute),
+		LookbackMinutes:  int(featureLongLookback / time.Minute),
+		QueryStepSeconds: int(featureQueryStep / time.Second),
+		Features: map[string]float64{
+			"gpu_temp_sample_count_24h":    289,
+			"power_usage_sample_count_24h": 289,
+			"gpu_util_sample_count_24h":    289,
+		},
+	}
+	if continuity := positiveTelemetryContinuity(row); continuity != 1 {
+		t.Fatalf("30d metadata must not dilute trailing-24h continuity, got %v", continuity)
+	}
+}
+
 func TestEntityIsolationExcludesGPUCrossingTimeBoundary(t *testing.T) {
 	trainEnd := time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC)
 	validationEnd := time.Date(2026, 1, 20, 0, 0, 0, 0, time.UTC)

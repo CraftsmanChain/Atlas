@@ -304,17 +304,21 @@ func (s *Service) buildHistoricalFeatures(build *api.TrainingFeatureBuild, maxEp
 	}()
 
 	ordered := make([][]extractedFeatureRow, len(grouped))
-	processed, failedWindows := 0, 0
+	processed, completedWindows, failedWindows := 0, 0, 0
 	for result := range results {
 		ordered[result.index] = result.rows
-		if result.err != nil {
-			failedWindows += len(grouped[result.index])
+		for _, row := range result.rows {
+			if row.ExtractionError != "" {
+				failedWindows++
+			} else {
+				completedWindows++
+			}
 		}
 		processed++
 		if processed%10 == 0 || processed == len(grouped) {
 			_ = s.db.Model(build).Updates(map[string]any{
 				"processed_episodes": processed, "failed_windows": failedWindows,
-				"completed_windows": totalWindows - failedWindows,
+				"completed_windows": completedWindows,
 			}).Error
 		}
 	}
