@@ -23,9 +23,11 @@ const (
 	baselineModelVersion             = "gpu-logistic-baseline-v12"
 	shallowGBDTModelVersion          = "gpu-shallow-gbdt-challenger-v1"
 	anomalyLogisticModelVersion      = "gpu-anomaly-logistic-cascade-v1"
+	anomalyAugmentedModelVersion     = "gpu-anomaly-augmented-logistic-v1"
 	logisticRegressionAlgorithm      = "logistic_regression"
 	shallowGBDTAlgorithm             = "gradient_boosted_stumps"
 	anomalyLogisticAlgorithm         = "anomaly_filtered_logistic"
+	anomalyAugmentedAlgorithm        = "anomaly_augmented_logistic"
 	cohortReadinessGateName          = "fault-model-horizon-readiness-v1"
 	baselineFeatureAuditVersion      = "baseline-feature-leakage-audit-v2"
 	baselineFeatureSelectionVersion  = "train-only-effect-selection-v1"
@@ -41,6 +43,7 @@ const (
 	shallowGBDTMinimumLeafRows       = 5
 	anomalyControlQuantile           = 0.80
 	anomalyMinimumScale              = 1e-9
+	anomalySyntheticFeature          = "__train_control_robust_anomaly_score_v1"
 )
 
 type BaselineModelBuildRequest struct {
@@ -100,6 +103,15 @@ type anomalyLogisticModel struct {
 	FeatureSelection baselineFeatureSelection `json:"feature_selection"`
 }
 
+type anomalyAugmentedLogisticModel struct {
+	HorizonMinutes   int                      `json:"horizon_minutes"`
+	Anomaly          anomalyFilterModel       `json:"anomaly"`
+	Classifier       logisticModel            `json:"classifier"`
+	Threshold        float64                  `json:"threshold"`
+	Calibration      probabilityCalibration   `json:"calibration"`
+	FeatureSelection baselineFeatureSelection `json:"feature_selection"`
+}
+
 type anomalyFilterSplitReport struct {
 	Count             int     `json:"count"`
 	Positive          int     `json:"positive"`
@@ -120,6 +132,28 @@ type anomalyFilterReport struct {
 	Train           anomalyFilterSplitReport `json:"train"`
 	Validation      anomalyFilterSplitReport `json:"validation"`
 	Test            anomalyFilterSplitReport `json:"test"`
+}
+
+type anomalyScoreClassReport struct {
+	Count int     `json:"count"`
+	Mean  float64 `json:"mean"`
+	P50   float64 `json:"p50"`
+	P90   float64 `json:"p90"`
+}
+
+type anomalyScoreSplitReport struct {
+	Positive anomalyScoreClassReport `json:"positive"`
+	Control  anomalyScoreClassReport `json:"control"`
+}
+
+type anomalyAugmentationReport struct {
+	Version          string                  `json:"version"`
+	SyntheticFeature string                  `json:"synthetic_feature"`
+	FeatureCount     int                     `json:"feature_count"`
+	TopK             int                     `json:"top_k"`
+	Train            anomalyScoreSplitReport `json:"train"`
+	Validation       anomalyScoreSplitReport `json:"validation"`
+	Test             anomalyScoreSplitReport `json:"test"`
 }
 
 type baselineSelectedFeature struct {
@@ -181,6 +215,7 @@ type baselineHorizonReport struct {
 	TestByRuleVersion       map[string]baselineMetrics `json:"test_by_rule_version"`
 	Threshold               float64                    `json:"threshold"`
 	AnomalyFilter           *anomalyFilterReport       `json:"anomaly_filter,omitempty"`
+	AnomalyAugmentation     *anomalyAugmentationReport `json:"anomaly_augmentation,omitempty"`
 }
 
 type baselineCalibrationBin struct {
@@ -218,19 +253,20 @@ type baselineUncertainty struct {
 	Status          string  `json:"status"`
 }
 type baselineArtifact struct {
-	Version          string                 `json:"version"`
-	Algorithm        string                 `json:"algorithm"`
-	MatrixKey        string                 `json:"matrix_key"`
-	ScopeEventType   string                 `json:"scope_event_type,omitempty"`
-	ScopeModelName   string                 `json:"scope_model_name,omitempty"`
-	ReadinessGate    string                 `json:"readiness_gate,omitempty"`
-	PredictionTarget string                 `json:"prediction_target"`
-	FeaturePolicy    string                 `json:"feature_policy"`
-	FeatureAudit     baselineFeatureAudit   `json:"feature_audit"`
-	Models           []logisticModel        `json:"models"`
-	BoostedModels    []shallowGBDTModel     `json:"boosted_models,omitempty"`
-	CascadeModels    []anomalyLogisticModel `json:"cascade_models,omitempty"`
-	CreatedAt        time.Time              `json:"created_at"`
+	Version          string                          `json:"version"`
+	Algorithm        string                          `json:"algorithm"`
+	MatrixKey        string                          `json:"matrix_key"`
+	ScopeEventType   string                          `json:"scope_event_type,omitempty"`
+	ScopeModelName   string                          `json:"scope_model_name,omitempty"`
+	ReadinessGate    string                          `json:"readiness_gate,omitempty"`
+	PredictionTarget string                          `json:"prediction_target"`
+	FeaturePolicy    string                          `json:"feature_policy"`
+	FeatureAudit     baselineFeatureAudit            `json:"feature_audit"`
+	Models           []logisticModel                 `json:"models"`
+	BoostedModels    []shallowGBDTModel              `json:"boosted_models,omitempty"`
+	CascadeModels    []anomalyLogisticModel          `json:"cascade_models,omitempty"`
+	AugmentedModels  []anomalyAugmentedLogisticModel `json:"augmented_models,omitempty"`
+	CreatedAt        time.Time                       `json:"created_at"`
 }
 type baselineReport struct {
 	Version                 string                     `json:"version"`
@@ -369,6 +405,8 @@ func resolveBaselineAlgorithm(value string) (string, string, error) {
 		return shallowGBDTAlgorithm, shallowGBDTModelVersion, nil
 	case anomalyLogisticAlgorithm:
 		return anomalyLogisticAlgorithm, anomalyLogisticModelVersion, nil
+	case anomalyAugmentedAlgorithm:
+		return anomalyAugmentedAlgorithm, anomalyAugmentedModelVersion, nil
 	default:
 		return "", "", fmt.Errorf("unsupported baseline algorithm %q", strings.TrimSpace(value))
 	}
@@ -441,6 +479,10 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 		mode = "offline_challenger_evaluation_only"
 		featureSelectionPolicy = "stage 1 fits robust median/MAD anomaly statistics and a healthy-control quantile gate on training rows only; stage 2 selects and fits Logistic only on gate-retained training rows; validation/test labels never fit the gate, features, calibration, or operating threshold; runtime registration is disabled"
 	}
+	if build.Algorithm == anomalyAugmentedAlgorithm {
+		mode = "offline_challenger_evaluation_only"
+		featureSelectionPolicy = "a broad safe feature set fits a continuous robust anomaly score from training controls only; training-only effect selection supplies Logistic features and the anomaly score is appended without filtering rows; validation/test labels never fit anomaly statistics, features, calibration, or operating threshold; runtime registration is disabled"
+	}
 	artifact := baselineArtifact{Version: build.Version, Algorithm: build.Algorithm, MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CreatedAt: s.now()}
 	report := baselineReport{Version: build.Version, Algorithm: build.Algorithm, MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, Mode: mode, FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CalibrationPolicy: "validation-only Platt scaling fits slope/intercept; held-out test labels are audit-only; no online probability release", OperatingPointPolicy: "validation-only threshold prioritizes precision >= 0.70 and recall >= 0.50; held-out test must independently pass both gates", FeatureSelectionPolicy: featureSelectionPolicy, ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
 	for _, h := range horizons {
@@ -461,6 +503,7 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 		}
 		var rawValidationScores, validationScores, rawTestScores, testScores []scoredLabel
 		var anomalyReport *anomalyFilterReport
+		var anomalyAugmentation *anomalyAugmentationReport
 		threshold := 0.5
 		if build.Algorithm == shallowGBDTAlgorithm {
 			model := fitShallowGBDT(train, selectedColumns, h)
@@ -487,6 +530,30 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 			testScores = applyCalibration(rawTestScores, model.Calibration)
 			artifact.CascadeModels = append(artifact.CascadeModels, model)
 			anomalyReport = &anomalyFilterReport{Version: model.Filter.Version, Threshold: model.Filter.Threshold, ControlQuantile: model.Filter.ControlQuantile, TopK: model.Filter.TopK, FeatureCount: len(model.Filter.FeatureColumns), Train: describeAnomalyFilterSplit(train, model.Filter), Validation: describeAnomalyFilterSplit(val, model.Filter), Test: describeAnomalyFilterSplit(test, model.Filter)}
+		} else if build.Algorithm == anomalyAugmentedAlgorithm {
+			anomalySelection := selectShallowGBDTFeatures(train, columns)
+			if anomalySelection.Status != "passed" || anomalySelection.SelectedFeatureCount == 0 {
+				return fmt.Errorf("horizon %d has no training-only anomaly features", h)
+			}
+			anomalyColumns := selectedFeatureNames(anomalySelection)
+			if len(anomalyColumns) > build.FeatureColumnCount {
+				build.FeatureColumnCount = len(anomalyColumns)
+			}
+			model, err := fitAnomalyAugmentedLogistic(train, anomalyColumns, selectedColumns, h)
+			if err != nil {
+				return fmt.Errorf("horizon %d anomaly augmentation: %w", h, err)
+			}
+			model.FeatureSelection = selection
+			model.Classifier.FeatureSelection = selection
+			rawValidationScores = scoreAnomalyAugmentedRowsWithoutCalibration(model, val)
+			model.Calibration = fitPlattCalibration(rawValidationScores)
+			validationScores = applyCalibration(rawValidationScores, model.Calibration)
+			model.Threshold = operationalThreshold(validationScores)
+			threshold = model.Threshold
+			rawTestScores = scoreAnomalyAugmentedRowsWithoutCalibration(model, test)
+			testScores = applyCalibration(rawTestScores, model.Calibration)
+			artifact.AugmentedModels = append(artifact.AugmentedModels, model)
+			anomalyAugmentation = &anomalyAugmentationReport{Version: model.Anomaly.Version, SyntheticFeature: anomalySyntheticFeature, FeatureCount: len(model.Anomaly.FeatureColumns), TopK: model.Anomaly.TopK, Train: describeAnomalyScoreSplit(train, model.Anomaly), Validation: describeAnomalyScoreSplit(val, model.Anomaly), Test: describeAnomalyScoreSplit(test, model.Anomaly)}
 		} else {
 			model := fitLogistic(train, selectedColumns, h)
 			model.FeatureSelection = selection
@@ -512,7 +579,7 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 		if build.Algorithm != logisticRegressionAlgorithm && releaseReadiness == "shadow_candidate" {
 			releaseReadiness = "offline_challenger_candidate_runtime_required"
 		}
-		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, FeatureSelection: selection, Train: describeLabels(train), Validation: evaluateScores(validationScores, threshold), ValidationUncertainty: validationUncertainty, Test: testMetrics, TestUncertainty: testUncertainty, CrossSplitStatus: crossSplitStatus, RawTestCalibration: rawTestCalibration, TestCalibration: testCalibration, ReleaseReadiness: releaseReadiness, TestByModel: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return []string{row.ModelName} }), TestByEventType: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes }), TestByDriverVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.DriverVersions }), TestByLabelSource: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.LabelSources }), TestByHardwareCertainty: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.HardwareCertainties }), TestByRuleVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.RuleDecisionVersions }), Threshold: threshold, AnomalyFilter: anomalyReport})
+		report.Horizons = append(report.Horizons, baselineHorizonReport{HorizonMinutes: h, FeatureSelection: selection, Train: describeLabels(train), Validation: evaluateScores(validationScores, threshold), ValidationUncertainty: validationUncertainty, Test: testMetrics, TestUncertainty: testUncertainty, CrossSplitStatus: crossSplitStatus, RawTestCalibration: rawTestCalibration, TestCalibration: testCalibration, ReleaseReadiness: releaseReadiness, TestByModel: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return []string{row.ModelName} }), TestByEventType: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.EventTypes }), TestByDriverVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.DriverVersions }), TestByLabelSource: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.LabelSources }), TestByHardwareCertainty: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.HardwareCertainties }), TestByRuleVersion: stratifiedTestMetrics(test, testScores, func(row trainingMatrixRow) []string { return row.LabelMetadata.RuleDecisionVersions }), Threshold: threshold, AnomalyFilter: anomalyReport, AnomalyAugmentation: anomalyAugmentation})
 		if crossSplitStatus == "robust_candidate" {
 			build.StatisticallyStableCount++
 		}
@@ -531,7 +598,7 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 	report.ByTestRuleVersion = macroStratifiedMetrics(report.Horizons, func(row baselineHorizonReport) map[string]baselineMetrics { return row.TestByRuleVersion })
 	report.MacroTest = macroTestMetrics(report.Horizons)
 	build.HorizonCount = len(horizons)
-	build.TrainedModelCount = len(artifact.Models) + len(artifact.BoostedModels) + len(artifact.CascadeModels)
+	build.TrainedModelCount = len(artifact.Models) + len(artifact.BoostedModels) + len(artifact.CascadeModels) + len(artifact.AugmentedModels)
 	build.TestMacroROCAUC = report.MacroTest.ROCAUC
 	build.TestMacroPRAUC = report.MacroTest.PRAUC
 	build.TestMacroPrecision = report.MacroTest.Precision
@@ -1249,7 +1316,34 @@ func fitAnomalyLogisticCascade(rows []trainingMatrixRow, columns []string, horiz
 }
 
 func fitAnomalyFilter(rows []trainingMatrixRow, columns []string) (anomalyFilterModel, error) {
-	model := anomalyFilterModel{Version: "train-control-robust-anomaly-filter-v1", FeatureColumns: append([]string(nil), columns...), ControlQuantile: anomalyControlQuantile, TopK: 3}
+	model, err := fitRobustAnomalyStatistics(rows, columns, "train-control-robust-anomaly-filter-v1")
+	if err != nil {
+		return anomalyFilterModel{}, err
+	}
+	controlScores := make([]float64, 0, len(rows))
+	for _, row := range rows {
+		if row.LabelValue == 0 {
+			controlScores = append(controlScores, anomalyScore(model, row))
+		}
+	}
+	if len(controlScores) == 0 {
+		return anomalyFilterModel{}, fmt.Errorf("training controls are required")
+	}
+	// Prefer a strict healthy-control filter, but relax it deterministically when
+	// the gate would remove every positive training example. The gate statistics
+	// and every candidate threshold still use training controls only.
+	for _, quantile := range []float64{anomalyControlQuantile, 0.70, 0.60, 0.50, 0} {
+		model.ControlQuantile = quantile
+		model.Threshold = percentile(controlScores, quantile)
+		if hasBothLabels(filterRowsByAnomaly(rows, model)) {
+			return model, nil
+		}
+	}
+	return anomalyFilterModel{}, fmt.Errorf("no training-only control quantile retained both labels")
+}
+
+func fitRobustAnomalyStatistics(rows []trainingMatrixRow, columns []string, version string) (anomalyFilterModel, error) {
+	model := anomalyFilterModel{Version: version, FeatureColumns: append([]string(nil), columns...), TopK: 3}
 	model.Medians = make([]float64, len(columns))
 	model.Scales = make([]float64, len(columns))
 	for columnIndex, column := range columns {
@@ -1274,26 +1368,7 @@ func fitAnomalyFilter(rows []trainingMatrixRow, columns []string) (anomalyFilter
 			model.Scales[columnIndex] = robustFallbackScale(values)
 		}
 	}
-	controlScores := make([]float64, 0, len(rows))
-	for _, row := range rows {
-		if row.LabelValue == 0 {
-			controlScores = append(controlScores, anomalyScore(model, row))
-		}
-	}
-	if len(controlScores) == 0 {
-		return anomalyFilterModel{}, fmt.Errorf("training controls are required")
-	}
-	// Prefer a strict healthy-control filter, but relax it deterministically when
-	// the gate would remove every positive training example. The gate statistics
-	// and every candidate threshold still use training controls only.
-	for _, quantile := range []float64{anomalyControlQuantile, 0.70, 0.60, 0.50, 0} {
-		model.ControlQuantile = quantile
-		model.Threshold = percentile(controlScores, quantile)
-		if hasBothLabels(filterRowsByAnomaly(rows, model)) {
-			return model, nil
-		}
-	}
-	return anomalyFilterModel{}, fmt.Errorf("no training-only control quantile retained both labels")
+	return model, nil
 }
 
 func robustFallbackScale(values []float64) float64 {
@@ -1343,6 +1418,88 @@ func anomalyScore(model anomalyFilterModel, row trainingMatrixRow) float64 {
 		sum += value
 	}
 	return sum / float64(topK)
+}
+
+func softAnomalyScore(model anomalyFilterModel, row trainingMatrixRow) float64 {
+	values := make([]float64, 0, len(model.FeatureColumns))
+	for index, column := range model.FeatureColumns {
+		value, ok := row.Features[column]
+		if !ok || math.IsNaN(value) || math.IsInf(value, 0) {
+			continue
+		}
+		scale := model.Scales[index]
+		if scale < anomalyMinimumScale {
+			scale = 1
+		}
+		values = append(values, math.Log1p(math.Abs(value-model.Medians[index])/scale))
+	}
+	if len(values) == 0 {
+		return 0
+	}
+	sort.Sort(sort.Reverse(sort.Float64Slice(values)))
+	topK := model.TopK
+	if topK <= 0 || topK > len(values) {
+		topK = len(values)
+	}
+	sum := 0.0
+	for _, value := range values[:topK] {
+		sum += value
+	}
+	return sum / float64(topK)
+}
+
+func fitAnomalyAugmentedLogistic(rows []trainingMatrixRow, anomalyColumns, classifierColumns []string, horizonMinutes int) (anomalyAugmentedLogisticModel, error) {
+	anomaly, err := fitRobustAnomalyStatistics(rows, anomalyColumns, "train-control-robust-anomaly-score-v1")
+	if err != nil {
+		return anomalyAugmentedLogisticModel{}, err
+	}
+	augmentedRows := augmentRowsWithAnomalyScore(rows, anomaly)
+	columns := append(append([]string(nil), classifierColumns...), anomalySyntheticFeature)
+	classifier := fitLogistic(augmentedRows, columns, horizonMinutes)
+	return anomalyAugmentedLogisticModel{HorizonMinutes: horizonMinutes, Anomaly: anomaly, Classifier: classifier, Threshold: 0.5}, nil
+}
+
+func augmentRowsWithAnomalyScore(rows []trainingMatrixRow, anomaly anomalyFilterModel) []trainingMatrixRow {
+	result := make([]trainingMatrixRow, len(rows))
+	for index, row := range rows {
+		result[index] = row
+		result[index].Features = make(map[string]float64, len(row.Features)+1)
+		for key, value := range row.Features {
+			result[index].Features[key] = value
+		}
+		result[index].Features[anomalySyntheticFeature] = softAnomalyScore(anomaly, row)
+	}
+	return result
+}
+
+func scoreAnomalyAugmentedRowsWithoutCalibration(model anomalyAugmentedLogisticModel, rows []trainingMatrixRow) []scoredLabel {
+	return scoreRowsWithoutCalibration(model.Classifier, augmentRowsWithAnomalyScore(rows, model.Anomaly))
+}
+
+func describeAnomalyScoreSplit(rows []trainingMatrixRow, anomaly anomalyFilterModel) anomalyScoreSplitReport {
+	positive, control := make([]float64, 0), make([]float64, 0)
+	for _, row := range rows {
+		score := softAnomalyScore(anomaly, row)
+		if row.LabelValue == 1 {
+			positive = append(positive, score)
+		} else {
+			control = append(control, score)
+		}
+	}
+	return anomalyScoreSplitReport{Positive: describeAnomalyScoreClass(positive), Control: describeAnomalyScoreClass(control)}
+}
+
+func describeAnomalyScoreClass(values []float64) anomalyScoreClassReport {
+	report := anomalyScoreClassReport{Count: len(values)}
+	for _, value := range values {
+		report.Mean += value
+	}
+	if len(values) > 0 {
+		report.Mean /= float64(len(values))
+		report.P50 = percentile(values, 0.5)
+		report.P90 = percentile(values, 0.9)
+	}
+	return report
 }
 
 func filterRowsByAnomaly(rows []trainingMatrixRow, model anomalyFilterModel) []trainingMatrixRow {

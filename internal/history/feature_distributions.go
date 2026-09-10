@@ -477,6 +477,16 @@ func uniqueBaselineFeatureColumns(artifact baselineArtifact) []string {
 			columns = append(columns, column)
 		}
 	}
+	for _, model := range artifact.AugmentedModels {
+		for _, column := range append(append([]string(nil), model.Anomaly.FeatureColumns...), model.Classifier.FeatureColumns...) {
+			column = strings.TrimSpace(column)
+			if column == "" || column == anomalySyntheticFeature || seen[column] {
+				continue
+			}
+			seen[column] = true
+			columns = append(columns, column)
+		}
+	}
 	sort.Strings(columns)
 	return columns
 }
@@ -793,7 +803,7 @@ func featureDistributionSnapshotSHA(snapshot api.PredictionFeatureDistributionSn
 		BaselineModelKey:      baseline.BaselineModelKey,
 		BaselineVersion:       baseline.Version,
 		ArtifactVersion:       artifact.Version,
-		ArtifactModelCount:    len(artifact.Models) + len(artifact.BoostedModels) + len(artifact.CascadeModels),
+		ArtifactModelCount:    len(artifact.Models) + len(artifact.BoostedModels) + len(artifact.CascadeModels) + len(artifact.AugmentedModels),
 		FeatureContract:       snapshot.FeatureContractVersion,
 		FeatureName:           snapshot.FeatureName,
 		SampleCount:           snapshot.SampleCount,
