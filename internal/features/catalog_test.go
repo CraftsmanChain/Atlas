@@ -13,8 +13,8 @@ import (
 func TestBuiltinsCoverHealthConsumerAndModelCapabilities(t *testing.T) {
 	definitions := Builtins()
 	specs := HealthMetricSpecs()
-	if len(definitions) != 39 || len(specs) != 58 {
-		t.Fatalf("expected 39 catalog features and 58 live source specs, got definitions=%d specs=%d", len(definitions), len(specs))
+	if len(definitions) != 48 || len(specs) != 58 {
+		t.Fatalf("expected 48 catalog features and 58 live source specs, got definitions=%d specs=%d", len(definitions), len(specs))
 	}
 	for _, definition := range definitions {
 		if err := Validate(&definition); err != nil {
@@ -47,6 +47,13 @@ func TestBuiltinsCoverHealthConsumerAndModelCapabilities(t *testing.T) {
 	}
 	if recordingRule == nil || recordingRule.SourceType != "recording_rule" || recordingRule.Status != "active" || recordingRule.QualityStatus != "validated" || recordingRule.SourceReference != "atlas:gpu_metric_family_count_delta_5m" || contains(recordingRule.Purposes, "health") {
 		t.Fatalf("metric-family recording rule must be active, validated and excluded from health: definition=%+v", recordingRule)
+	}
+	for _, name := range []string{"pcie_link_gen_current", "pending_remapped_rows", "corrected_ecc_aggregate", "clock_throttle_reasons", "nvlink_errors", "power_violation_ns", "reliability_violation_ns", "thermal_violation_ns"} {
+		for _, definition := range definitions {
+			if definition.Name == name && contains(definition.Purposes, "health") {
+				t.Fatalf("sparse prediction signal %s must not change live health coverage", name)
+			}
+		}
 	}
 	if contains(api.StringList(rtx4090), "row_remap_failure") || contains(api.StringList(rtx4090), "memory_temp") {
 		t.Fatal("4090 must not count unsupported row-remap or memory-temperature features as missing")

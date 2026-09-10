@@ -50,7 +50,10 @@ func TestBuildTrainingMatrixSignalAuditExposesIndependentSignalBreadth(t *testin
 	for _, finding := range result.Findings {
 		codes[finding.Code] = true
 	}
-	for _, expected := range []string{"configured_metrics_absent_from_matrix", "structural_observability_plane_missing", "lookback_shorter_than_prediction_horizon"} {
+	if result.ConfiguredCoreMetricCount != 10 || result.ConfiguredOptionalMetricCount != 18 || len(result.MissingCoreMetrics) != 9 || len(result.MissingOptionalMetrics) != 17 {
+		t.Fatalf("core and optional coverage must be audited separately: %+v", result)
+	}
+	for _, expected := range []string{"core_metrics_absent_from_matrix", "optional_metrics_absent_from_matrix", "structural_observability_plane_missing", "lookback_shorter_than_prediction_horizon"} {
 		if !codes[expected] {
 			t.Fatalf("missing finding %s: %+v", expected, result.Findings)
 		}

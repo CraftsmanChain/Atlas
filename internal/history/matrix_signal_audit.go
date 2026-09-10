@@ -16,7 +16,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const trainingMatrixSignalAuditVersion = "gpu-training-signal-audit-v1"
+const trainingMatrixSignalAuditVersion = "gpu-training-signal-audit-v2"
 
 type matrixSignalCoverage struct {
 	Rows    int     `json:"rows"`
@@ -49,6 +49,10 @@ type trainingMatrixSignalAudit struct {
 	SafeSourceMetrics               api.StringList                  `json:"safe_source_metrics"`
 	ConfiguredHistoricalMetricCount int                             `json:"configured_historical_metric_count"`
 	MissingConfiguredMetrics        api.StringList                  `json:"missing_configured_metrics"`
+	ConfiguredCoreMetricCount       int                             `json:"configured_core_metric_count"`
+	MissingCoreMetrics              api.StringList                  `json:"missing_core_metrics"`
+	ConfiguredOptionalMetricCount   int                             `json:"configured_optional_metric_count"`
+	MissingOptionalMetrics          api.StringList                  `json:"missing_optional_metrics"`
 	ResearchMetricFamilyCount       int                             `json:"research_metric_family_count"`
 	StructuralFeatureCount          int                             `json:"structural_feature_count"`
 	MissingStructuralFeatures       api.StringList                  `json:"missing_structural_features"`
@@ -137,10 +141,18 @@ func buildTrainingMatrixSignalAudit(build api.TrainingMatrixBuild, rows []traini
 	}
 
 	configured := stringSet(canonicalHistoricalMetrics())
+	core := stringSet(requiredHistoricalMetrics("NVIDIA H100"))
 	missingConfigured := make([]string, 0)
+	missingCore := make([]string, 0)
+	missingOptional := make([]string, 0)
 	for metric := range configured {
 		if !allSources[metric] {
 			missingConfigured = append(missingConfigured, metric)
+			if core[metric] {
+				missingCore = append(missingCore, metric)
+			} else {
+				missingOptional = append(missingOptional, metric)
+			}
 		}
 	}
 	structural := predictionStructuralFeatureNames()
@@ -162,6 +174,8 @@ func buildTrainingMatrixSignalAudit(build api.TrainingMatrixBuild, rows []traini
 		ProhibitedSelectedColumnCount: featureAudit.ProhibitedSelectedCount,
 		SafeSourceMetrics:             sortedSet(safeSources), ConfiguredHistoricalMetricCount: len(configured),
 		MissingConfiguredMetrics: api.StringList(missingConfigured), ResearchMetricFamilyCount: len(ResearchMetricFamilies()),
+		ConfiguredCoreMetricCount: len(core), MissingCoreMetrics: api.StringList(missingCore),
+		ConfiguredOptionalMetricCount: len(configured) - len(core), MissingOptionalMetrics: api.StringList(missingOptional),
 		StructuralFeatureCount: structuralCount, MissingStructuralFeatures: api.StringList(missingStructural),
 		LookbackMinutes: sortedIntSet(lookbacks), HorizonMinutes: sortedIntSet(horizons), CoverageBySplit: map[string]matrixSignalCoverage{},
 		Findings: []matrixSignalFinding{},
@@ -172,6 +186,8 @@ func buildTrainingMatrixSignalAudit(build api.TrainingMatrixBuild, rows []traini
 		result.MaximumLookbackMinutes = result.LookbackMinutes[len(result.LookbackMinutes)-1]
 	}
 	sort.Strings(result.MissingConfiguredMetrics)
+	sort.Strings(result.MissingCoreMetrics)
+	sort.Strings(result.MissingOptionalMetrics)
 	sort.Strings(result.MissingStructuralFeatures)
 	for split, item := range coverage {
 		minimum := item.min
@@ -188,11 +204,18 @@ func buildTrainingMatrixSignalAudit(build api.TrainingMatrixBuild, rows []traini
 			Recommendation: "measure feature breadth by independent source families and availability, not by derived column count",
 		})
 	}
-	if len(result.MissingConfiguredMetrics) > 0 {
+	if len(result.MissingCoreMetrics) > 0 {
 		result.Findings = append(result.Findings, matrixSignalFinding{
-			Severity: "warning", Code: "configured_metrics_absent_from_matrix",
-			Evidence:       fmt.Sprintf("%d of %d configured historical metrics produced no matrix columns", len(result.MissingConfiguredMetrics), result.ConfiguredHistoricalMetricCount),
-			Recommendation: "audit source availability and aliases before rebuilding the cohort",
+			Severity: "blocking", Code: "core_metrics_absent_from_matrix",
+			Evidence:       fmt.Sprintf("%d of %d core historical metrics produced no matrix columns", len(result.MissingCoreMetrics), result.ConfiguredCoreMetricCount),
+			Recommendation: "repair core telemetry availability or aliases before admitting affected windows",
+		})
+	}
+	if len(result.MissingOptionalMetrics) > 0 {
+		result.Findings = append(result.Findings, matrixSignalFinding{
+			Severity: "info", Code: "optional_metrics_absent_from_matrix",
+			Evidence:       fmt.Sprintf("%d of %d optional historical metrics produced no matrix columns", len(result.MissingOptionalMetrics), result.ConfiguredOptionalMetricCount),
+			Recommendation: "retain missing values as unknown and use observed window coverage to decide feature-family admission",
 		})
 	}
 	if structuralCount < len(structural) {

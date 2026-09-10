@@ -87,7 +87,7 @@ func TestTrainingPreparationGatesTelemetryAndBuildsLeakageSafeSplits(t *testing.
 	source := api.TrainingFeatureBuild{
 		FeatureDatasetKey: "features-v2", Version: featureDatasetVersion, Status: "completed",
 		SourceKey: "primary", SourceDatasetBuildID: cohort.ID, SourceDatasetKey: cohort.DatasetKey,
-		FeatureContractVersion: "1.9.0", EpisodeCount: 11, WindowCount: 11,
+		FeatureContractVersion: "1.10.0", EpisodeCount: 11, WindowCount: 11,
 		CompletedWindows: 11, FeaturePath: featurePath, FeatureSHA256: checksum,
 		OutputDir: featureDir, StartedAt: base, FinishedAt: &finished,
 	}
@@ -162,7 +162,7 @@ func TestManualFeedbackTrainingPreparationBuildsPositiveCandidates(t *testing.T)
 		RequestKey: "manual-feedback-features-test", Version: manualFeedbackFeatureRequestVersion,
 		Status: "features_ready_pending_training_preparation", SourceKey: "primary",
 		SourceManifestVersion: "prediction-human-feedback-manifest-v1", SourceManifestSHA256: "manifest-sha",
-		FeatureContractVersion: "1.9.0", LookbackMinutes: 1440, QueryStepSeconds: 300,
+		FeatureContractVersion: "1.10.0", LookbackMinutes: 1440, QueryStepSeconds: 300,
 		HardwareFeedbackRequests: 2, TrainingEligibleRequests: 2, PackReadyRequests: 2, WarningReviewedRequests: 2,
 		WindowCount: 2, CompletedWindows: 2, FeatureColumnCount: 4, AverageMetricCoverage: 0.615, MinimumMetricCoverage: 0.4,
 		OutputDir: featureDir, FeaturePath: featurePath, FeatureSHA256: checksum,

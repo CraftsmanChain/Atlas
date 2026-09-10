@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	promclient "atlas/internal/prometheus"
 	"atlas/pkg/api"
 	"atlas/pkg/config"
 	"atlas/pkg/storage"
@@ -146,16 +147,38 @@ func TestFeatureBuildRequiresCompletedCohort(t *testing.T) {
 }
 
 func TestExpectedHistoricalMetricsAreModelAware(t *testing.T) {
-	if got := len(expectedHistoricalMetrics("NVIDIA H100 80GB HBM3")); got != 18 {
+	if got := len(expectedHistoricalMetrics("NVIDIA H100 80GB HBM3")); got != 28 {
 		t.Fatalf("H100 expected metrics=%d", got)
 	}
 	a100 := expectedHistoricalMetrics("NVIDIA A100")
-	if len(a100) != 16 {
+	if len(a100) != 26 {
 		t.Fatalf("A100 expected metrics=%d", len(a100))
 	}
 	for _, metric := range a100 {
 		if metric == "uncorrected_ecc_aggregate" || metric == "uncorrected_ecc_volatile" {
 			t.Fatalf("unsupported H100/H200-only metric leaked into A100 coverage: %s", metric)
 		}
+	}
+	if got := len(requiredHistoricalMetrics("NVIDIA H100 80GB HBM3")); got != 10 {
+		t.Fatalf("H100 required core metrics=%d", got)
+	}
+	if got := len(requiredHistoricalMetrics("NVIDIA GeForce RTX 4090")); got != 9 {
+		t.Fatalf("4090 required core metrics=%d", got)
+	}
+}
+
+func TestOptionalHistoricalSignalsDoNotReduceCoreCoverage(t *testing.T) {
+	cutoff := time.Now().UTC()
+	window := datasetWindow{ModelName: "NVIDIA H100", FeatureCutoffAt: cutoff}
+	points := map[string][]promclient.RangePoint{}
+	for _, metric := range requiredHistoricalMetrics(window.ModelName) {
+		points[metric] = []promclient.RangePoint{{Timestamp: cutoff, Value: 1}}
+	}
+	row := summarizeFeatureWindow(&api.TrainingFeatureBuild{}, window, points)
+	if row.MetricCoverage != 1 || row.ExpectedMetrics != 10 || row.AvailableMetrics != 10 {
+		t.Fatalf("optional absence must not lower core coverage: %+v", row)
+	}
+	if row.OptionalMetrics != 18 || row.AvailableOptional != 0 || len(row.MissingOptional) != 18 {
+		t.Fatalf("optional availability audit is incomplete: %+v", row)
 	}
 }

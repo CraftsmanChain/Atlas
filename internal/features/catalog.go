@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const CatalogVersion = "1.9.0"
+const CatalogVersion = "1.10.0"
 
 type MetricSpec struct {
 	Key      string
@@ -61,6 +61,15 @@ func Builtins() []api.FeatureDefinition {
 		structuralMetric("target_scrape_samples_ratio_5m", "max by(instance,UUID)(DCGM_FI_DEV_GPU_UTIL * 0 + 1) * on(instance) group_left max by(instance)(avg_over_time(scrape_samples_scraped{job=\"dcgm_exporter\"}[5m]) / clamp_min(avg_over_time(scrape_samples_scraped{job=\"dcgm_exporter\"}[1h]), 1) * 100)", "5m", "DCGM target scrape samples ratio", "DCGM Target 五分钟样本量比"),
 		structuralMetric("target_scrape_duration_ratio_5m", "max by(instance,UUID)(DCGM_FI_DEV_GPU_UTIL * 0 + 1) * on(instance) group_left max by(instance)(avg_over_time(scrape_duration_seconds{job=\"dcgm_exporter\"}[5m]) / clamp_min(avg_over_time(scrape_duration_seconds{job=\"dcgm_exporter\"}[1h]), 0.000001) * 100)", "5m", "DCGM target scrape duration ratio", "DCGM Target 五分钟抓取耗时比"),
 		recordingRuleFeature("gpu_metric_family_count_delta_5m", "atlas:gpu_metric_family_count_delta_5m", "5m", "GPU metric-family count change", "GPU 指标族数量五分钟变化"),
+		recordingRuleFeature("gpu_metric_family_count", "atlas:gpu_metric_family_count", "instant", "GPU metric-family count", "GPU 指标族数量"),
+		predictionMetric("pcie_link_gen_current", "interconnect", "nvidia_smi_pcie_link_gen_current", "Current PCIe link generation", "当前 PCIe 链路代际", "gpu_exporter"),
+		predictionMetric("pending_remapped_rows", "memory", "nvidia_smi_remapped_rows_pending", "Pending remapped rows", "待处理重映射行", "gpu_exporter"),
+		predictionMetric("corrected_ecc_aggregate", "memory", "nvidia_smi_ecc_errors_corrected_aggregate_total", "Corrected aggregate ECC", "已纠正 ECC 累计值", "gpu_exporter"),
+		predictionMetric("clock_throttle_reasons", "degradation", "DCGM_FI_DEV_CLOCK_THROTTLE_REASONS", "Clock throttle reason bitmask", "时钟降频原因位图", "dcgm_exporter"),
+		predictionMetric("nvlink_errors", "interconnect", "DCGM_FI_DEV_GPU_NVLINK_ERRORS", "NVLink error count", "NVLink 错误计数", "dcgm_exporter"),
+		predictionMetric("power_violation_ns", "power", "DCGM_FI_DEV_POWER_VIOLATION", "Power-limit violation time", "功耗限制累计时长", "dcgm_exporter"),
+		predictionMetric("reliability_violation_ns", "degradation", "DCGM_FI_DEV_RELIABILITY_VIOLATION", "Reliability-limit violation time", "可靠性限制累计时长", "dcgm_exporter"),
+		predictionMetric("thermal_violation_ns", "thermal", "DCGM_FI_DEV_THERMAL_VIOLATION", "Thermal-limit violation time", "热限制累计时长", "dcgm_exporter"),
 		gpuMetric("gpu_reset_required", "stability", "nvidia_smi_reset_status_reset_required", "instant", "GPU reset required", "GPU 需要重置", api.StringList{"*"}),
 		gpuMetric("uncorrected_ecc_volatile", "memory", "nvidia_smi_ecc_errors_uncorrected_volatile_total", "instant", "Uncorrected volatile ECC", "本次驱动加载后的不可纠正 ECC", api.StringList{"H100", "H200"}),
 		gpuMetric("uncorrected_ecc_delta_24h", "memory", "clamp_min(delta(nvidia_smi_ecc_errors_uncorrected_aggregate_total[24h]), 0)", "24h", "Uncorrected aggregate ECC increase", "不可纠正 ECC 累计增量", api.StringList{"H100", "H200"}),
@@ -96,6 +105,14 @@ func recordingRuleFeature(name, rule, window, en, zh string) api.FeatureDefiniti
 	definition.Status = "active"
 	definition.Purposes = api.StringList{"anomaly", "risk_ranking", "prediction"}
 	definition.Lineage = api.StringList{"prometheus", "dcgm_exporter", "atlas_recording_rule"}
+	return definition
+}
+
+func predictionMetric(name, domain, query, en, zh, source string) api.FeatureDefinition {
+	definition := metric(name, domain, query, "instant", en, zh)
+	definition.MissingStrategy = "optional_not_collected_is_unknown"
+	definition.Purposes = api.StringList{"anomaly", "risk_ranking", "prediction", "degradation"}
+	definition.Lineage = api.StringList{"prometheus", source}
 	return definition
 }
 
