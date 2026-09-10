@@ -344,7 +344,18 @@ func (s *Service) extractControlFeature(client *promclient.Client, build *api.Tr
 	if err != nil {
 		return emptyExtractedFeatureRow(&featureBuild, window, err.Error()), err
 	}
-	return summarizeFeatureWindow(&featureBuild, window, canonicalSeries(series)), nil
+	longPoints := map[string][]promclient.RangePoint{}
+	if usesLongRange(request.HorizonMinutes) {
+		ctx, cancel = context.WithTimeout(context.Background(), s.timeout)
+		longSeries, longErr := client.QueryRange(ctx, historicalMetricQuery(request.GPUUUID),
+			request.FeatureCutoffAt.Add(-featureLongLookback), request.FeatureCutoffAt, featureLongQueryStep)
+		cancel()
+		if longErr != nil {
+			return emptyExtractedFeatureRow(&featureBuild, window, "long-range query: "+longErr.Error()), longErr
+		}
+		longPoints = canonicalSeries(longSeries)
+	}
+	return summarizeFeatureWindowWithLongRange(&featureBuild, window, canonicalSeries(series), longPoints), nil
 }
 
 func qualifyControlFeature(request healthyControlRequest, feature, positive extractedFeatureRow, minimumCoverage float64) controlFeatureRow {
@@ -367,6 +378,8 @@ func qualifyControlFeature(request healthyControlRequest, feature, positive extr
 		row.ExclusionReason = "telemetry_censored"
 	case feature.MetricCoverage < minimumCoverage:
 		row.ExclusionReason = "metric_coverage_below_threshold"
+	case usesLongRange(feature.HorizonMinutes) && feature.LongMetricCoverage < minimumCoverage:
+		row.ExclusionReason = "long_metric_coverage_below_threshold"
 	case row.TelemetryContinuity < minimumTelemetryContinuity:
 		row.ExclusionReason = "telemetry_discontinuous"
 	case !positiveOK || !controlOK:

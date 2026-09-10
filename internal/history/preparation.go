@@ -273,6 +273,9 @@ func (s *Service) writeManualFeedbackTrainingPreparation(build *api.TrainingPrep
 		case row.MetricCoverage < build.MinimumMetricCoverage:
 			item.TrainingStatus, item.ExclusionReason = "excluded", "metric_coverage_below_threshold"
 			build.LowCoverageCount++
+		case usesLongRange(row.HorizonMinutes) && row.LongMetricCoverage < build.MinimumMetricCoverage:
+			item.TrainingStatus, item.ExclusionReason = "excluded", "long_metric_coverage_below_threshold"
+			build.LowCoverageCount++
 		case positiveTelemetryContinuity(row) < minimumTelemetryContinuity:
 			item.TrainingStatus, item.ExclusionReason = "excluded", "positive_telemetry_discontinuous"
 			build.PositiveDiscontinuousCount++
@@ -309,7 +312,7 @@ func (s *Service) writeManualFeedbackTrainingPreparation(build *api.TrainingPrep
 				EpisodeKey: item.Sample.EpisodeKey, GPUUUID: item.Sample.GPUUUID, NodeIP: selectedControl.interval.NodeIP,
 				ModelName: selectedControl.interval.ModelName, DataCenterID: selectedControl.interval.DataCenterID,
 				DriverVersion: selectedControl.interval.DriverVersion, HorizonMinutes: item.Sample.HorizonMinutes,
-				FeatureCutoffAt: selectedControl.cutoff, LookbackMinutes: int(featureLookback / time.Minute),
+				FeatureCutoffAt: selectedControl.cutoff, LookbackMinutes: int(effectiveFeatureLookback(item.Sample.HorizonMinutes) / time.Minute),
 				Split: item.Split, LabelValue: 0, Eligibility: "pending_telemetry_and_load_validation",
 				PredictionTarget:  item.Sample.PredictionTarget,
 				ContaminationRule: "outside every known fault interval [-168h,+72h] with stable GPU identity for the full lookback",
@@ -380,7 +383,7 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 	correlatedEpisodes := correlatedFleetEpisodes(windows)
 	eligibleForSplit := make([]extractedFeatureRow, 0, len(rows))
 	for _, row := range rows {
-		if row.ExtractionError == "" && row.MetricCoverage >= build.MinimumMetricCoverage && positiveTelemetryContinuity(row) >= minimumTelemetryContinuity && labelEpisodes[row.EpisodeKey].Eligible && !correlatedEpisodes[row.EpisodeKey] {
+		if row.ExtractionError == "" && row.MetricCoverage >= build.MinimumMetricCoverage && (!usesLongRange(row.HorizonMinutes) || row.LongMetricCoverage >= build.MinimumMetricCoverage) && positiveTelemetryContinuity(row) >= minimumTelemetryContinuity && labelEpisodes[row.EpisodeKey].Eligible && !correlatedEpisodes[row.EpisodeKey] {
 			eligibleForSplit = append(eligibleForSplit, row)
 		}
 	}
@@ -402,6 +405,9 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 			build.TelemetryCensoredCount++
 		case row.MetricCoverage < build.MinimumMetricCoverage:
 			item.TrainingStatus, item.ExclusionReason = "excluded", "metric_coverage_below_threshold"
+			build.LowCoverageCount++
+		case usesLongRange(row.HorizonMinutes) && row.LongMetricCoverage < build.MinimumMetricCoverage:
+			item.TrainingStatus, item.ExclusionReason = "excluded", "long_metric_coverage_below_threshold"
 			build.LowCoverageCount++
 		case positiveTelemetryContinuity(row) < minimumTelemetryContinuity:
 			item.TrainingStatus, item.ExclusionReason = "excluded", "positive_telemetry_discontinuous"
@@ -465,7 +471,7 @@ func (s *Service) buildTrainingPreparation(build *api.TrainingPreparationBuild, 
 				EpisodeKey: item.Sample.EpisodeKey, GPUUUID: item.Sample.GPUUUID, NodeIP: selectedControl.interval.NodeIP,
 				ModelName: selectedControl.interval.ModelName, DataCenterID: selectedControl.interval.DataCenterID,
 				DriverVersion: selectedControl.interval.DriverVersion, HorizonMinutes: item.Sample.HorizonMinutes,
-				FeatureCutoffAt: selectedControl.cutoff, LookbackMinutes: int(featureLookback / time.Minute),
+				FeatureCutoffAt: selectedControl.cutoff, LookbackMinutes: int(effectiveFeatureLookback(item.Sample.HorizonMinutes) / time.Minute),
 				Split: item.Split, LabelValue: 0, Eligibility: "pending_telemetry_and_load_validation",
 				ContaminationRule: "outside every known fault interval [-168h,+72h] with stable GPU identity for the full lookback",
 			})
@@ -755,11 +761,12 @@ func healthyControlCutoffs(sample extractedFeatureRow, intervals []api.Historica
 	result := make([]selectedControl, 0, limit)
 	for _, offset := range offsets {
 		cutoff := sample.LabelOnsetAt.Add(-offset)
-		if faultWindowContaminated(cutoff.Add(-featureLookback), cutoff, faultTimes) {
+		lookback := effectiveFeatureLookback(sample.HorizonMinutes)
+		if faultWindowContaminated(cutoff.Add(-lookback), cutoff, faultTimes) {
 			continue
 		}
 		for _, interval := range intervals {
-			if !interval.FirstSeenAt.After(cutoff.Add(-featureLookback)) && !interval.LastSeenAt.Before(cutoff) {
+			if !interval.FirstSeenAt.After(cutoff.Add(-lookback)) && !interval.LastSeenAt.Before(cutoff) {
 				result = append(result, selectedControl{cutoff: cutoff, interval: interval})
 				break
 			}

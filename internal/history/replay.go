@@ -283,6 +283,14 @@ func (s *Service) buildFeatureReplay(run *api.PredictionFeatureReplayRun) error 
 
 func (s *Service) replayOneRow(client *promclient.Client, row trainingMatrixRow, columns []string, results map[string]*replayColumnResult) replaySampleResult {
 	result := replaySampleResult{RowKey: row.RowKey, GPUUUID: row.GPUUUID, Split: row.Split, LabelValue: row.LabelValue, FeatureCutoffAt: row.FeatureCutoffAt, Status: "completed"}
+	requiresLongRange := false
+	for _, column := range columns {
+		_, _, duration, supported := featurestats.ParseTrailingRangeColumn(column)
+		if supported && duration > featureLookback {
+			requiresLongRange = true
+			break
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	series, err := client.QueryRange(ctx, historicalMetricQuery(row.GPUUUID), row.FeatureCutoffAt.Add(-featureLookback), row.FeatureCutoffAt, featureQueryStep)
 	cancel()
@@ -291,6 +299,17 @@ func (s *Service) replayOneRow(client *promclient.Client, row trainingMatrixRow,
 		return result
 	}
 	canonical := canonicalSeries(series)
+	longCanonical := map[string][]promclient.RangePoint{}
+	if requiresLongRange {
+		ctx, cancel = context.WithTimeout(context.Background(), s.timeout)
+		longSeries, longErr := client.QueryRange(ctx, historicalMetricQuery(row.GPUUUID), row.FeatureCutoffAt.Add(-featureLongLookback), row.FeatureCutoffAt, featureLongQueryStep)
+		cancel()
+		if longErr != nil {
+			result.Status, result.ErrorMessage = "failed", "long-range query: "+longErr.Error()
+			return result
+		}
+		longCanonical = canonicalSeries(longSeries)
+	}
 	replayed := map[string]float64{}
 	sources := map[string]struct{}{}
 	for _, column := range columns {
@@ -301,6 +320,12 @@ func (s *Service) replayOneRow(client *promclient.Client, row trainingMatrixRow,
 		points := pointsInWindow(canonical[source], row.FeatureCutoffAt.Add(-featureLookback), row.FeatureCutoffAt)
 		if len(points) > 0 {
 			featurestats.AddTrailingRangeStatistics(replayed, source, points, row.FeatureCutoffAt)
+		}
+		if requiresLongRange {
+			longPoints := pointsInWindow(longCanonical[source], row.FeatureCutoffAt.Add(-featureLongLookback), row.FeatureCutoffAt)
+			if len(longPoints) > 0 {
+				featurestats.AddTrailingLongRangeStatistics(replayed, source, longPoints, row.FeatureCutoffAt)
+			}
 		}
 	}
 	for _, column := range columns {
@@ -404,7 +429,7 @@ func (s *Service) updateParityFromReplay(modelSpecID uint, status string, verifi
 		return fmt.Errorf("feature contract parity audit is required before value replay")
 	}
 	parityStatus := "live_coverage_required"
-	reasons := api.StringList{"live_24h_coverage_not_verified"}
+	reasons := api.StringList{"live_multiresolution_coverage_not_verified"}
 	if status != "passed" {
 		parityStatus = "blocked_replay"
 		reasons = append(api.StringList(nil), replayReasons...)

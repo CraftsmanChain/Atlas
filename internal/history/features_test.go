@@ -58,7 +58,7 @@ func TestHistoricalFeatureBuildBatchesMetricsAndEnforcesCutoff(t *testing.T) {
 		SampleKey: "sample-1", DatasetVersion: datasetBuildVersion, EpisodeKey: "episode-1",
 		NodeIP: "10.0.0.1", GPUUUID: "GPU.TEST-1", ModelName: "NVIDIA H100",
 		PredictionTarget: highPriorityXIDEventTarget,
-		HorizonMinutes:   60, FeatureCutoffAt: cutoff, LabelOnsetAt: cutoff.Add(time.Hour),
+		HorizonMinutes:   10080, FeatureCutoffAt: cutoff, LabelOnsetAt: cutoff.Add(7 * 24 * time.Hour),
 		Eligibility: "rule_positive_proxy", RuleDecision: "positive_proxy",
 		LabelSource: "versioned_rule", LabelWeight: 0.9,
 	}
@@ -112,8 +112,8 @@ func TestHistoricalFeatureBuildBatchesMetricsAndEnforcesCutoff(t *testing.T) {
 	if build.Status != "completed" || build.CompletedWindows != 1 || build.FailedWindows != 0 {
 		t.Fatalf("unexpected feature build: %+v", build)
 	}
-	if queryCount.Load() != 1 {
-		t.Fatalf("expected one batched range query, got %d", queryCount.Load())
+	if queryCount.Load() != 2 {
+		t.Fatalf("expected one fine and one coarse batched range query, got %d", queryCount.Load())
 	}
 	featureFile, err := os.Open(build.FeaturePath)
 	if err != nil {
@@ -129,6 +129,9 @@ func TestHistoricalFeatureBuildBatchesMetricsAndEnforcesCutoff(t *testing.T) {
 	}
 	if row.Features["gpu_util_max_1h"] != 20 || row.Features["gpu_util_mean_15m"] != 20 {
 		t.Fatalf("multi-scale point-in-time features missing: %+v", row.Features)
+	}
+	if row.Features["gpu_util_max_30d"] != 20 || row.Features["gpu_util_last_7d"] != 20 || row.LookbackMinutes != int(featureLongLookback/time.Minute) || row.LongQueryStepSeconds != int(featureLongQueryStep/time.Second) {
+		t.Fatalf("coarse long-range point-in-time features missing: %+v", row)
 	}
 	if !row.FeatureCutoffAt.Before(row.LabelOnsetAt) || row.PredictionTarget != highPriorityXIDEventTarget || build.PredictionTarget != highPriorityXIDEventTarget || build.FeatureSHA256 == "" || build.QualityReportPath == "" {
 		t.Fatalf("feature artifact lost point-in-time provenance: %+v %+v", row, build)
@@ -180,5 +183,29 @@ func TestOptionalHistoricalSignalsDoNotReduceCoreCoverage(t *testing.T) {
 	}
 	if row.OptionalMetrics != 18 || row.AvailableOptional != 0 || len(row.MissingOptional) != 18 {
 		t.Fatalf("optional availability audit is incomplete: %+v", row)
+	}
+}
+
+func TestFeatureQuerySegmentsMergeOnlyOverlappingLookbacks(t *testing.T) {
+	onset := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	windows := []datasetWindow{
+		{FeatureCutoffAt: onset.Add(-7 * 24 * time.Hour), HorizonMinutes: int(longRangeHorizon / time.Minute)},
+		{FeatureCutoffAt: onset.Add(-24 * time.Hour)},
+		{FeatureCutoffAt: onset.Add(-time.Hour)},
+	}
+	segments := featureQuerySegments(windows, featureLookback)
+	if len(segments) != 2 {
+		t.Fatalf("expected isolated 7d window plus merged 24h/1h windows, got %+v", segments)
+	}
+	queried := time.Duration(0)
+	for _, segment := range segments {
+		queried += segment.end.Sub(segment.start)
+	}
+	if queried != 71*time.Hour {
+		t.Fatalf("expected 71h of fine-resolution scan instead of a contiguous 8d scan, got %s", queried)
+	}
+	start, end, ok := longRangeQueryBounds(windows)
+	if !ok || end != windows[0].FeatureCutoffAt || end.Sub(start) != featureLongLookback {
+		t.Fatalf("long-range query must cover exactly the 30d window used by the 7d target: %v %v %v", start, end, ok)
 	}
 }

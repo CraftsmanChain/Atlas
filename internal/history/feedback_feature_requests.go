@@ -19,7 +19,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const manualFeedbackFeatureRequestVersion = "manual-feedback-feature-request-v5"
+const manualFeedbackFeatureRequestVersion = "manual-feedback-feature-request-v6"
 const manualFeedbackSourceManifestVersion = "prediction-human-feedback-manifest-v2"
 
 var manualFeedbackHorizons = []int{60, 360, 1440, 10080}
@@ -136,7 +136,7 @@ func (s *Service) BuildManualFeedbackFeatureRequestManifest(request ManualFeedba
 		SourceManifestVersion:  manualFeedbackSourceManifestVersion,
 		SourceManifestSHA256:   manifestSHA,
 		FeatureContractVersion: features.CatalogVersion,
-		LookbackMinutes:        int(featureLookback / time.Minute),
+		LookbackMinutes:        int(featureLongLookback / time.Minute),
 		QueryStepSeconds:       int(featureQueryStep / time.Second),
 		MetricFamilies:         ResearchMetricFamilies(),
 		MetricFamilyCount:      len(ResearchMetricFamilies()),
@@ -461,7 +461,17 @@ func (s *Service) extractManualFeedbackFeatureRecord(client *promclient.Client, 
 	if err != nil {
 		return emptyExtractedFeatureRow(build, window, err.Error()), err
 	}
-	row := summarizeFeatureWindow(build, window, canonicalSeries(series))
+	longPoints := map[string][]promclient.RangePoint{}
+	if usesLongRange(window.HorizonMinutes) {
+		ctx, cancel = context.WithTimeout(context.Background(), s.timeout)
+		longSeries, longErr := client.QueryRange(ctx, query, window.FeatureCutoffAt.Add(-featureLongLookback), window.FeatureCutoffAt, featureLongQueryStep)
+		cancel()
+		if longErr != nil {
+			return emptyExtractedFeatureRow(build, window, "long-range query: "+longErr.Error()), longErr
+		}
+		longPoints = canonicalSeries(longSeries)
+	}
+	row := summarizeFeatureWindowWithLongRange(build, window, canonicalSeries(series), longPoints)
 	if strings.TrimSpace(record.GPUUUID) == "" {
 		row.GPUUUID = "node:" + record.NodeIP
 	}

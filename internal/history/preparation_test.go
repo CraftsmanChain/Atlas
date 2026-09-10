@@ -232,6 +232,25 @@ func TestFaultContaminationChecksEntireFeatureWindow(t *testing.T) {
 	}
 }
 
+func TestHealthyControlCutoffsRequireHorizonSpecificIdentityHistory(t *testing.T) {
+	onset := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	cutoff := onset.Add(-14 * 24 * time.Hour)
+	interval := api.HistoricalGPUIdentityInterval{
+		GPUUUID:     "GPU-HISTORY",
+		FirstSeenAt: cutoff.Add(-7 * 24 * time.Hour),
+		LastSeenAt:  cutoff.Add(time.Hour),
+	}
+	short := extractedFeatureRow{GPUUUID: interval.GPUUUID, HorizonMinutes: 60, LabelOnsetAt: onset}
+	if controls := healthyControlCutoffs(short, []api.HistoricalGPUIdentityInterval{interval}, nil, 1); len(controls) != 1 {
+		t.Fatalf("24h feature control should accept seven days of stable identity history: %+v", controls)
+	}
+	long := short
+	long.HorizonMinutes = int(longRangeHorizon / time.Minute)
+	if controls := healthyControlCutoffs(long, []api.HistoricalGPUIdentityInterval{interval}, nil, 1); len(controls) != 0 {
+		t.Fatalf("7d target control must reject identity history shorter than the 30d feature window: %+v", controls)
+	}
+}
+
 func TestCorrelatedFleetEpisodesExcludesOnlyCrossNodeShock(t *testing.T) {
 	base := time.Date(2026, 7, 1, 8, 52, 0, 0, time.UTC)
 	windows := make([]datasetWindow, 0, 41)

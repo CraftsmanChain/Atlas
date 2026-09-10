@@ -38,7 +38,7 @@ func TestShadowRegistryPromotesOnlyIntegrityCheckedCandidate(t *testing.T) {
 	build := api.BaselineModelBuild{
 		BaselineModelKey: "gpu-logistic-baseline-v9-test", Version: "gpu-logistic-baseline-v9", Status: "completed",
 		Algorithm: "logistic_regression", SourceMatrixBuildID: 4, SourceTrainingMatrixKey: "matrix-v4",
-		FeatureContractVersion: "1.10.0", ScopeEventType: "xid_94_contained_ecc", ScopeModelName: "NVIDIA H100 80GB HBM3",
+		FeatureContractVersion: "1.11.0", ScopeEventType: "xid_94_contained_ecc", ScopeModelName: "NVIDIA H100 80GB HBM3",
 		FeatureAuditStatus: "passed", ShadowCandidateCount: 1, ArtifactPath: artifactPath,
 		ArtifactSHA256: checksum, ReportPath: reportPath, StartedAt: finished.Add(-time.Minute), FinishedAt: &finished,
 	}
@@ -84,7 +84,7 @@ func TestShadowRegistryPromotesOnlyIntegrityCheckedCandidate(t *testing.T) {
 	if len(audits) != 1 || audits[0].Status != "replay_required" || audits[0].TrainingFeatureCount != 2 || audits[0].ContractMatchedCount != 2 || audits[0].SourceMetricCount != 1 || audits[0].ScoringAllowed {
 		t.Fatalf("unexpected feature parity audit: %+v", audits)
 	}
-	if err := db.Model(&audits[0]).Updates(map[string]any{"status": "live_coverage_required", "replay_verified_count": 2, "blocking_reasons": api.StringList{"live_24h_coverage_not_verified"}}).Error; err != nil {
+	if err := db.Model(&audits[0]).Updates(map[string]any{"status": "live_coverage_required", "replay_verified_count": 2, "blocking_reasons": api.StringList{"live_multiresolution_coverage_not_verified"}}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := service.SyncFeatureParityAudits(); err != nil {

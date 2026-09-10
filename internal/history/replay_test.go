@@ -21,7 +21,7 @@ func TestReplayOneRowComparesSharedStatistics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	columns := []string{"gpu_temp_mean_24h", "gpu_temp_slope_per_hour_24h", "gpu_temp_mean_1h"}
+	columns := []string{"gpu_temp_mean_24h", "gpu_temp_slope_per_hour_24h", "gpu_temp_mean_1h", "gpu_temp_mean_30d"}
 	results := map[string]*replayColumnResult{}
 	for _, column := range columns {
 		results[column] = &replayColumnResult{}
@@ -29,17 +29,18 @@ func TestReplayOneRowComparesSharedStatistics(t *testing.T) {
 	row := trainingMatrixRow{
 		RowKey: "row-1", GPUUUID: "GPU-1", Split: "test", LabelValue: 1,
 		FeatureCutoffAt: time.Unix(3600, 0),
-		Features:        map[string]float64{"gpu_temp_mean_24h": 11, "gpu_temp_slope_per_hour_24h": 2, "gpu_temp_mean_1h": 11},
+		Features:        map[string]float64{"gpu_temp_mean_24h": 11, "gpu_temp_slope_per_hour_24h": 2, "gpu_temp_mean_1h": 11, "gpu_temp_mean_30d": 11},
 	}
 	service := &Service{timeout: time.Second}
 	result := service.replayOneRow(client, row, columns, results)
-	if result.Status != "completed" || result.Compared != 3 || result.Mismatched != 0 || result.MissingReplay != 0 {
+	if result.Status != "completed" || result.Compared != 4 || result.Mismatched != 0 || result.MissingReplay != 0 {
 		t.Fatalf("unexpected replay result: %+v columns=%+v", result, results)
 	}
 	row.Features["gpu_temp_mean_24h"] = 20
 	results["gpu_temp_mean_24h"] = &replayColumnResult{}
 	results["gpu_temp_slope_per_hour_24h"] = &replayColumnResult{}
 	results["gpu_temp_mean_1h"] = &replayColumnResult{}
+	results["gpu_temp_mean_30d"] = &replayColumnResult{}
 	result = service.replayOneRow(client, row, columns, results)
 	if result.Mismatched != 1 || results["gpu_temp_mean_24h"].MaximumAbsoluteError != 9 {
 		t.Fatalf("feature drift was not detected: %+v columns=%+v", result, results)

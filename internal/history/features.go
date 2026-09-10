@@ -25,9 +25,12 @@ import (
 )
 
 const (
-	featureDatasetVersion = "gpu-historical-features-v4"
+	featureDatasetVersion = "gpu-historical-features-v5"
 	featureLookback       = 24 * time.Hour
 	featureQueryStep      = 5 * time.Minute
+	featureLongLookback   = 30 * 24 * time.Hour
+	featureLongQueryStep  = time.Hour
+	longRangeHorizon      = 7 * 24 * time.Hour
 )
 
 type FeatureBuildRequest struct {
@@ -107,6 +110,7 @@ type extractedFeatureRow struct {
 	FeatureContract       string             `json:"feature_contract_version"`
 	LookbackMinutes       int                `json:"lookback_minutes"`
 	QueryStepSeconds      int                `json:"query_step_seconds"`
+	LongQueryStepSeconds  int                `json:"long_query_step_seconds,omitempty"`
 	MetricCoverage        float64            `json:"metric_coverage"`
 	AvailableMetrics      int                `json:"available_metrics"`
 	ExpectedMetrics       int                `json:"expected_metrics"`
@@ -114,32 +118,43 @@ type extractedFeatureRow struct {
 	OptionalMetrics       int                `json:"optional_metrics"`
 	AvailableOptional     int                `json:"available_optional_metrics"`
 	MissingOptional       []string           `json:"missing_optional_metrics"`
+	LongMetricCoverage    float64            `json:"long_metric_coverage,omitempty"`
+	AvailableLongMetrics  int                `json:"available_long_metrics,omitempty"`
+	ExpectedLongMetrics   int                `json:"expected_long_metrics,omitempty"`
+	MissingLongMetrics    []string           `json:"missing_long_metrics,omitempty"`
 	Features              map[string]float64 `json:"features"`
 	ExtractionError       string             `json:"extraction_error,omitempty"`
 }
 
 type featureQualityReport struct {
-	FeatureDatasetKey     string         `json:"feature_dataset_key"`
-	Version               string         `json:"version"`
-	SourceDatasetKey      string         `json:"source_dataset_key"`
-	PredictionTarget      string         `json:"prediction_target"`
-	FeatureContract       string         `json:"feature_contract_version"`
-	PointInTimeRule       string         `json:"point_in_time_rule"`
-	LookbackMinutes       int            `json:"lookback_minutes"`
-	QueryStepSeconds      int            `json:"query_step_seconds"`
-	EpisodeCount          int            `json:"episode_count"`
-	WindowCount           int            `json:"window_count"`
-	CompletedWindows      int            `json:"completed_windows"`
-	FailedWindows         int            `json:"failed_windows"`
-	MetricCount           int            `json:"metric_count"`
-	RequiredMetricCount   int            `json:"required_metric_count"`
-	OptionalMetricCount   int            `json:"optional_metric_count"`
-	FeatureColumnCount    int            `json:"feature_column_count"`
-	FeatureColumns        []string       `json:"feature_columns"`
-	AverageCoverage       float64        `json:"average_metric_coverage"`
-	MinimumCoverage       float64        `json:"minimum_metric_coverage"`
-	MetricAvailableCounts map[string]int `json:"metric_available_window_counts"`
-	CreatedAt             time.Time      `json:"created_at"`
+	FeatureDatasetKey       string         `json:"feature_dataset_key"`
+	Version                 string         `json:"version"`
+	SourceDatasetKey        string         `json:"source_dataset_key"`
+	PredictionTarget        string         `json:"prediction_target"`
+	FeatureContract         string         `json:"feature_contract_version"`
+	PointInTimeRule         string         `json:"point_in_time_rule"`
+	LookbackMinutes         int            `json:"lookback_minutes"`
+	QueryStepSeconds        int            `json:"query_step_seconds"`
+	LongLookbackMinutes     int            `json:"long_lookback_minutes"`
+	LongQueryStepSeconds    int            `json:"long_query_step_seconds"`
+	LongRangeHorizonMinutes int            `json:"long_range_horizon_minutes"`
+	EpisodeCount            int            `json:"episode_count"`
+	WindowCount             int            `json:"window_count"`
+	CompletedWindows        int            `json:"completed_windows"`
+	FailedWindows           int            `json:"failed_windows"`
+	MetricCount             int            `json:"metric_count"`
+	RequiredMetricCount     int            `json:"required_metric_count"`
+	OptionalMetricCount     int            `json:"optional_metric_count"`
+	FeatureColumnCount      int            `json:"feature_column_count"`
+	FeatureColumns          []string       `json:"feature_columns"`
+	AverageCoverage         float64        `json:"average_metric_coverage"`
+	MinimumCoverage         float64        `json:"minimum_metric_coverage"`
+	LongRangeWindowCount    int            `json:"long_range_window_count"`
+	LongRangeCompleteCount  int            `json:"long_range_complete_count"`
+	AverageLongCoverage     float64        `json:"average_long_metric_coverage"`
+	MinimumLongCoverage     float64        `json:"minimum_long_metric_coverage"`
+	MetricAvailableCounts   map[string]int `json:"metric_available_window_counts"`
+	CreatedAt               time.Time      `json:"created_at"`
 }
 
 type episodeFeatureResult struct {
@@ -187,7 +202,7 @@ func (s *Service) StartFeatureBuild(request FeatureBuildRequest) (api.TrainingFe
 		FeatureDatasetKey: key, Version: featureDatasetVersion, Status: "queued",
 		SourceKey: sourceBuild.SourceKey, SourceDatasetBuildID: sourceBuild.ID,
 		SourceDatasetKey: sourceBuild.DatasetKey, PredictionTarget: sourceBuild.PredictionTarget, FeatureContractVersion: features.CatalogVersion,
-		LookbackMinutes: int(featureLookback / time.Minute), QueryStepSeconds: int(featureQueryStep / time.Second),
+		LookbackMinutes: int(featureLongLookback / time.Minute), QueryStepSeconds: int(featureQueryStep / time.Second),
 		MetricCount: len(canonicalHistoricalMetrics()), OutputDir: filepath.Join(s.config.DatasetDir, "features", key),
 		StartedAt: started,
 	}
@@ -378,25 +393,105 @@ func (s *Service) extractEpisodeFeatures(client *promclient.Client, build *api.T
 	if len(windows) == 0 {
 		return nil, nil
 	}
-	start := windows[0].FeatureCutoffAt.Add(-featureLookback)
-	end := windows[len(windows)-1].FeatureCutoffAt
 	query := historicalMetricQuery(windows[0].GPUUUID)
-	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
-	series, err := client.QueryRange(ctx, query, start, end, featureQueryStep)
-	cancel()
-	if err != nil {
-		rows := make([]extractedFeatureRow, 0, len(windows))
-		for _, window := range windows {
-			rows = append(rows, emptyExtractedFeatureRow(build, window, err.Error()))
+	points := map[string][]promclient.RangePoint{}
+	for _, segment := range featureQuerySegments(windows, featureLookback) {
+		ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+		series, err := client.QueryRange(ctx, query, segment.start, segment.end, featureQueryStep)
+		cancel()
+		if err != nil {
+			rows := make([]extractedFeatureRow, 0, len(windows))
+			for _, window := range windows {
+				rows = append(rows, emptyExtractedFeatureRow(build, window, err.Error()))
+			}
+			return rows, err
 		}
-		return rows, err
+		mergeCanonicalPointMaps(points, canonicalSeries(series))
 	}
-	points := canonicalSeries(series)
+	longPoints := map[string][]promclient.RangePoint{}
+	longError := ""
+	if start, end, ok := longRangeQueryBounds(windows); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+		longSeries, queryErr := client.QueryRange(ctx, query, start, end, featureLongQueryStep)
+		cancel()
+		if queryErr != nil {
+			longError = "long-range query: " + queryErr.Error()
+		} else {
+			longPoints = canonicalSeries(longSeries)
+		}
+	}
 	rows := make([]extractedFeatureRow, 0, len(windows))
 	for _, window := range windows {
-		rows = append(rows, summarizeFeatureWindow(build, window, points))
+		row := summarizeFeatureWindowWithLongRange(build, window, points, longPoints)
+		if usesLongRange(window.HorizonMinutes) && longError != "" {
+			row.ExtractionError = longError
+		}
+		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+type featureQuerySegment struct {
+	start time.Time
+	end   time.Time
+}
+
+func featureQuerySegments(windows []datasetWindow, lookback time.Duration) []featureQuerySegment {
+	segments := make([]featureQuerySegment, 0, len(windows))
+	for _, window := range windows {
+		start, end := window.FeatureCutoffAt.Add(-lookback), window.FeatureCutoffAt
+		if len(segments) == 0 || start.After(segments[len(segments)-1].end) {
+			segments = append(segments, featureQuerySegment{start: start, end: end})
+			continue
+		}
+		if end.After(segments[len(segments)-1].end) {
+			segments[len(segments)-1].end = end
+		}
+	}
+	return segments
+}
+
+func longRangeQueryBounds(windows []datasetWindow) (time.Time, time.Time, bool) {
+	var start, end time.Time
+	for _, window := range windows {
+		if !usesLongRange(window.HorizonMinutes) {
+			continue
+		}
+		candidate := window.FeatureCutoffAt.Add(-featureLongLookback)
+		if start.IsZero() || candidate.Before(start) {
+			start = candidate
+		}
+		if end.IsZero() || window.FeatureCutoffAt.After(end) {
+			end = window.FeatureCutoffAt
+		}
+	}
+	return start, end, !start.IsZero()
+}
+
+func mergeCanonicalPointMaps(target, source map[string][]promclient.RangePoint) {
+	for metric, points := range source {
+		target[metric] = mergeRangePointsMax(target[metric], points)
+	}
+}
+
+func episodeUsesLongRange(windows []datasetWindow) bool {
+	for _, window := range windows {
+		if usesLongRange(window.HorizonMinutes) {
+			return true
+		}
+	}
+	return false
+}
+
+func usesLongRange(horizonMinutes int) bool {
+	return time.Duration(horizonMinutes)*time.Minute >= longRangeHorizon
+}
+
+func effectiveFeatureLookback(horizonMinutes int) time.Duration {
+	if usesLongRange(horizonMinutes) {
+		return featureLongLookback
+	}
+	return featureLookback
 }
 
 func historicalMetricQuery(uuid string) string {
@@ -508,6 +603,10 @@ func normalizeHistoricalPoints(name string, points []promclient.RangePoint) []pr
 }
 
 func summarizeFeatureWindow(build *api.TrainingFeatureBuild, window datasetWindow, all map[string][]promclient.RangePoint) extractedFeatureRow {
+	return summarizeFeatureWindowWithLongRange(build, window, all, nil)
+}
+
+func summarizeFeatureWindowWithLongRange(build *api.TrainingFeatureBuild, window datasetWindow, all, long map[string][]promclient.RangePoint) extractedFeatureRow {
 	row := emptyExtractedFeatureRow(build, window, "")
 	start := window.FeatureCutoffAt.Add(-featureLookback)
 	required := stringSet(requiredHistoricalMetrics(window.ModelName))
@@ -528,6 +627,25 @@ func summarizeFeatureWindow(build *api.TrainingFeatureBuild, window datasetWindo
 		}
 		featurestats.AddTrailingRangeStatistics(row.Features, metric, points, window.FeatureCutoffAt)
 	}
+	if usesLongRange(window.HorizonMinutes) {
+		longStart := window.FeatureCutoffAt.Add(-featureLongLookback)
+		for _, metric := range expectedHistoricalMetrics(window.ModelName) {
+			points := pointsInWindow(long[metric], longStart, window.FeatureCutoffAt)
+			if len(points) == 0 {
+				if required[metric] {
+					row.MissingLongMetrics = append(row.MissingLongMetrics, metric)
+				}
+				continue
+			}
+			if required[metric] {
+				row.AvailableLongMetrics++
+			}
+			featurestats.AddTrailingLongRangeStatistics(row.Features, metric, points, window.FeatureCutoffAt)
+		}
+		if row.ExpectedLongMetrics > 0 {
+			row.LongMetricCoverage = float64(row.AvailableLongMetrics) / float64(row.ExpectedLongMetrics)
+		}
+	}
 	if row.ExpectedMetrics > 0 {
 		row.MetricCoverage = float64(row.AvailableMetrics) / float64(row.ExpectedMetrics)
 	}
@@ -544,9 +662,13 @@ func emptyExtractedFeatureRow(build *api.TrainingFeatureBuild, window datasetWin
 		NodeIP:           window.NodeIP, GPUUUID: window.GPUUUID, ModelName: window.ModelName,
 		HorizonMinutes: window.HorizonMinutes, FeatureCutoffAt: window.FeatureCutoffAt,
 		LabelOnsetAt: window.LabelOnsetAt, LabelWeight: window.LabelWeight,
-		FeatureContract: features.CatalogVersion, LookbackMinutes: int(featureLookback / time.Minute),
+		FeatureContract: features.CatalogVersion, LookbackMinutes: int(effectiveFeatureLookback(window.HorizonMinutes) / time.Minute),
 		QueryStepSeconds: int(featureQueryStep / time.Second), ExpectedMetrics: len(metrics), OptionalMetrics: len(optional),
 		Features: map[string]float64{}, ExtractionError: extractionError,
+	}
+	if usesLongRange(window.HorizonMinutes) {
+		row.LongQueryStepSeconds = int(featureLongQueryStep / time.Second)
+		row.ExpectedLongMetrics = len(metrics)
 	}
 	if extractionError != "" {
 		row.MissingMetrics = metrics
@@ -597,10 +719,11 @@ func buildFeatureQualityReport(build api.TrainingFeatureBuild, rows []extractedF
 		FeatureDatasetKey: build.FeatureDatasetKey, Version: featureDatasetVersion,
 		SourceDatasetKey: build.SourceDatasetKey, PredictionTarget: build.PredictionTarget, FeatureContract: features.CatalogVersion,
 		PointInTimeRule: "every Prometheus sample timestamp must be <= feature_cutoff_at and strictly before label_onset_at",
-		LookbackMinutes: int(featureLookback / time.Minute), QueryStepSeconds: int(featureQueryStep / time.Second),
+		LookbackMinutes: int(featureLongLookback / time.Minute), QueryStepSeconds: int(featureQueryStep / time.Second),
+		LongLookbackMinutes: int(featureLongLookback / time.Minute), LongQueryStepSeconds: int(featureLongQueryStep / time.Second), LongRangeHorizonMinutes: int(longRangeHorizon / time.Minute),
 		EpisodeCount: build.EpisodeCount, WindowCount: len(rows), MetricCount: len(canonicalHistoricalMetrics()),
 		RequiredMetricCount: len(requiredHistoricalMetrics("NVIDIA H100")), OptionalMetricCount: len(optionalHistoricalMetrics("NVIDIA H100")),
-		MetricAvailableCounts: map[string]int{}, MinimumCoverage: 1, CreatedAt: time.Now(),
+		MetricAvailableCounts: map[string]int{}, MinimumCoverage: 1, MinimumLongCoverage: 1, CreatedAt: time.Now(),
 	}
 	for _, row := range rows {
 		if row.ExtractionError != "" {
@@ -610,6 +733,14 @@ func buildFeatureQualityReport(build api.TrainingFeatureBuild, rows []extractedF
 		}
 		report.AverageCoverage += row.MetricCoverage
 		report.MinimumCoverage = math.Min(report.MinimumCoverage, row.MetricCoverage)
+		if usesLongRange(row.HorizonMinutes) {
+			report.LongRangeWindowCount++
+			report.AverageLongCoverage += row.LongMetricCoverage
+			report.MinimumLongCoverage = math.Min(report.MinimumLongCoverage, row.LongMetricCoverage)
+			if row.LongMetricCoverage >= 1 {
+				report.LongRangeCompleteCount++
+			}
+		}
 		for _, metric := range expectedHistoricalMetrics(row.ModelName) {
 			if historicalMetricPresent(row.Features, metric) {
 				report.MetricAvailableCounts[metric]++
@@ -620,6 +751,11 @@ func buildFeatureQualityReport(build api.TrainingFeatureBuild, rows []extractedF
 		report.AverageCoverage /= float64(len(rows))
 	} else {
 		report.MinimumCoverage = 0
+	}
+	if report.LongRangeWindowCount > 0 {
+		report.AverageLongCoverage /= float64(report.LongRangeWindowCount)
+	} else {
+		report.MinimumLongCoverage = 0
 	}
 	report.FeatureColumns = historicalFeatureColumns()
 	report.FeatureColumnCount = len(report.FeatureColumns)

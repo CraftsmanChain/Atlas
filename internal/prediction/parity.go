@@ -109,7 +109,7 @@ func (s *Service) auditFeatureParity(spec api.PredictionModelSpec) error {
 		}
 	default:
 		audit.Status = "replay_required"
-		audit.BlockingReasons = append(audit.BlockingReasons, "historical_value_replay_not_verified", "live_24h_coverage_not_verified")
+		audit.BlockingReasons = append(audit.BlockingReasons, "historical_value_replay_not_verified", "live_multiresolution_coverage_not_verified")
 	}
 	var existing api.PredictionFeatureParityAudit
 	result := s.db.Where("model_spec_id = ?", spec.ID).Limit(1).Find(&existing)

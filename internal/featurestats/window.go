@@ -8,7 +8,7 @@ import (
 	promclient "atlas/internal/prometheus"
 )
 
-const TrailingRangeContractVersion = "trailing-multiscale-range-statistics-v2"
+const TrailingRangeContractVersion = "trailing-multiscale-range-statistics-v3"
 
 // Trailing24hContractVersion remains as a compatibility alias for callers that
 // only consume the original 24h statistics.
@@ -26,6 +26,15 @@ var shortWindowDurations = []struct {
 	{label: "15m", duration: 15 * time.Minute},
 	{label: "1h", duration: time.Hour},
 	{label: "6h", duration: 6 * time.Hour},
+}
+
+var longWindowDurations = []struct {
+	label    string
+	duration time.Duration
+}{
+	{label: "3d", duration: 3 * 24 * time.Hour},
+	{label: "7d", duration: 7 * 24 * time.Hour},
+	{label: "30d", duration: 30 * 24 * time.Hour},
 }
 
 var shortWindowStatistics = []string{"mean", "max", "delta", "slope_per_hour", "sample_count"}
@@ -58,6 +67,15 @@ func ParseTrailingRangeColumn(column string) (string, string, time.Duration, boo
 			}
 		}
 	}
+	for _, window := range longWindowDurations {
+		for _, statistic := range trailing24hStatistics {
+			name := strings.TrimSuffix(statistic, "_24h")
+			suffix := "_" + name + "_" + window.label
+			if strings.HasSuffix(column, suffix) && len(column) > len(suffix) {
+				return strings.TrimSuffix(column, suffix), name + "_" + window.label, window.duration, true
+			}
+		}
+	}
 	return "", "", 0, false
 }
 
@@ -68,11 +86,40 @@ func TrailingRangeStatistics() []string {
 			result = append(result, statistic+"_"+window.label)
 		}
 	}
+	for _, window := range longWindowDurations {
+		for _, statistic := range trailing24hStatistics {
+			result = append(result, strings.TrimSuffix(statistic, "_24h")+"_"+window.label)
+		}
+	}
 	return result
 }
 
 func AddTrailing24hStatistics(result map[string]float64, name string, points []promclient.RangePoint) {
 	addStatistics(result, name, "24h", points, true)
+}
+
+// AddTrailingLongRangeStatistics computes coarse multi-day summaries from a
+// separately queried point-in-time-safe series. Callers can keep the 24h path
+// at high resolution while bounding Prometheus response size for long ranges.
+func AddTrailingLongRangeStatistics(result map[string]float64, name string, points []promclient.RangePoint, cutoff time.Time) {
+	safePoints := make([]promclient.RangePoint, 0, len(points))
+	for _, point := range points {
+		if !point.Timestamp.After(cutoff) && !math.IsNaN(point.Value) && !math.IsInf(point.Value, 0) {
+			safePoints = append(safePoints, point)
+		}
+	}
+	for _, window := range longWindowDurations {
+		start := cutoff.Add(-window.duration)
+		windowPoints := make([]promclient.RangePoint, 0, len(safePoints))
+		for _, point := range safePoints {
+			if !point.Timestamp.Before(start) {
+				windowPoints = append(windowPoints, point)
+			}
+		}
+		if len(windowPoints) > 0 {
+			addStatistics(result, name, window.label, windowPoints, true)
+		}
+	}
 }
 
 // AddTrailingRangeStatistics computes all windows from the same point-in-time

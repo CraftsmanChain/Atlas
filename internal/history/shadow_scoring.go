@@ -103,7 +103,7 @@ func (s *Service) StartShadowScoring(modelSpecID uint) (api.PredictionShadowScor
 		RunKey: key, Version: shadowScoringVersion, Status: "queued", Trigger: "manual",
 		ModelSpecID: spec.ID, ModelKey: spec.ModelKey, ModelVersion: spec.Version,
 		ArtifactSHA256: spec.ArtifactSHA256, SourceKey: coverage.SourceKey, ScopeModelName: spec.ScopeModelName,
-		TransformationVersion: parity.TransformationContractVersion, WindowMinutes: int(featureLookback / time.Minute),
+		TransformationVersion: parity.TransformationContractVersion, WindowMinutes: int(effectiveFeatureLookback(spec.HorizonMinutes) / time.Minute),
 		QueryStepSeconds: int(featureQueryStep / time.Second), NoAlertEmitted: true, NoActionExecuted: true, StartedAt: started,
 	}
 	if err := s.db.Create(&run).Error; err != nil {
@@ -193,7 +193,10 @@ func (s *Service) buildShadowScoring(run *api.PredictionShadowScoringRun) error 
 	}
 	end := s.now()
 	start := end.Add(-featureLookback)
+	longRangeSources := longRangeSourceMetrics(model.FeatureColumns)
+	requiresLongRange := len(longRangeSources) > 0
 	byGPU := map[string]map[string][]promclient.RangePoint{}
+	longByGPU := map[string]map[string][]promclient.RangePoint{}
 	for offset := 0; offset < len(assets); offset += liveCoverageUUIDChunkSize {
 		limit := offset + liveCoverageUUIDChunkSize
 		if limit > len(assets) {
@@ -212,10 +215,23 @@ func (s *Service) buildShadowScoring(run *api.PredictionShadowScoringRun) error 
 		for uuid, values := range canonicalSeriesByGPU(series) {
 			byGPU[uuid] = values
 		}
+		if requiresLongRange {
+			ctx, cancel = context.WithTimeout(context.Background(), s.timeout)
+			longSeries, longErr := client.QueryRange(ctx, historicalMetricQueryUUIDs(uuids), end.Add(-featureLongLookback), end, featureLongQueryStep)
+			cancel()
+			if longErr != nil {
+				return fmt.Errorf("shadow long-range query chunk %d: %w", offset/liveCoverageUUIDChunkSize, longErr)
+			}
+			for uuid, values := range canonicalSeriesByGPU(longSeries) {
+				longByGPU[uuid] = values
+			}
+		}
 	}
 	report := shadowScoringReport{Version: shadowScoringVersion, RunKey: run.RunKey, ModelKey: spec.ModelKey, ModelVersion: spec.Version, ArtifactSHA256: checksum, TransformationVersion: parity.TransformationContractVersion, DecisionThreshold: *spec.DecisionThreshold, FeatureColumns: append([]string(nil), model.FeatureColumns...), GPUs: make([]shadowScoringGPUReport, 0, len(assets)), NoAlertEmitted: true, NoActionExecuted: true, CreatedAt: s.now()}
 	predictions := make([]api.HardwareRiskPrediction, 0, len(assets))
 	probabilitySum := 0.0
+	longExpected := int(featureLongLookback/featureLongQueryStep) + 1
+	longMinimum := int(math.Ceil(float64(longExpected) * liveCoverageMinimumRatio))
 	probabilities := make([]float64, 0, len(assets))
 	liveFeatureValues := map[string][]float64{}
 	nodeCounts, nodePositiveCounts, nodeProbabilitySums := map[string]int{}, map[string]int{}, map[string]float64{}
@@ -234,6 +250,18 @@ func (s *Service) buildShadowScoring(run *api.PredictionShadowScoringRun) error 
 				continue
 			}
 			featurestats.AddTrailingRangeStatistics(features, metric, points, end)
+			if _, metricRequiresLongRange := longRangeSources[metric]; metricRequiresLongRange {
+				longPoints := pointsInWindow(longByGPU[normalizeHistoricalGPUUUID(asset.CurrentUUID)][metric], end.Add(-featureLongLookback), end)
+				if len(longPoints) < longMinimum {
+					item.BlockingReasons = append(item.BlockingReasons, "long_metric_sparse:"+metric)
+					continue
+				}
+				if end.Sub(longPoints[len(longPoints)-1].Timestamp) > featureLongQueryStep+liveCoverageFreshnessSLA {
+					item.BlockingReasons = append(item.BlockingReasons, "long_metric_stale:"+metric)
+					continue
+				}
+				featurestats.AddTrailingLongRangeStatistics(features, metric, longPoints, end)
+			}
 		}
 		for _, column := range model.FeatureColumns {
 			if _, exists := features[column]; !exists {

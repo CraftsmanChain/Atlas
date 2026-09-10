@@ -42,7 +42,28 @@ func TestTrailingRangeContractComputesOnlyPointInTimeSafeWindows(t *testing.T) {
 	if !ok || base != "gpu_temp" || statistic != "slope_per_hour_6h" || duration != 6*time.Hour {
 		t.Fatalf("unexpected multi-scale parse: %q %q %s %t", base, statistic, duration, ok)
 	}
-	if len(TrailingRangeStatistics()) != 23 {
+	if len(TrailingRangeStatistics()) != 47 {
 		t.Fatalf("unexpected multi-scale suffix count: %d", len(TrailingRangeStatistics()))
+	}
+}
+
+func TestTrailingLongRangeStatisticsAreCoarseAndPointInTimeSafe(t *testing.T) {
+	cutoff := time.Unix(40*24*3600, 0)
+	points := []promclient.RangePoint{
+		{Timestamp: cutoff.Add(-31 * 24 * time.Hour), Value: 999},
+		{Timestamp: cutoff.Add(-20 * 24 * time.Hour), Value: 10},
+		{Timestamp: cutoff.Add(-6 * 24 * time.Hour), Value: 20},
+		{Timestamp: cutoff.Add(-2 * 24 * time.Hour), Value: 30},
+		{Timestamp: cutoff, Value: 40},
+		{Timestamp: cutoff.Add(time.Hour), Value: 999},
+	}
+	values := map[string]float64{}
+	AddTrailingLongRangeStatistics(values, "pcie_replay_counter", points, cutoff)
+	if values["pcie_replay_counter_delta_3d"] != 10 || values["pcie_replay_counter_max_7d"] != 40 || values["pcie_replay_counter_min_30d"] != 10 || values["pcie_replay_counter_last_30d"] != 40 {
+		t.Fatalf("unexpected long-range statistics: %+v", values)
+	}
+	base, statistic, duration, ok := ParseTrailingRangeColumn("pcie_replay_counter_slope_per_hour_30d")
+	if !ok || base != "pcie_replay_counter" || statistic != "slope_per_hour_30d" || duration != 30*24*time.Hour {
+		t.Fatalf("unexpected long-range parse: %q %q %s %t", base, statistic, duration, ok)
 	}
 }
