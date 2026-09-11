@@ -172,35 +172,40 @@ type TrainingDatasetBuild struct {
 // TrainingFeatureBuild records an asynchronous, point-in-time extraction from
 // a cohort manifest. Feature artifacts remain on the Atlas deployment node.
 type TrainingFeatureBuild struct {
-	ID                     uint       `json:"id" gorm:"primaryKey;autoIncrement"`
-	FeatureDatasetKey      string     `json:"feature_dataset_key" gorm:"uniqueIndex;not null"`
-	Version                string     `json:"version" gorm:"index;not null"`
-	Status                 string     `json:"status" gorm:"index;not null"`
-	SourceKey              string     `json:"source_key" gorm:"index;not null"`
-	SourceDatasetBuildID   uint       `json:"source_dataset_build_id" gorm:"index;not null"`
-	SourceDatasetKey       string     `json:"source_dataset_key" gorm:"index;not null"`
-	PredictionTarget       string     `json:"prediction_target" gorm:"index;not null;default:'gpu_hardware_failure'"`
-	FeatureContractVersion string     `json:"feature_contract_version" gorm:"index;not null"`
-	LookbackMinutes        int        `json:"lookback_minutes"`
-	QueryStepSeconds       int        `json:"query_step_seconds"`
-	EpisodeCount           int        `json:"episode_count"`
-	WindowCount            int        `json:"window_count"`
-	ProcessedEpisodes      int        `json:"processed_episodes"`
-	CompletedWindows       int        `json:"completed_windows"`
-	FailedWindows          int        `json:"failed_windows"`
-	MetricCount            int        `json:"metric_count"`
-	FeatureColumnCount     int        `json:"feature_column_count"`
-	AverageMetricCoverage  float64    `json:"average_metric_coverage"`
-	MinimumMetricCoverage  float64    `json:"minimum_metric_coverage"`
-	OutputDir              string     `json:"output_dir" gorm:"type:text"`
-	FeaturePath            string     `json:"feature_path" gorm:"type:text"`
-	FeatureSHA256          string     `json:"feature_sha256"`
-	QualityReportPath      string     `json:"quality_report_path" gorm:"type:text"`
-	ErrorMessage           string     `json:"error_message,omitempty" gorm:"type:text"`
-	StartedAt              time.Time  `json:"started_at" gorm:"index;not null"`
-	FinishedAt             *time.Time `json:"finished_at,omitempty" gorm:"index"`
-	CreatedAt              time.Time  `json:"created_at"`
-	UpdatedAt              time.Time  `json:"updated_at"`
+	ID                                uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	FeatureDatasetKey                 string     `json:"feature_dataset_key" gorm:"uniqueIndex;not null"`
+	Version                           string     `json:"version" gorm:"index;not null"`
+	Status                            string     `json:"status" gorm:"index;not null"`
+	SourceKey                         string     `json:"source_key" gorm:"index;not null"`
+	SourceDatasetBuildID              uint       `json:"source_dataset_build_id" gorm:"index;not null"`
+	SourceDatasetKey                  string     `json:"source_dataset_key" gorm:"index;not null"`
+	PredictionTarget                  string     `json:"prediction_target" gorm:"index;not null;default:'gpu_hardware_failure'"`
+	FeatureContractVersion            string     `json:"feature_contract_version" gorm:"index;not null"`
+	LookbackMinutes                   int        `json:"lookback_minutes"`
+	QueryStepSeconds                  int        `json:"query_step_seconds"`
+	EpisodeCount                      int        `json:"episode_count"`
+	WindowCount                       int        `json:"window_count"`
+	ProcessedEpisodes                 int        `json:"processed_episodes"`
+	CompletedWindows                  int        `json:"completed_windows"`
+	FailedWindows                     int        `json:"failed_windows"`
+	MetricCount                       int        `json:"metric_count"`
+	FeatureColumnCount                int        `json:"feature_column_count"`
+	AverageMetricCoverage             float64    `json:"average_metric_coverage"`
+	MinimumMetricCoverage             float64    `json:"minimum_metric_coverage"`
+	StructuralFeatureCount            int        `json:"structural_feature_count"`
+	StructuralCompleteWindows         int        `json:"structural_complete_windows"`
+	StructuralExtractionFailedWindows int        `json:"structural_extraction_failed_windows"`
+	AverageStructuralFeatureCoverage  float64    `json:"average_structural_feature_coverage"`
+	MinimumStructuralFeatureCoverage  float64    `json:"minimum_structural_feature_coverage"`
+	OutputDir                         string     `json:"output_dir" gorm:"type:text"`
+	FeaturePath                       string     `json:"feature_path" gorm:"type:text"`
+	FeatureSHA256                     string     `json:"feature_sha256"`
+	QualityReportPath                 string     `json:"quality_report_path" gorm:"type:text"`
+	ErrorMessage                      string     `json:"error_message,omitempty" gorm:"type:text"`
+	StartedAt                         time.Time  `json:"started_at" gorm:"index;not null"`
+	FinishedAt                        *time.Time `json:"finished_at,omitempty" gorm:"index"`
+	CreatedAt                         time.Time  `json:"created_at"`
+	UpdatedAt                         time.Time  `json:"updated_at"`
 }
 
 // ManualFeedbackFeatureRequestBuild records the immutable extraction request

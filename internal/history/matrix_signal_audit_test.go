@@ -103,3 +103,24 @@ func TestTrainingMatrixSignalAuditVerifiesArtifactAndServesReadOnlyReport(t *tes
 		t.Fatalf("missing immutable audit headers: %+v", response.Header())
 	}
 }
+
+func TestTrainingMatrixSignalAuditRecognizesCompleteStructuralPlane(t *testing.T) {
+	values := map[string]float64{}
+	for _, name := range historicalStructuralFeatures {
+		values[name] = 1
+	}
+	values["gpu_metric_family_count"] = 28
+	values["gpu_metric_family_count_delta_5m"] = 0
+	result, err := buildTrainingMatrixSignalAudit(api.TrainingMatrixBuild{ID: 8, TrainingMatrixKey: "structural", MatrixSHA256: "sha"}, []trainingMatrixRow{{RowKey: "structural-row", PredictionTarget: highPriorityXIDEventTarget, Split: "train", Features: values}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StructuralFeatureCount != 10 || len(result.MissingStructuralFeatures) != 0 {
+		t.Fatalf("expected complete 10/10 structural plane: %+v", result)
+	}
+	for _, finding := range result.Findings {
+		if finding.Code == "structural_observability_plane_missing" {
+			t.Fatalf("complete structural plane must not emit missing finding: %+v", result.Findings)
+		}
+	}
+}

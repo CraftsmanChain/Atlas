@@ -177,10 +177,15 @@ func normalizedFeatureWindowPolicy(value string) string {
 
 func selectedWindowCounts(horizons []baselineHorizonReport) map[string]int {
 	counts := map[string]int{}
+	structural := stringSet(historicalStructuralFeatures)
 	for _, horizon := range horizons {
 		for _, feature := range horizon.FeatureSelection.Selected {
 			_, _, duration, ok := featurestats.ParseTrailingRangeColumn(feature.Feature)
 			if !ok {
+				if structural[feature.Feature] {
+					counts["structural"]++
+					continue
+				}
 				counts["non_window"]++
 				continue
 			}
@@ -191,6 +196,9 @@ func selectedWindowCounts(horizons []baselineHorizonReport) map[string]int {
 }
 
 func formatFeatureWindow(duration time.Duration) string {
+	if duration == 24*time.Hour {
+		return "24h"
+	}
 	if duration%(24*time.Hour) == 0 {
 		return fmt.Sprintf("%dd", int(duration/(24*time.Hour)))
 	}

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"atlas/internal/features"
 	"atlas/pkg/api"
 	"atlas/pkg/storage"
 )
@@ -38,7 +39,7 @@ func TestShadowRegistryPromotesOnlyIntegrityCheckedCandidate(t *testing.T) {
 	build := api.BaselineModelBuild{
 		BaselineModelKey: "gpu-logistic-baseline-v9-test", Version: "gpu-logistic-baseline-v9", Status: "completed",
 		Algorithm: "logistic_regression", SourceMatrixBuildID: 4, SourceTrainingMatrixKey: "matrix-v4",
-		FeatureContractVersion: "1.11.0", ScopeEventType: "xid_94_contained_ecc", ScopeModelName: "NVIDIA H100 80GB HBM3",
+		FeatureContractVersion: features.CatalogVersion, ScopeEventType: "xid_94_contained_ecc", ScopeModelName: "NVIDIA H100 80GB HBM3",
 		FeatureAuditStatus: "passed", ShadowCandidateCount: 1, ArtifactPath: artifactPath,
 		ArtifactSHA256: checksum, ReportPath: reportPath, StartedAt: finished.Add(-time.Minute), FinishedAt: &finished,
 	}

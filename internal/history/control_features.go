@@ -355,7 +355,10 @@ func (s *Service) extractControlFeature(client *promclient.Client, build *api.Tr
 		}
 		longPoints = canonicalSeries(longSeries)
 	}
-	return summarizeFeatureWindowWithLongRange(&featureBuild, window, canonicalSeries(series), longPoints), nil
+	row := summarizeFeatureWindowWithLongRange(&featureBuild, window, canonicalSeries(series), longPoints)
+	structuralValues, structuralErr := s.extractStructuralFeatures(client, request.GPUUUID, request.FeatureCutoffAt)
+	applyStructuralFeatures(&row, structuralValues, structuralErr)
+	return row, nil
 }
 
 func qualifyControlFeature(request healthyControlRequest, feature, positive extractedFeatureRow, minimumCoverage float64) controlFeatureRow {

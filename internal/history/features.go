@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	featureDatasetVersion = "gpu-historical-features-v5"
+	featureDatasetVersion = "gpu-historical-features-v6"
 	featureLookback       = 24 * time.Hour
 	featureQueryStep      = 5 * time.Minute
 	featureLongLookback   = 30 * 24 * time.Hour
@@ -94,6 +94,17 @@ var coreHistoricalMetrics = map[string]bool{
 	"pcie_replay_counter": true,
 }
 
+var historicalStructuralFeatures = []string{
+	"gpu_metric_samples_1h",
+	"gpu_metric_presence_ratio_1h",
+	"gpu_metric_sample_age_seconds",
+	"gpu_uuid_presence_flap_count_1h",
+	"gpu_metric_gap_max_seconds_1h",
+	"target_scrape_success_ratio_5m",
+	"target_scrape_samples_ratio_5m",
+	"target_scrape_duration_ratio_5m",
+}
+
 type extractedFeatureRow struct {
 	SampleKey             string             `json:"sample_key"`
 	FeatureDatasetVersion string             `json:"feature_dataset_version"`
@@ -122,39 +133,49 @@ type extractedFeatureRow struct {
 	AvailableLongMetrics  int                `json:"available_long_metrics,omitempty"`
 	ExpectedLongMetrics   int                `json:"expected_long_metrics,omitempty"`
 	MissingLongMetrics    []string           `json:"missing_long_metrics,omitempty"`
+	StructuralCoverage    float64            `json:"structural_feature_coverage"`
+	AvailableStructural   int                `json:"available_structural_features"`
+	ExpectedStructural    int                `json:"expected_structural_features"`
+	MissingStructural     []string           `json:"missing_structural_features"`
 	Features              map[string]float64 `json:"features"`
 	ExtractionError       string             `json:"extraction_error,omitempty"`
+	StructuralError       string             `json:"structural_extraction_error,omitempty"`
 }
 
 type featureQualityReport struct {
-	FeatureDatasetKey       string         `json:"feature_dataset_key"`
-	Version                 string         `json:"version"`
-	SourceDatasetKey        string         `json:"source_dataset_key"`
-	PredictionTarget        string         `json:"prediction_target"`
-	FeatureContract         string         `json:"feature_contract_version"`
-	PointInTimeRule         string         `json:"point_in_time_rule"`
-	LookbackMinutes         int            `json:"lookback_minutes"`
-	QueryStepSeconds        int            `json:"query_step_seconds"`
-	LongLookbackMinutes     int            `json:"long_lookback_minutes"`
-	LongQueryStepSeconds    int            `json:"long_query_step_seconds"`
-	LongRangeHorizonMinutes int            `json:"long_range_horizon_minutes"`
-	EpisodeCount            int            `json:"episode_count"`
-	WindowCount             int            `json:"window_count"`
-	CompletedWindows        int            `json:"completed_windows"`
-	FailedWindows           int            `json:"failed_windows"`
-	MetricCount             int            `json:"metric_count"`
-	RequiredMetricCount     int            `json:"required_metric_count"`
-	OptionalMetricCount     int            `json:"optional_metric_count"`
-	FeatureColumnCount      int            `json:"feature_column_count"`
-	FeatureColumns          []string       `json:"feature_columns"`
-	AverageCoverage         float64        `json:"average_metric_coverage"`
-	MinimumCoverage         float64        `json:"minimum_metric_coverage"`
-	LongRangeWindowCount    int            `json:"long_range_window_count"`
-	LongRangeCompleteCount  int            `json:"long_range_complete_count"`
-	AverageLongCoverage     float64        `json:"average_long_metric_coverage"`
-	MinimumLongCoverage     float64        `json:"minimum_long_metric_coverage"`
-	MetricAvailableCounts   map[string]int `json:"metric_available_window_counts"`
-	CreatedAt               time.Time      `json:"created_at"`
+	FeatureDatasetKey         string         `json:"feature_dataset_key"`
+	Version                   string         `json:"version"`
+	SourceDatasetKey          string         `json:"source_dataset_key"`
+	PredictionTarget          string         `json:"prediction_target"`
+	FeatureContract           string         `json:"feature_contract_version"`
+	PointInTimeRule           string         `json:"point_in_time_rule"`
+	LookbackMinutes           int            `json:"lookback_minutes"`
+	QueryStepSeconds          int            `json:"query_step_seconds"`
+	LongLookbackMinutes       int            `json:"long_lookback_minutes"`
+	LongQueryStepSeconds      int            `json:"long_query_step_seconds"`
+	LongRangeHorizonMinutes   int            `json:"long_range_horizon_minutes"`
+	EpisodeCount              int            `json:"episode_count"`
+	WindowCount               int            `json:"window_count"`
+	CompletedWindows          int            `json:"completed_windows"`
+	FailedWindows             int            `json:"failed_windows"`
+	MetricCount               int            `json:"metric_count"`
+	RequiredMetricCount       int            `json:"required_metric_count"`
+	OptionalMetricCount       int            `json:"optional_metric_count"`
+	FeatureColumnCount        int            `json:"feature_column_count"`
+	FeatureColumns            []string       `json:"feature_columns"`
+	AverageCoverage           float64        `json:"average_metric_coverage"`
+	MinimumCoverage           float64        `json:"minimum_metric_coverage"`
+	LongRangeWindowCount      int            `json:"long_range_window_count"`
+	LongRangeCompleteCount    int            `json:"long_range_complete_count"`
+	AverageLongCoverage       float64        `json:"average_long_metric_coverage"`
+	MinimumLongCoverage       float64        `json:"minimum_long_metric_coverage"`
+	StructuralFeatureCount    int            `json:"structural_feature_count"`
+	StructuralCompleteCount   int            `json:"structural_complete_window_count"`
+	StructuralFailedCount     int            `json:"structural_extraction_failed_count"`
+	AverageStructuralCoverage float64        `json:"average_structural_feature_coverage"`
+	MinimumStructuralCoverage float64        `json:"minimum_structural_feature_coverage"`
+	MetricAvailableCounts     map[string]int `json:"metric_available_window_counts"`
+	CreatedAt                 time.Time      `json:"created_at"`
 }
 
 type episodeFeatureResult struct {
@@ -203,7 +224,8 @@ func (s *Service) StartFeatureBuild(request FeatureBuildRequest) (api.TrainingFe
 		SourceKey: sourceBuild.SourceKey, SourceDatasetBuildID: sourceBuild.ID,
 		SourceDatasetKey: sourceBuild.DatasetKey, PredictionTarget: sourceBuild.PredictionTarget, FeatureContractVersion: features.CatalogVersion,
 		LookbackMinutes: int(featureLongLookback / time.Minute), QueryStepSeconds: int(featureQueryStep / time.Second),
-		MetricCount: len(canonicalHistoricalMetrics()), OutputDir: filepath.Join(s.config.DatasetDir, "features", key),
+		MetricCount: len(canonicalHistoricalMetrics()), StructuralFeatureCount: len(historicalStructuralFeatures),
+		OutputDir: filepath.Join(s.config.DatasetDir, "features", key),
 		StartedAt: started,
 	}
 	if err := s.db.Create(&build).Error; err != nil {
@@ -350,7 +372,12 @@ func (s *Service) buildHistoricalFeatures(build *api.TrainingFeatureBuild, maxEp
 		"completed_windows": report.CompletedWindows, "failed_windows": report.FailedWindows,
 		"feature_column_count":    report.FeatureColumnCount,
 		"average_metric_coverage": report.AverageCoverage, "minimum_metric_coverage": report.MinimumCoverage,
-		"feature_path": featurePath, "feature_sha256": checksum, "quality_report_path": reportPath,
+		"structural_feature_count":             report.StructuralFeatureCount,
+		"structural_complete_windows":          report.StructuralCompleteCount,
+		"structural_extraction_failed_windows": report.StructuralFailedCount,
+		"average_structural_feature_coverage":  report.AverageStructuralCoverage,
+		"minimum_structural_feature_coverage":  report.MinimumStructuralCoverage,
+		"feature_path":                         featurePath, "feature_sha256": checksum, "quality_report_path": reportPath,
 		"error_message": errorMessage, "finished_at": &finished,
 	}).Error
 }
@@ -430,9 +457,24 @@ func (s *Service) extractEpisodeFeatures(client *promclient.Client, build *api.T
 		if usesLongRange(window.HorizonMinutes) && longError != "" {
 			row.ExtractionError = longError
 		}
+		values, structuralErr := s.extractStructuralFeatures(client, window.GPUUUID, window.FeatureCutoffAt)
+		applyStructuralFeatures(&row, values, structuralErr)
 		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+func (s *Service) extractStructuralFeatures(client *promclient.Client, uuid string, cutoff time.Time) (map[string]float64, error) {
+	if strings.TrimSpace(uuid) == "" || strings.HasPrefix(strings.ToLower(strings.TrimSpace(uuid)), "node:") {
+		return nil, fmt.Errorf("GPU UUID is required for per-GPU structural features")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+	series, err := client.QueryRange(ctx, historicalStructuralFeatureQuery(uuid), cutoff, cutoff, time.Minute)
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+	return structuralFeatureValues(series), nil
 }
 
 type featureQuerySegment struct {
@@ -519,6 +561,71 @@ func historicalMetricQueryUUIDs(uuids []string) string {
 	metricExpression := "^(" + strings.Join(names, "|") + ")$"
 	return fmt.Sprintf(`{__name__=~%q,UUID=~%q} or {__name__=~%q,uuid=~%q}`,
 		metricExpression, uuidExpression, metricExpression, uuidExpression)
+}
+
+func historicalStructuralFeatureQuery(uuid string) string {
+	uuidExpression := "(?i)^" + regexp.QuoteMeta(strings.TrimSpace(uuid)) + "$"
+	selector := fmt.Sprintf(`DCGM_FI_DEV_GPU_UTIL{UUID=~%q}`, uuidExpression)
+	expressions := map[string]string{
+		"gpu_metric_samples_1h":           fmt.Sprintf("max by(UUID)(count_over_time(%s[1h]))", selector),
+		"gpu_metric_presence_ratio_1h":    fmt.Sprintf("clamp_max(max by(UUID)(count_over_time(%s[1h])) / 240 * 100, 100)", selector),
+		"gpu_metric_sample_age_seconds":   fmt.Sprintf("min by(UUID)(time() - timestamp(%s))", selector),
+		"gpu_uuid_presence_flap_count_1h": fmt.Sprintf("changes((max by(UUID)(present_over_time(%s[1m])))[1h:1m])", selector),
+		"gpu_metric_gap_max_seconds_1h":   fmt.Sprintf("max by(UUID)(max_over_time((timestamp(%s) - timestamp(%s offset 15s))[1h:15s]))", selector, selector),
+		"target_scrape_success_ratio_5m":  fmt.Sprintf(`min by(UUID)(max by(instance,UUID)(%s * 0 + 1) * on(instance) group_left max by(instance)(avg_over_time(up{job="dcgm_exporter"}[5m])) * 100)`, selector),
+		"target_scrape_samples_ratio_5m":  fmt.Sprintf(`min by(UUID)(max by(instance,UUID)(%s * 0 + 1) * on(instance) group_left max by(instance)(avg_over_time(scrape_samples_scraped{job="dcgm_exporter"}[5m]) / clamp_min(avg_over_time(scrape_samples_scraped{job="dcgm_exporter"}[1h]), 1) * 100))`, selector),
+		"target_scrape_duration_ratio_5m": fmt.Sprintf(`max by(UUID)(max by(instance,UUID)(%s * 0 + 1) * on(instance) group_left max by(instance)(avg_over_time(scrape_duration_seconds{job="dcgm_exporter"}[5m]) / clamp_min(avg_over_time(scrape_duration_seconds{job="dcgm_exporter"}[1h]), 0.000001) * 100))`, selector),
+	}
+	queries := make([]string, 0, len(historicalStructuralFeatures))
+	for _, name := range historicalStructuralFeatures {
+		queries = append(queries, fmt.Sprintf(`label_replace((%s), "atlas_feature", %q, "", "")`, expressions[name], name))
+	}
+	return strings.Join(queries, " or ")
+}
+
+func structuralFeatureValues(series []promclient.RangeSeries) map[string]float64 {
+	allowed := stringSet(historicalStructuralFeatures)
+	result := make(map[string]float64, len(historicalStructuralFeatures))
+	for _, item := range series {
+		name := strings.TrimSpace(item.Metric["atlas_feature"])
+		if !allowed[name] {
+			continue
+		}
+		for index := len(item.Values) - 1; index >= 0; index-- {
+			value := item.Values[index].Value
+			if math.IsNaN(value) || math.IsInf(value, 0) {
+				continue
+			}
+			if existing, exists := result[name]; !exists || value > existing {
+				result[name] = value
+			}
+			break
+		}
+	}
+	return result
+}
+
+func applyStructuralFeatures(row *extractedFeatureRow, values map[string]float64, err error) {
+	row.ExpectedStructural = len(historicalStructuralFeatures)
+	row.AvailableStructural = 0
+	row.MissingStructural = row.MissingStructural[:0]
+	if err != nil {
+		row.StructuralError = err.Error()
+	} else {
+		row.StructuralError = ""
+	}
+	for _, name := range historicalStructuralFeatures {
+		value, exists := values[name]
+		if !exists || math.IsNaN(value) || math.IsInf(value, 0) {
+			row.MissingStructural = append(row.MissingStructural, name)
+			continue
+		}
+		row.Features[name] = value
+		row.AvailableStructural++
+	}
+	if row.ExpectedStructural > 0 {
+		row.StructuralCoverage = float64(row.AvailableStructural) / float64(row.ExpectedStructural)
+	}
 }
 
 func canonicalHistoricalMetrics() []string {
@@ -668,7 +775,11 @@ func emptyExtractedFeatureRow(build *api.TrainingFeatureBuild, window datasetWin
 		LabelOnsetAt: window.LabelOnsetAt, LabelWeight: window.LabelWeight,
 		FeatureContract: features.CatalogVersion, LookbackMinutes: int(effectiveFeatureLookback(window.HorizonMinutes) / time.Minute),
 		QueryStepSeconds: int(featureQueryStep / time.Second), ExpectedMetrics: len(metrics), OptionalMetrics: len(optional),
+		ExpectedStructural: len(historicalStructuralFeatures), MissingStructural: append([]string(nil), historicalStructuralFeatures...),
 		Features: map[string]float64{}, ExtractionError: extractionError,
+	}
+	if extractionError != "" {
+		row.StructuralError = "not queried because core feature extraction failed: " + extractionError
 	}
 	if usesLongRange(window.HorizonMinutes) {
 		row.LongQueryStepSeconds = int(featureLongQueryStep / time.Second)
@@ -727,7 +838,8 @@ func buildFeatureQualityReport(build api.TrainingFeatureBuild, rows []extractedF
 		LongLookbackMinutes: int(featureLongLookback / time.Minute), LongQueryStepSeconds: int(featureLongQueryStep / time.Second), LongRangeHorizonMinutes: int(longRangeHorizon / time.Minute),
 		EpisodeCount: build.EpisodeCount, WindowCount: len(rows), MetricCount: len(canonicalHistoricalMetrics()),
 		RequiredMetricCount: len(requiredHistoricalMetrics("NVIDIA H100")), OptionalMetricCount: len(optionalHistoricalMetrics("NVIDIA H100")),
-		MetricAvailableCounts: map[string]int{}, MinimumCoverage: 1, MinimumLongCoverage: 1, CreatedAt: time.Now(),
+		StructuralFeatureCount: len(historicalStructuralFeatures),
+		MetricAvailableCounts:  map[string]int{}, MinimumCoverage: 1, MinimumLongCoverage: 1, MinimumStructuralCoverage: 1, CreatedAt: time.Now(),
 	}
 	for _, row := range rows {
 		if row.ExtractionError != "" {
@@ -737,6 +849,14 @@ func buildFeatureQualityReport(build api.TrainingFeatureBuild, rows []extractedF
 		}
 		report.AverageCoverage += row.MetricCoverage
 		report.MinimumCoverage = math.Min(report.MinimumCoverage, row.MetricCoverage)
+		report.AverageStructuralCoverage += row.StructuralCoverage
+		report.MinimumStructuralCoverage = math.Min(report.MinimumStructuralCoverage, row.StructuralCoverage)
+		if row.StructuralError != "" {
+			report.StructuralFailedCount++
+		}
+		if row.StructuralCoverage >= 1 {
+			report.StructuralCompleteCount++
+		}
 		if usesLongRange(row.HorizonMinutes) {
 			report.LongRangeWindowCount++
 			report.AverageLongCoverage += row.LongMetricCoverage
@@ -753,8 +873,10 @@ func buildFeatureQualityReport(build api.TrainingFeatureBuild, rows []extractedF
 	}
 	if len(rows) > 0 {
 		report.AverageCoverage /= float64(len(rows))
+		report.AverageStructuralCoverage /= float64(len(rows))
 	} else {
 		report.MinimumCoverage = 0
+		report.MinimumStructuralCoverage = 0
 	}
 	if report.LongRangeWindowCount > 0 {
 		report.AverageLongCoverage /= float64(report.LongRangeWindowCount)
@@ -820,12 +942,14 @@ func historicalMetricPresent(values map[string]float64, metric string) bool {
 
 func historicalFeatureColumns() []string {
 	suffixes := featurestats.TrailingRangeStatistics()
-	columns := make([]string, 0, len(canonicalHistoricalMetrics())*len(suffixes))
+	columns := make([]string, 0, len(canonicalHistoricalMetrics())*len(suffixes)+len(historicalStructuralFeatures))
 	for _, metric := range canonicalHistoricalMetrics() {
 		for _, suffix := range suffixes {
 			columns = append(columns, metric+"_"+suffix)
 		}
 	}
+	columns = append(columns, historicalStructuralFeatures...)
+	sort.Strings(columns)
 	return columns
 }
 
