@@ -8,22 +8,25 @@ import (
 	"sort"
 	"time"
 
+	"atlas/internal/featurestats"
 	"atlas/pkg/api"
 )
 
-const modelRaceComparisonVersion = "gpu-model-race-comparison-v2"
+const modelRaceComparisonVersion = "gpu-model-race-comparison-v3"
 
 type modelRaceBuildSummary struct {
 	BuildID                   uint            `json:"build_id"`
 	ModelKey                  string          `json:"model_key"`
 	Version                   string          `json:"version"`
 	Algorithm                 string          `json:"algorithm"`
+	FeatureWindowPolicy       string          `json:"feature_window_policy"`
 	ArtifactSHA256            string          `json:"artifact_sha256"`
 	MacroTest                 baselineMetrics `json:"macro_test"`
 	StableCount               int             `json:"stable_count"`
 	CandidateCount            int             `json:"candidate_count"`
 	SelectedSourceMetricCount int             `json:"selected_source_metric_count"`
 	SelectedSourceMetrics     []string        `json:"selected_source_metrics"`
+	SelectedWindowCounts      map[string]int  `json:"selected_window_counts"`
 }
 
 type modelRaceDelta struct {
@@ -41,6 +44,7 @@ type modelRaceHorizon struct {
 	Readiness             map[string]string          `json:"readiness_by_build_id"`
 	SelectedFeatureCount  map[string]int             `json:"selected_feature_count_by_build_id"`
 	SelectedSourceMetrics map[string][]string        `json:"selected_source_metrics_by_build_id"`
+	SelectedWindowCounts  map[string]map[string]int  `json:"selected_window_counts_by_build_id"`
 }
 
 type ModelRaceComparison struct {
@@ -92,7 +96,7 @@ func (s *Service) CompareBaselineModels(referenceBuildID uint, challengerBuildID
 		if err != nil {
 			return ModelRaceComparison{}, fmt.Errorf("baseline build %d report: %w", id, err)
 		}
-		if report.Version != build.Version || report.Algorithm != build.Algorithm || report.MatrixKey != build.SourceTrainingMatrixKey {
+		if report.Version != build.Version || report.Algorithm != build.Algorithm || report.MatrixKey != build.SourceTrainingMatrixKey || normalizedFeatureWindowPolicy(report.FeatureWindowPolicy) != normalizedFeatureWindowPolicy(build.FeatureWindowPolicy) {
 			return ModelRaceComparison{}, fmt.Errorf("baseline build %d report provenance mismatch", id)
 		}
 		reports[index] = report
@@ -131,7 +135,7 @@ func (s *Service) CompareBaselineModels(referenceBuildID uint, challengerBuildID
 	for index, build := range builds {
 		report := reports[index]
 		selectedSources := selectedSourceMetrics(report.Horizons)
-		comparison.Builds = append(comparison.Builds, modelRaceBuildSummary{BuildID: build.ID, ModelKey: build.BaselineModelKey, Version: build.Version, Algorithm: build.Algorithm, ArtifactSHA256: build.ArtifactSHA256, MacroTest: report.MacroTest, StableCount: build.StatisticallyStableCount, CandidateCount: build.ShadowCandidateCount, SelectedSourceMetricCount: len(selectedSources), SelectedSourceMetrics: selectedSources})
+		comparison.Builds = append(comparison.Builds, modelRaceBuildSummary{BuildID: build.ID, ModelKey: build.BaselineModelKey, Version: build.Version, Algorithm: build.Algorithm, FeatureWindowPolicy: normalizedFeatureWindowPolicy(build.FeatureWindowPolicy), ArtifactSHA256: build.ArtifactSHA256, MacroTest: report.MacroTest, StableCount: build.StatisticallyStableCount, CandidateCount: build.ShadowCandidateCount, SelectedSourceMetricCount: len(selectedSources), SelectedSourceMetrics: selectedSources, SelectedWindowCounts: selectedWindowCounts(report.Horizons)})
 		if index > 0 {
 			comparison.Deltas = append(comparison.Deltas, modelRaceDelta{BuildID: build.ID, ReferenceID: referenceBuildID, ROCAUC: report.MacroTest.ROCAUC - baseReport.MacroTest.ROCAUC, PRAUC: report.MacroTest.PRAUC - baseReport.MacroTest.PRAUC, Precision: report.MacroTest.Precision - baseReport.MacroTest.Precision, Recall: report.MacroTest.Recall - baseReport.MacroTest.Recall})
 		}
@@ -140,7 +144,7 @@ func (s *Service) CompareBaselineModels(referenceBuildID uint, challengerBuildID
 		}
 	}
 	for horizonIndex, baseHorizon := range baseReport.Horizons {
-		horizon := modelRaceHorizon{HorizonMinutes: baseHorizon.HorizonMinutes, Metrics: map[string]baselineMetrics{}, Readiness: map[string]string{}, SelectedFeatureCount: map[string]int{}, SelectedSourceMetrics: map[string][]string{}}
+		horizon := modelRaceHorizon{HorizonMinutes: baseHorizon.HorizonMinutes, Metrics: map[string]baselineMetrics{}, Readiness: map[string]string{}, SelectedFeatureCount: map[string]int{}, SelectedSourceMetrics: map[string][]string{}, SelectedWindowCounts: map[string]map[string]int{}}
 		for buildIndex, build := range builds {
 			key := fmt.Sprintf("%d", build.ID)
 			reportHorizon := reports[buildIndex].Horizons[horizonIndex]
@@ -148,6 +152,7 @@ func (s *Service) CompareBaselineModels(referenceBuildID uint, challengerBuildID
 			horizon.Readiness[key] = reportHorizon.ReleaseReadiness
 			horizon.SelectedFeatureCount[key] = reportHorizon.FeatureSelection.SelectedFeatureCount
 			horizon.SelectedSourceMetrics[key] = selectedSourceMetrics([]baselineHorizonReport{reportHorizon})
+			horizon.SelectedWindowCounts[key] = selectedWindowCounts([]baselineHorizonReport{reportHorizon})
 		}
 		comparison.Horizons = append(comparison.Horizons, horizon)
 	}
@@ -160,6 +165,39 @@ func (s *Service) CompareBaselineModels(referenceBuildID uint, challengerBuildID
 	digest := sha256.Sum256(encoded)
 	comparison.ComparisonSHA256 = hex.EncodeToString(digest[:])
 	return comparison, nil
+}
+
+func normalizedFeatureWindowPolicy(value string) string {
+	policy, err := resolveFeatureWindowPolicy(value)
+	if err != nil {
+		return value
+	}
+	return policy
+}
+
+func selectedWindowCounts(horizons []baselineHorizonReport) map[string]int {
+	counts := map[string]int{}
+	for _, horizon := range horizons {
+		for _, feature := range horizon.FeatureSelection.Selected {
+			_, _, duration, ok := featurestats.ParseTrailingRangeColumn(feature.Feature)
+			if !ok {
+				counts["non_window"]++
+				continue
+			}
+			counts[formatFeatureWindow(duration)]++
+		}
+	}
+	return counts
+}
+
+func formatFeatureWindow(duration time.Duration) string {
+	if duration%(24*time.Hour) == 0 {
+		return fmt.Sprintf("%dd", int(duration/(24*time.Hour)))
+	}
+	if duration%time.Hour == 0 {
+		return fmt.Sprintf("%dh", int(duration/time.Hour))
+	}
+	return fmt.Sprintf("%dm", int(duration/time.Minute))
 }
 
 func selectedSourceMetrics(horizons []baselineHorizonReport) []string {
