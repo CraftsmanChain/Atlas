@@ -101,6 +101,37 @@ func TestResolveBaselineAlgorithmDefaultsAndRejectsUnknownRuntime(t *testing.T) 
 	}
 }
 
+func TestFeatureWindowPolicyDefaultsFiltersAndRejectsUnknown(t *testing.T) {
+	policy, err := resolveFeatureWindowPolicy("")
+	if err != nil || policy != allAvailableWindowsPolicy {
+		t.Fatalf("legacy requests must retain all windows: policy=%q err=%v", policy, err)
+	}
+	if _, err := resolveFeatureWindowPolicy("max_30d"); err == nil {
+		t.Fatal("unsupported temporal ablation policy must be rejected before queueing")
+	}
+	rows := []trainingMatrixRow{{Features: map[string]float64{
+		"gpu_temp_mean_24h": 1, "gpu_temp_mean_3d": 2, "gpu_temp_mean_7d": 3, "gpu_temp_mean_30d": 4,
+	}}}
+	tests := []struct {
+		policy string
+		want   []string
+	}{
+		{maximum24HourWindowPolicy, []string{"gpu_temp_mean_24h"}},
+		{maximum3DayWindowPolicy, []string{"gpu_temp_mean_24h", "gpu_temp_mean_3d"}},
+		{maximum7DayWindowPolicy, []string{"gpu_temp_mean_24h", "gpu_temp_mean_3d", "gpu_temp_mean_7d"}},
+		{allAvailableWindowsPolicy, []string{"gpu_temp_mean_24h", "gpu_temp_mean_30d", "gpu_temp_mean_3d", "gpu_temp_mean_7d"}},
+	}
+	for _, test := range tests {
+		audit := auditBaselineFeaturesForTargetAndWindowPolicy(rows, hardwareFailureTarget, test.policy)
+		if !reflect.DeepEqual(audit.SelectedColumns, test.want) {
+			t.Fatalf("policy %s selected %v, want %v", test.policy, audit.SelectedColumns, test.want)
+		}
+		if audit.SourceFeatureCount != audit.SelectedFeatureCount+audit.ExcludedFeatureCount {
+			t.Fatalf("policy %s lost audit accounting: %+v", test.policy, audit)
+		}
+	}
+}
+
 func TestAnomalyAugmentedLogisticPreservesRowsAndLearnsSymmetricAnomalies(t *testing.T) {
 	rows := make([]trainingMatrixRow, 0, 160)
 	for index := 0; index < 160; index++ {

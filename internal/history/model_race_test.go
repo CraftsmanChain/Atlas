@@ -30,7 +30,7 @@ func TestCompareBaselineModelsRequiresSameVerifiedMatrixAndProducesStableDigest(
 	}
 	service := NewService(db, config.HistoryConfig{DatasetDir: root}, time.Second)
 	finished := time.Date(2026, 9, 9, 8, 0, 0, 0, time.UTC)
-	create := func(key, version, algorithm string, roc, pr float64) api.BaselineModelBuild {
+	create := func(key, version, algorithm, windowPolicy string, roc, pr float64) api.BaselineModelBuild {
 		dir := filepath.Join(root, key)
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			t.Fatal(err)
@@ -45,18 +45,18 @@ func TestCompareBaselineModelsRequiresSameVerifiedMatrixAndProducesStableDigest(
 		if err != nil {
 			t.Fatal(err)
 		}
-		report := baselineReport{Version: version, Algorithm: algorithm, MatrixKey: matrix.TrainingMatrixKey, PredictionTarget: highPriorityXIDEventTarget, MacroTest: baselineMetrics{ROCAUC: roc, PRAUC: pr}, Horizons: []baselineHorizonReport{{HorizonMinutes: 60, FeatureSelection: baselineFeatureSelection{SelectedFeatureCount: 2, Selected: []baselineSelectedFeature{{Feature: "gpu_temp_mean_1h", SourceMetric: "gpu_temp"}, {Feature: "pcie_replay_counter_delta_1h", SourceMetric: "pcie_replay_counter"}}}, Test: baselineMetrics{ROCAUC: roc, PRAUC: pr}, ReleaseReadiness: "blocked_stability"}}}
+		report := baselineReport{Version: version, Algorithm: algorithm, FeatureWindowPolicy: windowPolicy, MatrixKey: matrix.TrainingMatrixKey, PredictionTarget: highPriorityXIDEventTarget, MacroTest: baselineMetrics{ROCAUC: roc, PRAUC: pr}, Horizons: []baselineHorizonReport{{HorizonMinutes: 60, FeatureSelection: baselineFeatureSelection{SelectedFeatureCount: 2, Selected: []baselineSelectedFeature{{Feature: "gpu_temp_mean_1h", SourceMetric: "gpu_temp"}, {Feature: "pcie_replay_counter_delta_3d", SourceMetric: "pcie_replay_counter"}}}, Test: baselineMetrics{ROCAUC: roc, PRAUC: pr}, ReleaseReadiness: "blocked_stability"}}}
 		if err := writeJSONAtomic(reportPath, report); err != nil {
 			t.Fatal(err)
 		}
-		build := api.BaselineModelBuild{BaselineModelKey: key, Version: version, Status: "completed", Algorithm: algorithm, SourceMatrixBuildID: matrix.ID, SourceTrainingMatrixKey: matrix.TrainingMatrixKey, FeatureContractVersion: matrix.FeatureContractVersion, ArtifactPath: artifactPath, ArtifactSHA256: artifactSHA, ReportPath: reportPath, StartedAt: finished, FinishedAt: &finished}
+		build := api.BaselineModelBuild{BaselineModelKey: key, Version: version, Status: "completed", Algorithm: algorithm, FeatureWindowPolicy: windowPolicy, SourceMatrixBuildID: matrix.ID, SourceTrainingMatrixKey: matrix.TrainingMatrixKey, FeatureContractVersion: matrix.FeatureContractVersion, ArtifactPath: artifactPath, ArtifactSHA256: artifactSHA, ReportPath: reportPath, StartedAt: finished, FinishedAt: &finished}
 		if err := db.Create(&build).Error; err != nil {
 			t.Fatal(err)
 		}
 		return build
 	}
-	reference := create("reference", baselineModelVersion, logisticRegressionAlgorithm, 0.60, 0.40)
-	challenger := create("challenger", anomalyLogisticModelVersion, anomalyLogisticAlgorithm, 0.65, 0.45)
+	reference := create("reference", baselineModelVersion, logisticRegressionAlgorithm, maximum24HourWindowPolicy, 0.60, 0.40)
+	challenger := create("challenger", baselineModelVersion, logisticRegressionAlgorithm, maximum3DayWindowPolicy, 0.65, 0.45)
 	first, err := service.CompareBaselineModels(reference.ID, []uint{challenger.ID})
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +68,7 @@ func TestCompareBaselineModelsRequiresSameVerifiedMatrixAndProducesStableDigest(
 	if first.ComparisonSHA256 == "" || first.ComparisonSHA256 != second.ComparisonSHA256 || first.MatrixSHA256 != matrixSHA || len(first.Deltas) != 1 || first.Deltas[0].ROCAUC < 0.049 {
 		t.Fatalf("unexpected comparison: %+v", first)
 	}
-	if first.Version != modelRaceComparisonVersion || len(first.Builds) != 2 || first.Builds[0].SelectedSourceMetricCount != 2 || len(first.Horizons) != 1 || first.Horizons[0].SelectedFeatureCount[fmt.Sprint(reference.ID)] != 2 || len(first.Horizons[0].SelectedSourceMetrics[fmt.Sprint(reference.ID)]) != 2 {
+	if first.Version != modelRaceComparisonVersion || len(first.Builds) != 2 || first.Builds[0].FeatureWindowPolicy != maximum24HourWindowPolicy || first.Builds[0].SelectedSourceMetricCount != 2 || first.Builds[0].SelectedWindowCounts["3d"] != 1 || len(first.Horizons) != 1 || first.Horizons[0].SelectedFeatureCount[fmt.Sprint(reference.ID)] != 2 || len(first.Horizons[0].SelectedSourceMetrics[fmt.Sprint(reference.ID)]) != 2 || first.Horizons[0].SelectedWindowCounts[fmt.Sprint(reference.ID)]["1h"] != 1 {
 		t.Fatalf("selected source metrics must be preserved in comparison: %+v", first)
 	}
 	if _, err := service.CompareBaselineModels(reference.ID, []uint{reference.ID}); err == nil || !strings.Contains(err.Error(), "unique") {

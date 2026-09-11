@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	baselineModelVersion             = "gpu-logistic-baseline-v12"
+	baselineModelVersion             = "gpu-logistic-baseline-v13"
 	shallowGBDTModelVersion          = "gpu-shallow-gbdt-challenger-v1"
 	anomalyLogisticModelVersion      = "gpu-anomaly-logistic-cascade-v1"
 	anomalyAugmentedModelVersion     = "gpu-anomaly-augmented-logistic-v1"
@@ -29,7 +29,7 @@ const (
 	anomalyLogisticAlgorithm         = "anomaly_filtered_logistic"
 	anomalyAugmentedAlgorithm        = "anomaly_augmented_logistic"
 	cohortReadinessGateName          = "fault-model-horizon-readiness-v1"
-	baselineFeatureAuditVersion      = "baseline-feature-leakage-audit-v2"
+	baselineFeatureAuditVersion      = "baseline-feature-leakage-audit-v3"
 	baselineFeatureSelectionVersion  = "train-only-effect-selection-v1"
 	baselineMinimumPrecision         = 0.70
 	baselineMinimumRecall            = 0.50
@@ -44,6 +44,10 @@ const (
 	anomalyControlQuantile           = 0.80
 	anomalyMinimumScale              = 1e-9
 	anomalySyntheticFeature          = "__train_control_robust_anomaly_score_v1"
+	allAvailableWindowsPolicy        = "all_available_windows"
+	maximum24HourWindowPolicy        = "max_24h"
+	maximum3DayWindowPolicy          = "max_3d"
+	maximum7DayWindowPolicy          = "max_7d"
 )
 
 type BaselineModelBuildRequest struct {
@@ -51,6 +55,7 @@ type BaselineModelBuildRequest struct {
 	EventType           string `json:"event_type,omitempty"`
 	ModelName           string `json:"model_name,omitempty"`
 	Algorithm           string `json:"algorithm,omitempty"`
+	FeatureWindowPolicy string `json:"feature_window_policy,omitempty"`
 }
 
 type logisticModel struct {
@@ -253,24 +258,26 @@ type baselineUncertainty struct {
 	Status          string  `json:"status"`
 }
 type baselineArtifact struct {
-	Version          string                          `json:"version"`
-	Algorithm        string                          `json:"algorithm"`
-	MatrixKey        string                          `json:"matrix_key"`
-	ScopeEventType   string                          `json:"scope_event_type,omitempty"`
-	ScopeModelName   string                          `json:"scope_model_name,omitempty"`
-	ReadinessGate    string                          `json:"readiness_gate,omitempty"`
-	PredictionTarget string                          `json:"prediction_target"`
-	FeaturePolicy    string                          `json:"feature_policy"`
-	FeatureAudit     baselineFeatureAudit            `json:"feature_audit"`
-	Models           []logisticModel                 `json:"models"`
-	BoostedModels    []shallowGBDTModel              `json:"boosted_models,omitempty"`
-	CascadeModels    []anomalyLogisticModel          `json:"cascade_models,omitempty"`
-	AugmentedModels  []anomalyAugmentedLogisticModel `json:"augmented_models,omitempty"`
-	CreatedAt        time.Time                       `json:"created_at"`
+	Version             string                          `json:"version"`
+	Algorithm           string                          `json:"algorithm"`
+	FeatureWindowPolicy string                          `json:"feature_window_policy"`
+	MatrixKey           string                          `json:"matrix_key"`
+	ScopeEventType      string                          `json:"scope_event_type,omitempty"`
+	ScopeModelName      string                          `json:"scope_model_name,omitempty"`
+	ReadinessGate       string                          `json:"readiness_gate,omitempty"`
+	PredictionTarget    string                          `json:"prediction_target"`
+	FeaturePolicy       string                          `json:"feature_policy"`
+	FeatureAudit        baselineFeatureAudit            `json:"feature_audit"`
+	Models              []logisticModel                 `json:"models"`
+	BoostedModels       []shallowGBDTModel              `json:"boosted_models,omitempty"`
+	CascadeModels       []anomalyLogisticModel          `json:"cascade_models,omitempty"`
+	AugmentedModels     []anomalyAugmentedLogisticModel `json:"augmented_models,omitempty"`
+	CreatedAt           time.Time                       `json:"created_at"`
 }
 type baselineReport struct {
 	Version                 string                     `json:"version"`
 	Algorithm               string                     `json:"algorithm"`
+	FeatureWindowPolicy     string                     `json:"feature_window_policy"`
 	MatrixKey               string                     `json:"matrix_key"`
 	ScopeEventType          string                     `json:"scope_event_type,omitempty"`
 	ScopeModelName          string                     `json:"scope_model_name,omitempty"`
@@ -364,6 +371,10 @@ func (s *Service) StartBaselineModelBuild(request BaselineModelBuildRequest) (ap
 		return api.BaselineModelBuild{}, err
 	}
 	request.Algorithm = algorithm
+	request.FeatureWindowPolicy, err = resolveFeatureWindowPolicy(request.FeatureWindowPolicy)
+	if err != nil {
+		return api.BaselineModelBuild{}, err
+	}
 	if (request.EventType == "") != (request.ModelName == "") {
 		return api.BaselineModelBuild{}, fmt.Errorf("event_type and model_name must be provided together")
 	}
@@ -385,7 +396,7 @@ func (s *Service) StartBaselineModelBuild(request BaselineModelBuildRequest) (ap
 	if request.EventType != "" {
 		readinessGate = cohortReadinessGateName
 	}
-	build := api.BaselineModelBuild{BaselineModelKey: key, Version: version, Status: "queued", Algorithm: request.Algorithm,
+	build := api.BaselineModelBuild{BaselineModelKey: key, Version: version, Status: "queued", Algorithm: request.Algorithm, FeatureWindowPolicy: request.FeatureWindowPolicy,
 		SourceMatrixBuildID: matrix.ID, SourceTrainingMatrixKey: matrix.TrainingMatrixKey, FeatureContractVersion: matrix.FeatureContractVersion,
 		ScopeEventType: request.EventType, ScopeModelName: request.ModelName, ReadinessGateVersion: readinessGate,
 		OutputDir: filepath.Join(s.config.DatasetDir, "baseline-models", key), StartedAt: started}
@@ -395,6 +406,30 @@ func (s *Service) StartBaselineModelBuild(request BaselineModelBuildRequest) (ap
 	s.baselineRunning = true
 	go s.executeBaselineModelBuild(build.ID)
 	return build, nil
+}
+
+func resolveFeatureWindowPolicy(value string) (string, error) {
+	switch strings.TrimSpace(value) {
+	case "", allAvailableWindowsPolicy:
+		return allAvailableWindowsPolicy, nil
+	case maximum24HourWindowPolicy, maximum3DayWindowPolicy, maximum7DayWindowPolicy:
+		return strings.TrimSpace(value), nil
+	default:
+		return "", fmt.Errorf("unsupported feature window policy %q", strings.TrimSpace(value))
+	}
+}
+
+func maximumFeatureWindow(policy string) time.Duration {
+	switch policy {
+	case maximum24HourWindowPolicy:
+		return 24 * time.Hour
+	case maximum3DayWindowPolicy:
+		return 3 * 24 * time.Hour
+	case maximum7DayWindowPolicy:
+		return 7 * 24 * time.Hour
+	default:
+		return 0
+	}
 }
 
 func resolveBaselineAlgorithm(value string) (string, string, error) {
@@ -448,7 +483,12 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 	if err != nil {
 		return err
 	}
-	featureAudit := auditBaselineFeaturesForTarget(rows, predictionTarget)
+	windowPolicy, err := resolveFeatureWindowPolicy(build.FeatureWindowPolicy)
+	if err != nil {
+		return err
+	}
+	build.FeatureWindowPolicy = windowPolicy
+	featureAudit := auditBaselineFeaturesForTargetAndWindowPolicy(rows, predictionTarget, windowPolicy)
 	if featureAudit.Status != "passed" || featureAudit.ProhibitedSelectedCount != 0 {
 		return fmt.Errorf("baseline feature leakage audit failed: %d prohibited columns selected", featureAudit.ProhibitedSelectedCount)
 	}
@@ -483,8 +523,8 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 		mode = "offline_challenger_evaluation_only"
 		featureSelectionPolicy = "a broad safe feature set fits a continuous robust anomaly score from training controls only; training-only effect selection supplies Logistic features and the anomaly score is appended without filtering rows; validation/test labels never fit anomaly statistics, features, calibration, or operating threshold; runtime registration is disabled"
 	}
-	artifact := baselineArtifact{Version: build.Version, Algorithm: build.Algorithm, MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CreatedAt: s.now()}
-	report := baselineReport{Version: build.Version, Algorithm: build.Algorithm, MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, Mode: mode, FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CalibrationPolicy: "validation-only Platt scaling fits slope/intercept; held-out test labels are audit-only; no online probability release", OperatingPointPolicy: "validation-only threshold prioritizes precision >= 0.70 and recall >= 0.50; held-out test must independently pass both gates", FeatureSelectionPolicy: featureSelectionPolicy, ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
+	artifact := baselineArtifact{Version: build.Version, Algorithm: build.Algorithm, FeatureWindowPolicy: windowPolicy, MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CreatedAt: s.now()}
+	report := baselineReport{Version: build.Version, Algorithm: build.Algorithm, FeatureWindowPolicy: windowPolicy, MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, Mode: mode, FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CalibrationPolicy: "validation-only Platt scaling fits slope/intercept; held-out test labels are audit-only; no online probability release", OperatingPointPolicy: "validation-only threshold prioritizes precision >= 0.70 and recall >= 0.50; held-out test must independently pass both gates", FeatureSelectionPolicy: featureSelectionPolicy, ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
 	for _, h := range horizons {
 		train, val, test := splitMatrixRows(byHorizon[h])
 		if !hasBothLabels(train) || !hasBothLabels(val) || !hasBothLabels(test) {
@@ -1097,6 +1137,10 @@ func auditBaselineFeatures(rows []trainingMatrixRow) baselineFeatureAudit {
 }
 
 func auditBaselineFeaturesForTarget(rows []trainingMatrixRow, predictionTarget string) baselineFeatureAudit {
+	return auditBaselineFeaturesForTargetAndWindowPolicy(rows, predictionTarget, allAvailableWindowsPolicy)
+}
+
+func auditBaselineFeaturesForTargetAndWindowPolicy(rows []trainingMatrixRow, predictionTarget, windowPolicy string) baselineFeatureAudit {
 	set := map[string]bool{}
 	for _, r := range rows {
 		for c := range r.Features {
@@ -1113,6 +1157,12 @@ func auditBaselineFeaturesForTarget(rows []trainingMatrixRow, predictionTarget s
 		if reason := prohibitedBaselineFeatureReasonForTarget(column, predictionTarget); reason != "" {
 			audit.Exclusions = append(audit.Exclusions, baselineFeatureExclusion{Feature: column, Reason: reason})
 			continue
+		}
+		if maximum := maximumFeatureWindow(windowPolicy); maximum > 0 {
+			if _, _, duration, ok := featurestats.ParseTrailingRangeColumn(column); ok && duration > maximum {
+				audit.Exclusions = append(audit.Exclusions, baselineFeatureExclusion{Feature: column, Reason: "temporal_ablation_above_" + windowPolicy})
+				continue
+			}
 		}
 		audit.SelectedColumns = append(audit.SelectedColumns, column)
 	}
