@@ -75,3 +75,23 @@ func TestCompareBaselineModelsRequiresSameVerifiedMatrixAndProducesStableDigest(
 		t.Fatalf("duplicate ids must be rejected, got %v", err)
 	}
 }
+
+func TestFormatFeatureWindowKeepsTwentyFourHoursExplicit(t *testing.T) {
+	if got := formatFeatureWindow(24 * time.Hour); got != "24h" {
+		t.Fatalf("24h window must not be mislabeled as %q", got)
+	}
+	if got := formatFeatureWindow(7 * 24 * time.Hour); got != "7d" {
+		t.Fatalf("multi-day window label=%q", got)
+	}
+}
+
+func TestSelectedWindowCountsSeparatesStructuralFeatures(t *testing.T) {
+	counts := selectedWindowCounts([]baselineHorizonReport{{FeatureSelection: baselineFeatureSelection{Selected: []baselineSelectedFeature{
+		{Feature: "gpu_metric_gap_max_seconds_1h"},
+		{Feature: "gpu_temp_mean_24h"},
+		{Feature: "legacy_exact_feature"},
+	}}}})
+	if counts["structural"] != 1 || counts["24h"] != 1 || counts["non_window"] != 1 {
+		t.Fatalf("unexpected selected-window classification: %+v", counts)
+	}
+}

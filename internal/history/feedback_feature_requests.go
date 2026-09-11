@@ -474,6 +474,10 @@ func (s *Service) extractManualFeedbackFeatureRecord(client *promclient.Client, 
 	row := summarizeFeatureWindowWithLongRange(build, window, canonicalSeries(series), longPoints)
 	if strings.TrimSpace(record.GPUUUID) == "" {
 		row.GPUUUID = "node:" + record.NodeIP
+		applyStructuralFeatures(&row, nil, fmt.Errorf("GPU UUID is required for per-GPU structural features; node-level raw metrics remain available"))
+	} else {
+		structuralValues, structuralErr := s.extractStructuralFeatures(client, record.GPUUUID, window.FeatureCutoffAt)
+		applyStructuralFeatures(&row, structuralValues, structuralErr)
 	}
 	return row, nil
 }

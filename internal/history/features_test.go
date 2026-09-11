@@ -30,6 +30,20 @@ func TestHistoricalFeatureBuildBatchesMetricsAndEnforcesCutoff(t *testing.T) {
 		}
 		queryCount.Add(1)
 		query := r.URL.Query().Get("query")
+		if strings.Contains(query, "atlas_feature") {
+			atCutoff := cutoff.Unix()
+			_, _ = fmt.Fprintf(w, `{"status":"success","data":{"resultType":"matrix","result":[
+				{"metric":{"atlas_feature":"gpu_metric_samples_1h"},"values":[[%d,"240"]]},
+				{"metric":{"atlas_feature":"gpu_metric_presence_ratio_1h"},"values":[[%d,"100"]]},
+				{"metric":{"atlas_feature":"gpu_metric_sample_age_seconds"},"values":[[%d,"8"]]},
+				{"metric":{"atlas_feature":"gpu_uuid_presence_flap_count_1h"},"values":[[%d,"0"]]},
+				{"metric":{"atlas_feature":"gpu_metric_gap_max_seconds_1h"},"values":[[%d,"15"]]},
+				{"metric":{"atlas_feature":"target_scrape_success_ratio_5m"},"values":[[%d,"100"]]},
+				{"metric":{"atlas_feature":"target_scrape_samples_ratio_5m"},"values":[[%d,"99"]]},
+				{"metric":{"atlas_feature":"target_scrape_duration_ratio_5m"},"values":[[%d,"101"]]}
+			]}}`, atCutoff, atCutoff, atCutoff, atCutoff, atCutoff, atCutoff, atCutoff, atCutoff)
+			return
+		}
 		if !strings.Contains(query, "DCGM_FI_DEV_GPU_UTIL") ||
 			!strings.Contains(query, "nvidia_smi_utilization_gpu_ratio") ||
 			!strings.Contains(query, `GPU\\.TEST-1`) {
@@ -112,8 +126,8 @@ func TestHistoricalFeatureBuildBatchesMetricsAndEnforcesCutoff(t *testing.T) {
 	if build.Status != "completed" || build.CompletedWindows != 1 || build.FailedWindows != 0 {
 		t.Fatalf("unexpected feature build: %+v", build)
 	}
-	if queryCount.Load() != 2 {
-		t.Fatalf("expected one fine and one coarse batched range query, got %d", queryCount.Load())
+	if queryCount.Load() != 3 {
+		t.Fatalf("expected one fine, one coarse, and one structural point query, got %d", queryCount.Load())
 	}
 	featureFile, err := os.Open(build.FeaturePath)
 	if err != nil {
@@ -133,8 +147,40 @@ func TestHistoricalFeatureBuildBatchesMetricsAndEnforcesCutoff(t *testing.T) {
 	if row.Features["gpu_util_max_30d"] != 20 || row.Features["gpu_util_last_7d"] != 20 || row.LookbackMinutes != int(featureLongLookback/time.Minute) || row.LongQueryStepSeconds != int(featureLongQueryStep/time.Second) {
 		t.Fatalf("coarse long-range point-in-time features missing: %+v", row)
 	}
+	if row.StructuralCoverage != 1 || row.AvailableStructural != 8 || row.Features["gpu_metric_samples_1h"] != 240 || row.StructuralError != "" {
+		t.Fatalf("structural observability features missing: %+v", row)
+	}
+	if build.StructuralFeatureCount != 8 || build.StructuralCompleteWindows != 1 || build.StructuralExtractionFailedWindows != 0 || build.AverageStructuralFeatureCoverage != 1 {
+		t.Fatalf("structural quality summary missing: %+v", build)
+	}
 	if !row.FeatureCutoffAt.Before(row.LabelOnsetAt) || row.PredictionTarget != highPriorityXIDEventTarget || build.PredictionTarget != highPriorityXIDEventTarget || build.FeatureSHA256 == "" || build.QualityReportPath == "" {
 		t.Fatalf("feature artifact lost point-in-time provenance: %+v %+v", row, build)
+	}
+}
+
+func TestHistoricalStructuralFeatureQueryIsScopedAndComplete(t *testing.T) {
+	query := historicalStructuralFeatureQuery("GPU.TEST-1")
+	if !strings.Contains(query, `GPU\\.TEST-1`) || !strings.Contains(query, `job="dcgm_exporter"`) {
+		t.Fatalf("structural query lost escaped GPU identity or exporter scope: %s", query)
+	}
+	for _, feature := range historicalStructuralFeatures {
+		if !strings.Contains(query, `"`+feature+`"`) {
+			t.Fatalf("structural query missing %s: %s", feature, query)
+		}
+	}
+}
+
+func TestApplyStructuralFeaturesKeepsFailureSeparateFromCoreExtraction(t *testing.T) {
+	row := extractedFeatureRow{Features: map[string]float64{}}
+	applyStructuralFeatures(&row, map[string]float64{
+		"gpu_metric_samples_1h": 240,
+		"unknown":               1,
+	}, fmt.Errorf("structural timeout"))
+	if row.ExtractionError != "" || row.StructuralError != "structural timeout" || row.StructuralCoverage != 0.125 || row.AvailableStructural != 1 || len(row.MissingStructural) != 7 {
+		t.Fatalf("structural degradation must remain auditable without failing core extraction: %+v", row)
+	}
+	if row.Features["gpu_metric_samples_1h"] != 240 {
+		t.Fatalf("available structural values must survive a partial query result: %+v", row.Features)
 	}
 }
 
