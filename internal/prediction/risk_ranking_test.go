@@ -52,11 +52,12 @@ func TestRiskRankingSnapshotFreezesLatestShadowRun(t *testing.T) {
 	nodes := []string{"10.0.0.1", "10.0.0.1", "10.0.0.2", "10.0.0.3"}
 	uuids := []string{"GPU-A", "GPU-B", "GPU-C", "GPU-D"}
 	cutoff := now.Add(-2 * time.Hour)
+	observedAt := cutoff.Add(-14 * time.Second)
 	for index := range probabilities {
 		prediction := api.HardwareRiskPrediction{
 			ShadowRunID: run.ID, ModelSpecID: spec.ID, ModelVersion: spec.Version, HardwareClass: "gpu", EntityType: "gpu",
 			EntityKey: uuids[index], GPUUUID: uuids[index], NodeIP: nodes[index], HorizonMinutes: spec.HorizonMinutes,
-			Probability: &probabilities[index], RiskLevel: "unvalidated", Status: "shadow_scored", ObservedAt: cutoff, EvaluatedAt: cutoff,
+			Probability: &probabilities[index], RiskLevel: "unvalidated", Status: "shadow_scored", ObservedAt: observedAt, EvaluatedAt: cutoff,
 		}
 		if err := db.Create(&prediction).Error; err != nil {
 			t.Fatal(err)

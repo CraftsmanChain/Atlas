@@ -13,7 +13,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const HeaRankChallengerReportVersion = "hearank-challenger-report-v13"
+const HeaRankChallengerReportVersion = "hearank-challenger-report-v14"
 
 const (
 	HeaRankMinimumSevenDayRows      = 30
@@ -380,7 +380,8 @@ type challengerHistory struct {
 }
 
 func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, histories map[time.Time]challengerHistory, horizonMinutes int, policy, description string, score func(api.PredictionOutcomeEvaluation, challengerHistory) float64) ChallengerMetricSet {
-	items := make([]rankedOutcome, 0, len(rows))
+	rowItems := make([]rankedOutcome, 0, len(rows))
+	nodeItems := map[string]rankedOutcome{}
 	nodes := map[string]struct{}{}
 	nonZeroNodes := map[string]struct{}{}
 	nonZeroRows := 0
@@ -398,19 +399,37 @@ func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, histories map[t
 			nonZeroRows++
 			nonZeroNodes[node] = struct{}{}
 		}
-		items = append(items, rankedOutcome{probability: scoreValue, actual: *row.FinalActualValue})
+		rowItem := rankedOutcome{probability: scoreValue, actual: *row.FinalActualValue}
+		rowItems = append(rowItems, rowItem)
+		nodeItem, found := nodeItems[node]
+		if !found || rowItem.probability > nodeItem.probability {
+			nodeItem.probability = rowItem.probability
+		}
+		if rowItem.actual == 1 {
+			nodeItem.actual = 1
+		}
+		nodeItems[node] = nodeItem
 	}
 	positives := 0
-	for _, item := range items {
+	for _, item := range rowItems {
 		if item.actual == 1 {
 			positives++
 		}
 	}
+	nodeKeys := make([]string, 0, len(nodeItems))
+	for node := range nodeItems {
+		nodeKeys = append(nodeKeys, node)
+	}
+	sort.Strings(nodeKeys)
+	rankingItems := make([]rankedOutcome, 0, len(nodeKeys))
+	for _, node := range nodeKeys {
+		rankingItems = append(rankingItems, nodeItems[node])
+	}
 	return ChallengerMetricSet{
-		Policy: policy, Description: description, Rows: len(items), Nodes: len(nodes), Positives: positives,
+		Policy: policy, Description: description, Rows: len(rowItems), Nodes: len(nodes), Positives: positives,
 		NonZeroScoreRows: nonZeroRows, NonZeroScoreNodes: len(nonZeroNodes), SignalCoverageStatus: challengerSignalCoverageStatus(nonZeroRows, len(nonZeroNodes)),
-		RankingAtK:       rankingFromItems(append([]rankedOutcome(nil), items...)),
-		RankingAtPercent: rankingPercentFromItems(items),
+		RankingAtK:       rankingFromItems(append([]rankedOutcome(nil), rankingItems...)),
+		RankingAtPercent: rankingPercentFromItems(rankingItems),
 	}
 }
 

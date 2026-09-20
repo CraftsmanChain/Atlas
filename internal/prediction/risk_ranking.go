@@ -11,7 +11,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const RiskRankingSnapshotVersion = "prediction-risk-ranking-snapshot-v1"
+const RiskRankingSnapshotVersion = "prediction-risk-ranking-snapshot-v2"
 
 type RiskRankingItem struct {
 	Rank                   int     `json:"rank"`
@@ -133,8 +133,12 @@ func riskRankingItems(predictions []api.HardwareRiskPrediction, threshold *float
 		if prediction.Probability == nil || strings.TrimSpace(prediction.NodeIP) == "" {
 			continue
 		}
-		if prediction.ObservedAt.After(cutoff) {
-			cutoff = prediction.ObservedAt
+		predictionCutoff := prediction.EvaluatedAt
+		if predictionCutoff.IsZero() {
+			predictionCutoff = prediction.ObservedAt
+		}
+		if predictionCutoff.After(cutoff) {
+			cutoff = predictionCutoff
 		}
 		node := strings.TrimSpace(prediction.NodeIP)
 		accumulator := byNode[node]

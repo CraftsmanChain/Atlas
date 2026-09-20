@@ -255,10 +255,11 @@ func TestDualTrackValidationAlignsRankingAndProbabilityCohort(t *testing.T) {
 	for index := range probabilities {
 		node := "10.0.0." + string(rune('1'+index))
 		uuid := "GPU-" + string(rune('A'+index))
+		predictionCutoff := cutoff.Add(time.Duration(index) * time.Nanosecond)
 		prediction := api.HardwareRiskPrediction{
 			ShadowRunID: run.ID, ModelSpecID: spec.ID, ModelVersion: spec.Version, HardwareClass: "gpu", EntityType: "gpu",
 			EntityKey: uuid, GPUUUID: uuid, NodeIP: node, HorizonMinutes: spec.HorizonMinutes,
-			Probability: &probabilities[index], Status: "shadow_scored", ObservedAt: cutoff, EvaluatedAt: cutoff,
+			Probability: &probabilities[index], Status: "shadow_scored", ObservedAt: cutoff.Add(-14 * time.Second), EvaluatedAt: predictionCutoff,
 		}
 		if err := db.Create(&prediction).Error; err != nil {
 			t.Fatal(err)
@@ -272,7 +273,7 @@ func TestDualTrackValidationAlignsRankingAndProbabilityCohort(t *testing.T) {
 			PredictionID: prediction.ID, ModelSpecID: spec.ID, ModelKey: spec.ModelKey, ModelVersion: spec.Version,
 			EntityType: "gpu", EntityKey: uuid, GPUUUID: uuid, NodeIP: node, HorizonMinutes: spec.HorizonMinutes,
 			Probability: &probabilities[index], DecisionThreshold: &threshold, PredictedPositive: probabilities[index] >= threshold,
-			PredictionEvaluatedAt: cutoff, WindowStartAt: cutoff, WindowEndAt: cutoff.Add(7 * 24 * time.Hour),
+			PredictionEvaluatedAt: predictionCutoff, WindowStartAt: predictionCutoff, WindowEndAt: predictionCutoff.Add(7 * 24 * time.Hour),
 			MaturityStatus: "matured", RuleActualValue: &actual, RuleOutcome: outcome, RuleDecisionVersion: OutcomeRuleVersion,
 			FinalActualValue: &actual, FinalOutcome: outcome, FinalSource: "rule",
 		}
@@ -322,12 +323,13 @@ func TestDualTrackValidationAlignsRankingAndProbabilityCohort(t *testing.T) {
 	}
 	seedHistoricalCohort(cutoff.Add(-24*time.Hour), "shadow-run-overlap", "GPU-O")
 	seedHistoricalCohort(cutoff.Add(-8*24*time.Hour), "shadow-run-independent", "GPU-I")
+	snapshotCutoff := cutoff.Add(3 * time.Nanosecond)
 
 	report, err := service.DualTrackValidationReport()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Version != DualTrackValidationReportVersion || report.Alignment.Status != "aligned" || report.Alignment.AlignedOutcomeRows != 4 || report.Alignment.SnapshotCutoffAt == nil || !report.Alignment.SnapshotCutoffAt.Equal(cutoff) {
+	if report.Version != DualTrackValidationReportVersion || report.Alignment.Status != "aligned" || report.Alignment.AlignedOutcomeRows != 4 || report.Alignment.SnapshotCutoffAt == nil || !report.Alignment.SnapshotCutoffAt.Equal(snapshotCutoff) {
 		t.Fatalf("unexpected dual-track alignment: %+v", report)
 	}
 	if report.Status != "exploratory" || report.Ranking.Status != "exploratory" || report.Probability.Status != "exploratory" || report.Ranking.PositiveRows != 1 || report.Probability.Maturity.Matured != 4 || len(report.Ranking.Metrics) == 0 {
@@ -339,7 +341,7 @@ func TestDualTrackValidationAlignsRankingAndProbabilityCohort(t *testing.T) {
 	if report.TemporalSummary.CohortLimit != DualTrackTemporalCohortLimit || report.TemporalSummary.CohortCount != 3 || report.TemporalSummary.MaturedCohortCount != 3 || report.TemporalSummary.IndependentCohortCount != 2 || len(report.TemporalCohorts) != 3 {
 		t.Fatalf("unexpected temporal cohort summary: %+v", report)
 	}
-	if !report.TemporalCohorts[0].PredictionCutoffAt.Equal(cutoff) || !report.TemporalCohorts[0].IndependentTimeBatch || report.TemporalCohorts[1].IndependentTimeBatch || !report.TemporalCohorts[2].IndependentTimeBatch {
+	if !report.TemporalCohorts[0].PredictionCutoffAt.Equal(snapshotCutoff) || !report.TemporalCohorts[0].IndependentTimeBatch || report.TemporalCohorts[1].IndependentTimeBatch || !report.TemporalCohorts[2].IndependentTimeBatch {
 		t.Fatalf("overlapping horizons must not count as independent time batches: %+v", report.TemporalCohorts)
 	}
 	if report.TemporalCohorts[0].ProbabilityMetrics.BrierScore == nil || report.TemporalCohorts[0].ProbabilityMetrics.NullBrierScore == nil || report.TemporalCohorts[0].ProbabilityMetrics.BrierSkillScore == nil || *report.TemporalCohorts[0].ProbabilityMetrics.BrierSkillScore <= 0 {

@@ -12,7 +12,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const DualTrackValidationReportVersion = "prediction-dual-track-validation-v9"
+const DualTrackValidationReportVersion = "prediction-dual-track-validation-v10"
 const DualTrackSliceAuditVersion = "prediction-slice-audit-v1"
 const DualTrackTemporalCohortLimit = 12
 const DualTrackMinimumConsistentCohorts = 3
@@ -319,11 +319,12 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 }
 
 func (s *Service) dualTrackAlignedRows(snapshot RiskRankingSnapshotReport) ([]api.PredictionOutcomeEvaluation, error) {
-	if snapshot.Status != "shadow_snapshot_available" || snapshot.SnapshotCutoffAt == nil {
+	if snapshot.Status != "shadow_snapshot_available" || snapshot.ShadowRunID == 0 {
 		return []api.PredictionOutcomeEvaluation{}, nil
 	}
 	var rows []api.PredictionOutcomeEvaluation
-	if err := s.db.Where("model_spec_id = ? AND horizon_minutes = ? AND prediction_evaluated_at = ?", snapshot.ModelSpecID, snapshot.HorizonMinutes, *snapshot.SnapshotCutoffAt).
+	predictionIDs := s.db.Model(&api.HardwareRiskPrediction{}).Select("id").Where("shadow_run_id = ?", snapshot.ShadowRunID)
+	if err := s.db.Where("model_spec_id = ? AND horizon_minutes = ? AND prediction_id IN (?)", snapshot.ModelSpecID, snapshot.HorizonMinutes, predictionIDs).
 		Order("node_ip ASC, gpu_uuid ASC, id ASC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -332,38 +333,76 @@ func (s *Service) dualTrackAlignedRows(snapshot RiskRankingSnapshotReport) ([]ap
 
 func (s *Service) dualTrackTemporalCohorts(snapshot RiskRankingSnapshotReport) (DualTrackTemporalSummary, []DualTrackTemporalCohort, error) {
 	summary := DualTrackTemporalSummary{CohortLimit: DualTrackTemporalCohortLimit}
-	var cutoffs []time.Time
-	if err := s.db.Model(&api.PredictionOutcomeEvaluation{}).
-		Where("model_spec_id = ? AND horizon_minutes = ?", snapshot.ModelSpecID, snapshot.HorizonMinutes).
-		Distinct("prediction_evaluated_at").Order("prediction_evaluated_at DESC").Limit(DualTrackTemporalCohortLimit).
-		Pluck("prediction_evaluated_at", &cutoffs).Error; err != nil {
+	var runs []api.PredictionShadowScoringRun
+	if err := s.db.Where("model_spec_id = ? AND status IN ?", snapshot.ModelSpecID, []string{"completed", "distribution_review_required"}).
+		Order("finished_at DESC, id DESC").Limit(DualTrackTemporalCohortLimit).Find(&runs).Error; err != nil {
 		return summary, nil, err
 	}
-	if len(cutoffs) == 0 {
+	if len(runs) == 0 {
+		return summary, []DualTrackTemporalCohort{}, nil
+	}
+	runIDs := make([]uint, 0, len(runs))
+	for _, run := range runs {
+		runIDs = append(runIDs, run.ID)
+	}
+	type predictionCohortLink struct {
+		ID          uint
+		ShadowRunID uint
+		EvaluatedAt time.Time
+		ObservedAt  time.Time
+	}
+	var links []predictionCohortLink
+	if err := s.db.Model(&api.HardwareRiskPrediction{}).Select("id", "shadow_run_id", "evaluated_at", "observed_at").
+		Where("shadow_run_id IN ? AND horizon_minutes = ?", runIDs, snapshot.HorizonMinutes).Find(&links).Error; err != nil {
+		return summary, nil, err
+	}
+	predictionIDs := make([]uint, 0, len(links))
+	runByPrediction := make(map[uint]uint, len(links))
+	cutoffByRun := make(map[uint]time.Time, len(runs))
+	for _, link := range links {
+		predictionIDs = append(predictionIDs, link.ID)
+		runByPrediction[link.ID] = link.ShadowRunID
+		cutoff := link.EvaluatedAt
+		if cutoff.IsZero() {
+			cutoff = link.ObservedAt
+		}
+		if cutoff.After(cutoffByRun[link.ShadowRunID]) {
+			cutoffByRun[link.ShadowRunID] = cutoff
+		}
+	}
+	if len(predictionIDs) == 0 {
 		return summary, []DualTrackTemporalCohort{}, nil
 	}
 	var rows []api.PredictionOutcomeEvaluation
-	if err := s.db.Where("model_spec_id = ? AND horizon_minutes = ? AND prediction_evaluated_at IN ?", snapshot.ModelSpecID, snapshot.HorizonMinutes, cutoffs).
+	if err := s.db.Where("model_spec_id = ? AND horizon_minutes = ? AND prediction_id IN ?", snapshot.ModelSpecID, snapshot.HorizonMinutes, predictionIDs).
 		Order("prediction_evaluated_at DESC, node_ip ASC, gpu_uuid ASC, id ASC").Find(&rows).Error; err != nil {
 		return summary, nil, err
 	}
-	rowsByCutoff := make(map[int64][]api.PredictionOutcomeEvaluation, len(cutoffs))
+	rowsByRun := make(map[uint][]api.PredictionOutcomeEvaluation, len(runs))
 	for _, row := range rows {
-		key := row.PredictionEvaluatedAt.UnixNano()
-		rowsByCutoff[key] = append(rowsByCutoff[key], row)
+		rowsByRun[runByPrediction[row.PredictionID]] = append(rowsByRun[runByPrediction[row.PredictionID]], row)
 	}
-	independent := make(map[int64]bool, len(cutoffs))
+	sort.SliceStable(runs, func(i, j int) bool { return cutoffByRun[runs[i].ID].After(cutoffByRun[runs[j].ID]) })
+	independent := make(map[uint]bool, len(runs))
 	horizon := time.Duration(snapshot.HorizonMinutes) * time.Minute
 	var lastIndependent time.Time
-	for _, cutoff := range cutoffs {
+	for _, run := range runs {
+		cutoff := cutoffByRun[run.ID]
+		if cutoff.IsZero() {
+			continue
+		}
 		if lastIndependent.IsZero() || !cutoff.After(lastIndependent.Add(-horizon)) {
-			independent[cutoff.UnixNano()] = true
+			independent[run.ID] = true
 			lastIndependent = cutoff
 		}
 	}
-	cohorts := make([]DualTrackTemporalCohort, 0, len(cutoffs))
-	for _, cutoff := range cutoffs {
-		cohortRows := rowsByCutoff[cutoff.UnixNano()]
+	cohorts := make([]DualTrackTemporalCohort, 0, len(runs))
+	for _, run := range runs {
+		cutoff := cutoffByRun[run.ID]
+		if cutoff.IsZero() {
+			continue
+		}
+		cohortRows := rowsByRun[run.ID]
 		accuracy := accuracyFromRows(cohortRows, cutoff)
 		maturity := outcomeMaturity(cohortRows)
 		stability := outcomeStability(maturity, accuracy)
@@ -371,7 +410,7 @@ func (s *Service) dualTrackTemporalCohorts(snapshot RiskRankingSnapshotReport) (
 		positives := accuracy.Final.TP + accuracy.Final.FN
 		rankingStatus, _ := dualTrackRankingStatus(snapshot, maturity, positives)
 		cohort := DualTrackTemporalCohort{
-			PredictionCutoffAt: cutoff, IndependentTimeBatch: independent[cutoff.UnixNano()],
+			PredictionCutoffAt: cutoff, IndependentTimeBatch: independent[run.ID],
 			TotalRows: maturity.Total, MaturedRows: maturity.Matured, PendingRows: maturity.Pending,
 			CensoredRows: maturity.Censored, NodeCount: maturity.NodeEligible, PositiveRows: positives,
 			RankingStatus: rankingStatus, ProbabilityStatus: dualTrackProbabilityStatus(stability.Status, quality.Status),

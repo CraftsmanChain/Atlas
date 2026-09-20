@@ -565,6 +565,8 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	if report.SevenDay[0].Rows != 4 || report.SevenDay[0].Nodes != 3 || report.SevenDay[0].Positives != 2 || len(report.SevenDay[0].RankingAtK) == 0 {
 		t.Fatalf("unexpected logistic challenger metrics: %+v", report.SevenDay[0])
 	}
+	assertRankingAtK(t, report.SevenDay[0].RankingAtK, 3, 3, 2, 2, 2.0/3.0, 1, 1)
+	assertRankingAtPercent(t, report.SevenDay[0].RankingAtPercent, 5, 1, 3, 2, 1, 1, 0.5, 1.5)
 	if report.SevenDay[6].NonZeroScoreRows != 1 || report.SevenDay[6].NonZeroScoreNodes != 1 || report.SevenDay[6].SignalCoverageStatus != "exploratory" {
 		t.Fatalf("severity challenger must expose non-zero history-signal coverage: %+v", report.SevenDay[6])
 	}
