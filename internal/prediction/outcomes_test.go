@@ -559,7 +559,7 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || report.ReportSHA256 == "" || len(report.SevenDay) != 8 || len(report.PolicyComparisons) != 7 || report.PolicyComparisons[0].Status != "blocked_insufficient_sample" || report.SevenDay[0].Policy != "logistic_probability" || report.SevenDay[1].Policy != "health_score_risk_prior" || report.SevenDay[2].Policy != "rule_hit_risk_prior" || report.SevenDay[3].Policy != "model_label_density_prior" || report.SevenDay[5].Policy != "recency_weighted_failure_prior" || report.SevenDay[6].Policy != "severity_weighted_label_history" {
+	if report.Status != "blocked_insufficient_7d_sample" || report.ConfidenceStatus != "insufficient_sample" || report.ReportSHA256 == "" || len(report.SevenDay) != 9 || len(report.PolicyComparisons) != 8 || report.PolicyComparisons[0].Status != "blocked_insufficient_sample" || report.SevenDay[0].Policy != "logistic_probability" || report.SevenDay[1].Policy != "health_score_risk_prior" || report.SevenDay[2].Policy != "observability_max_gap_prior" || report.SevenDay[3].Policy != "rule_hit_risk_prior" || report.SevenDay[4].Policy != "model_label_density_prior" || report.SevenDay[6].Policy != "recency_weighted_failure_prior" || report.SevenDay[7].Policy != "severity_weighted_label_history" {
 		t.Fatalf("unexpected challenger report: %+v", report)
 	}
 	if report.SevenDay[0].Rows != 4 || report.SevenDay[0].Nodes != 3 || report.SevenDay[0].Positives != 2 || len(report.SevenDay[0].RankingAtK) == 0 {
@@ -567,8 +567,8 @@ func TestHeaRankChallengerReportUsesSevenDayNodeOutcomes(t *testing.T) {
 	}
 	assertRankingAtK(t, report.SevenDay[0].RankingAtK, 3, 3, 2, 2, 2.0/3.0, 1, 1)
 	assertRankingAtPercent(t, report.SevenDay[0].RankingAtPercent, 5, 1, 3, 2, 1, 1, 0.5, 1.5)
-	if report.SevenDay[6].NonZeroScoreRows != 1 || report.SevenDay[6].NonZeroScoreNodes != 1 || report.SevenDay[6].SignalCoverageStatus != "exploratory" {
-		t.Fatalf("severity challenger must expose non-zero history-signal coverage: %+v", report.SevenDay[6])
+	if report.SevenDay[7].NonZeroScoreRows != 1 || report.SevenDay[7].NonZeroScoreNodes != 1 || report.SevenDay[7].SignalCoverageStatus != "exploratory" {
+		t.Fatalf("severity challenger must expose non-zero history-signal coverage: %+v", report.SevenDay[7])
 	}
 	if report.MinimumSevenDayRows != HeaRankMinimumSevenDayRows || report.MinimumSevenDayNodes != HeaRankMinimumSevenDayNodes || report.MinimumSevenDayPositives != HeaRankMinimumSevenDayPositives {
 		t.Fatalf("unexpected challenger gates: %+v", report)
@@ -695,12 +695,12 @@ func TestHeaRankEvidenceQueryUsesPredictionCutoffWindow(t *testing.T) {
 		}
 	}
 
-	loadedLabels, loadedScores, loadedHits, err := NewService(db).loadChallengerEvidence(rows)
+	loadedLabels, loadedScores, loadedHits, loadedSnapshots, err := NewService(db).loadChallengerEvidence(rows)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loadedLabels) != 2 || len(loadedScores) != 2 || len(loadedHits) != 2 {
-		t.Fatalf("evidence query must retain historical labels but bound operational signals: labels=%d scores=%d hits=%d", len(loadedLabels), len(loadedScores), len(loadedHits))
+	if len(loadedLabels) != 2 || len(loadedScores) != 2 || len(loadedHits) != 2 || len(loadedSnapshots) != 0 {
+		t.Fatalf("evidence query must retain historical labels but bound operational signals: labels=%d scores=%d hits=%d snapshots=%d", len(loadedLabels), len(loadedScores), len(loadedHits), len(loadedSnapshots))
 	}
 	if loadedScores[0].GPUUUID != "GPU-LOWER-BOUND" || loadedScores[1].GPUUUID != "GPU-LATEST" {
 		t.Fatalf("unexpected bounded health evidence: %+v", loadedScores)
@@ -726,7 +726,7 @@ func TestHeaRankEvidenceCutoffsUseOnlyEvaluationEligibleRows(t *testing.T) {
 	if len(allMatured) != 2 || len(sevenDay) != 1 || !sevenDay[0].PredictionEvaluatedAt.Equal(cutoff) {
 		t.Fatalf("only mature, scored, labeled, node-eligible rows may drive evidence queries: all=%+v sevenDay=%+v", allMatured, sevenDay)
 	}
-	histories := challengerHistoriesForCutoffs(rows, sevenDay, nil, nil, nil)
+	histories := challengerHistoriesForCutoffs(rows, sevenDay, nil, nil, nil, nil)
 	if len(histories) != 1 {
 		t.Fatalf("pending, censored and other-horizon rows must not create challenger cutoffs: %+v", histories)
 	}
@@ -763,6 +763,22 @@ func TestHeaRankHealthRiskUsesLatestScoreStrictlyBeforeCutoff(t *testing.T) {
 	risk := healthRiskByNodeBefore(scores, cutoff)
 	if risk["10.0.0.1"] != 40 || len(risk) != 1 {
 		t.Fatalf("health risk must use each GPU's latest score strictly before the cutoff: %+v", risk)
+	}
+}
+
+func TestHeaRankObservabilityGapUsesLatestPersistedSnapshotStrictlyBeforeCutoff(t *testing.T) {
+	cutoff := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	snapshots := []api.GPUFeatureSnapshot{
+		{ID: 1, NodeIP: "10.0.0.1", GPUUUID: "GPU-A", Metrics: api.FloatMap{"gpu_metric_gap_max_seconds_1h": 30}, ObservedAt: cutoff.Add(-2 * time.Hour)},
+		{ID: 2, NodeIP: "10.0.0.1", GPUUUID: "GPU-A", Metrics: api.FloatMap{}, ObservedAt: cutoff.Add(-time.Hour)},
+		{ID: 3, NodeIP: "10.0.0.1", GPUUUID: "GPU-B", Metrics: api.FloatMap{"gpu_metric_gap_max_seconds_1h": 60}, ObservedAt: cutoff.Add(-30 * time.Minute)},
+		{ID: 4, NodeIP: "10.0.0.1", GPUUUID: "GPU-B", Metrics: api.FloatMap{"gpu_metric_gap_max_seconds_1h": 999}, ObservedAt: cutoff},
+		{ID: 5, NodeIP: "10.0.0.2", GPUUUID: "GPU-C", Metrics: api.FloatMap{"gpu_metric_gap_max_seconds_1h": 120}, ObservedAt: cutoff.Add(-25 * time.Hour)},
+	}
+	index := newChallengerEvidenceIndex(nil, nil, snapshots)
+	gaps := observabilityGapByNodeBefore(index.featuresByNodeGPU, cutoff)
+	if len(gaps) != 1 || gaps["10.0.0.1"] != 60 {
+		t.Fatalf("observability gap must use the latest available strict pre-cutoff snapshot within 24h: %+v", gaps)
 	}
 }
 
@@ -826,7 +842,7 @@ func TestHeaRankIndexedEvidenceMatchesReferencePolicies(t *testing.T) {
 		{NodeIP: "10.0.0.1", ModelName: "H100", EventType: "row_remap_failure", LabelValue: 1, QualityTier: "confirmed", OccurredAt: cutoff.Add(-3 * time.Hour), AvailableAt: cutoff.Add(-2 * time.Hour)},
 		{NodeIP: "10.0.0.3", ModelName: "A100", EventType: "xid_repeated", LabelValue: 1, QualityTier: "strong_proxy", OccurredAt: cutoff.Add(-time.Hour), AvailableAt: cutoff},
 	}
-	index := newChallengerEvidenceIndex(scores, hits)
+	index := newChallengerEvidenceIndex(scores, hits, nil)
 	for _, candidateCutoff := range []time.Time{cutoff.Add(-90 * time.Minute), cutoff, cutoff.Add(time.Hour)} {
 		healthRisk, ruleRisk, modelDensity := challengerOperationalPriorsBefore(index, labels, candidateCutoff)
 		if expected := healthRiskByNodeBefore(scores, candidateCutoff); !reflect.DeepEqual(healthRisk, expected) {
@@ -864,7 +880,7 @@ func BenchmarkHeaRankIndexedHistoriesProductionShape(b *testing.B) {
 	}
 	b.ResetTimer()
 	for index := 0; index < b.N; index++ {
-		histories := challengerHistoriesForCutoffs(rows, rows, nil, scores, nil)
+		histories := challengerHistoriesForCutoffs(rows, rows, nil, scores, nil, nil)
 		if len(histories) != len(rows) {
 			b.Fatalf("unexpected history count: %d", len(histories))
 		}

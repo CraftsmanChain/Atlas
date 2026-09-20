@@ -13,7 +13,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const HeaRankChallengerReportVersion = "hearank-challenger-report-v14"
+const HeaRankChallengerReportVersion = "hearank-challenger-report-v15"
 
 const (
 	HeaRankMinimumSevenDayRows      = 30
@@ -88,7 +88,7 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 		return HeaRankChallengerReport{}, err
 	}
 	evaluationRows := challengerEvaluationRows(rows, 0)
-	labels, healthScores, ruleHits, err := s.loadChallengerEvidence(evaluationRows)
+	labels, healthScores, ruleHits, featureSnapshots, err := s.loadChallengerEvidence(evaluationRows)
 	if err != nil {
 		return HeaRankChallengerReport{}, err
 	}
@@ -116,7 +116,7 @@ func (s *Service) HeaRankChallengerReport() (HeaRankChallengerReport, error) {
 			"Accumulate eligible historical evidence before interpreting policies whose signal coverage is no_signal or exploratory.",
 		},
 	}
-	histories := challengerHistoriesForCutoffs(rows, evaluationRows, labels, healthScores, ruleHits)
+	histories := challengerHistoriesForCutoffs(rows, evaluationRows, labels, healthScores, ruleHits, featureSnapshots)
 	report.AllMatured = challengerMetricSetsWithHistories(rows, histories, 0)
 	report.SevenDay = challengerMetricSetsWithHistories(rows, histories, report.TargetHorizonMinutes)
 	rows7d, nodes7d, positives7d := validationReadinessSevenDaySummary(report.SevenDay)
@@ -144,27 +144,32 @@ func (s *Service) invalidateHeaRankChallengerCache() {
 	s.challengerMu.Unlock()
 }
 
-func (s *Service) loadChallengerEvidence(rows []api.PredictionOutcomeEvaluation) ([]api.FailureLabel, []api.GPUHealthScore, []api.GPUHealthRuleHit, error) {
+func (s *Service) loadChallengerEvidence(rows []api.PredictionOutcomeEvaluation) ([]api.FailureLabel, []api.GPUHealthScore, []api.GPUHealthRuleHit, []api.GPUFeatureSnapshot, error) {
 	_, windowEnd, found := challengerEvidenceQueryWindow(rows)
 	if !found {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	var labels []api.FailureLabel
 	if err := s.db.Select("id", "node_ip", "model_name", "event_type", "label_value", "quality_tier", "occurred_at", "available_at", "excluded").Where("occurred_at < ? AND available_at < ?", windowEnd, windowEnd).Order("available_at ASC, id ASC").Find(&labels).Error; err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	operationalWindows := challengerOperationalEvidenceWindows(rows)
 	var healthScores []api.GPUHealthScore
 	healthQuery := challengerOperationalEvidenceQuery(s.db.Select("id", "gpu_uuid", "node_ip", "model_name", "score", "evaluated_at"), operationalWindows)
 	if err := healthQuery.Order("evaluated_at ASC, id ASC").Find(&healthScores).Error; err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	var ruleHits []api.GPUHealthRuleHit
 	ruleHitQuery := challengerOperationalEvidenceQuery(s.db.Select("id", "health_score_id", "gpu_uuid", "severity", "evaluated_at"), operationalWindows)
 	if err := ruleHitQuery.Order("evaluated_at ASC, id ASC").Find(&ruleHits).Error; err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return labels, healthScores, ruleHits, nil
+	var featureSnapshots []api.GPUFeatureSnapshot
+	featureQuery := challengerOperationalEvidenceQueryByColumn(s.db.Select("id", "gpu_uuid", "node_ip", "metrics", "observed_at"), operationalWindows, "observed_at")
+	if err := featureQuery.Order("observed_at ASC, id ASC").Find(&featureSnapshots).Error; err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return labels, healthScores, ruleHits, featureSnapshots, nil
 }
 
 type challengerEvidenceWindow struct {
@@ -202,13 +207,17 @@ func challengerOperationalEvidenceWindows(rows []api.PredictionOutcomeEvaluation
 }
 
 func challengerOperationalEvidenceQuery(query *gorm.DB, windows []challengerEvidenceWindow) *gorm.DB {
+	return challengerOperationalEvidenceQueryByColumn(query, windows, "evaluated_at")
+}
+
+func challengerOperationalEvidenceQueryByColumn(query *gorm.DB, windows []challengerEvidenceWindow, column string) *gorm.DB {
 	var scoped *gorm.DB
 	for index, window := range windows {
 		if index == 0 {
-			scoped = query.Where("evaluated_at >= ? AND evaluated_at < ?", window.Start, window.End)
+			scoped = query.Where(column+" >= ? AND "+column+" < ?", window.Start, window.End)
 			continue
 		}
-		scoped = scoped.Or("evaluated_at >= ? AND evaluated_at < ?", window.Start, window.End)
+		scoped = scoped.Or(column+" >= ? AND "+column+" < ?", window.Start, window.End)
 	}
 	return scoped
 }
@@ -317,7 +326,7 @@ func heaRankConfidence(rows, nodes, positives int) (string, []string) {
 }
 
 func challengerMetricSets(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit, horizonMinutes int) []ChallengerMetricSet {
-	histories := challengerHistoriesForCutoffs(rows, challengerEvaluationRows(rows, horizonMinutes), labels, healthScores, ruleHits)
+	histories := challengerHistoriesForCutoffs(rows, challengerEvaluationRows(rows, horizonMinutes), labels, healthScores, ruleHits, nil)
 	return challengerMetricSetsWithHistories(rows, histories, horizonMinutes)
 }
 
@@ -331,6 +340,9 @@ func challengerMetricSetsWithHistories(rows []api.PredictionOutcomeEvaluation, h
 		}),
 		challengerMetricSet(rows, histories, horizonMinutes, "health_score_risk_prior", "node maximum risk derived from each GPU's latest health score strictly before the prediction cutoff", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
 			return prior.HealthRiskByNode[normalNode(row.NodeIP)]
+		}),
+		challengerMetricSet(rows, histories, horizonMinutes, "observability_max_gap_prior", "node maximum GPU metric gap from the latest persisted feature snapshot strictly before the prediction cutoff", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
+			return prior.ObservabilityGapByNode[normalNode(row.NodeIP)]
 		}),
 		challengerMetricSet(rows, histories, horizonMinutes, "rule_hit_risk_prior", "node maximum severity-weighted risk from each GPU's latest health-rule-hit batch strictly before the prediction cutoff", func(row api.PredictionOutcomeEvaluation, prior challengerHistory) float64 {
 			return prior.RuleHitRiskByNode[normalNode(row.NodeIP)]
@@ -375,6 +387,7 @@ type challengerHistory struct {
 	RecencyWeighted         map[string]float64
 	SeverityWeightedLabels  map[string]float64
 	HealthRiskByNode        map[string]float64
+	ObservabilityGapByNode  map[string]float64
 	RuleHitRiskByNode       map[string]float64
 	ModelLabelDensityByNode map[string]float64
 }
@@ -434,12 +447,12 @@ func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, histories map[t
 }
 
 func challengerHistoriesByCutoff(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit) map[time.Time]challengerHistory {
-	return challengerHistoriesForCutoffs(rows, rows, labels, healthScores, ruleHits)
+	return challengerHistoriesForCutoffs(rows, rows, labels, healthScores, ruleHits, nil)
 }
 
-func challengerHistoriesForCutoffs(historyRows, cutoffRows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit) map[time.Time]challengerHistory {
+func challengerHistoriesForCutoffs(historyRows, cutoffRows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit, featureSnapshots []api.GPUFeatureSnapshot) map[time.Time]challengerHistory {
 	histories := make(map[time.Time]challengerHistory, len(cutoffRows))
-	evidence := newChallengerEvidenceIndex(healthScores, ruleHits)
+	evidence := newChallengerEvidenceIndex(healthScores, ruleHits, featureSnapshots)
 	for _, row := range cutoffRows {
 		cutoff := row.PredictionEvaluatedAt
 		if _, found := histories[cutoff]; found {
@@ -461,15 +474,15 @@ func challengerSignalCoverageStatus(rows, nodes int) string {
 }
 
 func challengerHistoryBefore(rows []api.PredictionOutcomeEvaluation, cutoff time.Time) challengerHistory {
-	return challengerHistoryWithEvidenceBefore(rows, nil, nil, nil, cutoff)
+	return challengerHistoryWithEvidenceBefore(rows, nil, nil, nil, nil, cutoff)
 }
 
 func challengerHistoryWithLabelsBefore(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, cutoff time.Time) challengerHistory {
-	return challengerHistoryWithEvidenceBefore(rows, labels, nil, nil, cutoff)
+	return challengerHistoryWithEvidenceBefore(rows, labels, nil, nil, nil, cutoff)
 }
 
-func challengerHistoryWithEvidenceBefore(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit, cutoff time.Time) challengerHistory {
-	return challengerHistoryWithIndexedEvidenceBefore(rows, labels, newChallengerEvidenceIndex(healthScores, ruleHits), cutoff)
+func challengerHistoryWithEvidenceBefore(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit, featureSnapshots []api.GPUFeatureSnapshot, cutoff time.Time) challengerHistory {
+	return challengerHistoryWithIndexedEvidenceBefore(rows, labels, newChallengerEvidenceIndex(healthScores, ruleHits, featureSnapshots), cutoff)
 }
 
 type challengerRuleEvidence struct {
@@ -481,16 +494,26 @@ type challengerRuleEvidence struct {
 }
 
 type challengerEvidenceIndex struct {
-	healthByNodeGPU map[string][]api.GPUHealthScore
-	healthByGPU     map[string][]api.GPUHealthScore
-	rulesByNodeGPU  map[string][]challengerRuleEvidence
+	healthByNodeGPU   map[string][]api.GPUHealthScore
+	healthByGPU       map[string][]api.GPUHealthScore
+	rulesByNodeGPU    map[string][]challengerRuleEvidence
+	featuresByNodeGPU map[string][]api.GPUFeatureSnapshot
 }
 
-func newChallengerEvidenceIndex(healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit) challengerEvidenceIndex {
+func newChallengerEvidenceIndex(healthScores []api.GPUHealthScore, ruleHits []api.GPUHealthRuleHit, featureSnapshots []api.GPUFeatureSnapshot) challengerEvidenceIndex {
 	index := challengerEvidenceIndex{
-		healthByNodeGPU: map[string][]api.GPUHealthScore{},
-		healthByGPU:     map[string][]api.GPUHealthScore{},
-		rulesByNodeGPU:  map[string][]challengerRuleEvidence{},
+		healthByNodeGPU:   map[string][]api.GPUHealthScore{},
+		healthByGPU:       map[string][]api.GPUHealthScore{},
+		rulesByNodeGPU:    map[string][]challengerRuleEvidence{},
+		featuresByNodeGPU: map[string][]api.GPUFeatureSnapshot{},
+	}
+	for _, snapshot := range featureSnapshots {
+		node, gpu := normalNode(snapshot.NodeIP), strings.ToLower(strings.TrimSpace(snapshot.GPUUUID))
+		if node == "" || gpu == "" || snapshot.ObservedAt.IsZero() {
+			continue
+		}
+		key := node + "|" + gpu
+		index.featuresByNodeGPU[key] = append(index.featuresByNodeGPU[key], snapshot)
 	}
 	scoreByID := make(map[uint]api.GPUHealthScore, len(healthScores))
 	for _, score := range healthScores {
@@ -525,6 +548,14 @@ func newChallengerEvidenceIndex(healthScores []api.GPUHealthScore, ruleHits []ap
 				return series[i].id < series[j].id
 			}
 			return series[i].evaluatedAt.Before(series[j].evaluatedAt)
+		})
+	}
+	for _, series := range index.featuresByNodeGPU {
+		sort.Slice(series, func(i, j int) bool {
+			if series[i].ObservedAt.Equal(series[j].ObservedAt) {
+				return series[i].ID < series[j].ID
+			}
+			return series[i].ObservedAt.Before(series[j].ObservedAt)
 		})
 	}
 	return index
@@ -591,6 +622,29 @@ func challengerOperationalPriorsBefore(evidence challengerEvidenceIndex, labels 
 	return healthRiskByNode, ruleHitRiskByNodeFromIndex(evidence.rulesByNodeGPU, cutoff), modelDensityByNode
 }
 
+func observabilityGapByNodeBefore(seriesByGPU map[string][]api.GPUFeatureSnapshot, cutoff time.Time) map[string]float64 {
+	gapByNode := map[string]float64{}
+	for _, series := range seriesByGPU {
+		position := sort.Search(len(series), func(index int) bool { return !series[index].ObservedAt.Before(cutoff) })
+		for position > 0 {
+			snapshot := series[position-1]
+			if !operationalSignalFresh(snapshot.ObservedAt, cutoff) {
+				break
+			}
+			gap, found := snapshot.Metrics["gpu_metric_gap_max_seconds_1h"]
+			if found && !math.IsNaN(gap) && !math.IsInf(gap, 0) {
+				node := normalNode(snapshot.NodeIP)
+				if gap > gapByNode[node] {
+					gapByNode[node] = gap
+				}
+				break
+			}
+			position--
+		}
+	}
+	return gapByNode
+}
+
 func ruleHitRiskByNodeFromIndex(seriesByGPU map[string][]challengerRuleEvidence, cutoff time.Time) map[string]float64 {
 	riskByNode := map[string]float64{}
 	for _, series := range seriesByGPU {
@@ -653,7 +707,7 @@ func modelLabelDensityFromLatestScores(labels []api.FailureLabel, latestByGPU ma
 
 func challengerHistoryWithIndexedEvidenceBefore(rows []api.PredictionOutcomeEvaluation, labels []api.FailureLabel, evidence challengerEvidenceIndex, cutoff time.Time) challengerHistory {
 	healthRisk, ruleRisk, modelDensity := challengerOperationalPriorsBefore(evidence, labels, cutoff)
-	history := challengerHistory{PositiveCounts: map[string]int{}, RecencyWeighted: map[string]float64{}, SeverityWeightedLabels: map[string]float64{}, HealthRiskByNode: healthRisk, RuleHitRiskByNode: ruleRisk, ModelLabelDensityByNode: modelDensity}
+	history := challengerHistory{PositiveCounts: map[string]int{}, RecencyWeighted: map[string]float64{}, SeverityWeightedLabels: map[string]float64{}, HealthRiskByNode: healthRisk, ObservabilityGapByNode: observabilityGapByNodeBefore(evidence.featuresByNodeGPU, cutoff), RuleHitRiskByNode: ruleRisk, ModelLabelDensityByNode: modelDensity}
 	for _, candidate := range rows {
 		if candidate.MaturityStatus != "matured" || candidate.FinalActualValue == nil || *candidate.FinalActualValue != 1 || strings.TrimSpace(candidate.NodeIP) == "" || !candidate.WindowEndAt.Before(cutoff) {
 			continue
