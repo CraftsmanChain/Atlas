@@ -56,8 +56,8 @@ func TestTemporalProbabilityQualityMetrics(t *testing.T) {
 }
 
 func TestDualTrackEmptyRankingMetricsSerializeAsArray(t *testing.T) {
-	cohort := DualTrackTemporalCohort{NodeRankingAtK: nonNilRankingMetrics(nil)}
-	if cohort.NodeRankingAtK == nil {
+	cohort := DualTrackTemporalCohort{NodeRankingAtK: nonNilRankingMetrics(nil), NodeRankingAtPercent: nonNilRankingPercentMetrics(nil)}
+	if cohort.NodeRankingAtK == nil || cohort.NodeRankingAtPercent == nil {
 		t.Fatal("empty temporal Ranking@K must use a non-nil slice")
 	}
 	payload, err := json.Marshal(cohort)
@@ -66,6 +66,9 @@ func TestDualTrackEmptyRankingMetricsSerializeAsArray(t *testing.T) {
 	}
 	if !bytes.Contains(payload, []byte(`"node_ranking_at_k":[]`)) {
 		t.Fatalf("empty temporal Ranking@K must serialize as []: %s", payload)
+	}
+	if !bytes.Contains(payload, []byte(`"node_ranking_at_percent":[]`)) {
+		t.Fatalf("empty temporal Ranking@Percent must serialize as []: %s", payload)
 	}
 }
 
@@ -188,8 +191,8 @@ func TestDualTrackTemporalConsistencyRequiresThreePositiveIndependentCohorts(t *
 	for index := range cohorts {
 		cohorts[index] = DualTrackTemporalCohort{
 			IndependentTimeBatch: true, MaturedRows: 30, PositiveRows: 3,
-			NodeRankingAtK:     []RankingAtK{{K: 3, Lift: &lift}},
-			ProbabilityMetrics: TemporalProbabilityMetrics{BrierSkillScore: &skill},
+			NodeRankingAtPercent: []RankingAtPercent{{Percent: 5, Lift: &lift}},
+			ProbabilityMetrics:   TemporalProbabilityMetrics{BrierSkillScore: &skill},
 		}
 	}
 	consistency := dualTrackTemporalConsistency(cohorts)
@@ -197,7 +200,7 @@ func TestDualTrackTemporalConsistencyRequiresThreePositiveIndependentCohorts(t *
 		t.Fatalf("three positive independent cohorts should pass direction consistency: %+v", consistency)
 	}
 	negativeLift, negativeSkill := 0.8, -0.1
-	cohorts[0].NodeRankingAtK[0].Lift = &negativeLift
+	cohorts[0].NodeRankingAtPercent[0].Lift = &negativeLift
 	cohorts[0].ProbabilityMetrics.BrierSkillScore = &negativeSkill
 	mixed := dualTrackTemporalConsistency(cohorts)
 	if mixed.Ranking.Status != "review_mixed_direction" || mixed.Probability.Status != "review_mixed_direction" {

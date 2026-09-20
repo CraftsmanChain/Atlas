@@ -34,18 +34,33 @@ type ConfusionMatrix struct {
 
 type AccuracyMetrics struct {
 	ConfusionMatrix
-	Precision         *float64     `json:"precision,omitempty"`
-	Recall            *float64     `json:"recall,omitempty"`
-	Specificity       *float64     `json:"specificity,omitempty"`
-	FalsePositiveRate *float64     `json:"false_positive_rate,omitempty"`
-	FalseNegativeRate *float64     `json:"false_negative_rate,omitempty"`
-	Accuracy          *float64     `json:"accuracy,omitempty"`
-	RankingAtK        []RankingAtK `json:"ranking_at_k,omitempty"`
-	NodeRankingAtK    []RankingAtK `json:"node_ranking_at_k,omitempty"`
+	Precision            *float64           `json:"precision,omitempty"`
+	Recall               *float64           `json:"recall,omitempty"`
+	Specificity          *float64           `json:"specificity,omitempty"`
+	FalsePositiveRate    *float64           `json:"false_positive_rate,omitempty"`
+	FalseNegativeRate    *float64           `json:"false_negative_rate,omitempty"`
+	Accuracy             *float64           `json:"accuracy,omitempty"`
+	RankingAtK           []RankingAtK       `json:"ranking_at_k,omitempty"`
+	NodeRankingAtK       []RankingAtK       `json:"node_ranking_at_k,omitempty"`
+	RankingAtPercent     []RankingAtPercent `json:"ranking_at_percent,omitempty"`
+	NodeRankingAtPercent []RankingAtPercent `json:"node_ranking_at_percent,omitempty"`
 }
 
 type RankingAtK struct {
 	K         int      `json:"k"`
+	Status    string   `json:"status"`
+	Eligible  int      `json:"eligible"`
+	Positives int      `json:"positives"`
+	Hits      int      `json:"hits"`
+	Precision *float64 `json:"precision,omitempty"`
+	Recall    *float64 `json:"recall,omitempty"`
+	NDCG      *float64 `json:"ndcg,omitempty"`
+	Lift      *float64 `json:"lift,omitempty"`
+}
+
+type RankingAtPercent struct {
+	Percent   int      `json:"percent"`
+	Limit     int      `json:"limit"`
 	Status    string   `json:"status"`
 	Eligible  int      `json:"eligible"`
 	Positives int      `json:"positives"`
@@ -368,6 +383,10 @@ func accuracyFromRows(rows []api.PredictionOutcomeEvaluation, evaluatedAt time.T
 	summary.Final.RankingAtK = rankingAtK(rows, func(row api.PredictionOutcomeEvaluation) *int { return row.FinalActualValue })
 	summary.Rule.NodeRankingAtK = nodeRankingAtK(rows, func(row api.PredictionOutcomeEvaluation) *int { return row.RuleActualValue })
 	summary.Final.NodeRankingAtK = nodeRankingAtK(rows, func(row api.PredictionOutcomeEvaluation) *int { return row.FinalActualValue })
+	summary.Rule.RankingAtPercent = rankingAtPercent(rows, func(row api.PredictionOutcomeEvaluation) *int { return row.RuleActualValue })
+	summary.Final.RankingAtPercent = rankingAtPercent(rows, func(row api.PredictionOutcomeEvaluation) *int { return row.FinalActualValue })
+	summary.Rule.NodeRankingAtPercent = nodeRankingAtPercent(rows, func(row api.PredictionOutcomeEvaluation) *int { return row.RuleActualValue })
+	summary.Final.NodeRankingAtPercent = nodeRankingAtPercent(rows, func(row api.PredictionOutcomeEvaluation) *int { return row.FinalActualValue })
 	for _, item := range byKey {
 		finalizeMetrics(&item.Rule)
 		finalizeMetrics(&item.Final)
@@ -376,6 +395,10 @@ func accuracyFromRows(rows []api.PredictionOutcomeEvaluation, evaluatedAt time.T
 		item.Final.RankingAtK = rankingAtK(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.FinalActualValue })
 		item.Rule.NodeRankingAtK = nodeRankingAtK(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.RuleActualValue })
 		item.Final.NodeRankingAtK = nodeRankingAtK(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.FinalActualValue })
+		item.Rule.RankingAtPercent = rankingAtPercent(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.RuleActualValue })
+		item.Final.RankingAtPercent = rankingAtPercent(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.FinalActualValue })
+		item.Rule.NodeRankingAtPercent = nodeRankingAtPercent(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.RuleActualValue })
+		item.Final.NodeRankingAtPercent = nodeRankingAtPercent(sliceRows, func(row api.PredictionOutcomeEvaluation) *int { return row.FinalActualValue })
 		summary.ByModel = append(summary.ByModel, *item)
 	}
 	sort.Slice(summary.ByModel, func(i, j int) bool {
@@ -576,6 +599,14 @@ type rankedOutcome struct {
 }
 
 func rankingAtK(rows []api.PredictionOutcomeEvaluation, actualValue func(api.PredictionOutcomeEvaluation) *int) []RankingAtK {
+	return rankingFromItems(rankedOutcomeItems(rows, actualValue))
+}
+
+func rankingAtPercent(rows []api.PredictionOutcomeEvaluation, actualValue func(api.PredictionOutcomeEvaluation) *int) []RankingAtPercent {
+	return rankingPercentFromItems(rankedOutcomeItems(rows, actualValue))
+}
+
+func rankedOutcomeItems(rows []api.PredictionOutcomeEvaluation, actualValue func(api.PredictionOutcomeEvaluation) *int) []rankedOutcome {
 	items := make([]rankedOutcome, 0, len(rows))
 	for _, row := range rows {
 		if row.MaturityStatus != "matured" || row.Probability == nil {
@@ -587,10 +618,18 @@ func rankingAtK(rows []api.PredictionOutcomeEvaluation, actualValue func(api.Pre
 		}
 		items = append(items, rankedOutcome{probability: *row.Probability, actual: *actual})
 	}
-	return rankingFromItems(items)
+	return items
 }
 
 func nodeRankingAtK(rows []api.PredictionOutcomeEvaluation, actualValue func(api.PredictionOutcomeEvaluation) *int) []RankingAtK {
+	return rankingFromItems(nodeRankedOutcomeItems(rows, actualValue))
+}
+
+func nodeRankingAtPercent(rows []api.PredictionOutcomeEvaluation, actualValue func(api.PredictionOutcomeEvaluation) *int) []RankingAtPercent {
+	return rankingPercentFromItems(nodeRankedOutcomeItems(rows, actualValue))
+}
+
+func nodeRankedOutcomeItems(rows []api.PredictionOutcomeEvaluation, actualValue func(api.PredictionOutcomeEvaluation) *int) []rankedOutcome {
 	byNode := map[string]rankedOutcome{}
 	for _, row := range rows {
 		if row.MaturityStatus != "matured" || row.Probability == nil || strings.TrimSpace(row.NodeIP) == "" {
@@ -614,7 +653,52 @@ func nodeRankingAtK(rows []api.PredictionOutcomeEvaluation, actualValue func(api
 	for _, item := range byNode {
 		items = append(items, item)
 	}
-	return rankingFromItems(items)
+	return items
+}
+
+func rankingPercentFromItems(items []rankedOutcome) []RankingAtPercent {
+	if len(items) == 0 {
+		return nil
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].probability > items[j].probability })
+	positiveTotal := 0
+	for _, item := range items {
+		if item.actual == 1 {
+			positiveTotal++
+		}
+	}
+	const percent = 5
+	limit := int(math.Ceil(float64(len(items)) * float64(percent) / 100))
+	hits, dcg := 0, 0.0
+	for index := 0; index < limit; index++ {
+		if items[index].actual == 1 {
+			hits++
+			dcg += 1 / math.Log2(float64(index+2))
+		}
+	}
+	metric := RankingAtPercent{Percent: percent, Limit: limit, Eligible: len(items), Positives: positiveTotal, Hits: hits, Status: rankingInterpretationStatus(len(items), positiveTotal)}
+	precision := float64(hits) / float64(limit)
+	metric.Precision = &precision
+	if positiveTotal > 0 {
+		recall := float64(hits) / float64(positiveTotal)
+		metric.Recall = &recall
+		idealLimit := positiveTotal
+		if idealLimit > limit {
+			idealLimit = limit
+		}
+		idealDCG := 0.0
+		for index := 0; index < idealLimit; index++ {
+			idealDCG += 1 / math.Log2(float64(index+2))
+		}
+		if idealDCG > 0 {
+			ndcg := dcg / idealDCG
+			metric.NDCG = &ndcg
+		}
+		baseRate := float64(positiveTotal) / float64(len(items))
+		lift := precision / baseRate
+		metric.Lift = &lift
+	}
+	return []RankingAtPercent{metric}
 }
 
 func rankingFromItems(items []rankedOutcome) []RankingAtK {

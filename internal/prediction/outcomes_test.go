@@ -82,6 +82,7 @@ func TestOutcomeReconciliationAndHumanOverride(t *testing.T) {
 	assertRankingAtK(t, summary.Rule.RankingAtK, 1, 4, 2, 1, 1, 0.5, 1/(2.0/4.0))
 	assertRankingAtK(t, summary.Rule.RankingAtK, 3, 4, 2, 2, 2.0/3.0, 1, (2.0/3.0)/(2.0/4.0))
 	assertRankingAtK(t, summary.Rule.NodeRankingAtK, 3, 3, 2, 2, 2.0/3.0, 1, 1)
+	assertRankingAtPercent(t, summary.Rule.NodeRankingAtPercent, 5, 1, 3, 2, 1, 1, 0.5, 1.5)
 	var falsePositive api.PredictionOutcomeEvaluation
 	if err := db.Where("gpu_uuid = ?", "GPU-FP").First(&falsePositive).Error; err != nil {
 		t.Fatal(err)
@@ -1328,5 +1329,19 @@ func assertRankingAtK(t *testing.T, rows []RankingAtK, k, eligible, positives, h
 	}
 	if found.Lift == nil || math.Abs(*found.Lift-lift) > 1e-12 {
 		t.Fatalf("unexpected lift@%d: %+v expected %v", k, found.Lift, lift)
+	}
+}
+
+func assertRankingAtPercent(t *testing.T, rows []RankingAtPercent, percent, limit, eligible, positives, hits int, precision, recall, lift float64) {
+	t.Helper()
+	if len(rows) != 1 || rows[0].Percent != percent {
+		t.Fatalf("missing ranking top-%d%% in %+v", percent, rows)
+	}
+	found := rows[0]
+	if found.Limit != limit || found.Eligible != eligible || found.Positives != positives || found.Hits != hits {
+		t.Fatalf("unexpected ranking top-%d%% counts: %+v", percent, found)
+	}
+	if found.Precision == nil || math.Abs(*found.Precision-precision) > 1e-12 || found.Recall == nil || math.Abs(*found.Recall-recall) > 1e-12 || found.Lift == nil || math.Abs(*found.Lift-lift) > 1e-12 {
+		t.Fatalf("unexpected ranking top-%d%% metrics: %+v", percent, found)
 	}
 }
