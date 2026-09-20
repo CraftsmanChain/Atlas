@@ -32,15 +32,16 @@ type heaRankChallengerCache struct {
 }
 
 type ChallengerMetricSet struct {
-	Policy               string       `json:"policy"`
-	Description          string       `json:"description"`
-	Rows                 int          `json:"rows"`
-	Nodes                int          `json:"nodes"`
-	Positives            int          `json:"positives"`
-	NonZeroScoreRows     int          `json:"non_zero_score_rows"`
-	NonZeroScoreNodes    int          `json:"non_zero_score_nodes"`
-	SignalCoverageStatus string       `json:"signal_coverage_status"`
-	RankingAtK           []RankingAtK `json:"ranking_at_k"`
+	Policy               string             `json:"policy"`
+	Description          string             `json:"description"`
+	Rows                 int                `json:"rows"`
+	Nodes                int                `json:"nodes"`
+	Positives            int                `json:"positives"`
+	NonZeroScoreRows     int                `json:"non_zero_score_rows"`
+	NonZeroScoreNodes    int                `json:"non_zero_score_nodes"`
+	SignalCoverageStatus string             `json:"signal_coverage_status"`
+	RankingAtK           []RankingAtK       `json:"ranking_at_k"`
+	RankingAtPercent     []RankingAtPercent `json:"ranking_at_percent"`
 }
 
 type ChallengerPolicyComparison struct {
@@ -408,7 +409,8 @@ func challengerMetricSet(rows []api.PredictionOutcomeEvaluation, histories map[t
 	return ChallengerMetricSet{
 		Policy: policy, Description: description, Rows: len(items), Nodes: len(nodes), Positives: positives,
 		NonZeroScoreRows: nonZeroRows, NonZeroScoreNodes: len(nonZeroNodes), SignalCoverageStatus: challengerSignalCoverageStatus(nonZeroRows, len(nonZeroNodes)),
-		RankingAtK: rankingFromItems(items),
+		RankingAtK:       rankingFromItems(append([]rankedOutcome(nil), items...)),
+		RankingAtPercent: rankingPercentFromItems(items),
 	}
 }
 

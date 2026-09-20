@@ -12,7 +12,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const DualTrackValidationReportVersion = "prediction-dual-track-validation-v8"
+const DualTrackValidationReportVersion = "prediction-dual-track-validation-v9"
 const DualTrackSliceAuditVersion = "prediction-slice-audit-v1"
 const DualTrackTemporalCohortLimit = 12
 const DualTrackMinimumConsistentCohorts = 3
@@ -29,16 +29,17 @@ type DualTrackAlignment struct {
 }
 
 type RankingValidationTrack struct {
-	Status          string       `json:"status"`
-	Policy          string       `json:"policy"`
-	ScoreSemantics  string       `json:"score_semantics"`
-	SnapshotVersion string       `json:"snapshot_version"`
-	SnapshotSHA256  string       `json:"snapshot_sha256"`
-	Nodes           int          `json:"nodes"`
-	MaturedRows     int          `json:"matured_rows"`
-	PositiveRows    int          `json:"positive_rows"`
-	Metrics         []RankingAtK `json:"ranking_at_k"`
-	BlockingReasons []string     `json:"blocking_reasons"`
+	Status          string             `json:"status"`
+	Policy          string             `json:"policy"`
+	ScoreSemantics  string             `json:"score_semantics"`
+	SnapshotVersion string             `json:"snapshot_version"`
+	SnapshotSHA256  string             `json:"snapshot_sha256"`
+	Nodes           int                `json:"nodes"`
+	MaturedRows     int                `json:"matured_rows"`
+	PositiveRows    int                `json:"positive_rows"`
+	Metrics         []RankingAtK       `json:"ranking_at_k"`
+	PercentMetrics  []RankingAtPercent `json:"ranking_at_percent"`
+	BlockingReasons []string           `json:"blocking_reasons"`
 }
 
 type ProbabilityValidationTrack struct {
@@ -110,6 +111,7 @@ type DualTrackTemporalCohort struct {
 	RankingStatus        string                     `json:"ranking_status"`
 	ProbabilityStatus    string                     `json:"probability_status"`
 	NodeRankingAtK       []RankingAtK               `json:"node_ranking_at_k"`
+	NodeRankingAtPercent []RankingAtPercent         `json:"node_ranking_at_percent"`
 	ProbabilityMetrics   TemporalProbabilityMetrics `json:"probability_metrics"`
 }
 
@@ -160,17 +162,18 @@ type DualTrackSliceAudit struct {
 }
 
 type DualTrackValidationSlice struct {
-	Dimension          string                     `json:"dimension"`
-	Value              string                     `json:"value"`
-	TotalRows          int                        `json:"total_rows"`
-	MaturedRows        int                        `json:"matured_rows"`
-	NodeCount          int                        `json:"node_count"`
-	PositiveRows       int                        `json:"positive_rows"`
-	RankingStatus      string                     `json:"ranking_status"`
-	ProbabilityStatus  string                     `json:"probability_status"`
-	NodeRankingAtK     []RankingAtK               `json:"node_ranking_at_k"`
-	ProbabilityMetrics TemporalProbabilityMetrics `json:"probability_metrics"`
-	BlockingReasons    []string                   `json:"blocking_reasons"`
+	Dimension            string                     `json:"dimension"`
+	Value                string                     `json:"value"`
+	TotalRows            int                        `json:"total_rows"`
+	MaturedRows          int                        `json:"matured_rows"`
+	NodeCount            int                        `json:"node_count"`
+	PositiveRows         int                        `json:"positive_rows"`
+	RankingStatus        string                     `json:"ranking_status"`
+	ProbabilityStatus    string                     `json:"probability_status"`
+	NodeRankingAtK       []RankingAtK               `json:"node_ranking_at_k"`
+	NodeRankingAtPercent []RankingAtPercent         `json:"node_ranking_at_percent"`
+	ProbabilityMetrics   TemporalProbabilityMetrics `json:"probability_metrics"`
+	BlockingReasons      []string                   `json:"blocking_reasons"`
 }
 
 type DualTrackSliceComparability struct {
@@ -243,7 +246,7 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 		Ranking: RankingValidationTrack{
 			Status: "blocked", Policy: rankingSnapshot.Policy, ScoreSemantics: rankingSnapshot.ScoreSemantics,
 			SnapshotVersion: rankingSnapshot.Version, SnapshotSHA256: rankingSnapshot.ReportSHA256,
-			Nodes: rankingSnapshot.NodeCount, Metrics: []RankingAtK{}, BlockingReasons: append([]string(nil), rankingSnapshot.BlockingReasons...),
+			Nodes: rankingSnapshot.NodeCount, Metrics: []RankingAtK{}, PercentMetrics: []RankingAtPercent{}, BlockingReasons: append([]string(nil), rankingSnapshot.BlockingReasons...),
 		},
 		Probability: ProbabilityValidationTrack{
 			Status: "blocked", OutcomeReportVersion: "prediction-outcome-report-v1",
@@ -264,7 +267,7 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 		ValidationSlices:    validationSlices,
 		SliceComparability:  sliceComparability,
 		Interpretation: []string{
-			"ranking track answers who should be reviewed first and is evaluated with node Ranking@K metrics",
+			"ranking track answers who should be reviewed first and is evaluated with node Ranking@K and Top-5% capture metrics",
 			"probability track answers event risk within a fixed horizon and is evaluated with discrimination and calibration metrics",
 			"track statuses remain independent; no combined success rate is produced",
 		},
@@ -300,6 +303,7 @@ func (s *Service) DualTrackValidationReport() (DualTrackValidationReport, error)
 	report.Ranking.MaturedRows = maturity.Matured
 	report.Ranking.PositiveRows = positives
 	report.Ranking.Metrics = nonNilRankingMetrics(accuracy.Final.NodeRankingAtK)
+	report.Ranking.PercentMetrics = nonNilRankingPercentMetrics(accuracy.Final.NodeRankingAtPercent)
 	report.Ranking.Status, report.Ranking.BlockingReasons = dualTrackRankingStatus(rankingSnapshot, maturity, positives)
 	report.Probability.Status = dualTrackProbabilityStatus(stability.Status, quality.Status)
 	report.Probability.Maturity = maturity
@@ -371,8 +375,9 @@ func (s *Service) dualTrackTemporalCohorts(snapshot RiskRankingSnapshotReport) (
 			TotalRows: maturity.Total, MaturedRows: maturity.Matured, PendingRows: maturity.Pending,
 			CensoredRows: maturity.Censored, NodeCount: maturity.NodeEligible, PositiveRows: positives,
 			RankingStatus: rankingStatus, ProbabilityStatus: dualTrackProbabilityStatus(stability.Status, quality.Status),
-			NodeRankingAtK:     nonNilRankingMetrics(accuracy.Final.NodeRankingAtK),
-			ProbabilityMetrics: quality,
+			NodeRankingAtK:       nonNilRankingMetrics(accuracy.Final.NodeRankingAtK),
+			NodeRankingAtPercent: nonNilRankingPercentMetrics(accuracy.Final.NodeRankingAtPercent),
+			ProbabilityMetrics:   quality,
 		}
 		cohorts = append(cohorts, cohort)
 		if cohort.MaturedRows > 0 {
@@ -644,7 +649,8 @@ func dualTrackValidationSlices(rows []api.PredictionOutcomeEvaluation, snapshot 
 				Dimension: dimension, Value: value, TotalRows: maturity.Total, MaturedRows: maturity.Matured,
 				NodeCount: maturity.NodeEligible, PositiveRows: positives, RankingStatus: rankingStatus,
 				ProbabilityStatus: probabilityStatus, NodeRankingAtK: nonNilRankingMetrics(accuracy.Final.NodeRankingAtK),
-				ProbabilityMetrics: quality, BlockingReasons: blockers,
+				NodeRankingAtPercent: nonNilRankingPercentMetrics(accuracy.Final.NodeRankingAtPercent),
+				ProbabilityMetrics:   quality, BlockingReasons: blockers,
 			})
 		}
 	}
@@ -786,7 +792,7 @@ func temporalAveragePrecision(values []temporalScoredActual) *float64 {
 
 func dualTrackTemporalConsistency(cohorts []DualTrackTemporalCohort) DualTrackTemporalConsistency {
 	ranking := TemporalTrackConsistency{
-		Metric: "node_rank_at_3_lift", PositiveDirectionRule: "lift_greater_than_1",
+		Metric: "node_top_5_percent_lift", PositiveDirectionRule: "lift_greater_than_1",
 		MinimumIndependentCohorts: DualTrackMinimumConsistentCohorts, MinimumDirectionRatio: DualTrackMinimumDirectionRatio,
 	}
 	probability := TemporalTrackConsistency{
@@ -797,8 +803,8 @@ func dualTrackTemporalConsistency(cohorts []DualTrackTemporalCohort) DualTrackTe
 		if !cohort.IndependentTimeBatch || cohort.MaturedRows == 0 || cohort.PositiveRows == 0 {
 			continue
 		}
-		for _, metric := range cohort.NodeRankingAtK {
-			if metric.K == 3 && metric.Lift != nil {
+		for _, metric := range cohort.NodeRankingAtPercent {
+			if metric.Percent == 5 && metric.Lift != nil {
 				ranking.EvaluableIndependentCohorts++
 				if *metric.Lift > 1 {
 					ranking.PositiveDirectionCohorts++
@@ -842,6 +848,13 @@ func nonNilRankingMetrics(rows []RankingAtK) []RankingAtK {
 		return []RankingAtK{}
 	}
 	return append([]RankingAtK(nil), rows...)
+}
+
+func nonNilRankingPercentMetrics(rows []RankingAtPercent) []RankingAtPercent {
+	if len(rows) == 0 {
+		return []RankingAtPercent{}
+	}
+	return append([]RankingAtPercent(nil), rows...)
 }
 
 func dualTrackRankingStatus(snapshot RiskRankingSnapshotReport, maturity OutcomeMaturity, positives int) (string, []string) {
