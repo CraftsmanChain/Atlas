@@ -132,6 +132,34 @@ func TestFeatureWindowPolicyDefaultsFiltersAndRejectsUnknown(t *testing.T) {
 	}
 }
 
+func TestFeaturePlanePolicyDefaultsExcludesOnlyStructuralAndRejectsUnknown(t *testing.T) {
+	policy, err := resolveFeaturePlanePolicy("")
+	if err != nil || policy != allFeaturePlanesPolicy {
+		t.Fatalf("legacy requests must retain all feature planes: policy=%q err=%v", policy, err)
+	}
+	if _, err := resolveFeaturePlanePolicy("structural_only"); err == nil {
+		t.Fatal("unsupported feature plane policy must be rejected before queueing")
+	}
+	rows := []trainingMatrixRow{{Features: map[string]float64{
+		"gpu_temp_mean_24h":              1,
+		"gpu_metric_presence_ratio_1h":   2,
+		"target_scrape_success_ratio_5m": 3,
+	}}}
+	all := auditBaselineFeaturesForTargetAndPolicies(rows, hardwareFailureTarget, allAvailableWindowsPolicy, allFeaturePlanesPolicy)
+	if len(all.SelectedColumns) != 3 {
+		t.Fatalf("all feature planes selected %v", all.SelectedColumns)
+	}
+	ablated := auditBaselineFeaturesForTargetAndPolicies(rows, hardwareFailureTarget, allAvailableWindowsPolicy, excludeStructuralPlanePolicy)
+	if !reflect.DeepEqual(ablated.SelectedColumns, []string{"gpu_temp_mean_24h"}) || ablated.ExcludedFeatureCount != 2 {
+		t.Fatalf("structural ablation audit=%+v", ablated)
+	}
+	for _, exclusion := range ablated.Exclusions {
+		if exclusion.Reason != "feature_plane_ablation_exclude_structural" {
+			t.Fatalf("unexpected structural exclusion: %+v", exclusion)
+		}
+	}
+}
+
 func TestAnomalyAugmentedLogisticPreservesRowsAndLearnsSymmetricAnomalies(t *testing.T) {
 	rows := make([]trainingMatrixRow, 0, 160)
 	for index := 0; index < 160; index++ {

@@ -12,7 +12,7 @@ import (
 	"atlas/pkg/api"
 )
 
-const modelRaceComparisonVersion = "gpu-model-race-comparison-v3"
+const modelRaceComparisonVersion = "gpu-model-race-comparison-v4"
 
 type modelRaceBuildSummary struct {
 	BuildID                   uint            `json:"build_id"`
@@ -20,6 +20,7 @@ type modelRaceBuildSummary struct {
 	Version                   string          `json:"version"`
 	Algorithm                 string          `json:"algorithm"`
 	FeatureWindowPolicy       string          `json:"feature_window_policy"`
+	FeaturePlanePolicy        string          `json:"feature_plane_policy"`
 	ArtifactSHA256            string          `json:"artifact_sha256"`
 	MacroTest                 baselineMetrics `json:"macro_test"`
 	StableCount               int             `json:"stable_count"`
@@ -96,7 +97,7 @@ func (s *Service) CompareBaselineModels(referenceBuildID uint, challengerBuildID
 		if err != nil {
 			return ModelRaceComparison{}, fmt.Errorf("baseline build %d report: %w", id, err)
 		}
-		if report.Version != build.Version || report.Algorithm != build.Algorithm || report.MatrixKey != build.SourceTrainingMatrixKey || normalizedFeatureWindowPolicy(report.FeatureWindowPolicy) != normalizedFeatureWindowPolicy(build.FeatureWindowPolicy) {
+		if report.Version != build.Version || report.Algorithm != build.Algorithm || report.MatrixKey != build.SourceTrainingMatrixKey || normalizedFeatureWindowPolicy(report.FeatureWindowPolicy) != normalizedFeatureWindowPolicy(build.FeatureWindowPolicy) || normalizedFeaturePlanePolicy(report.FeaturePlanePolicy) != normalizedFeaturePlanePolicy(build.FeaturePlanePolicy) {
 			return ModelRaceComparison{}, fmt.Errorf("baseline build %d report provenance mismatch", id)
 		}
 		reports[index] = report
@@ -135,7 +136,7 @@ func (s *Service) CompareBaselineModels(referenceBuildID uint, challengerBuildID
 	for index, build := range builds {
 		report := reports[index]
 		selectedSources := selectedSourceMetrics(report.Horizons)
-		comparison.Builds = append(comparison.Builds, modelRaceBuildSummary{BuildID: build.ID, ModelKey: build.BaselineModelKey, Version: build.Version, Algorithm: build.Algorithm, FeatureWindowPolicy: normalizedFeatureWindowPolicy(build.FeatureWindowPolicy), ArtifactSHA256: build.ArtifactSHA256, MacroTest: report.MacroTest, StableCount: build.StatisticallyStableCount, CandidateCount: build.ShadowCandidateCount, SelectedSourceMetricCount: len(selectedSources), SelectedSourceMetrics: selectedSources, SelectedWindowCounts: selectedWindowCounts(report.Horizons)})
+		comparison.Builds = append(comparison.Builds, modelRaceBuildSummary{BuildID: build.ID, ModelKey: build.BaselineModelKey, Version: build.Version, Algorithm: build.Algorithm, FeatureWindowPolicy: normalizedFeatureWindowPolicy(build.FeatureWindowPolicy), FeaturePlanePolicy: normalizedFeaturePlanePolicy(build.FeaturePlanePolicy), ArtifactSHA256: build.ArtifactSHA256, MacroTest: report.MacroTest, StableCount: build.StatisticallyStableCount, CandidateCount: build.ShadowCandidateCount, SelectedSourceMetricCount: len(selectedSources), SelectedSourceMetrics: selectedSources, SelectedWindowCounts: selectedWindowCounts(report.Horizons)})
 		if index > 0 {
 			comparison.Deltas = append(comparison.Deltas, modelRaceDelta{BuildID: build.ID, ReferenceID: referenceBuildID, ROCAUC: report.MacroTest.ROCAUC - baseReport.MacroTest.ROCAUC, PRAUC: report.MacroTest.PRAUC - baseReport.MacroTest.PRAUC, Precision: report.MacroTest.Precision - baseReport.MacroTest.Precision, Recall: report.MacroTest.Recall - baseReport.MacroTest.Recall})
 		}
@@ -169,6 +170,14 @@ func (s *Service) CompareBaselineModels(referenceBuildID uint, challengerBuildID
 
 func normalizedFeatureWindowPolicy(value string) string {
 	policy, err := resolveFeatureWindowPolicy(value)
+	if err != nil {
+		return value
+	}
+	return policy
+}
+
+func normalizedFeaturePlanePolicy(value string) string {
+	policy, err := resolveFeaturePlanePolicy(value)
 	if err != nil {
 		return value
 	}
