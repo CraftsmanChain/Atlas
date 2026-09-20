@@ -376,6 +376,7 @@ type BaselineModelBuild struct {
 	Status                   string     `json:"status" gorm:"index;not null"`
 	Algorithm                string     `json:"algorithm" gorm:"index;not null"`
 	FeatureWindowPolicy      string     `json:"feature_window_policy" gorm:"index;not null;default:all_available_windows"`
+	FeaturePlanePolicy       string     `json:"feature_plane_policy" gorm:"index;not null;default:all_features"`
 	SourceMatrixBuildID      uint       `json:"source_matrix_build_id" gorm:"index;not null"`
 	SourceTrainingMatrixKey  string     `json:"source_training_matrix_key" gorm:"index;not null"`
 	FeatureContractVersion   string     `json:"feature_contract_version" gorm:"index;not null"`

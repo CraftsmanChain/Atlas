@@ -48,6 +48,8 @@ const (
 	maximum24HourWindowPolicy        = "max_24h"
 	maximum3DayWindowPolicy          = "max_3d"
 	maximum7DayWindowPolicy          = "max_7d"
+	allFeaturePlanesPolicy           = "all_features"
+	excludeStructuralPlanePolicy     = "exclude_structural"
 )
 
 type BaselineModelBuildRequest struct {
@@ -56,6 +58,7 @@ type BaselineModelBuildRequest struct {
 	ModelName           string `json:"model_name,omitempty"`
 	Algorithm           string `json:"algorithm,omitempty"`
 	FeatureWindowPolicy string `json:"feature_window_policy,omitempty"`
+	FeaturePlanePolicy  string `json:"feature_plane_policy,omitempty"`
 }
 
 type logisticModel struct {
@@ -261,6 +264,7 @@ type baselineArtifact struct {
 	Version             string                          `json:"version"`
 	Algorithm           string                          `json:"algorithm"`
 	FeatureWindowPolicy string                          `json:"feature_window_policy"`
+	FeaturePlanePolicy  string                          `json:"feature_plane_policy"`
 	MatrixKey           string                          `json:"matrix_key"`
 	ScopeEventType      string                          `json:"scope_event_type,omitempty"`
 	ScopeModelName      string                          `json:"scope_model_name,omitempty"`
@@ -278,6 +282,7 @@ type baselineReport struct {
 	Version                 string                     `json:"version"`
 	Algorithm               string                     `json:"algorithm"`
 	FeatureWindowPolicy     string                     `json:"feature_window_policy"`
+	FeaturePlanePolicy      string                     `json:"feature_plane_policy"`
 	MatrixKey               string                     `json:"matrix_key"`
 	ScopeEventType          string                     `json:"scope_event_type,omitempty"`
 	ScopeModelName          string                     `json:"scope_model_name,omitempty"`
@@ -375,6 +380,10 @@ func (s *Service) StartBaselineModelBuild(request BaselineModelBuildRequest) (ap
 	if err != nil {
 		return api.BaselineModelBuild{}, err
 	}
+	request.FeaturePlanePolicy, err = resolveFeaturePlanePolicy(request.FeaturePlanePolicy)
+	if err != nil {
+		return api.BaselineModelBuild{}, err
+	}
 	if (request.EventType == "") != (request.ModelName == "") {
 		return api.BaselineModelBuild{}, fmt.Errorf("event_type and model_name must be provided together")
 	}
@@ -396,7 +405,7 @@ func (s *Service) StartBaselineModelBuild(request BaselineModelBuildRequest) (ap
 	if request.EventType != "" {
 		readinessGate = cohortReadinessGateName
 	}
-	build := api.BaselineModelBuild{BaselineModelKey: key, Version: version, Status: "queued", Algorithm: request.Algorithm, FeatureWindowPolicy: request.FeatureWindowPolicy,
+	build := api.BaselineModelBuild{BaselineModelKey: key, Version: version, Status: "queued", Algorithm: request.Algorithm, FeatureWindowPolicy: request.FeatureWindowPolicy, FeaturePlanePolicy: request.FeaturePlanePolicy,
 		SourceMatrixBuildID: matrix.ID, SourceTrainingMatrixKey: matrix.TrainingMatrixKey, FeatureContractVersion: matrix.FeatureContractVersion,
 		ScopeEventType: request.EventType, ScopeModelName: request.ModelName, ReadinessGateVersion: readinessGate,
 		OutputDir: filepath.Join(s.config.DatasetDir, "baseline-models", key), StartedAt: started}
@@ -416,6 +425,17 @@ func resolveFeatureWindowPolicy(value string) (string, error) {
 		return strings.TrimSpace(value), nil
 	default:
 		return "", fmt.Errorf("unsupported feature window policy %q", strings.TrimSpace(value))
+	}
+}
+
+func resolveFeaturePlanePolicy(value string) (string, error) {
+	switch strings.TrimSpace(value) {
+	case "", allFeaturePlanesPolicy:
+		return allFeaturePlanesPolicy, nil
+	case excludeStructuralPlanePolicy:
+		return excludeStructuralPlanePolicy, nil
+	default:
+		return "", fmt.Errorf("unsupported feature plane policy %q", strings.TrimSpace(value))
 	}
 }
 
@@ -488,7 +508,12 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 		return err
 	}
 	build.FeatureWindowPolicy = windowPolicy
-	featureAudit := auditBaselineFeaturesForTargetAndWindowPolicy(rows, predictionTarget, windowPolicy)
+	planePolicy, err := resolveFeaturePlanePolicy(build.FeaturePlanePolicy)
+	if err != nil {
+		return err
+	}
+	build.FeaturePlanePolicy = planePolicy
+	featureAudit := auditBaselineFeaturesForTargetAndPolicies(rows, predictionTarget, windowPolicy, planePolicy)
 	if featureAudit.Status != "passed" || featureAudit.ProhibitedSelectedCount != 0 {
 		return fmt.Errorf("baseline feature leakage audit failed: %d prohibited columns selected", featureAudit.ProhibitedSelectedCount)
 	}
@@ -523,8 +548,8 @@ func (s *Service) buildBaselineModels(build *api.BaselineModelBuild) error {
 		mode = "offline_challenger_evaluation_only"
 		featureSelectionPolicy = "a broad safe feature set fits a continuous robust anomaly score from training controls only; training-only effect selection supplies Logistic features and the anomaly score is appended without filtering rows; validation/test labels never fit anomaly statistics, features, calibration, or operating threshold; runtime registration is disabled"
 	}
-	artifact := baselineArtifact{Version: build.Version, Algorithm: build.Algorithm, FeatureWindowPolicy: windowPolicy, MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CreatedAt: s.now()}
-	report := baselineReport{Version: build.Version, Algorithm: build.Algorithm, FeatureWindowPolicy: windowPolicy, MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, Mode: mode, FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CalibrationPolicy: "validation-only Platt scaling fits slope/intercept; held-out test labels are audit-only; no online probability release", OperatingPointPolicy: "validation-only threshold prioritizes precision >= 0.70 and recall >= 0.50; held-out test must independently pass both gates", FeatureSelectionPolicy: featureSelectionPolicy, ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
+	artifact := baselineArtifact{Version: build.Version, Algorithm: build.Algorithm, FeatureWindowPolicy: windowPolicy, FeaturePlanePolicy: planePolicy, MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CreatedAt: s.now()}
+	report := baselineReport{Version: build.Version, Algorithm: build.Algorithm, FeatureWindowPolicy: windowPolicy, FeaturePlanePolicy: planePolicy, MatrixKey: matrix.TrainingMatrixKey, ScopeEventType: build.ScopeEventType, ScopeModelName: build.ScopeModelName, ReadinessGate: build.ReadinessGateVersion, PredictionTarget: predictionTarget, Mode: mode, FeaturePolicy: baselineFeaturePolicy(predictionTarget), FeatureAudit: featureAudit, CalibrationPolicy: "validation-only Platt scaling fits slope/intercept; held-out test labels are audit-only; no online probability release", OperatingPointPolicy: "validation-only threshold prioritizes precision >= 0.70 and recall >= 0.50; held-out test must independently pass both gates", FeatureSelectionPolicy: featureSelectionPolicy, ByTestModel: map[string]baselineMetrics{}, ByTestEventType: map[string]baselineMetrics{}, ByTestDriverVersion: map[string]baselineMetrics{}, ByTestLabelSource: map[string]baselineMetrics{}, ByTestHardwareCertainty: map[string]baselineMetrics{}, ByTestRuleVersion: map[string]baselineMetrics{}, CreatedAt: s.now()}
 	for _, h := range horizons {
 		train, val, test := splitMatrixRows(byHorizon[h])
 		if !hasBothLabels(train) || !hasBothLabels(val) || !hasBothLabels(test) {
@@ -1141,6 +1166,10 @@ func auditBaselineFeaturesForTarget(rows []trainingMatrixRow, predictionTarget s
 }
 
 func auditBaselineFeaturesForTargetAndWindowPolicy(rows []trainingMatrixRow, predictionTarget, windowPolicy string) baselineFeatureAudit {
+	return auditBaselineFeaturesForTargetAndPolicies(rows, predictionTarget, windowPolicy, allFeaturePlanesPolicy)
+}
+
+func auditBaselineFeaturesForTargetAndPolicies(rows []trainingMatrixRow, predictionTarget, windowPolicy, planePolicy string) baselineFeatureAudit {
 	set := map[string]bool{}
 	for _, r := range rows {
 		for c := range r.Features {
@@ -1153,9 +1182,14 @@ func auditBaselineFeaturesForTargetAndWindowPolicy(rows []trainingMatrixRow, pre
 	}
 	sort.Strings(all)
 	audit := baselineFeatureAudit{Version: baselineFeatureAuditVersion, PredictionTarget: predictionTarget, Status: "passed", SourceFeatureCount: len(all), SelectedColumns: []string{}, Exclusions: []baselineFeatureExclusion{}}
+	structural := stringSet(historicalStructuralFeatures)
 	for _, column := range all {
 		if reason := prohibitedBaselineFeatureReasonForTarget(column, predictionTarget); reason != "" {
 			audit.Exclusions = append(audit.Exclusions, baselineFeatureExclusion{Feature: column, Reason: reason})
+			continue
+		}
+		if planePolicy == excludeStructuralPlanePolicy && structural[column] {
+			audit.Exclusions = append(audit.Exclusions, baselineFeatureExclusion{Feature: column, Reason: "feature_plane_ablation_exclude_structural"})
 			continue
 		}
 		if maximum := maximumFeatureWindow(windowPolicy); maximum > 0 {
