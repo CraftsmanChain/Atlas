@@ -2,15 +2,118 @@ package prediction
 
 import (
 	"bytes"
+	"encoding/json"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
 	"atlas/pkg/api"
 	"atlas/pkg/storage"
 )
+
+func TestObservabilityRankingFixedTimeReplaySurvivesMaturityAndLabelChanges(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	asOf := time.Date(2026, 9, 30, 12, 0, 0, 123456789, time.UTC)
+	var runIDs []uint
+	for _, offset := range []time.Duration{-time.Hour, time.Hour} {
+		finished := asOf.Add(-observabilityRankingHorizon - observabilityRankingNegativeCensor + offset)
+		run := api.HealthEvaluationRun{Status: "success", StartedAt: finished.Add(-time.Minute), FinishedAt: &finished}
+		if err := db.Create(&run).Error; err != nil {
+			t.Fatal(err)
+		}
+		runIDs = append(runIDs, run.ID)
+		if err := db.Create(&api.GPUFeatureSnapshot{
+			EvaluationRunID: run.ID, GPUUUID: "GPU-REPLAY", NodeIP: "10.0.0.1",
+			ObservedAt: finished, Metrics: api.FloatMap{observabilityMaxGapMetric: 10},
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index, availability := range []time.Time{asOf, asOf.Add(time.Hour)} {
+		if err := db.Create(&api.FailureLabel{
+			LabelKey: "replay-label-" + twoDigit(index), HardwareClass: "gpu", EntityType: "gpu",
+			EntityKey: "GPU-REPLAY", GPUUUID: "GPU-REPLAY", EventType: "row_remap_failure",
+			LabelValue: 1, QualityTier: "confirmed", SourceType: "rule", SourceRecordID: uint(index + 1),
+			LabelContractVersion: LabelContractVersion, OccurredAt: asOf.Add(-4 * 24 * time.Hour), AvailableAt: availability,
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return asOf }
+	initial, err := service.ObservabilityRankingValidationReport()
+	if err != nil || len(initial.Cohorts) != 1 || initial.Cohorts[0].HealthEvaluationRunID != runIDs[0] || initial.Cohorts[0].MatchedLabelCount != 1 {
+		t.Fatalf("initial rolling evidence: %+v err=%v", initial, err)
+	}
+	fixed, err := service.ObservabilityRankingValidationReportAsOf(asOf)
+	if err != nil || fixed.CohortSelectionMode != "fixed_as_of" || !fixed.EvaluationAsOf.Equal(asOf) {
+		t.Fatalf("fixed evidence: %+v err=%v", fixed, err)
+	}
+	service.now = func() time.Time { return asOf.Add(2 * time.Hour) }
+	rolling, err := service.ObservabilityRankingValidationReport()
+	if err != nil || len(rolling.Cohorts) != 1 || rolling.Cohorts[0].HealthEvaluationRunID != runIDs[1] || rolling.Cohorts[0].MatchedLabelCount != 2 {
+		t.Fatalf("test must reproduce rolling selection and later label availability: %+v err=%v", rolling, err)
+	}
+	replayed, err := service.ObservabilityRankingValidationReportAsOf(asOf)
+	if err != nil || replayed.ReportSHA256 != fixed.ReportSHA256 || replayed.Cohorts[0].HealthEvaluationRunID != runIDs[0] || replayed.Cohorts[0].MatchedLabelCount != 1 || replayed.GeneratedAt.Equal(fixed.GeneratedAt) {
+		t.Fatalf("fixed replay must retain original cohorts and exclude later labels: %+v err=%v", replayed, err)
+	}
+	otherTime, err := service.ObservabilityRankingValidationReportAsOf(asOf.Add(time.Minute))
+	if err != nil || otherTime.ReportSHA256 == fixed.ReportSHA256 {
+		t.Fatalf("fixed fingerprints must bind evaluation time: %+v err=%v", otherTime, err)
+	}
+	// The emitted URL must work without timestamp truncation, including nanoseconds.
+	handler := NewHandlerWithService(service)
+	response := httptest.NewRecorder()
+	handler.HandleObservabilityRankingValidation(response, httptest.NewRequest(http.MethodGet, initial.ReplayURL+"&download=1", nil))
+	var body struct {
+		Data ObservabilityRankingValidationReport `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || body.Data.ReportSHA256 != fixed.ReportSHA256 || response.Header().Get("Content-Disposition") == "" {
+		t.Fatalf("download must replay the displayed evaluation time: %d %s", response.Code, response.Body.String())
+	}
+	conditional := httptest.NewRequest(http.MethodGet, initial.ReplayURL, nil)
+	conditional.Header.Set("If-None-Match", response.Header().Get("ETag"))
+	response = httptest.NewRecorder()
+	handler.HandleObservabilityRankingValidation(response, conditional)
+	if response.Code != http.StatusNotModified {
+		t.Fatalf("unchanged fixed replay should return 304, got %d", response.Code)
+	}
+	// Equivalent timezone spellings must bind the same evidence timestamp and SHA.
+	equivalent := asOf.In(time.FixedZone("UTC+8", 8*3600)).Format(time.RFC3339Nano)
+	response = httptest.NewRecorder()
+	handler.HandleObservabilityRankingValidation(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/observability-ranking-validation?as_of="+url.QueryEscape(equivalent), nil))
+	if response.Code != http.StatusOK || response.Header().Get("ETag") != `"`+fixed.ReportSHA256+`"` {
+		t.Fatalf("timezone equivalent replay must have identical SHA: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestObservabilityRankingRejectsInvalidReplayTimes(t *testing.T) {
+	// Invalid requests must fail before database access.
+	service := &Service{now: func() time.Time { return time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC) }}
+	handler := NewHandlerWithService(service)
+	for _, query := range []string{
+		"as_of=", "as_of=bad", "as_of=%ZZ", "as_of=2026-09-30", "as_of=2026-10-01T00:00:00Z",
+		"as_of=0001-01-01T00:00:00Z", "as_of=2026-09-01T00:00:00Z&as_of=2026-09-02T00:00:00Z",
+	} {
+		t.Run(query, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.HandleObservabilityRankingValidation(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/observability-ranking-validation?"+query, nil))
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
 
 func TestObservabilityRankingValidationUsesIndependentPointInTimeCohorts(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
