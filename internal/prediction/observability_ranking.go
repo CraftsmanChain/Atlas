@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -15,7 +16,7 @@ import (
 )
 
 const (
-	ObservabilityRankingValidationVersion = "prediction-observability-ranking-validation-v3"
+	ObservabilityRankingValidationVersion = "prediction-observability-ranking-validation-v4"
 	observabilityRankingHorizon           = 7 * 24 * time.Hour
 	observabilityRankingNegativeCensor    = 24 * time.Hour
 	observabilityRankingCohortLimit       = 12
@@ -23,6 +24,8 @@ const (
 	observabilityRankingMinimumEntities   = 3
 	observabilityMaxGapMetric             = "gpu_metric_gap_max_seconds_1h"
 )
+
+var ErrInvalidObservabilityAsOf = errors.New("as_of must be a nonzero RFC3339 timestamp no later than the current time")
 
 const (
 	observabilityMaxGapPolicy                = "max_gap"
@@ -126,6 +129,9 @@ type ObservabilityRankingPolicySummary struct {
 }
 
 type ObservabilityRankingValidationReport struct {
+	CohortSelectionMode           string                              `json:"cohort_selection_mode"`
+	EvaluationAsOf                time.Time                           `json:"evaluation_as_of"`
+	ReplayURL                     string                              `json:"replay_url"`
 	Version                       string                              `json:"version"`
 	FrameworkVersion              string                              `json:"framework_version"`
 	Mode                          string                              `json:"mode"`
@@ -160,8 +166,28 @@ type ObservabilityRankingValidationReport struct {
 
 func (s *Service) ObservabilityRankingValidationReport() (ObservabilityRankingValidationReport, error) {
 	now := s.now()
+	return s.observabilityRankingValidationReport(now, now, false)
+}
+
+// AsOf pins run maturity and label availability, not a historical database snapshot.
+// Reviewed labels or backfilled records can still change the resulting evidence SHA.
+func (s *Service) ObservabilityRankingValidationReportAsOf(asOf time.Time) (ObservabilityRankingValidationReport, error) {
+	now := s.now()
+	if asOf.IsZero() || asOf.After(now) {
+		return ObservabilityRankingValidationReport{}, ErrInvalidObservabilityAsOf
+	}
+	return s.observabilityRankingValidationReport(asOf.UTC(), now, true)
+}
+
+func (s *Service) observabilityRankingValidationReport(asOf, generatedAt time.Time, fixed bool) (ObservabilityRankingValidationReport, error) {
+	selectionMode := "rolling_latest_mature"
+	if fixed {
+		selectionMode = "fixed_as_of"
+	}
 	report := ObservabilityRankingValidationReport{
-		Version: ObservabilityRankingValidationVersion, FrameworkVersion: FrameworkVersion,
+		CohortSelectionMode: selectionMode, EvaluationAsOf: asOf.UTC(),
+		ReplayURL: "/api/v1/prediction/observability-ranking-validation?as_of=" + url.QueryEscape(asOf.UTC().Format(time.RFC3339Nano)),
+		Version:   ObservabilityRankingValidationVersion, FrameworkVersion: FrameworkVersion,
 		Mode: "read_only_prospective_health_run_signal_validation", Status: "blocked_no_mature_cohorts",
 		Signal: observabilityMaxGapMetric, PrimaryPolicy: observabilityMaxGapPolicy,
 		ScoreSemantics:       "relative_node_priority_not_absolute_failure_probability",
@@ -173,6 +199,8 @@ func (s *Service) ObservabilityRankingValidationReport() (ObservabilityRankingVa
 		EvidenceIndependenceBlockers: []string{},
 		Safety:                       ObservabilityRankingSafety{ReadOnlyShadow: true, NoAlertEmitted: true, NoActionExecuted: true, ModelIndependent: true},
 		Interpretation: []string{
+			"as_of pins run maturity and label availability; without it the selected cohorts roll with request time",
+			"fixed-time replay reads current persisted records, not a historical database snapshot; retain downloaded reports and SHA fingerprints to detect evidence changes",
 			"each cohort is one persisted health evaluation run and uses only its point-in-time structural snapshots and health component scores",
 			"fourteen fixed policies across two signal planes race on identical cohorts and labels; legacy top-level ranking fields remain bound to the primary max-gap policy",
 			"positive outcomes are confirmed or strong-proxy labels inside the following seven days; negatives require an additional 24-hour censoring window",
@@ -180,15 +208,15 @@ func (s *Service) ObservabilityRankingValidationReport() (ObservabilityRankingVa
 			"risk ranking is relative priority evidence and is not a calibrated hardware-failure probability",
 		},
 		RecommendedNextRun: []string{"continue collecting persisted health runs and reviewed failure labels without enabling alerts or actions"},
-		GeneratedAt:        now,
+		GeneratedAt:        generatedAt,
 	}
 
-	runs, err := s.independentMatureHealthRuns(now)
+	runs, err := s.independentMatureHealthRuns(asOf)
 	if err != nil {
 		return report, err
 	}
 	for _, run := range runs {
-		cohort, err := s.observabilityRankingCohort(run, now)
+		cohort, err := s.observabilityRankingCohort(run, asOf)
 		if err != nil {
 			return report, err
 		}
@@ -669,6 +697,12 @@ func observabilityRankingChecksum(report ObservabilityRankingValidationReport) s
 	fingerprint := report
 	fingerprint.ReportSHA256 = ""
 	fingerprint.GeneratedAt = time.Time{}
+	fingerprint.ReplayURL = ""
+	// Preserve rolling ETags while evidence is unchanged; fixed replay binds its
+	// requested evaluation time, even if another time happens to select the same runs.
+	if fingerprint.CohortSelectionMode == "rolling_latest_mature" {
+		fingerprint.EvaluationAsOf = time.Time{}
+	}
 	payload, _ := json.Marshal(fingerprint)
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])

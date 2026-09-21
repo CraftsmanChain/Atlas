@@ -2,8 +2,10 @@ package prediction
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -180,9 +182,33 @@ func (h *Handler) HandleObservabilityRankingValidation(w http.ResponseWriter, r 
 		predictionJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	report, err := h.service.ObservabilityRankingValidationReport()
+	query, queryErr := url.ParseQuery(r.URL.RawQuery)
+	if queryErr != nil {
+		predictionJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid query encoding"})
+		return
+	}
+	var report ObservabilityRankingValidationReport
+	var err error
+	if values, present := query["as_of"]; present {
+		if len(values) != 1 || values[0] == "" {
+			predictionJSON(w, http.StatusBadRequest, map[string]any{"error": "supply exactly one nonempty as_of timestamp"})
+			return
+		}
+		asOf, parseErr := time.Parse(time.RFC3339Nano, values[0])
+		if parseErr != nil {
+			predictionJSON(w, http.StatusBadRequest, map[string]any{"error": ErrInvalidObservabilityAsOf.Error()})
+			return
+		}
+		report, err = h.service.ObservabilityRankingValidationReportAsOf(asOf)
+	} else {
+		report, err = h.service.ObservabilityRankingValidationReport()
+	}
 	if err != nil {
-		predictionJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if errors.Is(err, ErrInvalidObservabilityAsOf) {
+			status = http.StatusBadRequest
+		}
+		predictionJSON(w, status, map[string]any{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Cache-Control", "private, no-store")
