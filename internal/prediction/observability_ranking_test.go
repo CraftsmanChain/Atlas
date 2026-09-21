@@ -116,6 +116,92 @@ func TestObservabilityRankingValidationUsesIndependentPointInTimeCohorts(t *test
 	}
 }
 
+func TestObservabilityRankingValidationSelectsStablePolicyWithoutTuningPrimarySignal(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	cutoffs := []time.Time{
+		time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC),
+		time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC),
+		time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC),
+	}
+	for cohortIndex, cutoff := range cutoffs {
+		finished := cutoff.Add(time.Minute)
+		run := api.HealthEvaluationRun{Status: "success", StartedAt: cutoff, FinishedAt: &finished, AssetCount: 40, ScoredCount: 40}
+		if err := db.Create(&run).Error; err != nil {
+			t.Fatal(err)
+		}
+		for nodeIndex := 0; nodeIndex < 40; nodeIndex++ {
+			presence := 100.0
+			maxGap := float64(200 - nodeIndex)
+			if nodeIndex == 0 {
+				presence = 50
+				maxGap = 1
+			}
+			uuid := "GPU-RACE-" + string(rune('A'+cohortIndex)) + "-" + twoDigit(nodeIndex+1)
+			snapshot := api.GPUFeatureSnapshot{
+				EvaluationRunID: run.ID, GPUAssetID: uint(nodeIndex + 1), GPUUUID: uuid,
+				NodeIP: "10.2." + string(rune('1'+cohortIndex)) + "." + twoDigit(nodeIndex+1), GPUIndex: 0,
+				Metrics: api.FloatMap{
+					observabilityMaxGapMetric:         maxGap,
+					"gpu_metric_presence_ratio_1h":    presence,
+					"gpu_metric_sample_age_seconds":   15,
+					"gpu_uuid_presence_flap_count_1h": 0,
+					"target_scrape_success_ratio_5m":  100,
+					"target_scrape_samples_ratio_5m":  100,
+				},
+				ObservedAt: cutoff.Add(30 * time.Second),
+			}
+			if err := db.Create(&snapshot).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		positiveUUID := "GPU-RACE-" + string(rune('A'+cohortIndex)) + "-01"
+		label := api.FailureLabel{
+			LabelKey: "race-positive-" + twoDigit(cohortIndex), HardwareClass: "gpu", EntityType: "gpu",
+			EntityKey: positiveUUID, GPUUUID: positiveUUID, EventType: "row_remap_failure", LabelValue: 1,
+			QualityTier: "confirmed", SourceType: "human_resolution", SourceRecordID: uint(cohortIndex + 1),
+			LabelContractVersion: LabelContractVersion, OccurredAt: cutoff.Add(24 * time.Hour), AvailableAt: cutoff.Add(48 * time.Hour),
+		}
+		if err := db.Create(&label).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	report, err := service.ObservabilityRankingValidationReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "comparable" || report.PrimaryPolicy != observabilityMaxGapPolicy || report.CandidatePolicy != observabilityPresenceDeficitPolicy {
+		t.Fatalf("stable alternative policy should be selected without changing the primary compatibility fields: %+v", report)
+	}
+	maxGapSummary, ok := observabilityPolicySummaryByName(report.PolicySummaries, observabilityMaxGapPolicy)
+	if !ok || maxGapSummary.TemporalConsistency.Status != "review_mixed_direction" || maxGapSummary.TemporalConsistency.PositiveDirectionCohorts != 0 {
+		t.Fatalf("the failed max-gap hypothesis must remain explicit: %+v", maxGapSummary)
+	}
+	presenceSummary, ok := observabilityPolicySummaryByName(report.PolicySummaries, observabilityPresenceDeficitPolicy)
+	if !ok || presenceSummary.TemporalConsistency.Status != "consistent" || presenceSummary.TemporalConsistency.PositiveDirectionCohorts != 3 {
+		t.Fatalf("presence-deficit policy must pass all independent cohorts: %+v", presenceSummary)
+	}
+	for _, cohort := range report.Cohorts {
+		if top := cohort.RankingAtPercent[0]; top.Hits != 0 {
+			t.Fatalf("legacy max-gap fields must preserve the failed primary result: %+v", cohort)
+		}
+		presence, ok := observabilityPolicyResultByName(cohort.PolicyResults, observabilityPresenceDeficitPolicy)
+		if !ok || presence.Status != "comparable" || presence.DistinctScoreCount != 2 || presence.RankingAtPercent[0].Hits != 1 {
+			t.Fatalf("presence policy result is incomplete: %+v", presence)
+		}
+		constantAge, ok := observabilityPolicyResultByName(cohort.PolicyResults, observabilitySampleAgePolicy)
+		if !ok || constantAge.Status != "no_discrimination" || constantAge.DistinctScoreCount != 1 {
+			t.Fatalf("constant scores must not become an accidental ranking candidate: %+v", constantAge)
+		}
+	}
+}
+
 func TestObservabilityRankingValidationBlocksWithoutMatureCohorts(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
