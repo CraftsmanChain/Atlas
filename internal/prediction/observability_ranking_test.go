@@ -202,6 +202,135 @@ func TestObservabilityRankingValidationSelectsStablePolicyWithoutTuningPrimarySi
 	}
 }
 
+func TestObservabilityRankingValidationRacesPersistedHealthComponents(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	cutoffs := []time.Time{
+		time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC),
+		time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC),
+		time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC),
+	}
+	for cohortIndex, cutoff := range cutoffs {
+		finished := cutoff.Add(time.Minute)
+		run := api.HealthEvaluationRun{Status: "success", StartedAt: cutoff, FinishedAt: &finished, AssetCount: 40, ScoredCount: 40}
+		if err := db.Create(&run).Error; err != nil {
+			t.Fatal(err)
+		}
+		for nodeIndex := 0; nodeIndex < 40; nodeIndex++ {
+			uuid := "GPU-HEALTH-" + string(rune('A'+cohortIndex)) + "-" + twoDigit(nodeIndex+1)
+			node := "10.3." + string(rune('1'+cohortIndex)) + "." + twoDigit(nodeIndex+1)
+			maxGap := float64(200 - nodeIndex)
+			memoryScore := 100
+			if nodeIndex == 0 {
+				maxGap = 1
+				memoryScore = 50
+			}
+			snapshot := api.GPUFeatureSnapshot{
+				EvaluationRunID: run.ID, GPUAssetID: uint(nodeIndex + 1), GPUUUID: uuid, NodeIP: node, GPUIndex: 0,
+				Metrics: api.FloatMap{observabilityMaxGapMetric: maxGap}, ObservedAt: cutoff.Add(30 * time.Second),
+			}
+			if err := db.Create(&snapshot).Error; err != nil {
+				t.Fatal(err)
+			}
+			overallScore := 100
+			healthScore := api.GPUHealthScore{
+				EvaluationRunID: run.ID, FeatureSnapshotID: snapshot.ID, GPUAssetID: snapshot.GPUAssetID,
+				GPUUUID: uuid, NodeIP: node, GPUIndex: 0, Score: &overallScore,
+				StabilityScore: 100, MemoryScore: memoryScore, ThermalScore: 100, PowerScore: 100,
+				InterconnectScore: 100, PerformanceScore: 100, EvaluatedAt: finished.Add(-10 * time.Second),
+			}
+			if err := db.Create(&healthScore).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		positiveUUID := "GPU-HEALTH-" + string(rune('A'+cohortIndex)) + "-01"
+		label := api.FailureLabel{
+			LabelKey: "health-positive-" + twoDigit(cohortIndex), HardwareClass: "gpu", EntityType: "gpu",
+			EntityKey: positiveUUID, GPUUUID: positiveUUID, EventType: "row_remap_failure", LabelValue: 1,
+			QualityTier: "confirmed", SourceType: "human_resolution", SourceRecordID: uint(cohortIndex + 1),
+			LabelContractVersion: LabelContractVersion, OccurredAt: cutoff.Add(24 * time.Hour), AvailableAt: cutoff.Add(48 * time.Hour),
+		}
+		if err := db.Create(&label).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	report, err := service.ObservabilityRankingValidationReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "comparable" || report.CandidatePolicy != observabilityMemoryHealthPolicy || report.EvidenceIndependenceStatus != "passed" || report.UniquePositiveEntityCount != 3 {
+		t.Fatalf("memory health policy should win on three entity-independent cohorts: %+v", report)
+	}
+	memory, ok := observabilityPolicySummaryByName(report.PolicySummaries, observabilityMemoryHealthPolicy)
+	if !ok || memory.Plane != observabilityHealthPlane || memory.TemporalConsistency.Status != "consistent" || memory.TemporalConsistency.PositiveDirectionCohorts != 3 {
+		t.Fatalf("memory health policy summary is incomplete: %+v", memory)
+	}
+	overall, ok := observabilityPolicySummaryByName(report.PolicySummaries, observabilityOverallHealthPolicy)
+	if !ok || overall.BlockedPositiveCohorts != 3 {
+		t.Fatalf("constant overall health scores must be blocked as non-discriminating: %+v", overall)
+	}
+}
+
+func TestObservabilityRankingValidationBlocksRepeatedPositiveEntity(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	cutoffs := []time.Time{
+		time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC),
+		time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC),
+		time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC),
+	}
+	for cohortIndex, cutoff := range cutoffs {
+		finished := cutoff.Add(time.Minute)
+		run := api.HealthEvaluationRun{Status: "success", StartedAt: cutoff, FinishedAt: &finished, AssetCount: 30, ScoredCount: 30}
+		if err := db.Create(&run).Error; err != nil {
+			t.Fatal(err)
+		}
+		for nodeIndex := 0; nodeIndex < 30; nodeIndex++ {
+			uuid := "GPU-REPEAT-" + twoDigit(nodeIndex+1)
+			snapshot := api.GPUFeatureSnapshot{
+				EvaluationRunID: run.ID, GPUAssetID: uint(nodeIndex + 1), GPUUUID: uuid,
+				NodeIP: "10.4.0." + twoDigit(nodeIndex+1), GPUIndex: 0,
+				Metrics: api.FloatMap{observabilityMaxGapMetric: float64(100 - nodeIndex)}, ObservedAt: cutoff.Add(30 * time.Second),
+			}
+			if err := db.Create(&snapshot).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		label := api.FailureLabel{
+			LabelKey: "repeat-positive-" + twoDigit(cohortIndex), HardwareClass: "gpu", EntityType: "gpu",
+			EntityKey: "GPU-REPEAT-01", GPUUUID: "GPU-REPEAT-01", EventType: "row_remap_failure", LabelValue: 1,
+			QualityTier: "confirmed", SourceType: "human_resolution", SourceRecordID: uint(cohortIndex + 1),
+			LabelContractVersion: LabelContractVersion, OccurredAt: cutoff.Add(24 * time.Hour), AvailableAt: cutoff.Add(48 * time.Hour),
+		}
+		if err := db.Create(&label).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	report, err := service.ObservabilityRankingValidationReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	maxGap, ok := observabilityPolicySummaryByName(report.PolicySummaries, observabilityMaxGapPolicy)
+	if !ok || maxGap.TemporalConsistency.Status != "consistent" {
+		t.Fatalf("test setup must produce a cohort-consistent max-gap policy: %+v", maxGap)
+	}
+	if report.Status != "exploratory" || report.CandidatePolicy != "" || report.EvidenceIndependenceStatus != "blocked_insufficient_unique_positive_entities" || report.UniquePositiveEntityCount != 1 || report.RecurrentPositiveEntityCount != 1 || report.PositiveEpisodeCount != 3 {
+		t.Fatalf("repeated positive GPU must block candidate selection: %+v", report)
+	}
+}
+
 func TestObservabilityRankingValidationBlocksWithoutMatureCohorts(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {

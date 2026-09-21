@@ -15,11 +15,12 @@ import (
 )
 
 const (
-	ObservabilityRankingValidationVersion = "prediction-observability-ranking-validation-v2"
+	ObservabilityRankingValidationVersion = "prediction-observability-ranking-validation-v3"
 	observabilityRankingHorizon           = 7 * 24 * time.Hour
 	observabilityRankingNegativeCensor    = 24 * time.Hour
 	observabilityRankingCohortLimit       = 12
 	observabilityRankingMinimumCoverage   = 0.80
+	observabilityRankingMinimumEntities   = 3
 	observabilityMaxGapMetric             = "gpu_metric_gap_max_seconds_1h"
 )
 
@@ -31,22 +32,43 @@ const (
 	observabilityScrapeFailurePolicy         = "scrape_success_deficit"
 	observabilityScrapeSampleDeficitPolicy   = "scrape_samples_deficit"
 	observabilityContinuityWorstMarginPolicy = "continuity_worst_margin"
+	observabilityOverallHealthPolicy         = "overall_health_deficit"
+	observabilityStabilityHealthPolicy       = "stability_health_deficit"
+	observabilityMemoryHealthPolicy          = "memory_health_deficit"
+	observabilityThermalHealthPolicy         = "thermal_health_deficit"
+	observabilityPowerHealthPolicy           = "power_health_deficit"
+	observabilityInterconnectHealthPolicy    = "interconnect_health_deficit"
+	observabilityPerformanceHealthPolicy     = "performance_health_deficit"
+)
+
+const (
+	observabilityStructuralPlane = "structural_observability"
+	observabilityHealthPlane     = "health_score_components"
 )
 
 type observabilityPolicyDefinition struct {
-	Name        string
-	Description string
-	Score       func(api.FloatMap) (float64, bool)
+	Name          string
+	Plane         string
+	Description   string
+	SnapshotScore func(api.FloatMap) (float64, bool)
+	HealthScore   func(api.GPUHealthScore) (float64, bool)
 }
 
 var observabilityPolicyDefinitions = []observabilityPolicyDefinition{
-	{Name: observabilityMaxGapPolicy, Description: "node maximum GPU metric gap over the preceding hour", Score: metricRiskScore(observabilityMaxGapMetric)},
-	{Name: observabilityPresenceDeficitPolicy, Description: "node maximum deficit from 100% GPU metric presence over the preceding hour", Score: deficitRiskScore("gpu_metric_presence_ratio_1h", 100)},
-	{Name: observabilitySampleAgePolicy, Description: "node maximum age of the latest GPU metric sample", Score: metricRiskScore("gpu_metric_sample_age_seconds")},
-	{Name: observabilityPresenceFlapPolicy, Description: "node maximum GPU UUID presence flap count over the preceding hour", Score: metricRiskScore("gpu_uuid_presence_flap_count_1h")},
-	{Name: observabilityScrapeFailurePolicy, Description: "node maximum deficit from 100% DCGM target scrape success over five minutes", Score: deficitRiskScore("target_scrape_success_ratio_5m", 100)},
-	{Name: observabilityScrapeSampleDeficitPolicy, Description: "node maximum deficit from 100% DCGM target scrape sample ratio over five minutes", Score: deficitRiskScore("target_scrape_samples_ratio_5m", 100)},
-	{Name: observabilityContinuityWorstMarginPolicy, Description: "node worst normalized telemetry-continuity margin using existing degraded thresholds", Score: continuityWorstMarginScore},
+	{Name: observabilityMaxGapPolicy, Plane: observabilityStructuralPlane, Description: "node maximum GPU metric gap over the preceding hour", SnapshotScore: metricRiskScore(observabilityMaxGapMetric)},
+	{Name: observabilityPresenceDeficitPolicy, Plane: observabilityStructuralPlane, Description: "node maximum deficit from 100% GPU metric presence over the preceding hour", SnapshotScore: deficitRiskScore("gpu_metric_presence_ratio_1h", 100)},
+	{Name: observabilitySampleAgePolicy, Plane: observabilityStructuralPlane, Description: "node maximum age of the latest GPU metric sample", SnapshotScore: metricRiskScore("gpu_metric_sample_age_seconds")},
+	{Name: observabilityPresenceFlapPolicy, Plane: observabilityStructuralPlane, Description: "node maximum GPU UUID presence flap count over the preceding hour", SnapshotScore: metricRiskScore("gpu_uuid_presence_flap_count_1h")},
+	{Name: observabilityScrapeFailurePolicy, Plane: observabilityStructuralPlane, Description: "node maximum deficit from 100% DCGM target scrape success over five minutes", SnapshotScore: deficitRiskScore("target_scrape_success_ratio_5m", 100)},
+	{Name: observabilityScrapeSampleDeficitPolicy, Plane: observabilityStructuralPlane, Description: "node maximum deficit from 100% DCGM target scrape sample ratio over five minutes", SnapshotScore: deficitRiskScore("target_scrape_samples_ratio_5m", 100)},
+	{Name: observabilityContinuityWorstMarginPolicy, Plane: observabilityStructuralPlane, Description: "node worst normalized telemetry-continuity margin using existing degraded thresholds", SnapshotScore: continuityWorstMarginScore},
+	{Name: observabilityOverallHealthPolicy, Plane: observabilityHealthPlane, Description: "node maximum deficit from the persisted overall GPU health score", HealthScore: overallHealthDeficitScore},
+	{Name: observabilityStabilityHealthPolicy, Plane: observabilityHealthPlane, Description: "node maximum deficit from the persisted GPU stability component score", HealthScore: componentHealthDeficitScore(func(score api.GPUHealthScore) int { return score.StabilityScore })},
+	{Name: observabilityMemoryHealthPolicy, Plane: observabilityHealthPlane, Description: "node maximum deficit from the persisted GPU memory component score", HealthScore: componentHealthDeficitScore(func(score api.GPUHealthScore) int { return score.MemoryScore })},
+	{Name: observabilityThermalHealthPolicy, Plane: observabilityHealthPlane, Description: "node maximum deficit from the persisted GPU thermal component score", HealthScore: componentHealthDeficitScore(func(score api.GPUHealthScore) int { return score.ThermalScore })},
+	{Name: observabilityPowerHealthPolicy, Plane: observabilityHealthPlane, Description: "node maximum deficit from the persisted GPU power component score", HealthScore: componentHealthDeficitScore(func(score api.GPUHealthScore) int { return score.PowerScore })},
+	{Name: observabilityInterconnectHealthPolicy, Plane: observabilityHealthPlane, Description: "node maximum deficit from the persisted GPU interconnect component score", HealthScore: componentHealthDeficitScore(func(score api.GPUHealthScore) int { return score.InterconnectScore })},
+	{Name: observabilityPerformanceHealthPolicy, Plane: observabilityHealthPlane, Description: "node maximum deficit from the persisted GPU performance component score", HealthScore: componentHealthDeficitScore(func(score api.GPUHealthScore) int { return score.PerformanceScore })},
 }
 
 type ObservabilityRankingSafety struct {
@@ -74,10 +96,13 @@ type ObservabilityRankingCohort struct {
 	RankingAtK            []RankingAtK                       `json:"ranking_at_k"`
 	RankingAtPercent      []RankingAtPercent                 `json:"ranking_at_percent"`
 	BlockingReasons       []string                           `json:"blocking_reasons"`
+	positiveEntityKeys    []string
+	positiveEpisodeKeys   []string
 }
 
 type ObservabilityRankingPolicyResult struct {
 	Policy                string             `json:"policy"`
+	Plane                 string             `json:"plane"`
 	Description           string             `json:"description"`
 	Status                string             `json:"status"`
 	ScoredGPUCount        int                `json:"scored_gpu_count"`
@@ -94,54 +119,64 @@ type ObservabilityRankingPolicyResult struct {
 
 type ObservabilityRankingPolicySummary struct {
 	Policy                 string                   `json:"policy"`
+	Plane                  string                   `json:"plane"`
 	Description            string                   `json:"description"`
 	BlockedPositiveCohorts int                      `json:"blocked_positive_cohorts"`
 	TemporalConsistency    TemporalTrackConsistency `json:"temporal_consistency"`
 }
 
 type ObservabilityRankingValidationReport struct {
-	Version              string                              `json:"version"`
-	FrameworkVersion     string                              `json:"framework_version"`
-	Mode                 string                              `json:"mode"`
-	Status               string                              `json:"status"`
-	ReportSHA256         string                              `json:"report_sha256"`
-	Signal               string                              `json:"signal"`
-	PrimaryPolicy        string                              `json:"primary_policy"`
-	CandidatePolicy      string                              `json:"candidate_policy,omitempty"`
-	ScoreSemantics       string                              `json:"score_semantics"`
-	TargetHorizonMinutes int                                 `json:"target_horizon_minutes"`
-	NegativeCensorHours  int                                 `json:"negative_censor_hours"`
-	CohortLimit          int                                 `json:"cohort_limit"`
-	MinimumScoreCoverage float64                             `json:"minimum_score_coverage"`
-	CohortCount          int                                 `json:"cohort_count"`
-	EvaluableCohortCount int                                 `json:"evaluable_cohort_count"`
-	PositiveCohortCount  int                                 `json:"positive_cohort_count"`
-	Cohorts              []ObservabilityRankingCohort        `json:"cohorts"`
-	PolicySummaries      []ObservabilityRankingPolicySummary `json:"policy_summaries"`
-	TemporalConsistency  TemporalTrackConsistency            `json:"temporal_consistency"`
-	Safety               ObservabilityRankingSafety          `json:"safety"`
-	BlockingReasons      []string                            `json:"blocking_reasons"`
-	Interpretation       []string                            `json:"interpretation"`
-	RecommendedNextRun   []string                            `json:"recommended_next_run"`
-	GeneratedAt          time.Time                           `json:"generated_at"`
+	Version                       string                              `json:"version"`
+	FrameworkVersion              string                              `json:"framework_version"`
+	Mode                          string                              `json:"mode"`
+	Status                        string                              `json:"status"`
+	ReportSHA256                  string                              `json:"report_sha256"`
+	Signal                        string                              `json:"signal"`
+	PrimaryPolicy                 string                              `json:"primary_policy"`
+	CandidatePolicy               string                              `json:"candidate_policy,omitempty"`
+	ScoreSemantics                string                              `json:"score_semantics"`
+	TargetHorizonMinutes          int                                 `json:"target_horizon_minutes"`
+	NegativeCensorHours           int                                 `json:"negative_censor_hours"`
+	CohortLimit                   int                                 `json:"cohort_limit"`
+	MinimumScoreCoverage          float64                             `json:"minimum_score_coverage"`
+	CohortCount                   int                                 `json:"cohort_count"`
+	EvaluableCohortCount          int                                 `json:"evaluable_cohort_count"`
+	PositiveCohortCount           int                                 `json:"positive_cohort_count"`
+	MinimumUniquePositiveEntities int                                 `json:"minimum_unique_positive_entities"`
+	UniquePositiveEntityCount     int                                 `json:"unique_positive_entity_count"`
+	RecurrentPositiveEntityCount  int                                 `json:"recurrent_positive_entity_count"`
+	PositiveEpisodeCount          int                                 `json:"positive_episode_count"`
+	EvidenceIndependenceStatus    string                              `json:"evidence_independence_status"`
+	EvidenceIndependenceBlockers  []string                            `json:"evidence_independence_blocking_reasons"`
+	Cohorts                       []ObservabilityRankingCohort        `json:"cohorts"`
+	PolicySummaries               []ObservabilityRankingPolicySummary `json:"policy_summaries"`
+	TemporalConsistency           TemporalTrackConsistency            `json:"temporal_consistency"`
+	Safety                        ObservabilityRankingSafety          `json:"safety"`
+	BlockingReasons               []string                            `json:"blocking_reasons"`
+	Interpretation                []string                            `json:"interpretation"`
+	RecommendedNextRun            []string                            `json:"recommended_next_run"`
+	GeneratedAt                   time.Time                           `json:"generated_at"`
 }
 
 func (s *Service) ObservabilityRankingValidationReport() (ObservabilityRankingValidationReport, error) {
 	now := s.now()
 	report := ObservabilityRankingValidationReport{
 		Version: ObservabilityRankingValidationVersion, FrameworkVersion: FrameworkVersion,
-		Mode: "read_only_prospective_observability_validation", Status: "blocked_no_mature_cohorts",
+		Mode: "read_only_prospective_health_run_signal_validation", Status: "blocked_no_mature_cohorts",
 		Signal: observabilityMaxGapMetric, PrimaryPolicy: observabilityMaxGapPolicy,
 		ScoreSemantics:       "relative_node_priority_not_absolute_failure_probability",
 		TargetHorizonMinutes: int(observabilityRankingHorizon / time.Minute),
 		NegativeCensorHours:  int(observabilityRankingNegativeCensor / time.Hour),
 		CohortLimit:          observabilityRankingCohortLimit, MinimumScoreCoverage: observabilityRankingMinimumCoverage,
-		Cohorts: []ObservabilityRankingCohort{}, PolicySummaries: []ObservabilityRankingPolicySummary{},
-		Safety: ObservabilityRankingSafety{ReadOnlyShadow: true, NoAlertEmitted: true, NoActionExecuted: true, ModelIndependent: true},
+		MinimumUniquePositiveEntities: observabilityRankingMinimumEntities,
+		Cohorts:                       []ObservabilityRankingCohort{}, PolicySummaries: []ObservabilityRankingPolicySummary{},
+		EvidenceIndependenceBlockers: []string{},
+		Safety:                       ObservabilityRankingSafety{ReadOnlyShadow: true, NoAlertEmitted: true, NoActionExecuted: true, ModelIndependent: true},
 		Interpretation: []string{
-			"each cohort is one persisted health evaluation run and uses only its point-in-time structural-observability snapshots",
-			"seven fixed policies race on identical cohorts and labels; legacy top-level ranking fields remain bound to the primary max-gap policy",
+			"each cohort is one persisted health evaluation run and uses only its point-in-time structural snapshots and health component scores",
+			"fourteen fixed policies across two signal planes race on identical cohorts and labels; legacy top-level ranking fields remain bound to the primary max-gap policy",
 			"positive outcomes are confirmed or strong-proxy labels inside the following seven days; negatives require an additional 24-hour censoring window",
+			"candidate selection requires at least three unique positive GPU identities, with node identity used only when GPU identity is unavailable",
 			"risk ranking is relative priority evidence and is not a calibrated hardware-failure probability",
 		},
 		RecommendedNextRun: []string{"continue collecting persisted health runs and reviewed failure labels without enabling alerts or actions"},
@@ -166,13 +201,14 @@ func (s *Service) ObservabilityRankingValidationReport() (ObservabilityRankingVa
 		}
 	}
 	report.CohortCount = len(report.Cohorts)
+	observabilityEvidenceIndependence(&report)
 	for _, definition := range observabilityPolicyDefinitions {
 		report.PolicySummaries = append(report.PolicySummaries, observabilityPolicySummary(report.Cohorts, definition))
 	}
 	if summary, ok := observabilityPolicySummaryByName(report.PolicySummaries, report.PrimaryPolicy); ok {
 		report.TemporalConsistency = summary.TemporalConsistency
 	}
-	report.CandidatePolicy = observabilityCandidatePolicy(report.PolicySummaries)
+	report.CandidatePolicy = observabilityCandidatePolicy(report.PolicySummaries, report.EvidenceIndependenceStatus == "passed")
 	report.Status, report.BlockingReasons = observabilityRankingReportStatus(report)
 	report.ReportSHA256 = observabilityRankingChecksum(report)
 	return report, nil
@@ -231,7 +267,38 @@ func (s *Service) observabilityRankingCohort(run api.HealthEvaluationRun, now ti
 			nodeByGPU[gpu] = node
 		}
 		for _, definition := range observabilityPolicyDefinitions {
-			value, valid := definition.Score(snapshot.Metrics)
+			if definition.SnapshotScore == nil {
+				continue
+			}
+			value, valid := definition.SnapshotScore(snapshot.Metrics)
+			if !valid {
+				continue
+			}
+			scoredGPUsByPolicy[definition.Name]++
+			nodeScores := scoresByPolicy[definition.Name]
+			if previous, exists := nodeScores[node]; !exists || value > previous {
+				nodeScores[node] = value
+			}
+		}
+	}
+	var healthScores []api.GPUHealthScore
+	if err := s.db.Where("evaluation_run_id = ? AND evaluated_at <= ?", run.ID, cutoff).
+		Order("node_ip ASC, gpu_index ASC, id ASC").Find(&healthScores).Error; err != nil {
+		return cohort, err
+	}
+	for _, score := range healthScores {
+		node := strings.TrimSpace(score.NodeIP)
+		if node == "" {
+			continue
+		}
+		if _, exists := nodes[node]; !exists {
+			continue
+		}
+		for _, definition := range observabilityPolicyDefinitions {
+			if definition.HealthScore == nil {
+				continue
+			}
+			value, valid := definition.HealthScore(score)
 			if !valid {
 				continue
 			}
@@ -251,9 +318,12 @@ func (s *Service) observabilityRankingCohort(run api.HealthEvaluationRun, now ti
 		return cohort, err
 	}
 	positiveNodes := map[string]struct{}{}
+	positiveEntities := map[string]struct{}{}
+	positiveEpisodes := map[string]struct{}{}
 	for _, label := range labels {
 		node := ""
-		if gpu := strings.ToLower(strings.TrimSpace(label.GPUUUID)); gpu != "" {
+		gpu := strings.ToLower(strings.TrimSpace(label.GPUUUID))
+		if gpu != "" {
 			node = nodeByGPU[gpu]
 		}
 		if node == "" {
@@ -266,9 +336,17 @@ func (s *Service) observabilityRankingCohort(run api.HealthEvaluationRun, now ti
 			continue
 		}
 		positiveNodes[node] = struct{}{}
+		entity := "gpu:" + gpu
+		if gpu == "" {
+			entity = "node:" + strings.ToLower(node)
+		}
+		positiveEntities[entity] = struct{}{}
+		positiveEpisodes[entity+"|"+label.OccurredAt.UTC().Format(time.RFC3339Nano)] = struct{}{}
 		cohort.MatchedLabelCount++
 	}
 	cohort.PositiveNodeCount = len(positiveNodes)
+	cohort.positiveEntityKeys = sortedStringSet(positiveEntities)
+	cohort.positiveEpisodeKeys = sortedStringSet(positiveEpisodes)
 
 	for _, definition := range observabilityPolicyDefinitions {
 		result := buildObservabilityPolicyResult(definition, scoresByPolicy[definition.Name], scoredGPUsByPolicy[definition.Name], cohort.NodeCount, positiveNodes)
@@ -290,7 +368,7 @@ func (s *Service) observabilityRankingCohort(run api.HealthEvaluationRun, now ti
 
 func buildObservabilityPolicyResult(definition observabilityPolicyDefinition, nodeScores map[string]float64, scoredGPUCount, nodeCount int, positiveNodes map[string]struct{}) ObservabilityRankingPolicyResult {
 	result := ObservabilityRankingPolicyResult{
-		Policy: definition.Name, Description: definition.Description, ScoredGPUCount: scoredGPUCount,
+		Policy: definition.Name, Plane: definition.Plane, Description: definition.Description, ScoredGPUCount: scoredGPUCount,
 		ScoredNodeCount: len(nodeScores), PositiveNodeCount: len(positiveNodes),
 		RankingAtK: []RankingAtK{}, RankingAtPercent: []RankingAtPercent{}, BlockingReasons: []string{},
 	}
@@ -352,7 +430,7 @@ func observabilityPolicySummary(cohorts []ObservabilityRankingCohort, definition
 		Metric: "node_top_5_percent_lift", PositiveDirectionRule: "lift_greater_than_1",
 		MinimumIndependentCohorts: DualTrackMinimumConsistentCohorts, MinimumDirectionRatio: DualTrackMinimumDirectionRatio,
 	}
-	summary := ObservabilityRankingPolicySummary{Policy: definition.Name, Description: definition.Description}
+	summary := ObservabilityRankingPolicySummary{Policy: definition.Name, Plane: definition.Plane, Description: definition.Description}
 	for _, cohort := range cohorts {
 		result, ok := observabilityPolicyResultByName(cohort.PolicyResults, definition.Name)
 		if !ok {
@@ -404,7 +482,10 @@ func observabilityPolicySummaryByName(summaries []ObservabilityRankingPolicySumm
 	return ObservabilityRankingPolicySummary{}, false
 }
 
-func observabilityCandidatePolicy(summaries []ObservabilityRankingPolicySummary) string {
+func observabilityCandidatePolicy(summaries []ObservabilityRankingPolicySummary, evidenceIndependent bool) string {
+	if !evidenceIndependent {
+		return ""
+	}
 	for _, definition := range observabilityPolicyDefinitions {
 		summary, ok := observabilityPolicySummaryByName(summaries, definition.Name)
 		if ok && summary.BlockedPositiveCohorts == 0 && summary.TemporalConsistency.Status == "consistent" {
@@ -414,6 +495,35 @@ func observabilityCandidatePolicy(summaries []ObservabilityRankingPolicySummary)
 	return ""
 }
 
+func observabilityEvidenceIndependence(report *ObservabilityRankingValidationReport) {
+	entityCohorts := map[string]int{}
+	episodes := map[string]struct{}{}
+	for _, cohort := range report.Cohorts {
+		for _, entity := range cohort.positiveEntityKeys {
+			entityCohorts[entity]++
+		}
+		for _, episode := range cohort.positiveEpisodeKeys {
+			episodes[episode] = struct{}{}
+		}
+	}
+	report.UniquePositiveEntityCount = len(entityCohorts)
+	report.PositiveEpisodeCount = len(episodes)
+	for _, cohortCount := range entityCohorts {
+		if cohortCount > 1 {
+			report.RecurrentPositiveEntityCount++
+		}
+	}
+	switch {
+	case report.PositiveCohortCount == 0:
+		report.EvidenceIndependenceStatus = "collecting_no_positive_entities"
+	case report.UniquePositiveEntityCount < report.MinimumUniquePositiveEntities:
+		report.EvidenceIndependenceStatus = "blocked_insufficient_unique_positive_entities"
+		report.EvidenceIndependenceBlockers = []string{"fewer than three unique positive GPU or fallback node entities are represented"}
+	default:
+		report.EvidenceIndependenceStatus = "passed"
+	}
+}
+
 func observabilityRankingReportStatus(report ObservabilityRankingValidationReport) (string, []string) {
 	if report.CohortCount == 0 {
 		return "blocked_no_mature_cohorts", []string{"no health evaluation run has completed the seven-day horizon and 24-hour negative censoring window"}
@@ -421,10 +531,22 @@ func observabilityRankingReportStatus(report ObservabilityRankingValidationRepor
 	if report.PositiveCohortCount == 0 {
 		return "collecting_no_positive_cohorts", []string{"mature independent cohorts exist, but none contains an eligible positive node label"}
 	}
+	if report.EvidenceIndependenceStatus != "passed" {
+		return "exploratory", append([]string{}, report.EvidenceIndependenceBlockers...)
+	}
 	if report.CandidatePolicy == "" {
-		return "exploratory", []string{"no fixed observability policy shows complete and stable positive direction across independent cohorts"}
+		return "exploratory", []string{"no fixed structural or health-score policy shows complete and stable positive direction across independent cohorts"}
 	}
 	return "comparable", []string{}
+}
+
+func sortedStringSet(values map[string]struct{}) []string {
+	keys := make([]string, 0, len(values))
+	for value := range values {
+		keys = append(keys, value)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func metricRiskScore(metric string) func(api.FloatMap) (float64, bool) {
@@ -444,6 +566,32 @@ func deficitRiskScore(metric string, ceiling float64) func(api.FloatMap) (float6
 		}
 		return ceiling - value, true
 	}
+}
+
+func overallHealthDeficitScore(score api.GPUHealthScore) (float64, bool) {
+	if score.Score == nil {
+		return 0, false
+	}
+	return boundedHealthDeficit(*score.Score)
+}
+
+func componentHealthDeficitScore(component func(api.GPUHealthScore) int) func(api.GPUHealthScore) (float64, bool) {
+	return func(score api.GPUHealthScore) (float64, bool) {
+		if score.Score == nil {
+			return 0, false
+		}
+		return boundedHealthDeficit(component(score))
+	}
+}
+
+func boundedHealthDeficit(value int) (float64, bool) {
+	if value < 0 {
+		return 0, false
+	}
+	if value > 100 {
+		value = 100
+	}
+	return float64(100 - value), true
 }
 
 func validNonnegativeMetric(metrics api.FloatMap, metric string) (float64, bool) {
