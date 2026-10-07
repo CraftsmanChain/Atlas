@@ -115,6 +115,90 @@ func TestObservabilityRankingRejectsInvalidReplayTimes(t *testing.T) {
 	}
 }
 
+func TestTelemetryMigrationReadinessSplitsPlannedMigrationScopes(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	oldFinished := now.Add(-observabilityRankingHorizon - observabilityRankingNegativeCensor - 2*time.Hour)
+	latestFinished := now.Add(-2 * time.Hour)
+	oldRun := api.HealthEvaluationRun{Status: "success", StartedAt: oldFinished.Add(-time.Minute), FinishedAt: &oldFinished}
+	latestRun := api.HealthEvaluationRun{Status: "success", StartedAt: latestFinished.Add(-time.Minute), FinishedAt: &latestFinished}
+	if err := db.Create(&oldRun).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&latestRun).Error; err != nil {
+		t.Fatal(err)
+	}
+	assets := make([]api.InfrastructureAsset, 0, 20)
+	for index := 0; index < 10; index++ {
+		assets = append(assets,
+			api.InfrastructureAsset{AssetKey: "new-" + twoDigit(index), Source: "ops_host", IPAddress: "10.10.0." + twoDigit(index+1), DataCenterID: "dc-new", Present: true, InUse: true, EntityKind: "gpu_node"},
+			api.InfrastructureAsset{AssetKey: "old-" + twoDigit(index), Source: "ops_host", IPAddress: "10.20.0." + twoDigit(index+1), DataCenterID: "dc-old", Present: true, InUse: true, EntityKind: "gpu_node"},
+		)
+	}
+	if err := db.Create(&assets).Error; err != nil {
+		t.Fatal(err)
+	}
+	createSnapshot := func(runID uint, node, uuid string, scored bool) {
+		t.Helper()
+		metrics := api.FloatMap{}
+		if scored {
+			metrics[observabilityMaxGapMetric] = 10
+		}
+		if err := db.Create(&api.GPUFeatureSnapshot{EvaluationRunID: runID, NodeIP: node, GPUUUID: uuid, Metrics: metrics, ObservedAt: latestFinished}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index := 0; index < 10; index++ {
+		newNode := "10.10.0." + twoDigit(index+1)
+		oldNode := "10.20.0." + twoDigit(index+1)
+		createSnapshot(oldRun.ID, newNode, "GPU-OLD-NEW-"+twoDigit(index), true)
+		createSnapshot(oldRun.ID, oldNode, "GPU-OLD-OLD-"+twoDigit(index), true)
+		createSnapshot(latestRun.ID, newNode, "GPU-LATEST-NEW-"+twoDigit(index), true)
+		createSnapshot(latestRun.ID, oldNode, "GPU-LATEST-OLD-"+twoDigit(index), index < 2)
+	}
+	createSnapshot(latestRun.ID, "10.30.0.1", "GPU-UNKNOWN-01", true)
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	report, err := service.TelemetryMigrationReadinessReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Version != TelemetryMigrationReadinessVersion || report.FrameworkVersion != FrameworkVersion || report.Status != "ready" || report.ReportSHA256 == "" {
+		t.Fatalf("unexpected migration readiness report: %+v", report)
+	}
+	byScope := map[string]TelemetryMigrationScopeReadiness{}
+	for _, scope := range report.Scopes {
+		byScope[scope.Scope] = scope
+	}
+	newScope := byScope["data_center:dc-new"]
+	if newScope.Status != "ready_for_first_fixed_replay" || newScope.DataCenterID != "dc-new" || newScope.LatestNodeScoreCoverage != 1 || newScope.FirstFixedReplayReadyAt == nil || now.Before(*newScope.FirstFixedReplayReadyAt) {
+		t.Fatalf("new data center should be ready for first fixed replay: %+v", newScope)
+	}
+	oldScope := byScope["data_center:dc-old"]
+	if oldScope.Status != "blocked_low_current_coverage" || oldScope.LatestScoredNodeCount != 2 || oldScope.LatestNodeCount != 10 {
+		t.Fatalf("old planned-offline scope must remain blocked by current coverage: %+v", oldScope)
+	}
+	if unknown := byScope["data_center_unknown"]; unknown.Status != "warming_24h_burn_in" || unknown.LatestNodeCount != 1 {
+		t.Fatalf("unmapped nodes must be explicit and collecting: %+v", unknown)
+	}
+	handler := NewHandlerWithService(service)
+	response := httptest.NewRecorder()
+	handler.HandleTelemetryMigrationReadiness(response, httptest.NewRequest(http.MethodGet, "/api/v1/prediction/telemetry-migration-readiness?download=1", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(TelemetryMigrationReadinessVersion)) || response.Header().Get("Content-Disposition") == "" || response.Header().Get("ETag") == "" {
+		t.Fatalf("migration readiness download failed: %d %s", response.Code, response.Body.String())
+	}
+	conditional := httptest.NewRequest(http.MethodGet, "/api/v1/prediction/telemetry-migration-readiness", nil)
+	conditional.Header.Set("If-None-Match", response.Header().Get("ETag"))
+	conditionalResponse := httptest.NewRecorder()
+	handler.HandleTelemetryMigrationReadiness(conditionalResponse, conditional)
+	if conditionalResponse.Code != http.StatusNotModified {
+		t.Fatalf("conditional migration readiness should return 304, got %d", conditionalResponse.Code)
+	}
+}
+
 func TestObservabilityRankingValidationUsesIndependentPointInTimeCohorts(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
