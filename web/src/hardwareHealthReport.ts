@@ -1,0 +1,110 @@
+export type HealthLevel = 'critical' | 'warning' | 'attention' | 'unknown' | 'clear_for_checked_signals';
+export type HealthEvidence = { id: string; field: string; value: string; unit: string };
+export type HealthHit = { rule: string; level: 'critical' | 'warning' | 'attention'; evidence_id: string };
+export type HealthRow = {
+  reference: string; entity_id: string; entity_type: 'disk' | 'nvme_controller'; identity_status: 'bound' | 'provisional' | 'conflict';
+  scope: string; node: string; generation: string; boot_id: string; serial: string; model: string; firmware: string; protocol: string; device: string;
+  tool_version: string; source: string; source_kind: 'fixture' | 'operator_snapshot' | ''; input_sha256: string;
+  observed_at: string; available_at: string; freshness: 'unknown' | 'future' | 'stale' | 'fresh_at_cutoff';
+  support: 'unsupported' | 'fixture_verified'; assessment_status: 'assessed' | 'insufficient_data'; level: HealthLevel;
+  exit_code: number | null; media_delta: string | null; baseline_sha256: string; trend_status: 'unavailable' | 'available' | 'invalid_baseline' | 'counter_reset';
+  blockers: string[]; hits: HealthHit[]; evidence: HealthEvidence[];
+};
+export type HealthReport = {
+  schema: 'hardware-health-report-v1'; input_manifest_sha256: string; rule_version: 'disk-health-v1.0.0'; mode: 'offline_replay'; as_of: string;
+  alerts_emitted: false; actions_executed: false;
+  summary: { total: number; assessed: number; unknown: number; by_level: Record<string, number> }; rows: HealthRow[];
+};
+export type ImportedHealthReport = { report: HealthReport; sha256: string; fileName: string };
+export const MAX_BUNDLE_BYTES = 4 * 1024 * 1024;
+export const levels: HealthLevel[] = ['critical', 'warning', 'attention', 'unknown', 'clear_for_checked_signals'];
+
+function fail(reason: string): never { throw new Error(reason); }
+function object(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('expected_object');
+  return value as Record<string, unknown>;
+}
+function text(value: unknown, max = 512): string {
+  if (typeof value !== 'string' || value.length > max) fail('invalid_text');
+  if (Array.from(value).some(character => { const code = character.charCodeAt(0); return code < 32 || code === 127 || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069); })) fail('invalid_text');
+  return value;
+}
+function list(value: unknown, max: number): unknown[] { if (!Array.isArray(value) || value.length > max) fail('invalid_array'); return value; }
+function choice(value: unknown, choices: readonly string[]): string { const result = text(value); if (!choices.includes(result)) fail('unsupported_value'); return result; }
+function hash(value: unknown, optional = false): string { const result = text(value, 64); if (!(optional && result === '') && !/^[a-f0-9]{64}$/.test(result)) fail('invalid_sha256'); return result; }
+function date(value: unknown): string { const result = text(value, 40); if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/.test(result) || !Number.isFinite(Date.parse(result))) fail('invalid_time'); return result; }
+function decimal(value: unknown): string { const result = text(value, 39); if (!/^(0|[1-9][0-9]*)$/.test(result) || BigInt(result) >= (1n << 128n)) fail('invalid_decimal_counter'); return result; }
+
+export function validateReport(value: unknown): HealthReport {
+  const report = object(value);
+  if (report.schema !== 'hardware-health-report-v1' || report.rule_version !== 'disk-health-v1.0.0' || report.mode !== 'offline_replay' || report.alerts_emitted !== false || report.actions_executed !== false) fail('unsupported_report_contract');
+  date(report.as_of);
+  hash(report.input_manifest_sha256);
+  const refs = new Set<string>();
+  const boundIdentities = new Set<string>();
+  const rows = list(report.rows, 200).map(value => {
+    const row = object(value);
+    for (const field of ['reference', 'scope', 'node', 'generation', 'boot_id', 'serial', 'model', 'firmware', 'protocol', 'device', 'tool_version', 'source']) text(row[field]);
+    if (!row.reference || refs.has(String(row.reference))) fail('duplicate_or_missing_reference');
+    refs.add(String(row.reference));
+    hash(row.entity_id); hash(row.input_sha256); hash(row.baseline_sha256, true);
+    date(row.observed_at); date(row.available_at);
+    choice(row.entity_type, ['disk', 'nvme_controller']); choice(row.identity_status, ['bound', 'provisional', 'conflict']);
+    if (row.identity_status === 'bound') { if (boundIdentities.has(String(row.entity_id))) fail('duplicate_bound_identity'); boundIdentities.add(String(row.entity_id)); }
+    choice(row.source_kind, ['fixture', 'operator_snapshot', '']); choice(row.support, ['unsupported', 'fixture_verified']);
+    choice(row.freshness, ['unknown', 'future', 'stale', 'fresh_at_cutoff']); choice(row.assessment_status, ['assessed', 'insufficient_data']); choice(row.level, levels);
+    choice(row.trend_status, ['unavailable', 'available', 'invalid_baseline', 'counter_reset']);
+    if (row.exit_code !== null && (!Number.isInteger(row.exit_code) || Number(row.exit_code) < 0 || Number(row.exit_code) > 255)) fail('invalid_exit_code');
+    if (row.media_delta !== null) decimal(row.media_delta);
+    const blockers = list(row.blockers, 64).map(value => text(value, 160));
+    const evidenceIDs = new Set<string>();
+    const evidence = list(row.evidence, 64).map(value => {
+      const item = object(value); const id = hash(item.id);
+      if (evidenceIDs.has(id)) fail('duplicate_evidence'); evidenceIDs.add(id);
+      text(item.field, 160); text(item.unit, 40); text(item.value);
+      if (String(item.field).startsWith('nvme.')) decimal(item.value);
+      return item as HealthEvidence;
+    });
+    const hits = list(row.hits, 32).map(value => {
+      const hit = object(value); text(hit.rule, 160); choice(hit.level, ['critical', 'warning', 'attention']);
+      if (!evidenceIDs.has(hash(hit.evidence_id))) fail('missing_hit_evidence');
+      return hit as HealthHit;
+    });
+    const severity = { critical: 3, warning: 2, attention: 1, unknown: 0, clear_for_checked_signals: 0 };
+    const max = hits.reduce((value, hit) => Math.max(value, severity[hit.level]), 0);
+    if (severity[row.level as HealthLevel] !== max) fail('severity_inconsistent');
+    if (row.assessment_status === 'assessed') {
+      if (blockers.length || row.identity_status !== 'bound' || row.freshness !== 'fresh_at_cutoff' || row.support !== 'fixture_verified' || row.level === 'unknown') fail('invalid_assessed_state');
+      if (['scope', 'generation', 'serial', 'model', 'firmware', 'source', 'tool_version'].some(field => !String(row[field]).trim()) || !row.source_kind || row.protocol !== 'NVMe' || row.entity_type !== 'nvme_controller' || row.exit_code === null || (Number(row.exit_code) & 7) !== 0) fail('invalid_assessed_metadata');
+    } else if (!blockers.length || (max === 0 && row.level !== 'unknown')) fail('invalid_insufficient_state');
+    if (row.freshness === 'fresh_at_cutoff' && (Date.parse(String(row.available_at)) > Date.parse(String(report.as_of)) || Date.parse(String(row.observed_at)) > Date.parse(String(row.available_at)))) fail('cutoff_violation');
+    if ((row.trend_status === 'available') !== (row.media_delta !== null)) fail('invalid_delta_state');
+    return { ...row, blockers, evidence, hits } as HealthRow;
+  });
+  const summary = object(report.summary), byLevel = object(summary.by_level);
+  const assessed = rows.filter(row => row.assessment_status === 'assessed').length;
+  if (summary.total !== rows.length || summary.assessed !== assessed || summary.unknown !== rows.length - assessed) fail('summary_mismatch');
+  const counts: Record<string, number> = {};
+  for (const row of rows) counts[row.level] = (counts[row.level] || 0) + 1;
+  if (Object.keys(byLevel).some(level => !levels.includes(level as HealthLevel)) || levels.some(level => (byLevel[level] || 0) !== (counts[level] || 0))) fail('level_count_mismatch');
+  return { ...report, rows } as HealthReport;
+}
+
+export async function parseHealthBundle(content: string, fileName: string): Promise<ImportedHealthReport> {
+  if (new TextEncoder().encode(content).byteLength > MAX_BUNDLE_BYTES) fail('bundle_too_large');
+  const bundle = object(JSON.parse(content));
+  if (bundle.schema !== 'hardware-health-bundle-v1' || typeof bundle.report_json !== 'string' || bundle.report_json.length > 2 * 1024 * 1024) fail('unsupported_bundle_contract');
+  const expected = hash(bundle.report_sha256);
+  const bytes = new TextEncoder().encode(bundle.report_json);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  const actual = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+  if (actual !== expected) fail('report_digest_mismatch');
+  return { report: validateReport(JSON.parse(bundle.report_json)), sha256: actual, fileName };
+}
+
+export function selectRows(rows: HealthRow[], query: string, level: string, quality: string, order: string): HealthRow[] {
+  const needle = query.trim().toLocaleLowerCase();
+  const result = rows.filter(row => (!needle || [row.reference, row.node, row.serial, row.model, row.device, row.scope].some(value => value.toLocaleLowerCase().includes(needle))) && (!level || row.level === level) && (!quality || (quality === 'stale' ? row.freshness === 'stale' : row.assessment_status === quality)));
+  const priority = { critical: 4, warning: 3, attention: 2, unknown: 1, clear_for_checked_signals: 0 };
+  return result.sort((a, b) => (order === 'observed' ? Date.parse(b.observed_at) - Date.parse(a.observed_at) : priority[b.level] - priority[a.level]) || a.reference.localeCompare(b.reference));
+}

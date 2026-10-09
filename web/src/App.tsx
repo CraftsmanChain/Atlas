@@ -10,8 +10,9 @@ import {
   Thermometer, Trash2, X, Zap,
 } from 'lucide-react';
 import './App.css';
+import HardwareHealth from './HardwareHealth';
 
-type PageId = 'overview' | 'gpus' | 'issues' | 'incidents' | 'validations' | 'quality' | 'models' | 'about';
+type PageId = 'overview' | 'gpus' | 'hardware' | 'issues' | 'incidents' | 'validations' | 'quality' | 'models' | 'about';
 type SubPage = { id: string; label: string };
 type Tx = (zh: string, en: string) => string;
 
@@ -213,11 +214,12 @@ type FleetSummary = {
   latest_sync: SyncRun | null;
 };
 
-const pageIcons = { overview: BarChart3, gpus: Cpu, issues: ClipboardList, incidents: Bell, validations: Gauge, quality: Database, models: BrainCircuit, about: BookOpen };
-const pages: PageId[] = ['overview', 'gpus', 'incidents', 'validations', 'issues', 'quality', 'models', 'about'];
+const pageIcons = { overview: BarChart3, gpus: Cpu, hardware: MemoryStick, issues: ClipboardList, incidents: Bell, validations: Gauge, quality: Database, models: BrainCircuit, about: BookOpen };
+const pages: PageId[] = ['overview', 'gpus', 'hardware', 'incidents', 'validations', 'issues', 'quality', 'models', 'about'];
 const pageCopy = (tx: Tx): Record<PageId, { label: string; group: string; title: string; desc: string }> => ({
   overview: { label: tx('集群总览', 'Overview'), group: tx('运行', 'OPERATIONS'), title: tx('GPU 集群', 'GPU Fleet'), desc: tx('资产、状态、事件与交付进度', 'Assets, status, incidents and delivery') },
   gpus: { label: tx('GPU 资产', 'GPU Assets'), group: tx('运行', 'OPERATIONS'), title: tx('GPU 资产', 'GPU Assets'), desc: tx('健康、异常、性能与取值来源', 'Health, anomaly, performance and source lineage') },
+  hardware: { label: tx('硬盘与内存', 'Disks & Memory'), group: tx('运行', 'OPERATIONS'), title: tx('硬盘与内存健康', 'Disk & Memory Health'), desc: '' },
   issues: { label: tx('数据统计', 'Data Statistics'), group: tx('运行', 'OPERATIONS'), title: tx('数据问题统计与处置', 'Data Issue Analytics & Resolution'), desc: tx('数据、资产与可用性问题的发现、分类、状态及训练记录', 'Discovery, categories, status and training records for data, inventory and availability issues') },
   incidents: { label: tx('告警中心', 'Alert Center'), group: tx('运行', 'OPERATIONS'), title: tx('告警中心', 'Alert Center'), desc: tx('硬件告警、接收记录、详情与人工处置', 'Hardware alerts, ingestion records, details and operator resolution') },
   validations: { label: tx('性能验证', 'Validation'), group: tx('运行', 'OPERATIONS'), title: tx('性能验证', 'Performance Validation'), desc: tx('算力衰减检测与维护窗口复测', 'Degradation detection and maintenance validation') },
@@ -227,6 +229,7 @@ const pageCopy = (tx: Tx): Record<PageId, { label: string; group: string; title:
 });
 const subPages = (page: PageId, tx: Tx): SubPage[] => ({
   overview: [],
+  hardware: [],
   gpus: [{ id: 'health', label: tx('GPU 健康', 'GPU Health') }, { id: 'inventory', label: tx('资产清单', 'Inventory') }],
   issues: [{ id: 'ledger', label: tx('问题台账', 'Issue Ledger') }, { id: 'assets', label: tx('资产统计', 'Asset Statistics') }],
   incidents: [{ id: 'hardware', label: tx('硬件事件', 'Hardware Events') }, { id: 'ingestion', label: tx('接收记录', 'Ingestion Records') }, { id: 'workflow', label: tx('处理流程', 'Workflow') }],
@@ -320,7 +323,7 @@ export default function App() {
   const [degradationSummary, setDegradationSummary] = useState<DegradationSummary | null>(null);
   const [degradationCandidates, setDegradationCandidates] = useState<DegradationCandidate[]>([]);
   const [nodeAccess, setNodeAccess] = useState<NodeAccessOverview | null>(null);
-  const [subPage, setSubPage] = useState<Record<PageId, string>>({ overview: '', gpus: 'health', issues: 'ledger', incidents: 'hardware', validations: 'degradation', quality: 'targets', models: 'prediction', about: 'definition' });
+  const [subPage, setSubPage] = useState<Record<PageId, string>>({ overview: '', gpus: 'health', hardware: '', issues: 'ledger', incidents: 'hardware', validations: 'degradation', quality: 'targets', models: 'prediction', about: 'definition' });
 
   const navigate = (id: PageId) => { setPage(id); setSidebar(false); window.location.hash = `/${id}`; window.scrollTo(0, 0); };
   const load = async () => {
@@ -523,8 +526,8 @@ export default function App() {
         <div className="top-actions"><LanguageButton i18n={i18n} zh={zh} /><ThemeButton tx={tx} /><button className="icon-btn" onClick={refresh} title={tx('刷新', 'Refresh')}><RefreshCw size={16} className={refreshing || ingestionLoading ? 'spin' : ''} /></button></div>
       </header>
       <div className="content">
-        <div className="page-head"><div><h1>{copy[page].title}</h1><p>{copy[page].desc}</p></div><div className="page-meta"><Badge value={platformConfig.environment} kind="info" /><Badge value={`DATA ${freshnessStatus}`} kind={freshnessTone} />{collectionSources.length > 0 && <Badge value={overdueSources.length > 0 ? tx('采集超时', 'COLLECTION OVERDUE') : tx('采集中', 'COLLECTING')} kind={overdueSources.length > 0 ? 'warning' : 'info'} />}<span title={tx('源数据最新观测时间；不是页面刷新时间', 'Latest source observation; not the page refresh time')}>{freshnessLatest ? time(freshnessLatest, lang) : '—'}</span></div></div>
-        {overdueSources.length > 0 && <div className="collection-alert"><AlertTriangle size={17} /><div><b>{tx('监控数据超过 10 分钟仍未获取完成', 'Monitoring collection has not completed within 10 minutes')}</b><span>{overdueSources.map(([name, source]) => `${name.toUpperCase()} ${Math.floor((source.collection_age_seconds || 0) / 60)}m`).join(' · ')}</span></div></div>}
+        <div className="page-head"><div><h1>{copy[page].title}</h1>{copy[page].desc && <p>{copy[page].desc}</p>}</div><div className="page-meta">{page === 'hardware' ? <Badge value={tx('离线证据', 'OFFLINE EVIDENCE')} kind="info" /> : <><Badge value={platformConfig.environment} kind="info" /><Badge value={`DATA ${freshnessStatus}`} kind={freshnessTone} />{collectionSources.length > 0 && <Badge value={overdueSources.length > 0 ? tx('采集超时', 'COLLECTION OVERDUE') : tx('采集中', 'COLLECTING')} kind={overdueSources.length > 0 ? 'warning' : 'info'} />}<span title={tx('源数据最新观测时间；不是页面刷新时间', 'Latest source observation; not the page refresh time')}>{freshnessLatest ? time(freshnessLatest, lang) : '—'}</span></>}</div></div>
+        {page !== 'hardware' && overdueSources.length > 0 && <div className="collection-alert"><AlertTriangle size={17} /><div><b>{tx('监控数据超过 10 分钟仍未获取完成', 'Monitoring collection has not completed within 10 minutes')}</b><span>{overdueSources.map(([name, source]) => `${name.toUpperCase()} ${Math.floor((source.collection_age_seconds || 0) / 60)}m`).join(' · ')}</span></div></div>}
         {currentSubPages.length > 0 && <nav className="subnav" aria-label={tx('页面分区', 'Page sections')}>{currentSubPages.map(item => <button key={item.id} className={subPage[page] === item.id ? 'active' : ''} onClick={() => setSubPage(current => ({ ...current, [page]: item.id }))}>{item.label}</button>)}</nav>}
         <AnimatePresence mode="wait"><motion.div key={page} className={page === 'overview' ? 'overview-page' : 'secondary-page'} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: .12 }}>
           {page === 'overview' && <Overview tx={tx} faults={openFaults} faultSummary={faultSummary} hosts={hosts} loading={loading} summary={summary} models={fleetModels} inventoryError={inventoryError} navigate={navigate} />}
@@ -536,6 +539,7 @@ export default function App() {
           {page === 'models' && <PageErrorBoundary key={subPage.models} title={tx('故障预警页面数据异常', 'Failure early-warning page data error')}><Models tx={tx} view={subPage.models} lang={lang} assets={gpuAssets} /></PageErrorBoundary>}
           {page === 'about' && <About tx={tx} view={subPage.about} platformConfig={platformConfig} onPlatformConfig={setPlatformConfig} />}
         </motion.div></AnimatePresence>
+        <div hidden={page !== 'hardware'}><PageErrorBoundary title={tx('硬件健康报告异常', 'Hardware health report error')}><HardwareHealth tx={tx} lang={lang} /></PageErrorBoundary></div>
       </div>
     </main>
     <AnimatePresence>{searchOpen && <GlobalSearch tx={tx} query={query} setQuery={setQuery} pagesCopy={copy} items={ingestions} assets={gpuAssets} close={() => setSearchOpen(false)} navigate={navigate} select={id => { setSelected(id); navigate('incidents'); setSearchOpen(false); }} />}</AnimatePresence>
@@ -2531,7 +2535,8 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
     { id: 'validation', name: tx('维修验证闭环', 'Repair Validation Workflow'), version: 'v0.0.0', status: tx('方案阶段', 'DESIGNED'), desc: tx('记录人工维修反馈、根因、修复或更换结果，并通过识别、遥测、错误计数和性能复测验证重新上线。', 'Capture repair feedback, root cause and replacement results, then validate return to service through identity, telemetry, counters and performance checks.'), history: [tx('v0.0.0 · 状态机、维护窗口和验证门设计', 'v0.0.0 · state machine, maintenance window and validation gates')] },
   ];
   const releaseModule = { id: 'release', name: tx('发布与产物同步', 'Release & Artifact Sync'), version: 'v0.2.0', status: tx('环境感知数据库备份', 'STAGE-AWARE DB BACKUP'), desc: tx('开发发布默认跳过 PostgreSQL 备份以缩短迭代时间；正式发布通过 production 阶段强制先备份，再执行原子切换和健康回滚。源码、前端和辅助脚本继续使用 rsync 校验同步。', 'Development releases skip PostgreSQL backup by default to shorten iteration time; production-stage releases require a successful backup before atomic switching and health rollback. Source, web, and helper scripts continue to use checksum-aware rsync.'), history: [tx('v0.2.0 · ATLAS_DEPLOYMENT_STAGE=development 默认跳过数据库备份，production 强制执行备份', 'v0.2.0 · ATLAS_DEPLOYMENT_STAGE=development skips database backup by default; production requires it'), tx('v0.1.0 · 默认远端源码发布和 legacy 二进制发布全部由 scp 切换为 rsync，并增加本机/远端依赖预检', 'v0.1.0 · Replaced scp with rsync in both remote-source and legacy-binary release paths, adding local and remote dependency preflight checks')] };
-  const modules = [...baseModules, releaseModule].map(module => module.id === 'feature' ? {
+  const componentHealthModule = { id: 'component-health', name: tx('硬盘与内存健康', 'Disk and Memory Health'), version: 'v0.1.0', status: tx('离线证据回放', 'OFFLINE EVIDENCE'), desc: tx('本地文件回放有限 NVMe 规则，在浏览器展示风险、数据缺口、趋势和原始证据。内存与 RAID 原始适配尚未交付；不采集设备、不发送告警、不输出故障概率。', 'Replays a limited NVMe rule set from local files and displays risk, data gaps, trends, and raw evidence in the browser. Memory and RAID raw adapters are not delivered; no device collection, operational alerts, or failure probabilities.'), history: [tx('v0.1.0 · 交付有界离线 CLI、SHA256 证据包和本地前端读取，支持筛选、分页、证据追溯与明确未知状态', 'v0.1.0 · delivers bounded offline CLI, SHA256 evidence bundles, and local frontend reading with filters, pagination, traceable evidence, and explicit unknown states')] };
+  const modules = [...baseModules, componentHealthModule, releaseModule].map(module => module.id === 'feature' ? {
     ...module,
     version: 'v1.12.0',
     status: tx('结构特征历史贯通', 'STRUCTURAL HISTORY ENABLED'),
@@ -2539,13 +2544,14 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
     history: [tx('v1.12.0 · 历史正例、健康对照和人工反馈按同一截止点聚合 8 项结构可观测性特征，缺失保持 unknown 并独立报告覆盖与查询失败', 'v1.12.0 · historical positives, healthy controls, and manual feedback aggregate eight structural-observability features at the same cutoff, preserve missing as unknown, and report coverage/query failures separately'), tx('v1.11.0 · 为 7 天目标增加 3d/7d/30d 一小时粒度趋势，并保持 24h 五分钟特征和全链路变换一致', 'v1.11.0 · adds hourly 3d/7d/30d trends for the 7-day target while preserving 5-minute 24h features and end-to-end transform parity'), tx('v1.10.0 · 拆分核心覆盖与可选信号，扩展线上已核验的历史预测指标', 'v1.10.0 · separates core coverage from optional signals and expands production-verified historical prediction metrics'), ...module.history],
   } : module).map(module => module.id === 'prediction' ? {
     ...module,
-		version: 'v0.27.58',
+		version: 'v0.27.59',
     status: tx('故障预警工作台', 'EARLY-WARNING WORKBENCH'),
     desc: tx(
       '当前故障预警能力保持 GPU-only、read-only shadow：已具备训练数据、标签 Manifest、训练样本 Evidence Bundle、模型治理卡、影子门禁、成熟 outcome、Ranking@K、naive baseline、HeaRank 7d node-risk challenger、数据/校准漂移、训练侧和 live-shadow 特征分布快照，并把故障前后数据反馈包列为重点入口；不触发告警、调度、维修或自动隔离。',
       'Early warning remains GPU-only and read-only shadow: training data, label manifest, training-sample Evidence Bundle, model governance cards, shadow gates, mature outcomes, Ranking@K, naive baselines, a HeaRank 7d node-risk challenger, data/calibration drift, and training/live-shadow feature-distribution snapshots are available, with the pre/post-fault feedback pack promoted as a priority entry; no alert, scheduling, repair or automatic isolation is triggered.',
     ),
 		history: [
+			tx('v0.27.59 · 独立交付硬盘离线规则与证据前端；缺失不作健康、保留已知严重风险，GPU 模型及评分不变', 'v0.27.59 · independently delivers offline disk rules and evidence UI; missing data is not healthy, known critical risk is retained, and GPU models and scoring are unchanged'),
 			tx('v0.27.58 · 增加新机房/迁移遥测就绪报告，按机房和未知机房拆分覆盖、24h burn-in 与 7d+24h 首次固定回放时间，不降低既有排序门禁', 'v0.27.58 · adds new-room/migration telemetry readiness, splitting coverage, 24h burn-in and 7d+24h first fixed replay timing by data center and unknown mapping without relaxing ranking gates'),
 			tx('v0.27.57 · 前瞻报告支持固定评估时点复核，统一锁定批次成熟度与标签可用时间；下载沿用页面时点，防止滚动选批混淆跨版本对照', 'v0.27.57 · adds fixed-time prospective report replay, pins cohort maturity and label availability to one evaluation time, and downloads using the displayed time to prevent rolling cohorts from confounding comparisons'),
 			tx('v0.27.56 · 将前瞻赛马扩展为结构可观测性与持久化健康分量两类共十四种固定策略，并增加至少三个唯一正例实体的独立性门，防止同一卡跨批复发伪造稳定性', 'v0.27.56 · expands the prospective race to fourteen fixed policies across structural observability and persisted health-score components, and adds a three-unique-positive-entity independence gate so repeat failures from one GPU cannot fabricate stability'),
@@ -2751,7 +2757,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.56" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.57" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>

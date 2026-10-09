@@ -1,0 +1,8 @@
+{
+  "schema": "hardware-health-input-v1",
+  "inputs": [
+    { "reference": "public-nvme", "file": "smart-nvme.json", "sha256": "cc5a9dc0c2977894bdbdfdae098c42940b9ebc2ce3d8d98f2f9b9aebe0f3c584", "scope": "public-fixtures", "node": "fixture-node-a", "generation": "fixture-1", "boot_id": "fixture-boot", "source": "smartctl-public-fixture", "source_kind": "fixture", "observed_at": "2021-11-16T04:00:00Z", "available_at": "2021-11-16T04:00:01Z", "max_age_seconds": 1800, "exit_code": 0, "truncated": false },
+    { "reference": "public-nvme-historical-errors", "file": "smart-nvme-failed.json", "sha256": "e60928e55ba1d1fa65a5c402197d8b4f70cb2a611da4d2475e11e49f4bb33c8b", "scope": "public-fixtures", "node": "fixture-node-b", "generation": "fixture-1", "boot_id": "fixture-boot", "source": "smartctl-public-fixture", "source_kind": "fixture", "observed_at": "2021-11-16T04:00:00Z", "available_at": "2021-11-16T04:00:01Z", "max_age_seconds": 1800, "exit_code": 0, "truncated": false },
+    { "reference": "public-ata-unsupported", "file": "smart-ata.json", "sha256": "2308313063db61d39f894a2f597f05c95449e665d5d680d9e189eae3135d42ba", "scope": "public-fixtures", "node": "fixture-node-c", "generation": "fixture-1", "boot_id": "fixture-boot", "source": "smartctl-public-fixture", "source_kind": "fixture", "observed_at": "2021-11-16T04:00:00Z", "available_at": "2021-11-16T04:00:01Z", "max_age_seconds": 1800, "exit_code": 0, "truncated": false }
+  ]
+}
