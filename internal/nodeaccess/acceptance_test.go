@@ -28,7 +28,7 @@ func acceptanceTestScope(now time.Time) AcceptanceScope {
 
 func TestAcceptancePlanGuards(t *testing.T) {
 	now := time.Now().UTC()
-	zero, negative, high := 0, -1, 32
+	zero, one, negative, high := 0, 1, -1, 32
 	tests := []struct {
 		name string
 		edit func(*AcceptanceScope)
@@ -77,6 +77,9 @@ func TestAcceptancePlanGuards(t *testing.T) {
 		}},
 		{"disk type scsi", func(s *AcceptanceScope) {
 			s.Commands[0] = AcceptanceRequest{ID: "disk.smart", Device: "/dev/sda", Protocol: "scsi"}
+		}},
+		{"cross controller evidence", func(s *AcceptanceScope) {
+			s.Commands = []AcceptanceRequest{{ID: "memory.edac.counters", Controller: &zero}, {ID: "memory.edac.driver", Controller: &one}}
 		}},
 	}
 	for _, test := range tests {
