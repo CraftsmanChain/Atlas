@@ -50,13 +50,13 @@ async function main() {
     assert.equal(await page.locator('.hh-table tbody tr').count(), 1);
     await page.getByLabel('数据状态', { exact: true }).selectOption('');
     await page.getByRole('tab', { name: /^内存/ }).click();
-    await page.getByRole('heading', { name: '内存原始证据尚未接入' }).waitFor();
+    await page.getByRole('heading', { name: '当前报告无内存原始证据' }).waitFor();
     await page.getByRole('tab', { name: /^RAID/ }).click();
     await page.getByRole('heading', { name: 'RAID 原始证据尚未接入' }).waitFor();
     await page.getByRole('tab', { name: /^硬盘/ }).click();
     await page.getByRole('tab', { name: /^硬盘/ }).focus();
     await page.keyboard.press('ArrowRight');
-    await page.getByRole('heading', { name: '内存原始证据尚未接入' }).waitFor();
+    await page.getByRole('heading', { name: '当前报告无内存原始证据' }).waitFor();
     await page.keyboard.press('Home');
     assert.equal(await page.locator('.hh-table tbody tr').count(), 3);
 
@@ -101,13 +101,49 @@ async function main() {
     await page.getByRole('button', { name: '外观' }).click();
     await page.getByRole('button', { name: '暗色', exact: true }).click();
     await page.screenshot({ path: path.join(output, 'report-dark.png'), fullPage: true });
+    if (process.env.ATLAS_MEMORY_TEST_BUNDLE) {
+      await choose(process.env.ATLAS_MEMORY_TEST_BUNDLE);
+      await page.waitForFunction(() => document.querySelector('#hh-tab-memory')?.getAttribute('aria-selected') === 'true');
+      assert.equal(await page.locator('.hh-table tbody tr').count(), 3);
+      assert((await page.locator('.hh-table').innerText()).includes('DIMM 未定位'));
+      await page.getByRole('button', { name: '查看证据 synthetic-memory-new-ue', exact: true }).click();
+      assert((await page.locator('.hh-evidence-table').innerText()).includes('new_ue_errors'));
+      await page.getByRole('tab', { name: /^数据缺口/ }).click();
+      assert((await page.locator('.hh-gaps').innerText()).includes('UE 新增量'));
+      await page.getByRole('tab', { name: '来源与身份', exact: true }).click();
+      assert((await page.locator('.hh-source').innerText()).includes('synthetic-edac-driver'));
+      await page.keyboard.press('ArrowLeft');
+      assert.equal(await page.getByRole('tab', { name: /^数据缺口/ }).getAttribute('aria-selected'), 'true');
+      await page.keyboard.press('Home');
+      assert.equal(await page.getByRole('tab', { name: '规则与字段', exact: true }).getAttribute('aria-selected'), 'true');
+      await page.screenshot({ path: path.join(output, 'memory-dark.png'), fullPage: true });
+      await page.getByRole('button', { name: '外观' }).click();
+      await page.getByRole('button', { name: '亮色', exact: true }).click();
+      await page.screenshot({ path: path.join(output, 'memory-desktop.png'), fullPage: true });
+      for (const width of [390, 320]) {
+        await page.setViewportSize({ width, height: 844 });
+        await page.waitForFunction(() => document.querySelector('.sidebar').getBoundingClientRect().right <= 1);
+        await checkWidth();
+        await page.screenshot({ path: path.join(output, `memory-mobile-${width}.png`), fullPage: true, animations: 'disabled' });
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.getByLabel('风险等级', { exact: true }).selectOption('critical');
+      assert.equal(await page.locator('.hh-table tbody tr').count(), 1);
+      await page.getByRole('tab', { name: /^硬盘/ }).click();
+      await page.getByRole('heading', { name: '尚无硬盘健康证据' }).waitFor();
+      await page.getByRole('tab', { name: /^内存/ }).click();
+      assert.equal(await page.locator('.hh-table tbody tr').count(), 3);
+      await page.getByRole('button', { name: '查看证据 public-edac-incomplete', exact: true }).click();
+      await page.getByRole('tab', { name: /^数据缺口/ }).click();
+      assert((await page.locator('.hh-gaps').innerText()).includes('edac_counter_consistency'));
+    }
     await page.getByTitle('English', { exact: true }).click();
     await page.getByRole('heading', { name: 'Disk & Memory Health', exact: true }).waitFor();
     await page.getByRole('button', { name: 'Clear local report' }).click();
     await page.getByRole('heading', { name: 'No disk health evidence' }).waitFor();
     assert.deepEqual(errors, []);
     assert.deepEqual(uploads, [], 'report upload or mutation occurred');
-    console.log(JSON.stringify({ status: 'passed', checks: ['empty', 'import', 'evidence', 'source', 'unknown', 'search', 'filters', 'memory_raid_gaps', 'keyboard_tabs', 'pagination_60_rows', 'tamper_preserves_report', 'export_identical', '320_390_1440_viewports', 'dark_theme', 'language', 'clear', 'no_mutations'], screenshots: output }));
+    console.log(JSON.stringify({ status: 'passed', checks: ['empty', 'import', 'evidence', 'source', 'unknown', 'search', 'filters', 'memory_raid_gaps', 'keyboard_tabs', 'pagination_60_rows', 'tamper_preserves_report', 'export_identical', '320_390_1440_viewports', 'dark_theme', 'language', 'clear', 'no_mutations'], memory_checks: process.env.ATLAS_MEMORY_TEST_BUNDLE ? ['raw_memory_import', 'controller_precision', 'new_ue', 'ce_ue_deltas', 'driver_kernel_source', 'memory_filter', 'tab_filter_reset', 'public_missing_conflicting_fields', 'memory_desktop_mobile_dark'] : 'skipped', screenshots: output }));
   } catch (error) {
     await page.screenshot({ path: path.join(output, 'failure.png'), fullPage: true });
     const overflow = await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth, scrollX, elements: Array.from(document.querySelectorAll('main *,aside')).filter(element => element.getBoundingClientRect().right > innerWidth || ['hh-table-scroll', 'hh-sr-only'].includes(element.className)).slice(0, 30).map(element => ({ tag: element.tagName, class: element.className, width: element.getBoundingClientRect().width, right: element.getBoundingClientRect().right, position: getComputedStyle(element).position, overflow: getComputedStyle(element).overflow })) }));

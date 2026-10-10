@@ -38,7 +38,7 @@ func ReadLimited(path string, max int64) ([]byte, error) {
 }
 
 func Build(manifestPath string, asOf time.Time) (Report, error) {
-	result := Report{Schema: SchemaVersion, RuleVersion: RuleVersion, Mode: "offline_replay", AsOf: asOf.UTC(), Rows: []Result{}}
+	result := Report{Schema: SchemaVersion, RuleVersion: ReportRuleVersion, Mode: "offline_replay", AsOf: asOf.UTC(), Rows: []Result{}}
 	if asOf.IsZero() {
 		return result, fmt.Errorf("a fixed as-of time is required")
 	}
@@ -193,7 +193,7 @@ func WriteReport(report Report, manifestPath, outDir string) error {
 	if err != nil {
 		return err
 	}
-	meta := OutputManifest{Schema: "hardware-health-artifacts-v1", RuleVersion: RuleVersion,
+	meta := OutputManifest{Schema: "hardware-health-artifacts-v1", RuleVersion: report.RuleVersion,
 		InputManifestSHA256: Digest(input), ExecutableSHA256: execHash,
 		ReportSHA256: Digest(encoded), MarkdownSHA256: Digest(markdown)}
 	if info, ok := debug.ReadBuildInfo(); ok {

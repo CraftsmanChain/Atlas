@@ -19,3 +19,23 @@ The ATA fixture is an unsupported-model counterexample, not ATA production suppo
 
 Sources: [NVMe 2.0c SMART log, section 5.16.1.3](https://www.nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-2.0c-2022.10.04-Ratified.pdf)
 and [smartctl source and manual](https://github.com/smartmontools/smartmontools).
+
+## EDAC raw-field fixtures
+
+`edac-public.json` wraps four unmodified sysfs file contents from node_exporter
+commit `1271bc244266457fd225dcef9b8a33641b582c64`,
+[sys.ttar](https://github.com/prometheus/node_exporter/blob/1271bc244266457fd225dcef9b8a33641b582c64/collector/fixtures/sys.ttar).
+Full upstream archive SHA256: `a72844f95f8578f901be125f07ee8d4e9feead937c8da936b540d7170ce10ba4`.
+The four paths are `sys/devices/system/edac/mc/mc0/` followed by
+`ce_count`, `ce_noinfo_count`, `ue_count`, and `ue_noinfo_count`.
+Apache-2.0 license retained in LICENSE.node_exporter.
+The wrapper adds only schema/controller identifiers and leaves missing driver,
+kernel, mc_name and reset timer absent/empty. The inconsistent counters are
+not repaired: the expected result is insufficient data, not healthy.
+
+`edac-synthetic-*.json` and `input-memory.json` are explicitly synthetic
+software fixtures, not raw captures from a production node or failure labels.
+They exercise baseline, zero and new-UE paths in the Linux sysfs format.
+Only controller-scope, boot-scoped identity is supported; no DIMM serial is inferred.
+Sources: [Linux EDAC sysfs ABI](https://github.com/torvalds/linux/blob/master/Documentation/ABI/testing/sysfs-devices-edac)
+and [node_exporter EDAC collector](https://github.com/prometheus/node_exporter/blob/1271bc244266457fd225dcef9b8a33641b582c64/collector/edac_linux.go).

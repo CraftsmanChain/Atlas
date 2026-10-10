@@ -17,7 +17,7 @@ test('frontend and framework release contracts stay aligned', () => {
   assert(version);
   assert(app.includes(`version: '${version}'`));
   assert(app.includes(`${version} ·`));
-  assert(app.includes('PLATFORM / v0.120.57'));
+  assert(app.includes('PLATFORM / v0.120.58'));
   assert(app.includes("id: 'component-health'"));
 });
 
@@ -77,4 +77,32 @@ test('Go CLI artifact passes browser contract', { skip: !process.env.ATLAS_HEALT
   const parsed = await parseHealthBundle(readFileSync(path, 'utf8'), 'bundle.json');
   assert.equal(parsed.report.rows.length, 3);
   assert.equal(parsed.report.rows.find(row => row.protocol === 'ATA')?.support, 'unsupported');
+});
+
+test('controller-scoped memory contract preserves critical evidence and exact deltas', () => {
+  const report = fixture() as unknown as HealthReport;
+  report.rule_version = 'hardware-health-v1.1.0';
+  Object.assign(report.rows[0], { rule_version: 'memory-health-v0.1.0', entity_type: 'memory_controller', protocol: 'EDAC', serial: '', firmware: '', tool_version: 'Linux EDAC sysfs v1', baseline_sha256: 'e'.repeat(64), trend_status: 'available', level: 'critical', memory: { controller: 'mc0', driver: 'synthetic-driver', kernel_release: 'synthetic-kernel', location_precision: 'controller', ce_delta: '0', ue_delta: '1' }, evidence: [{ id: 'c'.repeat(64), field: 'edac.ue_delta', value: '1', unit: 'count' }], hits: [{ rule: 'new_ue_errors', level: 'critical', evidence_id: 'c'.repeat(64) }] });
+  report.summary.by_level = { critical: 1 };
+  assert.equal(validateReport(report).rows[0].memory?.ue_delta, '1');
+  for (const mutate of [
+    (r: HealthReport) => { r.rows[0].memory!.ce_delta = null; },
+    (r: HealthReport) => { r.rows[0].memory!.ue_delta = '-1'; },
+    (r: HealthReport) => { r.rows[0].memory!.location_precision = 'dimm' as 'controller'; },
+    (r: HealthReport) => { r.rows[0].memory!.driver = ''; },
+    (r: HealthReport) => { r.rows[0].baseline_sha256 = ''; },
+    (r: HealthReport) => { r.rows[0].media_delta = '1'; },
+  ]) { const candidate = structuredClone(report); mutate(candidate); assert.throws(() => validateReport(candidate)); }
+});
+
+test('raw EDAC CLI artifact passes browser contract without claiming DIMM health', { skip: !process.env.ATLAS_MEMORY_TEST_BUNDLE }, async () => {
+  const parsed = await parseHealthBundle(readFileSync(process.env.ATLAS_MEMORY_TEST_BUNDLE!, 'utf8'), 'memory-bundle.json');
+  assert.equal(parsed.report.rows.length, 3);
+  const incomplete = parsed.report.rows.find(row => row.reference === 'public-edac-incomplete')!;
+  assert.equal(incomplete.assessment_status, 'insufficient_data');
+  assert.equal(incomplete.level, 'attention');
+  const critical = parsed.report.rows.find(row => row.reference === 'synthetic-memory-new-ue')!;
+  assert.equal(critical.level, 'critical');
+  assert.equal(critical.memory?.ue_delta, '1');
+  assert.equal(critical.serial, '');
 });

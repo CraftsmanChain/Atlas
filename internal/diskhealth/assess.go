@@ -9,7 +9,15 @@ import (
 )
 
 func Assess(in Input, raw []byte, baseline []byte, asOf time.Time) Result {
+	if in.Adapter == "linux-edac-sysfs-v1" {
+		return assessMemory(in, raw, baseline, asOf)
+	}
 	r := newResult(in, raw)
+	if in.Adapter != "" && in.Adapter != "smartctl" {
+		r.block("adapter_unsupported")
+		r.finish()
+		return r
+	}
 	return assess(&r, in, raw, baseline, asOf)
 }
 
@@ -200,7 +208,7 @@ func applyBaseline(r *Result, in Input, raw []byte, media *big.Int, asOf time.Ti
 			return
 		}
 	}
-	if previous.IdentityStatus != "bound" || previous.EntityID != r.EntityID || previous.Model != r.Model || previous.Firmware != r.Firmware || previous.ToolVersion != r.ToolVersion || b.SourceKind != in.SourceKind || media == nil {
+	if previous.IdentityStatus != "bound" || previous.EntityID != r.EntityID || previous.Model != r.Model || previous.Firmware != r.Firmware || previous.ToolVersion != r.ToolVersion || b.SourceKind != in.SourceKind || b.Adapter != in.Adapter || media == nil {
 		r.TrendStatus = "invalid_baseline"
 		return
 	}
