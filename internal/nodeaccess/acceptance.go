@@ -179,6 +179,7 @@ func PlanAcceptance(scope AcceptanceScope, now time.Time) (AcceptancePlan, error
 		CommandOutputBytes: acceptanceCommandBytes, BatchOutputBytes: acceptanceBatchBytes, NoChangeExecuted: true,
 	}
 	seen := map[string]bool{}
+	var controller *int
 	for _, request := range scope.Commands {
 		if seen[request.ID] {
 			return AcceptancePlan{}, errors.New("duplicate command ID; only one disk/controller per scope")
@@ -187,6 +188,12 @@ func PlanAcceptance(scope AcceptanceScope, now time.Time) (AcceptancePlan, error
 		command, err := acceptanceTemplate(request)
 		if err != nil {
 			return AcceptancePlan{}, err
+		}
+		if request.Controller != nil {
+			if controller != nil && *controller != *request.Controller {
+				return AcceptancePlan{}, errors.New("one controller per scope; counters and driver must match")
+			}
+			controller = request.Controller
 		}
 		plan.Commands = append(plan.Commands, command)
 	}
