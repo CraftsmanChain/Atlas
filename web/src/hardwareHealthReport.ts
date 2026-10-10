@@ -1,8 +1,10 @@
 export type HealthLevel = 'critical' | 'warning' | 'attention' | 'unknown' | 'clear_for_checked_signals';
 export type HealthEvidence = { id: string; field: string; value: string; unit: string };
 export type HealthHit = { rule: string; level: 'critical' | 'warning' | 'attention'; evidence_id: string };
+export type MemoryDetails = { controller: string; driver: string; kernel_release: string; location_precision: 'controller'; ce_delta: string | null; ue_delta: string | null };
 export type HealthRow = {
-  reference: string; entity_id: string; entity_type: 'disk' | 'nvme_controller'; identity_status: 'bound' | 'provisional' | 'conflict';
+  rule_version?: string; memory?: MemoryDetails;
+  reference: string; entity_id: string; entity_type: 'disk' | 'nvme_controller' | 'memory_controller'; identity_status: 'bound' | 'provisional' | 'conflict';
   scope: string; node: string; generation: string; boot_id: string; serial: string; model: string; firmware: string; protocol: string; device: string;
   tool_version: string; source: string; source_kind: 'fixture' | 'operator_snapshot' | ''; input_sha256: string;
   observed_at: string; available_at: string; freshness: 'unknown' | 'future' | 'stale' | 'fresh_at_cutoff';
@@ -11,7 +13,7 @@ export type HealthRow = {
   blockers: string[]; hits: HealthHit[]; evidence: HealthEvidence[];
 };
 export type HealthReport = {
-  schema: 'hardware-health-report-v1'; input_manifest_sha256: string; rule_version: 'disk-health-v1.0.0'; mode: 'offline_replay'; as_of: string;
+  schema: 'hardware-health-report-v1'; input_manifest_sha256: string; rule_version: 'disk-health-v1.0.0' | 'hardware-health-v1.1.0'; mode: 'offline_replay'; as_of: string;
   alerts_emitted: false; actions_executed: false;
   summary: { total: number; assessed: number; unknown: number; by_level: Record<string, number> }; rows: HealthRow[];
 };
@@ -37,7 +39,7 @@ function decimal(value: unknown): string { const result = text(value, 39); if (!
 
 export function validateReport(value: unknown): HealthReport {
   const report = object(value);
-  if (report.schema !== 'hardware-health-report-v1' || report.rule_version !== 'disk-health-v1.0.0' || report.mode !== 'offline_replay' || report.alerts_emitted !== false || report.actions_executed !== false) fail('unsupported_report_contract');
+  if (report.schema !== 'hardware-health-report-v1' || !['disk-health-v1.0.0', 'hardware-health-v1.1.0'].includes(String(report.rule_version)) || report.mode !== 'offline_replay' || report.alerts_emitted !== false || report.actions_executed !== false) fail('unsupported_report_contract');
   date(report.as_of);
   hash(report.input_manifest_sha256);
   const refs = new Set<string>();
@@ -49,7 +51,18 @@ export function validateReport(value: unknown): HealthReport {
     refs.add(String(row.reference));
     hash(row.entity_id); hash(row.input_sha256); hash(row.baseline_sha256, true);
     date(row.observed_at); date(row.available_at);
-    choice(row.entity_type, ['disk', 'nvme_controller']); choice(row.identity_status, ['bound', 'provisional', 'conflict']);
+    choice(row.entity_type, ['disk', 'nvme_controller', 'memory_controller']); choice(row.identity_status, ['bound', 'provisional', 'conflict']);
+    const isMemory = row.entity_type === 'memory_controller';
+    if (isMemory) {
+      if (report.rule_version !== 'hardware-health-v1.1.0' || row.rule_version !== 'memory-health-v0.1.0' || row.protocol !== 'EDAC' || row.media_delta !== null) fail('invalid_memory_contract');
+      const memory = object(row.memory);
+      for (const field of ['controller', 'driver', 'kernel_release']) text(memory[field], 160);
+      if (memory.location_precision !== 'controller') fail('invalid_memory_location');
+      if (memory.ce_delta !== null) decimal(memory.ce_delta);
+      if (memory.ue_delta !== null) decimal(memory.ue_delta);
+      if ((row.trend_status === 'available') !== (memory.ce_delta !== null && memory.ue_delta !== null) || (memory.ce_delta === null) !== (memory.ue_delta === null)) fail('invalid_memory_delta');
+      if (row.trend_status === 'available' && !row.baseline_sha256) fail('missing_memory_baseline');
+    } else if (row.memory !== undefined) fail('unexpected_memory_details');
     if (row.identity_status === 'bound') { if (boundIdentities.has(String(row.entity_id))) fail('duplicate_bound_identity'); boundIdentities.add(String(row.entity_id)); }
     choice(row.source_kind, ['fixture', 'operator_snapshot', '']); choice(row.support, ['unsupported', 'fixture_verified']);
     choice(row.freshness, ['unknown', 'future', 'stale', 'fresh_at_cutoff']); choice(row.assessment_status, ['assessed', 'insufficient_data']); choice(row.level, levels);
@@ -62,7 +75,7 @@ export function validateReport(value: unknown): HealthReport {
       const item = object(value); const id = hash(item.id);
       if (evidenceIDs.has(id)) fail('duplicate_evidence'); evidenceIDs.add(id);
       text(item.field, 160); text(item.unit, 40); text(item.value);
-      if (String(item.field).startsWith('nvme.')) decimal(item.value);
+      if (String(item.field).startsWith('nvme.') || String(item.field).startsWith('edac.')) decimal(item.value);
       return item as HealthEvidence;
     });
     const hits = list(row.hits, 32).map(value => {
@@ -75,10 +88,13 @@ export function validateReport(value: unknown): HealthReport {
     if (severity[row.level as HealthLevel] !== max) fail('severity_inconsistent');
     if (row.assessment_status === 'assessed') {
       if (blockers.length || row.identity_status !== 'bound' || row.freshness !== 'fresh_at_cutoff' || row.support !== 'fixture_verified' || row.level === 'unknown') fail('invalid_assessed_state');
-      if (['scope', 'generation', 'serial', 'model', 'firmware', 'source', 'tool_version'].some(field => !String(row[field]).trim()) || !row.source_kind || row.protocol !== 'NVMe' || row.entity_type !== 'nvme_controller' || row.exit_code === null || (Number(row.exit_code) & 7) !== 0) fail('invalid_assessed_metadata');
+      if (isMemory) {
+        const memory = object(row.memory);
+        if (['scope', 'node', 'generation', 'boot_id', 'model', 'source'].some(field => !String(row[field]).trim()) || !row.source_kind || !String(memory.driver).trim() || !String(memory.kernel_release).trim() || !/^mc[0-9]{1,4}$/.test(String(memory.controller)) || row.exit_code !== 0 || row.tool_version !== 'Linux EDAC sysfs v1') fail('invalid_memory_metadata');
+      } else if (['scope', 'generation', 'serial', 'model', 'firmware', 'source', 'tool_version'].some(field => !String(row[field]).trim()) || !row.source_kind || row.protocol !== 'NVMe' || row.entity_type !== 'nvme_controller' || row.exit_code === null || (Number(row.exit_code) & 7) !== 0) fail('invalid_assessed_metadata');
     } else if (!blockers.length || (max === 0 && row.level !== 'unknown')) fail('invalid_insufficient_state');
     if (row.freshness === 'fresh_at_cutoff' && (Date.parse(String(row.available_at)) > Date.parse(String(report.as_of)) || Date.parse(String(row.observed_at)) > Date.parse(String(row.available_at)))) fail('cutoff_violation');
-    if ((row.trend_status === 'available') !== (row.media_delta !== null)) fail('invalid_delta_state');
+    if (!isMemory && (row.trend_status === 'available') !== (row.media_delta !== null)) fail('invalid_delta_state');
     return { ...row, blockers, evidence, hits } as HealthRow;
   });
   const summary = object(report.summary), byLevel = object(summary.by_level);

@@ -1,0 +1,7 @@
+{
+  "schema": "linux-edac-sysfs-snapshot-v1",
+  "controller": "mc0",
+  "driver": "synthetic-edac-driver",
+  "kernel_release": "synthetic-kernel-6.12",
+  "files": { "mc_name": "synthetic-memory-controller\n", "ce_count": "5\n", "ue_count": "2\n", "ce_noinfo_count": "0\n", "ue_noinfo_count": "0\n", "seconds_since_reset": "1060\n" }
+}

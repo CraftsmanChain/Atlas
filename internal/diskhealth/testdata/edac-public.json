@@ -1,0 +1,12 @@
+{
+  "schema": "linux-edac-sysfs-snapshot-v1",
+  "controller": "mc0",
+  "driver": "",
+  "kernel_release": "",
+  "files": {
+    "ce_count": "1\n",
+    "ce_noinfo_count": "2\n",
+    "ue_count": "5\n",
+    "ue_noinfo_count": "6\n"
+  }
+}

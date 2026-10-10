@@ -6,11 +6,13 @@ import (
 )
 
 const (
-	SchemaVersion = "hardware-health-report-v1"
-	RuleVersion   = "disk-health-v1.0.0"
-	MaxInputBytes = 256 * 1024
-	MaxBatchBytes = 2 * 1024 * 1024
-	MaxInputs     = 200
+	SchemaVersion     = "hardware-health-report-v1"
+	RuleVersion       = "disk-health-v1.0.0"
+	ReportRuleVersion = "hardware-health-v1.1.0"
+	MemoryRuleVersion = "memory-health-v0.1.0"
+	MaxInputBytes     = 256 * 1024
+	MaxBatchBytes     = 2 * 1024 * 1024
+	MaxInputs         = 200
 )
 
 type InputManifest struct {
@@ -19,6 +21,7 @@ type InputManifest struct {
 }
 
 type Input struct {
+	Adapter        string    `json:"adapter,omitempty"`
 	Reference      string    `json:"reference"`
 	File           string    `json:"file"`
 	SHA256         string    `json:"sha256"`
@@ -52,36 +55,47 @@ type Hit struct {
 }
 
 type Result struct {
-	Reference        string     `json:"reference"`
-	EntityID         string     `json:"entity_id"`
-	EntityType       string     `json:"entity_type"`
-	IdentityStatus   string     `json:"identity_status"`
-	Scope            string     `json:"scope"`
-	Node             string     `json:"node"`
-	Generation       string     `json:"generation"`
-	BootID           string     `json:"boot_id"`
-	Serial           string     `json:"serial"`
-	Model            string     `json:"model"`
-	Firmware         string     `json:"firmware"`
-	Protocol         string     `json:"protocol"`
-	Device           string     `json:"device"`
-	ToolVersion      string     `json:"tool_version"`
-	Source           string     `json:"source"`
-	SourceKind       string     `json:"source_kind"`
-	InputSHA256      string     `json:"input_sha256"`
-	ObservedAt       time.Time  `json:"observed_at"`
-	AvailableAt      time.Time  `json:"available_at"`
-	Freshness        string     `json:"freshness"`
-	Support          string     `json:"support"`
-	AssessmentStatus string     `json:"assessment_status"`
-	Level            string     `json:"level"`
-	ExitCode         *int       `json:"exit_code"`
-	MediaDelta       *string    `json:"media_delta"`
-	BaselineSHA256   string     `json:"baseline_sha256"`
-	TrendStatus      string     `json:"trend_status"`
-	Blockers         []string   `json:"blockers"`
-	Hits             []Hit      `json:"hits"`
-	Evidence         []Evidence `json:"evidence"`
+	RuleVersion      string         `json:"rule_version,omitempty"`
+	Memory           *MemoryDetails `json:"memory,omitempty"`
+	Reference        string         `json:"reference"`
+	EntityID         string         `json:"entity_id"`
+	EntityType       string         `json:"entity_type"`
+	IdentityStatus   string         `json:"identity_status"`
+	Scope            string         `json:"scope"`
+	Node             string         `json:"node"`
+	Generation       string         `json:"generation"`
+	BootID           string         `json:"boot_id"`
+	Serial           string         `json:"serial"`
+	Model            string         `json:"model"`
+	Firmware         string         `json:"firmware"`
+	Protocol         string         `json:"protocol"`
+	Device           string         `json:"device"`
+	ToolVersion      string         `json:"tool_version"`
+	Source           string         `json:"source"`
+	SourceKind       string         `json:"source_kind"`
+	InputSHA256      string         `json:"input_sha256"`
+	ObservedAt       time.Time      `json:"observed_at"`
+	AvailableAt      time.Time      `json:"available_at"`
+	Freshness        string         `json:"freshness"`
+	Support          string         `json:"support"`
+	AssessmentStatus string         `json:"assessment_status"`
+	Level            string         `json:"level"`
+	ExitCode         *int           `json:"exit_code"`
+	MediaDelta       *string        `json:"media_delta"`
+	BaselineSHA256   string         `json:"baseline_sha256"`
+	TrendStatus      string         `json:"trend_status"`
+	Blockers         []string       `json:"blockers"`
+	Hits             []Hit          `json:"hits"`
+	Evidence         []Evidence     `json:"evidence"`
+}
+
+type MemoryDetails struct {
+	Controller        string  `json:"controller"`
+	Driver            string  `json:"driver"`
+	KernelRelease     string  `json:"kernel_release"`
+	LocationPrecision string  `json:"location_precision"`
+	CEDelta           *string `json:"ce_delta"`
+	UEDelta           *string `json:"ue_delta"`
 }
 
 type Summary struct {
@@ -131,7 +145,11 @@ func (r *Result) block(reason string) {
 }
 
 func (r *Result) evidence(field, value, unit string) string {
-	identity, _ := json.Marshal([]string{r.InputSHA256, r.BaselineSHA256, RuleVersion, field, value, unit})
+	version := r.RuleVersion
+	if version == "" {
+		version = RuleVersion
+	}
+	identity, _ := json.Marshal([]string{r.InputSHA256, r.BaselineSHA256, version, field, value, unit})
 	id := Digest(identity)
 	r.Evidence = append(r.Evidence, Evidence{ID: id, Field: field, Value: value, Unit: unit})
 	return id
