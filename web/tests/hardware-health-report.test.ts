@@ -18,7 +18,7 @@ test('frontend and framework release contracts stay aligned', () => {
   assert(version);
   assert(app.includes(`version: '${version}'`));
   assert(app.includes(`${version} ·`));
-  assert(app.includes('PLATFORM / v0.120.61'));
+  assert(app.includes('PLATFORM / v0.120.62'));
   assert(app.includes("id: 'component-health'"));
 });
 
@@ -139,6 +139,54 @@ test('field controller report is supported without weakening older rule-version 
   const previousContract = structuredClone(parsed.report);
   previousContract.rule_version = 'hardware-health-v1.2.0';
   assert.throws(() => validateReport(previousContract), /invalid_disk_rule_version/);
+});
+
+test('PM893 profile is versioned, field-bound and never a health percentage', () => {
+  const report = fixture() as unknown as HealthReport;
+  report.rule_version = 'hardware-health-v1.3.0';
+  const evidence = [
+    ['ata.5.raw', '0', 'count'], ['ata.187.raw', '0', 'count'], ['ata.199.raw', '0', 'count'], ['ata.197.raw', '0', 'sectors'],
+    ['ata.177.normalized', '98', 'normalized'], ['ata.temperature', '30', 'celsius'],
+  ].map(([field, value, unit], index) => ({ field, value, unit, id: String(index + 1).repeat(64) }));
+  Object.assign(report.rows[0], {
+    rule_version: 'disk-health-v1.2.0', entity_type: 'disk', protocol: 'ATA', model: 'SAMSUNG MZ7L3480HCHQ-00B7C', firmware: 'JXTC404Q', device: '/dev/sda', evidence,
+    disk: { media_type: 'SSD', profile: 'ata-samsung-pm893-v1', temperature_celsius: '30',
+      wear: { field: 'ata.177.normalized', value: '98', unit: 'normalized', kind: 'normalized_index', evidence_id: evidence[4].id },
+      dimensions: [
+        { id: 'media', state: 'checked', level: 'clear_for_checked_signals' }, { id: 'endurance', state: 'insufficient_data', level: 'unknown' },
+        { id: 'temperature', state: 'insufficient_data', level: 'unknown' }, { id: 'path_power', state: 'checked', level: 'clear_for_checked_signals' },
+      ], counter_deltas: [],
+    },
+  });
+  assert.equal(validateReport(report).rows[0].disk?.wear?.value, '98');
+  for (const mutate of [
+    (r: HealthReport) => { r.rows[0].firmware = 'JXTC104Q'; },
+    (r: HealthReport) => { r.rows[0].model = 'SAMSUNG MZ7L3480HCHQ-00A07'; },
+    (r: HealthReport) => { r.rows[0].disk!.wear!.unit = 'percent'; },
+    (r: HealthReport) => { r.rows[0].disk!.wear!.kind = 'consumed_percent'; },
+    (r: HealthReport) => { r.rows[0].disk!.dimensions[1] = { id: 'endurance', state: 'checked', level: 'clear_for_checked_signals' }; },
+    (r: HealthReport) => { r.rows[0].evidence = r.rows[0].evidence.filter(e => e.field !== 'ata.197.raw'); },
+    (r: HealthReport) => { r.rows[0].evidence[3].unit = 'count'; },
+    (r: HealthReport) => { r.rule_version = 'hardware-health-v1.2.1'; },
+    (r: HealthReport) => { r.rule_version = 'disk-health-v1.0.0'; },
+    (r: HealthReport) => { r.rule_version = 'hardware-health-v1.2.1'; r.rows[0].rule_version = 'disk-health-v1.1.1'; },
+  ]) { const candidate = structuredClone(report); mutate(candidate); assert.throws(() => validateReport(candidate)); }
+});
+
+test('same real six-disk input now includes two limited Samsung assessments', { skip: !process.env.ATLAS_PM893_TEST_BUNDLE }, async () => {
+  const parsed = await parseHealthBundle(readFileSync(process.env.ATLAS_PM893_TEST_BUNDLE!, 'utf8'), 'pm893-field-bundle.json');
+  assert.equal(parsed.report.rule_version, 'hardware-health-v1.3.0');
+  assert.equal(parsed.report.input_manifest_sha256, 'c435dde03f70ef12f1a7688d80d98408f4921e7879b0dfa64b35c32bf7b28639');
+  assert.deepEqual([parsed.report.summary.total, parsed.report.summary.assessed, parsed.report.summary.unknown], [6, 6, 0]);
+  const sata = parsed.report.rows.filter(row => row.protocol === 'ATA');
+  assert.equal(sata.length, 2);
+  for (const row of sata) {
+    assert.equal(row.disk?.profile, 'ata-samsung-pm893-v1');
+    assert.equal(row.disk?.wear?.kind, 'normalized_index');
+    assert.equal(row.disk?.wear?.value, '98');
+    assert.equal(row.trend_status, 'unavailable');
+    assert.equal(row.disk?.dimensions.find(d => d.id === 'endurance')?.state, 'insufficient_data');
+  }
 });
 
 test('controlled audit bundle retains actual execution provenance', { skip: !process.env.ATLAS_AUDIT_TEST_BUNDLE }, async () => {

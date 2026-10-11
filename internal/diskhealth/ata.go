@@ -26,6 +26,9 @@ func ataProfile(o object) (string, string) {
 	if model == "Samsung SSD 860 EVO 500GB" && o.text("firmware_version") == "RVT02B6Q" && o.text("model_family") == "Samsung based SSDs" {
 		return "SSD", "ata-samsung-860-evo-v1"
 	}
+	if model == "SAMSUNG MZ7L3480HCHQ-00B7C" && o.text("firmware_version") == "JXTC404Q" {
+		return "SSD", "ata-samsung-pm893-v1"
+	}
 	return "SSD", ""
 }
 
@@ -55,6 +58,13 @@ func assessATA(r *Result, in Input, o object, baseline []byte, asOf time.Time) {
 	if media == "SSD" {
 		required = []int{5, 187, 199}
 	}
+	if profile == "ata-samsung-pm893-v1" {
+		// The field snapshot uses the 7.2 default decoder; newer drivedb
+		// renames 187 without changing its raw48 counter. Do not generalize
+		// this alias to other SSDs. Pending sectors are a gauge, not a delta.
+		names[187] = append(names[187], "Reported_Uncorrect")
+		required = append(required, 197)
+	}
 	values, ids := map[int]*big.Int{}, map[int]string{}
 	for _, id := range required {
 		attr := attrs[id]
@@ -73,7 +83,7 @@ func assessATA(r *Result, in Input, o object, baseline []byte, asOf time.Time) {
 		}
 		values[id] = value
 		unit := "count"
-		if media == "HDD" && id != 199 {
+		if media == "HDD" && id != 199 || id == 197 {
 			unit = "sectors"
 		}
 		ids[id] = r.evidence(fmt.Sprintf("ata.%d.raw", id), value.String(), unit)
@@ -88,6 +98,9 @@ func assessATA(r *Result, in Input, o object, baseline []byte, asOf time.Time) {
 			}
 		}
 	} else {
+		if value := values[197]; value != nil && value.Sign() > 0 {
+			r.hit("ata_pending_sectors", "warning", ids[197])
+		}
 		if value := values[187]; value != nil && value.Sign() > 0 {
 			r.hit("historical_media_errors", "attention", ids[187])
 		}

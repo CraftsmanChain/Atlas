@@ -7,8 +7,8 @@ import (
 
 const (
 	SchemaVersion     = "hardware-health-report-v1"
-	RuleVersion       = "disk-health-v1.1.1"
-	ReportRuleVersion = "hardware-health-v1.2.1"
+	RuleVersion       = "disk-health-v1.2.0"
+	ReportRuleVersion = "hardware-health-v1.3.0"
 	MemoryRuleVersion = "memory-health-v0.1.0"
 	MaxInputBytes     = 256 * 1024
 	MaxBatchBytes     = 2 * 1024 * 1024
