@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { levels, parseHealthBundle, selectRows, validateReport, type HealthReport } from '../src/hardwareHealthReport.ts';
 
-const digest = async (value: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))), value => value.toString(16).padStart(2, '0')).join('');
+const digest = async (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
 const fixture = () => ({
   schema: 'hardware-health-report-v1', input_manifest_sha256: 'd'.repeat(64), rule_version: 'disk-health-v1.0.0', mode: 'offline_replay', as_of: '2026-10-09T00:00:00Z', alerts_emitted: false, actions_executed: false,
   summary: { total: 1, assessed: 1, unknown: 0, by_level: { clear_for_checked_signals: 1 } },
@@ -17,7 +18,7 @@ test('frontend and framework release contracts stay aligned', () => {
   assert(version);
   assert(app.includes(`version: '${version}'`));
   assert(app.includes(`${version} ·`));
-  assert(app.includes('PLATFORM / v0.120.60'));
+  assert(app.includes('PLATFORM / v0.120.61'));
   assert(app.includes("id: 'component-health'"));
 });
 
@@ -31,6 +32,25 @@ test('exact counters survive parsing without Number conversion', async () => {
 test('reject tampering and unsupported safety contract', async () => {
   await assert.rejects(parseHealthBundle(JSON.stringify({ schema: 'hardware-health-bundle-v1', report_json: JSON.stringify(fixture()), report_sha256: '0'.repeat(64) }), 'bad.json'), /digest_mismatch/);
   for (const field of ['schema', 'rule_version', 'mode', 'alerts_emitted', 'actions_executed']) { const report = { ...fixture(), [field]: 'invalid' }; assert.throws(() => validateReport(report)); }
+});
+
+test('intranet HTTP imports preserve SHA-256 integrity without Web Crypto', async () => {
+  const report = fixture();
+  report.rows[0].node = '算力小镇-智元';
+  const reportJSON = JSON.stringify(report);
+  const expected = await digest(reportJSON);
+  const content = JSON.stringify({ schema: 'hardware-health-bundle-v1', report_json: reportJSON, report_sha256: expected });
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: undefined });
+  try {
+    const result = await parseHealthBundle(content, 'http-report.json');
+    assert.equal(result.sha256, expected);
+    assert.equal(result.report.rows[0].node, report.rows[0].node);
+    await assert.rejects(parseHealthBundle(content.replace('算力小镇-智元', 'changed'), 'tampered.json'), /digest_mismatch/);
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'crypto', descriptor);
+    else Reflect.deleteProperty(globalThis, 'crypto');
+  }
 });
 
 test('reject malformed rows, evidence links and inconsistent summaries', () => {

@@ -1,3 +1,5 @@
+import { sha256 } from '@noble/hashes/sha2.js';
+
 export type HealthLevel = 'critical' | 'warning' | 'attention' | 'unknown' | 'clear_for_checked_signals';
 export type HealthEvidence = { id: string; field: string; value: string; unit: string };
 export type HealthHit = { rule: string; level: 'critical' | 'warning' | 'attention'; evidence_id: string };
@@ -180,8 +182,8 @@ export async function parseHealthBundle(content: string, fileName: string): Prom
   if (bundle.schema !== 'hardware-health-bundle-v1' || typeof bundle.report_json !== 'string' || bundle.report_json.length > 2 * 1024 * 1024) fail('unsupported_bundle_contract');
   const expected = hash(bundle.report_sha256);
   const bytes = new TextEncoder().encode(bundle.report_json);
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  const actual = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+  // Offline reports also open on intranet HTTP, where SubtleCrypto is unavailable.
+  const actual = Array.from(sha256(bytes), value => value.toString(16).padStart(2, '0')).join('');
   if (actual !== expected) fail('report_digest_mismatch');
   return { report: validateReport(JSON.parse(bundle.report_json)), sha256: actual, fileName };
 }
