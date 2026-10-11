@@ -10,6 +10,8 @@ build_image="${ATLAS_GO_BUILD_IMAGE:-docker.m.daocloud.io/library/golang:1.24-bo
 go_proxy="${ATLAS_GOPROXY:-https://goproxy.cn|https://proxy.golang.org|direct}"
 go_sumdb="${ATLAS_GOSUMDB:-sum.golang.google.cn}"
 deployment_stage="${ATLAS_DEPLOYMENT_STAGE:-development}"
+bootstrap="${ATLAS_BOOTSTRAP:-0}"
+config_template="${ATLAS_CONFIG_TEMPLATE:-configs/clusters/xiaozhen-zhiyuan.yaml}"
 
 case "$deployment_stage" in
   development)
@@ -28,6 +30,25 @@ if [[ ! "$release_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "Invalid release id: $release_id" >&2
   exit 1
 fi
+if [[ ! "$version_name" =~ ^[A-Za-z0-9._-]+$ || ! "$commit" =~ ^[a-f0-9]{7,40}$ ]]; then
+  echo "Invalid version or commit" >&2
+  exit 1
+fi
+if [[ ! "$remote_root" =~ ^/[A-Za-z0-9_./-]+$ || "$remote_root" == / || "$remote_root" == *..* ]]; then
+  echo "Invalid application root" >&2
+  exit 1
+fi
+if [[ "$bootstrap" != 0 && "$bootstrap" != 1 ]]; then
+  echo "ATLAS_BOOTSTRAP must be 0 or 1" >&2
+  exit 1
+fi
+if [[ "$bootstrap" == 1 && ( "$deployment_stage" != development || "$service_name" != atlas.service ) ]]; then
+  echo "Bootstrap requires the standard Atlas service in development stage" >&2
+  exit 1
+fi
+for command_name in docker flock curl jq install systemctl; do
+  command -v "$command_name" >/dev/null || { echo "Missing required command: $command_name" >&2; exit 1; }
+done
 
 incoming_dir="$remote_root/incoming"
 release_dir="$remote_root/releases/$release_id"
@@ -70,12 +91,14 @@ fi
 build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "Building Atlas on target: version=$version_name commit=$commit"
 docker run --rm \
+  --cpus "${ATLAS_BUILD_CPUS:-2}" --memory "${ATLAS_BUILD_MEMORY:-3g}" \
   --volume "$release_dir/source:/src" \
   --volume "$release_dir/output:/out" \
   --volume "$remote_root/build-cache/go-build:/root/.cache/go-build" \
   --volume "$remote_root/build-cache/go-mod:/go/pkg/mod" \
   --workdir /src \
   --env CGO_ENABLED=1 \
+  --env GOMAXPROCS=2 \
   --env "GOPROXY=$go_proxy" \
   --env "GOSUMDB=$go_sumdb" \
   "$build_image" \
@@ -88,6 +111,13 @@ test -x "$release_dir/output/atlas-server"
 test -x "$release_dir/output/atlas-db-migrate"
 test -f "$release_dir/web/dist/index.html"
 
+if [[ "$bootstrap" == 1 ]]; then
+  bash "$release_dir/source/scripts/bootstrap_remote.sh" apply "$remote_root" "$release_dir/source" "$config_template"
+elif [[ ! -f "$remote_root/configs/config.yaml" ]] || [[ "$(systemctl show "$service_name" --property=LoadState --value)" != loaded ]]; then
+  echo "Existing service/configuration missing; first deployment must be explicitly bootstrapped" >&2
+  exit 1
+fi
+
 if [[ "$database_backup_enabled" == "1" ]]; then
   echo "Backing up PostgreSQL before production release"
   "$backup_script"
@@ -96,31 +126,54 @@ else
 fi
 
 timestamp="$(date +%Y%m%d%H%M%S)"
+mkdir -p "$remote_root/web"
 server_backup="$remote_root/atlas-server.bak.$timestamp"
 web_backup="$remote_root/web/dist.bak.$timestamp"
-cp "$remote_root/atlas-server" "$server_backup"
-if [[ -d "$remote_root/web/dist" ]]; then
-  mv "$remote_root/web/dist" "$web_backup"
+previous_server=0
+if [[ -f "$remote_root/atlas-server" ]]; then
+  cp "$remote_root/atlas-server" "$server_backup"
+  previous_server=1
 fi
 
 rollback() {
-  echo "Release verification failed; rolling back binaries and web assets" >&2
-  install -m 755 "$server_backup" "$remote_root/atlas-server"
+  trap - ERR
+  echo "Release verification failed; retaining release artifacts and database" >&2
+  if [[ "$previous_server" == 1 ]]; then
+    install -m 755 "$server_backup" "$remote_root/atlas-server.rollback"
+    mv -f "$remote_root/atlas-server.rollback" "$remote_root/atlas-server"
+  fi
   if [[ -d "$web_backup" ]]; then
-    rm -rf "$remote_root/web/dist"
+    if [[ -d "$remote_root/web/dist" ]]; then
+      mv "$remote_root/web/dist" "$release_dir/failed-web"
+    fi
     mv "$web_backup" "$remote_root/web/dist"
   fi
-  systemctl restart "$service_name"
+  if [[ "$previous_server" == 1 ]]; then
+    systemctl restart "$service_name"
+  else
+    systemctl stop "$service_name"
+    echo "First deployment failed: no previous Atlas binary exists; new Atlas stopped, files/data retained." >&2
+  fi
 }
 trap rollback ERR
 
-install -m 755 "$release_dir/output/atlas-server" "$remote_root/atlas-server"
+if [[ -d "$remote_root/web/dist" ]]; then
+  mv "$remote_root/web/dist" "$web_backup"
+fi
+install -m 755 "$release_dir/output/atlas-server" "$remote_root/atlas-server.next"
+mv -f "$remote_root/atlas-server.next" "$remote_root/atlas-server"
 install -m 755 "$release_dir/output/atlas-db-migrate" "$remote_root/atlas-db-migrate"
 mv "$release_dir/web/dist" "$remote_root/web/dist"
-systemctl restart "$service_name"
+if [[ "$previous_server" == 1 ]]; then
+  systemctl restart "$service_name"
+else
+  systemctl start "$service_name"
+fi
 
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
-  if curl -fsS --max-time 3 "http://127.0.0.1:7077/health" >/dev/null; then
+  if curl -fsS --max-time 3 "http://127.0.0.1:7077/health" >/dev/null && \
+    curl -fsS --max-time 3 "http://127.0.0.1:7077/api/v1/status" | \
+      jq -e --arg commit "$commit" --arg version "$version_name" '.commit == $commit and .version == $version' >/dev/null; then
     break
   fi
   if [[ "$attempt" == "10" ]]; then
@@ -131,9 +184,6 @@ done
 systemctl is-active "$service_name"
 trap - ERR
 
-rm -f "$source_archive" "$web_archive"
-find "$remote_root/releases" -mindepth 1 -maxdepth 1 -type d -mtime +14 -exec rm -rf {} +
-find "$remote_root" -maxdepth 1 -type f -name 'atlas-server.bak.*' -mtime +14 -delete
-find "$remote_root/web" -maxdepth 1 -type d -name 'dist.bak.*' -mtime +14 -exec rm -rf {} +
+echo "Source archives, releases and rollback files retained; no automatic pruning"
 
 echo "Atlas release completed: $release_id"

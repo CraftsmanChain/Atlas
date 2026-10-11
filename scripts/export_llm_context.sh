@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-context_base_url="${ATLAS_CONTEXT_BASE_URL:-http://10.111.201.1:7077}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deployment_target.sh"
+context_base_url="${ATLAS_CONTEXT_BASE_URL:-$remote_url}"
 if [[ "${1:-}" == "--base-url" ]]; then
   context_base_url="${2:-}"
 elif [[ $# -gt 0 ]]; then

@@ -52,3 +52,29 @@ node_access:
 		t.Fatalf("unexpected node access config: %#v", cfg.NodeAccess)
 	}
 }
+
+func TestXiaozhenDeploymentConfigIsIndependentAndPassive(t *testing.T) {
+	cfg, err := LoadConfig("../../configs/clusters/xiaozhen-zhiyuan.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Branding.InstanceName != "算力小镇-智元" || cfg.Gateway.Port != ":7077" {
+		t.Fatal("new cluster branding or port is incorrect")
+	}
+	if cfg.Storage.Driver != "postgres" || cfg.Storage.DSN != "" {
+		t.Fatal("new cluster must inject its own PostgreSQL credentials")
+	}
+	if cfg.Prometheus.BaseURL != "http://10.80.192.236:28481/select/0/prometheus" {
+		t.Fatal("VM base URL must not include /api/v1/query")
+	}
+	if cfg.Inventory.Enabled || cfg.Inventory.AssetFile != "" || cfg.Health.Enabled || cfg.History.Enabled || cfg.NodeAccess.Enabled || len(cfg.Feishu.Bots) != 0 || len(cfg.NodeAccess.CredentialProfiles) != 0 {
+		t.Fatal("new cluster must not inherit active GPU/SSH/asset/notification loops")
+	}
+	if len(cfg.History.Sources) != 1 || cfg.History.Sources[0].Enabled || cfg.History.Sources[0].Type != "victoriametrics-cluster" || cfg.History.Sources[0].TenantID != "0" || cfg.History.Sources[0].BaseURL != "http://10.80.192.236:28481" {
+		t.Fatal("VM history source must retain its tenant without duplicating the select prefix")
+	}
+	legacy, err := LoadConfig("../../configs/config.yaml")
+	if err != nil || legacy.Prometheus.BaseURL != "http://10.111.201.1:9090" {
+		t.Fatal("legacy cluster configuration must be preserved")
+	}
+}
