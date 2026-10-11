@@ -1,5 +1,5 @@
 [Unit]
-Description=Atlas GPU Reliability Server
+Description=Atlas Hardware Reliability Server
 After=network-online.target atlas-postgres.service
 Wants=network-online.target
 Requires=atlas-postgres.service

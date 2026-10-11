@@ -35,7 +35,7 @@ web-build: web-install
 	cd $(WEB_DIR) && $(NPM) run build
 
 release-scripts-check:
-	bash -n scripts/check_release_status.sh scripts/deploy_remote_source.sh scripts/remote_build_release.sh scripts/bootstrap_remote.sh scripts/deployment_target.sh scripts/postgres_backup.sh scripts/export_llm_context.sh scripts/check_agent_context.sh
+	bash -n scripts/check_release_status.sh scripts/deploy_remote_source.sh scripts/remote_build_release.sh scripts/bootstrap_remote.sh scripts/prepare_native_deployment.sh scripts/deployment_target.sh scripts/postgres_backup.sh scripts/export_llm_context.sh scripts/check_agent_context.sh
 	@if rg -nw scp scripts; then echo "scp is forbidden in release scripts; use rsync instead." >&2; exit 1; fi
 	@rg -q --fixed-strings 'deployment_stage="$${ATLAS_DEPLOYMENT_STAGE:-development}"' scripts/deploy_remote_source.sh scripts/remote_build_release.sh scripts/check_release_status.sh
 	@rg -q --fixed-strings 'ATLAS_DEPLOYMENT_STAGE=' scripts/deploy_remote_source.sh scripts/check_release_status.sh
