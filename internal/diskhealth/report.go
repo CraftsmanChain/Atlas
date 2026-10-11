@@ -172,7 +172,7 @@ func WriteReport(report Report, manifestPath, outDir string) error {
 	}
 	encoded = append(encoded, '\n')
 	markdown := []byte(Markdown(report))
-	input, err := ReadLimited(manifestPath, MaxInputBytes)
+	input, err := ReadLimited(manifestPath, MaxBatchBytes)
 	if err != nil {
 		return err
 	}

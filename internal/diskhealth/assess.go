@@ -13,6 +13,7 @@ func Assess(in Input, raw []byte, baseline []byte, asOf time.Time) Result {
 		return assessMemory(in, raw, baseline, asOf)
 	}
 	r := newResult(in, raw)
+	r.RuleVersion = RuleVersion
 	if in.Adapter != "" && in.Adapter != "smartctl" {
 		r.block("adapter_unsupported")
 		r.finish()
@@ -37,8 +38,10 @@ func assess(r *Result, in Input, raw, baseline []byte, asOf time.Time) Result {
 	r.Device = o.child("device").text("name")
 	r.Serial, r.Model, r.Firmware = o.text("serial_number"), o.text("model_name"), o.text("firmware_version")
 	r.EntityType = "disk"
+	r.Disk = newDiskDetails("unknown", "")
 	if r.Protocol == "NVMe" {
 		r.EntityType = "nvme_controller"
+		r.Disk = newDiskDetails("SSD", "nvme-standard-v1")
 	}
 	if r.Serial != "" && in.Scope != "" && in.Generation != "" {
 		identity, _ := json.Marshal([]string{in.Scope, in.Generation, r.EntityType, r.Serial})
@@ -118,6 +121,11 @@ func assess(r *Result, in Input, raw, baseline []byte, asOf time.Time) Result {
 		id := r.evidence("smart_status.passed", "false", "boolean")
 		r.hit("manufacturer_smart_failure", "critical", id)
 	}
+	if r.Protocol == "ATA" {
+		assessATA(r, in, o, baseline, asOf)
+		r.finish()
+		return *r
+	}
 	if r.Protocol != "NVMe" {
 		r.block("protocol_or_model_rules_unsupported")
 		r.finish()
@@ -153,6 +161,13 @@ func assess(r *Result, in Input, raw, baseline []byte, asOf time.Time) Result {
 		}
 		values[field] = value
 		ids[field] = r.evidence("nvme."+field, value.String(), unit)
+	}
+	if value := values["temperature"]; value != nil {
+		temperature := value.String()
+		r.Disk.Temperature = &temperature
+	}
+	if value := values["percentage_used"]; value != nil {
+		r.Disk.Wear = &WearIndicator{Field: "nvme.percentage_used", Value: value.String(), Unit: "percent", Kind: "consumed_percent", EvidenceID: ids["percentage_used"]}
 	}
 	if warning := values["critical_warning"]; warning != nil {
 		mask := warning.Int64()

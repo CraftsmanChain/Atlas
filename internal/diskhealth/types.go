@@ -7,8 +7,8 @@ import (
 
 const (
 	SchemaVersion     = "hardware-health-report-v1"
-	RuleVersion       = "disk-health-v1.0.0"
-	ReportRuleVersion = "hardware-health-v1.1.0"
+	RuleVersion       = "disk-health-v1.1.0"
+	ReportRuleVersion = "hardware-health-v1.2.0"
 	MemoryRuleVersion = "memory-health-v0.1.0"
 	MaxInputBytes     = 256 * 1024
 	MaxBatchBytes     = 2 * 1024 * 1024
@@ -57,6 +57,7 @@ type Hit struct {
 type Result struct {
 	RuleVersion      string         `json:"rule_version,omitempty"`
 	Memory           *MemoryDetails `json:"memory,omitempty"`
+	Disk             *DiskDetails   `json:"disk,omitempty"`
 	Reference        string         `json:"reference"`
 	EntityID         string         `json:"entity_id"`
 	EntityType       string         `json:"entity_type"`
@@ -87,6 +88,36 @@ type Result struct {
 	Blockers         []string       `json:"blockers"`
 	Hits             []Hit          `json:"hits"`
 	Evidence         []Evidence     `json:"evidence"`
+}
+
+type DiskDetails struct {
+	MediaType   string          `json:"media_type"`
+	Profile     string          `json:"profile"`
+	Temperature *string         `json:"temperature_celsius"`
+	Wear        *WearIndicator  `json:"wear"`
+	Dimensions  []DiskDimension `json:"dimensions"`
+	Deltas      []CounterDelta  `json:"counter_deltas"`
+}
+
+type WearIndicator struct {
+	Field      string `json:"field"`
+	Value      string `json:"value"`
+	Unit       string `json:"unit"`
+	Kind       string `json:"kind"`
+	EvidenceID string `json:"evidence_id"`
+}
+
+type DiskDimension struct {
+	ID    string `json:"id"`
+	Level string `json:"level"`
+	State string `json:"state"`
+}
+
+type CounterDelta struct {
+	Field      string `json:"field"`
+	Value      string `json:"value"`
+	Unit       string `json:"unit"`
+	EvidenceID string `json:"evidence_id"`
 }
 
 type MemoryDetails struct {
@@ -176,6 +207,7 @@ func (r *Result) finish() {
 			r.Level = h.Level
 		}
 	}
+	r.finishDiskDimensions()
 }
 
 func Severity(level string) int {

@@ -17,7 +17,7 @@ test('frontend and framework release contracts stay aligned', () => {
   assert(version);
   assert(app.includes(`version: '${version}'`));
   assert(app.includes(`${version} ·`));
-  assert(app.includes('PLATFORM / v0.120.58'));
+  assert(app.includes('PLATFORM / v0.120.59'));
   assert(app.includes("id: 'component-health'"));
 });
 
@@ -76,7 +76,45 @@ test('Go CLI artifact passes browser contract', { skip: !process.env.ATLAS_HEALT
   if (!path) return;
   const parsed = await parseHealthBundle(readFileSync(path, 'utf8'), 'bundle.json');
   assert.equal(parsed.report.rows.length, 3);
-  assert.equal(parsed.report.rows.find(row => row.protocol === 'ATA')?.support, 'unsupported');
+  assert.equal(parsed.report.rows.find(row => row.protocol === 'ATA')?.support, 'fixture_verified');
+});
+
+test('D1 disk artifact preserves protocol-specific wear and four health dimensions', { skip: !process.env.ATLAS_DISK_TEST_BUNDLE }, async () => {
+  const parsed = await parseHealthBundle(readFileSync(process.env.ATLAS_DISK_TEST_BUNDLE!, 'utf8'), 'disk-bundle.json');
+  assert.equal(parsed.report.rule_version, 'hardware-health-v1.2.0');
+  assert.equal(parsed.report.rows.length, 5);
+  assert.equal(parsed.report.summary.assessed, 4);
+  const ssd = parsed.report.rows.find(row => row.reference === 'public-sata-ssd')!;
+  assert.equal(ssd.disk?.wear?.kind, 'normalized_index');
+  assert.equal(ssd.disk?.wear?.value, '81');
+  assert.equal(ssd.disk?.wear?.unit, 'normalized');
+  const hdd = parsed.report.rows.find(row => row.reference === 'public-sata-hdd')!;
+  assert.equal(hdd.disk?.dimensions.find(d => d.id === 'endurance')?.state, 'not_applicable');
+  assert.equal(hdd.disk?.dimensions.find(d => d.id === 'temperature')?.state, 'insufficient_data');
+  const unmatched = parsed.report.rows.find(row => row.reference === 'public-ata-unmatched')!;
+  assert.equal(unmatched.assessment_status, 'insufficient_data');
+  assert.equal(unmatched.level, 'unknown');
+  assert.equal(parsed.report.rows.find(row => row.reference === 'public-nvme')?.disk?.wear?.kind, 'consumed_percent');
+  for (const mutate of [
+    (r: HealthReport) => { r.rows.find(row => row.reference === ssd.reference)!.disk!.wear!.unit = 'percent'; },
+    (r: HealthReport) => { r.rows.find(row => row.reference === ssd.reference)!.firmware = 'unverified-fw'; },
+    (r: HealthReport) => { r.rows.find(row => row.reference === ssd.reference)!.disk!.wear!.value = '99'; },
+    (r: HealthReport) => { r.rows.find(row => row.reference === hdd.reference)!.disk!.dimensions[2].level = 'clear_for_checked_signals'; },
+    (r: HealthReport) => { r.rows.find(row => row.reference === ssd.reference)!.disk!.dimensions.pop(); },
+    (r: HealthReport) => { r.rows.find(row => row.reference === ssd.reference)!.disk!.profile = 'nvme-standard-v1'; },
+    (r: HealthReport) => { r.rows.find(row => row.reference === ssd.reference)!.disk!.counter_deltas.push({field:'ata.199.raw', value:'1', unit:'count', evidence_id:'f'.repeat(64)}); },
+  ]) { const candidate = structuredClone(parsed.report); mutate(candidate); assert.throws(() => validateReport(candidate)); }
+});
+
+test('controlled audit bundle retains actual execution provenance', { skip: !process.env.ATLAS_AUDIT_TEST_BUNDLE }, async () => {
+  const parsed = await parseHealthBundle(readFileSync(process.env.ATLAS_AUDIT_TEST_BUNDLE!, 'utf8'), 'audit-bundle.json');
+  assert.equal(parsed.report.rows.length, 1);
+  const row = parsed.report.rows[0];
+  assert.equal(row.source, 'hardware-evidence-acceptance-v1');
+  assert.equal(row.source_kind, 'fixture');
+  assert.equal(row.exit_code, 0);
+  assert.equal(row.disk?.media_type, 'HDD');
+  assert.notEqual(row.input_sha256, parsed.report.input_manifest_sha256);
 });
 
 test('controller-scoped memory contract preserves critical evidence and exact deltas', () => {
