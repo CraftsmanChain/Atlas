@@ -7,8 +7,10 @@ const crypto = require('node:crypto');
 async function main() {
   const base = process.env.ATLAS_HEALTH_UI_URL || 'http://127.0.0.1:5173';
   if (!['127.0.0.1', 'localhost'].includes(new URL(base).hostname)) throw new Error('UI checks are local-only');
-  const bundlePath = process.env.ATLAS_HEALTH_TEST_BUNDLE;
-  if (!bundlePath) throw new Error('ATLAS_HEALTH_TEST_BUNDLE is required');
+  const bundlePath = process.env.ATLAS_DISK_TEST_BUNDLE || process.env.ATLAS_HEALTH_TEST_BUNDLE;
+  if (!bundlePath) throw new Error('ATLAS_DISK_TEST_BUNDLE is required');
+  const expectedBundle = JSON.parse(await fs.readFile(bundlePath, 'utf8'));
+  const expectedReport = JSON.parse(expectedBundle.report_json);
   const output = process.env.ATLAS_HEALTH_UI_OUTPUT || '/tmp/atlas-health-ui-check';
   await fs.mkdir(output, { recursive: true });
   const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || undefined });
@@ -29,15 +31,13 @@ async function main() {
     await page.screenshot({ path: path.join(output, 'empty-desktop.png'), fullPage: true });
     await choose(bundlePath);
     await page.getByText('文件完整性已校验').waitFor();
-    assert.equal(await page.locator('.hh-table tbody tr').count(), 3);
+    assert.equal(await page.locator('.hh-table tbody tr').count(), expectedReport.rows.length);
     await page.getByRole('button', { name: '查看证据 public-nvme-historical-errors', exact: true }).click();
     await page.getByRole('heading', { name: 'Samsung SSD 970 EVO 500GB', exact: true }).waitFor();
     assert(await page.locator('.hh-evidence-table').innerText().then(text => text.includes('historical_media_errors')));
     await page.getByRole('tab', { name: '数据缺口' }).click();
     assert((await page.locator('.hh-gaps').innerText()).includes('unavailable'));
     await page.getByRole('tab', { name: '来源与身份' }).click();
-    const expectedBundle = JSON.parse(await fs.readFile(bundlePath, 'utf8'));
-    const expectedReport = JSON.parse(expectedBundle.report_json);
     const expectedTool = expectedReport.rows.find(row => row.reference === 'public-nvme-historical-errors').tool_version;
     assert((await page.locator('.hh-source').innerText()).includes(expectedTool));
     await page.getByRole('tab', { name: '规则与字段' }).click();
@@ -51,20 +51,38 @@ async function main() {
     await page.getByLabel('数据状态', { exact: true }).selectOption('');
     await page.getByRole('tab', { name: /^内存/ }).click();
     await page.getByRole('heading', { name: '当前报告无内存原始证据' }).waitFor();
-    await page.getByRole('tab', { name: /^RAID/ }).click();
-    await page.getByRole('heading', { name: 'RAID 原始证据尚未接入' }).waitFor();
+    assert.equal(await page.getByRole('tab', { name: /^RAID/ }).count(), 0);
+
     await page.getByRole('tab', { name: /^硬盘/ }).click();
     await page.getByRole('tab', { name: /^硬盘/ }).focus();
     await page.keyboard.press('ArrowRight');
     await page.getByRole('heading', { name: '当前报告无内存原始证据' }).waitFor();
     await page.keyboard.press('Home');
-    assert.equal(await page.locator('.hh-table tbody tr').count(), 3);
+    assert.equal(await page.locator('.hh-table tbody tr').count(), expectedReport.rows.length);
+
+    if (process.env.ATLAS_DISK_TEST_BUNDLE) {
+      await page.getByLabel('硬盘类型', { exact: true }).selectOption('ATA:SSD');
+      assert.equal(await page.locator('.hh-table tbody tr').count(), 2);
+      await page.getByRole('button', { name: '查看证据 public-sata-ssd', exact: true }).click();
+      assert((await page.locator('.hh-disk-overview').innerText()).includes('厂商归一化磨损值'));
+      assert((await page.locator('.hh-disk-readings').innerText()).includes('81'));
+      assert(!(await page.locator('.hh-disk-readings').innerText()).includes('81%'));
+      await page.getByLabel('硬盘类型', { exact: true }).selectOption('ATA:HDD');
+      assert.equal(await page.locator('.hh-table tbody tr').count(), 1);
+      await page.getByRole('button', { name: '查看证据 public-sata-hdd', exact: true }).click();
+      assert((await page.locator('.hh-dimensions').innerText()).includes('不适用'));
+      await page.screenshot({ path: path.join(output, 'sata-hdd-desktop.png'), fullPage: true });
+      await page.getByRole('textbox', { name: '搜索健康记录' }).fill('absent');
+      await page.getByRole('button', { name: '重置筛选' }).click();
+      assert.equal(await page.getByLabel('硬盘类型', { exact: true }).inputValue(), '');
+      assert.equal(await page.locator('.hh-table tbody tr').count(), expectedReport.rows.length);
+    }
 
     const bad = path.join(output, 'tampered.json');
     await fs.writeFile(bad, JSON.stringify({ schema: 'hardware-health-bundle-v1', report_json: '{}', report_sha256: '0'.repeat(64) }));
     await choose(bad);
     await page.getByRole('alert').waitFor();
-    assert.equal(await page.locator('.hh-table tbody tr').count(), 3, 'bad import replaced valid report');
+    assert.equal(await page.locator('.hh-table tbody tr').count(), expectedReport.rows.length, 'bad import replaced valid report');
     await page.getByRole('button', { name: '关闭错误' }).click();
     const downloadEvent = page.waitForEvent('download');
     await page.getByRole('button', { name: '导出原始报告' }).click();
@@ -88,7 +106,7 @@ async function main() {
     await page.getByLabel('每页条数', { exact: true }).selectOption('100');
     assert.equal(await page.locator('.hh-table tbody tr').count(), 60);
     await choose(bundlePath);
-    await page.waitForFunction(() => document.querySelector('.hh-pagination')?.textContent.includes('/ 3'));
+    await page.waitForFunction(total => document.querySelector('.hh-pagination')?.textContent.includes(`/ ${total}`), expectedReport.rows.length);
     await page.getByRole('button', { name: '查看证据 public-nvme-historical-errors', exact: true }).click();
 
     for (const width of [390, 320]) {
@@ -143,7 +161,7 @@ async function main() {
     await page.getByRole('heading', { name: 'No disk health evidence' }).waitFor();
     assert.deepEqual(errors, []);
     assert.deepEqual(uploads, [], 'report upload or mutation occurred');
-    console.log(JSON.stringify({ status: 'passed', checks: ['empty', 'import', 'evidence', 'source', 'unknown', 'search', 'filters', 'memory_raid_gaps', 'keyboard_tabs', 'pagination_60_rows', 'tamper_preserves_report', 'export_identical', '320_390_1440_viewports', 'dark_theme', 'language', 'clear', 'no_mutations'], memory_checks: process.env.ATLAS_MEMORY_TEST_BUNDLE ? ['raw_memory_import', 'controller_precision', 'new_ue', 'ce_ue_deltas', 'driver_kernel_source', 'memory_filter', 'tab_filter_reset', 'public_missing_conflicting_fields', 'memory_desktop_mobile_dark'] : 'skipped', screenshots: output }));
+    console.log(JSON.stringify({ status: 'passed', checks: ['empty', 'import', 'evidence', 'source', 'unknown', 'search', 'filters', 'disk_dimensions_wear', 'physical_disk_scope', 'memory_gaps', 'keyboard_tabs', 'pagination_60_rows', 'tamper_preserves_report', 'export_identical', '320_390_1440_viewports', 'dark_theme', 'language', 'clear', 'no_mutations'], memory_checks: process.env.ATLAS_MEMORY_TEST_BUNDLE ? ['raw_memory_import', 'controller_precision', 'new_ue', 'ce_ue_deltas', 'driver_kernel_source', 'memory_filter', 'tab_filter_reset', 'public_missing_conflicting_fields', 'memory_desktop_mobile_dark'] : 'skipped', screenshots: output }));
   } catch (error) {
     await page.screenshot({ path: path.join(output, 'failure.png'), fullPage: true });
     const overflow = await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth, scrollX, elements: Array.from(document.querySelectorAll('main *,aside')).filter(element => element.getBoundingClientRect().right > innerWidth || ['hh-table-scroll', 'hh-sr-only'].includes(element.className)).slice(0, 30).map(element => ({ tag: element.tagName, class: element.className, width: element.getBoundingClientRect().width, right: element.getBoundingClientRect().right, position: getComputedStyle(element).position, overflow: getComputedStyle(element).overflow })) }));

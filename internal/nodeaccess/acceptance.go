@@ -356,7 +356,7 @@ func (e *AcceptanceSSH) Collect(ctx context.Context, scope AcceptanceScope, secr
 		record.StdoutSHA256, record.StderrSHA256 = acceptanceHash(record.Stdout), acceptanceHash(record.Stderr)
 		audit.Evidence = append(audit.Evidence, record)
 		audit.MissingCommandIDs = audit.MissingCommandIDs[1:]
-		if record.Status != "completed" || record.RedactionApplied {
+		if record.Status != "completed" || record.RedactionApplied || record.StdoutTruncated || record.StderrTruncated {
 			audit.Status = "partial"
 		}
 		if record.Status == "timed_out" || record.Status == "cancelled" || record.Status == "exit_missing" || record.Status == "exit_signal" ||
