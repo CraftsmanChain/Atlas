@@ -6,12 +6,13 @@ version_name="${2:?version is required}"
 commit="${3:?commit is required}"
 remote_root="${ATLAS_REMOTE_ROOT:-/ops/atlas}"
 service_name="${ATLAS_SERVICE_NAME:-atlas.service}"
-build_image="${ATLAS_GO_BUILD_IMAGE:-docker.m.daocloud.io/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac}"
+build_image="${ATLAS_GO_BUILD_IMAGE:-m.daocloud.io/docker.io/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac}"
 go_proxy="${ATLAS_GOPROXY:-https://goproxy.cn|https://proxy.golang.org|direct}"
 go_sumdb="${ATLAS_GOSUMDB:-sum.golang.google.cn}"
 deployment_stage="${ATLAS_DEPLOYMENT_STAGE:-development}"
 bootstrap="${ATLAS_BOOTSTRAP:-0}"
 config_template="${ATLAS_CONFIG_TEMPLATE:-configs/clusters/xiaozhen-zhiyuan.yaml}"
+deployment_runtime="${ATLAS_DEPLOY_RUNTIME:-systemd}"
 
 case "$deployment_stage" in
   development)
@@ -26,7 +27,7 @@ case "$deployment_stage" in
     ;;
 esac
 
-if [[ ! "$release_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
+if [[ ! "$release_id" =~ ^[A-Za-z0-9._-]+$ || "$release_id" == .* || "$release_id" == *..* ]]; then
   echo "Invalid release id: $release_id" >&2
   exit 1
 fi
@@ -46,7 +47,11 @@ if [[ "$bootstrap" == 1 && ( "$deployment_stage" != development || "$service_nam
   echo "Bootstrap requires the standard Atlas service in development stage" >&2
   exit 1
 fi
-for command_name in docker flock curl jq install systemctl; do
+if [[ "$deployment_runtime" != systemd && "$deployment_runtime" != docker ]]; then
+  echo "ATLAS_DEPLOY_RUNTIME must be systemd or docker" >&2
+  exit 1
+fi
+for command_name in flock curl jq install systemctl; do
   command -v "$command_name" >/dev/null || { echo "Missing required command: $command_name" >&2; exit 1; }
 done
 
@@ -83,13 +88,42 @@ mkdir -p "$release_dir/source" "$release_dir/output" "$release_dir/web"
 tar -xzf "$source_archive" -C "$release_dir/source"
 tar -xzf "$web_archive" -C "$release_dir/web"
 
-if ! docker image inspect "$build_image" >/dev/null 2>&1; then
+if [[ "$deployment_runtime" == docker ]] && ! docker image inspect "$build_image" >/dev/null 2>&1; then
   echo "Pulling one-time Go build image: $build_image"
-  docker pull "$build_image"
+  if ! docker pull "$build_image"; then
+    if [[ "$build_image" == *@sha256:* && ( "$build_image" == docker.m.daocloud.io/* || "$build_image" == m.daocloud.io/docker.io/* ) ]]; then
+      if [[ "$build_image" == m.daocloud.io/docker.io/* ]]; then
+        build_image="${build_image#m.daocloud.io/}"
+      else
+        build_image="docker.io/${build_image#docker.m.daocloud.io/}"
+      fi
+      echo "Mirror unavailable; using the official registry with the identical pinned digest: $build_image"
+      if ! docker image inspect "$build_image" >/dev/null 2>&1; then
+        docker pull "$build_image"
+      fi
+    else
+      exit 1
+    fi
+  fi
 fi
 
 build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "Building Atlas on target: version=$version_name commit=$commit"
+if [[ "$deployment_runtime" == systemd ]]; then
+  go_bin="${ATLAS_GO_BIN:-$remote_root/toolchains/go1.24.10/bin/go}"
+  test -x "$go_bin"
+  command -v gcc >/dev/null
+  systemd-run --quiet --scope --unit "atlas-build-$release_id" \
+    --property=CPUQuota=200% --property=MemoryMax=3G \
+    env CGO_ENABLED=1 GOMAXPROCS=2 GOMEMLIMIT=2GiB GOTOOLCHAIN=local \
+    "GOCACHE=$remote_root/build-cache/go-build" "GOPATH=$remote_root/build-cache" \
+    "GOPROXY=$go_proxy" "GOSUMDB=$go_sumdb" \
+    bash -c 'set -euo pipefail
+cd "$1"
+"$2" build -ldflags "$3" -o "$4/atlas-server" ./cmd/server
+"$2" build -o "$4/atlas-db-migrate" ./cmd/dbmigrate
+' _ "$release_dir/source" "$go_bin" "-X main.Version=$version_name -X main.Commit=$commit -X main.BuildTime=$build_time" "$release_dir/output"
+else
 docker run --rm \
   --cpus "${ATLAS_BUILD_CPUS:-2}" --memory "${ATLAS_BUILD_MEMORY:-3g}" \
   --volume "$release_dir/source:/src" \
@@ -106,6 +140,7 @@ docker run --rm \
 go build -ldflags '-X main.Version=$version_name -X main.Commit=$commit -X main.BuildTime=$build_time' -o /out/atlas-server ./cmd/server
 go build -o /out/atlas-db-migrate ./cmd/dbmigrate
 "
+fi
 
 test -x "$release_dir/output/atlas-server"
 test -x "$release_dir/output/atlas-db-migrate"

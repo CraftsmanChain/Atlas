@@ -51,6 +51,8 @@ usage() {
   REMOTE_URL=http://10.80.192.232:7077
   REMOTE_SSH=root@10.80.192.232
   ATLAS_BOOTSTRAP=1                 # 仅用于确认无已有服务/数据的首次部署
+  ATLAS_DEPLOY_RUNTIME=systemd       # 新集群默认原生；原集群保留 docker 路线
+  ATLAS_PREPARE_NATIVE=1             # 首次安装缺失的原生依赖；已有组件不升级
   ATLAS_SSH_CONFIG=/path/to/config  # 所有 SSH/rsync 共用的连接配置，不含明文密码
   REMOTE_ROOT=/ops/atlas
   SERVICE_NAME=atlas.service

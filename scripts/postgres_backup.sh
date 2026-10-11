@@ -42,6 +42,14 @@ cleanup() {
 trap cleanup EXIT
 umask 077
 
+if [[ "${ATLAS_PG_RUNTIME:-docker}" == systemd ]]; then
+  pg_bin="${ATLAS_PG_BIN_DIR:-/usr/lib/postgresql/17/bin}"
+  runuser -u postgres -- "$pg_bin/pg_dump" \
+    --host="${ATLAS_PG_SOCKET:-/run/atlas-postgres}" --port="${ATLAS_PG_PORT:-15432}" \
+    --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" \
+    --format=custom --compress=6 --no-owner --no-privileges > "$temporary_file"
+  runuser -u postgres -- "$pg_bin/pg_restore" --list < "$temporary_file" >/dev/null
+else
 docker exec "$container_name" pg_dump \
   --username="$POSTGRES_USER" \
   --dbname="$POSTGRES_DB" \
@@ -51,6 +59,7 @@ docker exec "$container_name" pg_dump \
   --no-privileges >"$temporary_file"
 
 docker exec -i "$container_name" pg_restore --list <"$temporary_file" >/dev/null
+fi
 mv "$temporary_file" "$final_file"
 sha256sum "$final_file" >"$checksum_file"
 

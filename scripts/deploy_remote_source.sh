@@ -8,9 +8,14 @@ git_remote="${GIT_REMOTE:-origin}"
 extra_git_remote="${EXTRA_GIT_REMOTE:-github}"
 deployment_stage="${ATLAS_DEPLOYMENT_STAGE:-development}"
 bootstrap="${ATLAS_BOOTSTRAP:-0}"
+prepare_native="${ATLAS_PREPARE_NATIVE:-0}"
 
 if [[ "$bootstrap" != 0 && "$bootstrap" != 1 ]]; then
   echo "ATLAS_BOOTSTRAP must be 0 or 1" >&2
+  exit 1
+fi
+if [[ "$prepare_native" != 0 && "$prepare_native" != 1 ]]; then
+  echo "ATLAS_PREPARE_NATIVE must be 0 or 1" >&2
   exit 1
 fi
 if [[ ! "$version_name" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -46,7 +51,7 @@ ensure_rsync_available() {
   for command_name in rsync curl jq ssh npm; do
     command -v "$command_name" >/dev/null || { echo "Missing local command: $command_name" >&2; exit 1; }
   done
-  if ! atlas_ssh "$remote_ssh" "for tool in rsync docker curl jq flock systemctl; do command -v \"\$tool\" >/dev/null || exit 1; done; docker info >/dev/null 2>&1"; then
+  if ! atlas_ssh "$remote_ssh" "for tool in rsync curl jq flock systemctl; do command -v \"\$tool\" >/dev/null || exit 1; done"; then
     echo "Remote dependency/connection preflight failed: $remote_ssh (no packages installed)" >&2
     exit 1
   fi
@@ -61,16 +66,27 @@ sync_to_remote() {
 }
 
 ensure_rsync_available
+if [[ "$deployment_runtime" == systemd && "$prepare_native" == 1 ]]; then
+  atlas_ssh "$remote_ssh" "ATLAS_REMOTE_ROOT='$remote_root' bash -s" < "$repo_root/scripts/prepare_native_deployment.sh"
+fi
+if [[ "$deployment_runtime" == docker ]]; then
+  atlas_ssh "$remote_ssh" "docker info >/dev/null 2>&1"
+else
+  atlas_ssh "$remote_ssh" "test -x '$remote_root/toolchains/go1.24.10/bin/go' && test -x /usr/lib/postgresql/17/bin/postgres && command -v gcc >/dev/null && command -v systemd-run >/dev/null" || {
+    echo "Native dependencies missing; inspect ATLAS_PREPARE_NATIVE=1 before first deployment." >&2
+    exit 1
+  }
+fi
 if [[ "$bootstrap" == 1 ]]; then
   [[ -f "$repo_root/$config_template" ]] || { echo "Missing cluster configuration" >&2; exit 1; }
-  atlas_ssh "$remote_ssh" "bash -s -- check '$remote_root'" < "$repo_root/scripts/bootstrap_remote.sh"
+  atlas_ssh "$remote_ssh" "ATLAS_DEPLOY_RUNTIME='$deployment_runtime' bash -s -- check '$remote_root'" < "$repo_root/scripts/bootstrap_remote.sh"
 else
   atlas_ssh "$remote_ssh" "test -f '$remote_root/configs/config.yaml' && test -f /etc/atlas/atlas.env && test \"\$(systemctl show atlas.service --property=LoadState --value)\" = loaded" || {
     echo "Existing Atlas service/configuration not found; inspect the host before opting into ATLAS_BOOTSTRAP=1." >&2
     exit 1
   }
 fi
-echo "Deployment target: $deployment_target ($remote_ssh), bootstrap=$bootstrap, stage=$deployment_stage"
+echo "Deployment target: $deployment_target ($remote_ssh), runtime=$deployment_runtime, bootstrap=$bootstrap, stage=$deployment_stage"
 
 if [[ "${SKIP_GIT_PUSH:-0}" != "1" ]]; then
   git push "$git_remote" "$branch"
@@ -90,7 +106,7 @@ git archive --format=tar.gz --output="$temporary_dir/$release_id.source.tar.gz" 
   ':(exclude)bin' \
   ':(exclude)dist.tar.gz' \
   ':(exclude)atlas.db'
-tar -C "$repo_root/web" -zcf "$temporary_dir/$release_id.web.tar.gz" dist
+COPYFILE_DISABLE=1 tar --no-xattrs -C "$repo_root/web" -zcf "$temporary_dir/$release_id.web.tar.gz" dist
 cp "$repo_root/scripts/remote_build_release.sh" "$temporary_dir/remote_build_release.sh"
 
 atlas_ssh "$remote_ssh" "mkdir -p '$remote_root/incoming' '$remote_root/scripts'"
@@ -100,7 +116,7 @@ sync_to_remote "$temporary_dir/remote_build_release.sh" "$remote_root/scripts/re
 sync_to_remote "$repo_root/scripts/postgres_backup.sh" "$remote_root/scripts/postgres_backup.sh"
 
 atlas_ssh "$remote_ssh" "chmod 755 '$remote_root/scripts/remote_build_release.sh' '$remote_root/scripts/postgres_backup.sh' &&
-ATLAS_REMOTE_ROOT='$remote_root' ATLAS_BOOTSTRAP='$bootstrap' ATLAS_CONFIG_TEMPLATE='$config_template' ATLAS_DEPLOYMENT_STAGE='$deployment_stage' '$remote_root/scripts/remote_build_release.sh' '$release_id' '$version_name' '$commit'"
+ATLAS_REMOTE_ROOT='$remote_root' ATLAS_DEPLOY_RUNTIME='$deployment_runtime' ATLAS_BOOTSTRAP='$bootstrap' ATLAS_CONFIG_TEMPLATE='$config_template' ATLAS_DEPLOYMENT_STAGE='$deployment_stage' '$remote_root/scripts/remote_build_release.sh' '$release_id' '$version_name' '$commit'"
 
 echo "Verifying deployed service"
 status="$(curl -fsS --max-time 8 "${remote_url%/}/api/v1/status")"

@@ -7,11 +7,13 @@ case "$deployment_target" in
     target_ssh="root@10.80.192.232"
     target_url="http://10.80.192.232:7077"
     target_config="configs/clusters/xiaozhen-zhiyuan.yaml"
+    target_runtime=systemd
     ;;
   legacy-zhiyuan)
     target_ssh="root@10.111.201.1"
     target_url="http://10.111.201.1:7077"
     target_config="configs/config.yaml"
+    target_runtime=docker
     ;;
   *)
     echo "Unknown ATLAS_DEPLOY_TARGET: $deployment_target" >&2
@@ -27,6 +29,11 @@ remote_ssh="${REMOTE_SSH:-$target_ssh}"
 remote_url="${REMOTE_URL:-$target_url}"
 remote_root="${REMOTE_ROOT:-/ops/atlas}"
 config_template="${ATLAS_CONFIG_TEMPLATE:-$target_config}"
+deployment_runtime="${ATLAS_DEPLOY_RUNTIME:-$target_runtime}"
+if [[ "$deployment_runtime" != systemd && "$deployment_runtime" != docker ]]; then
+  echo "ATLAS_DEPLOY_RUNTIME must be systemd or docker" >&2
+  return 1
+fi
 if [[ ! "$remote_url" =~ ^https?://[^[:space:]\'\"]+$ || "$remote_url" == *[@\?\#]* ]]; then
   echo "REMOTE_URL must be a credential-free HTTP(S) base URL." >&2
   return 1

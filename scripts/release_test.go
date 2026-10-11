@@ -14,7 +14,7 @@ import (
 func shell(t *testing.T, env []string, args ...string) (string, error) {
 	t.Helper()
 	// Register shell source files with Go's test cache as well as executing them.
-	for _, path := range []string{"deployment_target.sh", "bootstrap_remote.sh", "deploy_remote_source.sh", "remote_build_release.sh"} {
+	for _, path := range []string{"deployment_target.sh", "bootstrap_remote.sh", "prepare_native_deployment.sh", "deploy_remote_source.sh", "remote_build_release.sh"} {
 		if _, err := os.ReadFile(path); err != nil {
 			t.Fatal(err)
 		}
@@ -32,18 +32,19 @@ func TestDeploymentTargetSelection(t *testing.T) {
 		want string
 		fail bool
 	}{
-		{"default", nil, "root@10.80.192.232|http://10.80.192.232:7077|configs/clusters/xiaozhen-zhiyuan.yaml", false},
-		{"legacy", []string{"ATLAS_DEPLOY_TARGET=legacy-zhiyuan"}, "root@10.111.201.1|http://10.111.201.1:7077|configs/config.yaml", false},
+		{"default", nil, "root@10.80.192.232|http://10.80.192.232:7077|configs/clusters/xiaozhen-zhiyuan.yaml|systemd", false},
+		{"legacy", []string{"ATLAS_DEPLOY_TARGET=legacy-zhiyuan"}, "root@10.111.201.1|http://10.111.201.1:7077|configs/config.yaml|docker", false},
 		{"custom", []string{"REMOTE_SSH=atlas@192.0.2.1", "REMOTE_URL=http://192.0.2.1:7077"}, "atlas@192.0.2.1|http://192.0.2.1:7077|configs/clusters/xiaozhen-zhiyuan.yaml", false},
 		{"wrong-cluster-check", []string{"REMOTE_SSH=atlas@192.0.2.1"}, "requires REMOTE_URL", true},
 		{"unknown", []string{"ATLAS_DEPLOY_TARGET=invalid"}, "Unknown", true},
+		{"unknown-runtime", []string{"ATLAS_DEPLOY_RUNTIME=invalid"}, "must be systemd or docker", true},
 		{"unsafe-root", []string{"REMOTE_ROOT=/ops/../etc"}, "safe absolute", true},
 		{"unsafe-template", []string{"ATLAS_CONFIG_TEMPLATE=configs/../other.yaml"}, "repository YAML", true},
 		{"secret-url", []string{"REMOTE_URL=http://user:example@192.0.2.1"}, "credential-free", true},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			output, err := shell(t, test.env, "-ec", `source ./deployment_target.sh; printf '%s|%s|%s' "$remote_ssh" "$remote_url" "$config_template"`)
+			output, err := shell(t, test.env, "-ec", `source ./deployment_target.sh; printf '%s|%s|%s|%s' "$remote_ssh" "$remote_url" "$config_template" "$deployment_runtime"`)
 			if (err != nil) != test.fail || !strings.Contains(output, test.want) {
 				t.Fatalf("output=%q err=%v", output, err)
 			}
@@ -86,6 +87,7 @@ if [ "$1" = container ]; then exit 1; fi
 			output, err := shell(t, []string{
 				"PATH=" + mocks + ":" + os.Getenv("PATH"), "ATLAS_TEST_LOG=" + logPath,
 				"ATLAS_TEST_LOAD_STATE=" + test.state, "ATLAS_TEST_LISTENERS=" + test.listeners,
+				"ATLAS_DEPLOY_RUNTIME=docker",
 			}, "./bootstrap_remote.sh", "check", "/ops/atlas")
 			if (err == nil) != (test.name == "new-host") {
 				t.Fatalf("output=%q err=%v", output, err)
@@ -159,6 +161,8 @@ func TestRemoteReleaseSwitchAndRollback(t *testing.T) {
 				writeArchive(t, filepath.Join(root, "incoming/test.web.tar.gz"), map[string]string{"dist/index.html": "new web"})
 				writeFixture(t, filepath.Join(mocks, "docker"), `#!/usr/bin/env bash
 set -eu
+printf 'docker %s\n' "$*" >> "$ATLAS_TEST_LOG"
+if [[ "$ATLAS_TEST_MIRROR_FAIL" == 1 && "$1" != run && "$*" == *m.daocloud.io/* ]]; then exit 1; fi
 if [[ "$1" == run ]]; then
   while [[ $# -gt 0 ]]; do
     if [[ "$1" == --volume && "$2" == *:/out ]]; then
@@ -182,6 +186,22 @@ else
   printf 'Atlas Server is healthy\n'
 fi
 `, 0o755)
+				writeFixture(t, filepath.Join(root, "toolchains/go1.24.10/bin/go"), `#!/usr/bin/env bash
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -o ]]; then
+    if [[ "$2" == */atlas-server ]]; then printf 'new binary' > "$2"; else printf 'migration binary' > "$2"; fi
+    chmod 755 "$2"
+    exit 0
+  fi
+  shift
+done
+exit 1
+`, 0o755)
+				writeFixture(t, filepath.Join(mocks, "systemd-run"), `#!/usr/bin/env bash
+printf 'systemd-run %s\n' "$*" >> "$ATLAS_TEST_LOG"
+while [[ $# -gt 0 && "$1" != env ]]; do shift; done
+exec "$@"
+`, 0o755)
 				for _, command := range []string{"flock", "sleep"} {
 					writeFixture(t, filepath.Join(mocks, command), "#!/bin/sh\nexit 0\n", 0o755)
 				}
@@ -189,9 +209,19 @@ fi
 				if mismatch {
 					statusCommit = "badcafe"
 				}
+				mirrorFailure := "0"
+				runtime := "systemd"
+				if previous {
+					runtime = "docker"
+				}
+				if previous && !mismatch {
+					mirrorFailure = "1"
+				}
 				output, err := shell(t, []string{
 					"PATH=" + mocks + ":" + os.Getenv("PATH"), "ATLAS_REMOTE_ROOT=" + root,
 					"ATLAS_TEST_LOG=" + logPath, "ATLAS_TEST_STATUS_COMMIT=" + statusCommit,
+					"ATLAS_TEST_MIRROR_FAIL=" + mirrorFailure,
+					"ATLAS_DEPLOY_RUNTIME=" + runtime,
 				}, "./remote_build_release.sh", "test", "v0.120.59", "123abcd")
 				if (err != nil) != mismatch {
 					t.Fatalf("output=%s err=%v", output, err)
@@ -206,6 +236,12 @@ fi
 					t.Fatalf("binary=%q web=%q output=%s", binary, web, output)
 				}
 				operations, _ := os.ReadFile(logPath)
+				if !previous && (strings.Contains(string(operations), "docker ") || !strings.Contains(string(operations), "systemd-run")) {
+					t.Fatal("new native deployment must build without invoking Docker")
+				}
+				if mirrorFailure == "1" && (!strings.Contains(output, "identical pinned digest") || !strings.Contains(string(operations), "docker.io/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac")) {
+					t.Fatal("mirror fallback must keep the original pinned digest")
+				}
 				if !previous && mismatch && !strings.Contains(string(operations), "systemctl stop atlas.service") {
 					t.Fatal("failed first installation must stop only the newly created Atlas service")
 				}
