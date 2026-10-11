@@ -1,0 +1,16 @@
+[Unit]
+Description=Atlas PostgreSQL (Persistent Container)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/env docker start --attach atlas-postgres
+ExecStop=/usr/bin/env docker stop -t 60 atlas-postgres
+TimeoutStopSec=75
+
+[Install]
+WantedBy=multi-user.target

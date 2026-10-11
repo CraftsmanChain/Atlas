@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-remote_ssh="${REMOTE_SSH:-root@10.111.201.1}"
-remote_root="${REMOTE_ROOT:-/ops/atlas}"
-remote_url="${REMOTE_URL:-http://10.111.201.1:7077}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deployment_target.sh"
 version_name="${VERSION_NAME:-dev}"
 branch="${BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
 git_remote="${GIT_REMOTE:-origin}"
 extra_git_remote="${EXTRA_GIT_REMOTE:-github}"
-rsync_rsh="${RSYNC_RSH:-ssh}"
 deployment_stage="${ATLAS_DEPLOYMENT_STAGE:-development}"
+bootstrap="${ATLAS_BOOTSTRAP:-0}"
+
+if [[ "$bootstrap" != 0 && "$bootstrap" != 1 ]]; then
+  echo "ATLAS_BOOTSTRAP must be 0 or 1" >&2
+  exit 1
+fi
+if [[ ! "$version_name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "VERSION_NAME contains unsafe characters" >&2
+  exit 1
+fi
+if [[ "$bootstrap" == 1 && "$deployment_stage" != development ]]; then
+  echo "First deployment requires development stage; production requires an existing backup-ready database." >&2
+  exit 1
+fi
 
 if [[ "$deployment_stage" != "development" && "$deployment_stage" != "production" ]]; then
   echo "ATLAS_DEPLOYMENT_STAGE must be development or production, got: $deployment_stage" >&2
@@ -32,12 +43,11 @@ cleanup() {
 trap cleanup EXIT
 
 ensure_rsync_available() {
-  if ! command -v rsync >/dev/null 2>&1; then
-    echo "rsync is required on the deployment host." >&2
-    exit 1
-  fi
-  if ! ssh "$remote_ssh" "command -v rsync >/dev/null 2>&1"; then
-    echo "rsync is required on the remote host: $remote_ssh" >&2
+  for command_name in rsync curl jq ssh npm; do
+    command -v "$command_name" >/dev/null || { echo "Missing local command: $command_name" >&2; exit 1; }
+  done
+  if ! atlas_ssh "$remote_ssh" "for tool in rsync docker curl jq flock systemctl; do command -v \"\$tool\" >/dev/null || exit 1; done; docker info >/dev/null 2>&1"; then
+    echo "Remote dependency/connection preflight failed: $remote_ssh (no packages installed)" >&2
     exit 1
   fi
 }
@@ -51,6 +61,16 @@ sync_to_remote() {
 }
 
 ensure_rsync_available
+if [[ "$bootstrap" == 1 ]]; then
+  [[ -f "$repo_root/$config_template" ]] || { echo "Missing cluster configuration" >&2; exit 1; }
+  atlas_ssh "$remote_ssh" "bash -s -- check '$remote_root'" < "$repo_root/scripts/bootstrap_remote.sh"
+else
+  atlas_ssh "$remote_ssh" "test -f '$remote_root/configs/config.yaml' && test -f /etc/atlas/atlas.env && test \"\$(systemctl show atlas.service --property=LoadState --value)\" = loaded" || {
+    echo "Existing Atlas service/configuration not found; inspect the host before opting into ATLAS_BOOTSTRAP=1." >&2
+    exit 1
+  }
+fi
+echo "Deployment target: $deployment_target ($remote_ssh), bootstrap=$bootstrap, stage=$deployment_stage"
 
 if [[ "${SKIP_GIT_PUSH:-0}" != "1" ]]; then
   git push "$git_remote" "$branch"
@@ -73,21 +93,21 @@ git archive --format=tar.gz --output="$temporary_dir/$release_id.source.tar.gz" 
 tar -C "$repo_root/web" -zcf "$temporary_dir/$release_id.web.tar.gz" dist
 cp "$repo_root/scripts/remote_build_release.sh" "$temporary_dir/remote_build_release.sh"
 
-ssh "$remote_ssh" "mkdir -p '$remote_root/incoming' '$remote_root/scripts'"
+atlas_ssh "$remote_ssh" "mkdir -p '$remote_root/incoming' '$remote_root/scripts'"
 sync_to_remote "$temporary_dir/$release_id.source.tar.gz" "$remote_root/incoming/"
 sync_to_remote "$temporary_dir/$release_id.web.tar.gz" "$remote_root/incoming/"
 sync_to_remote "$temporary_dir/remote_build_release.sh" "$remote_root/scripts/remote_build_release.sh"
 sync_to_remote "$repo_root/scripts/postgres_backup.sh" "$remote_root/scripts/postgres_backup.sh"
 
-ssh "$remote_ssh" "chmod 755 '$remote_root/scripts/remote_build_release.sh' '$remote_root/scripts/postgres_backup.sh' &&
-ATLAS_REMOTE_ROOT='$remote_root' ATLAS_DEPLOYMENT_STAGE='$deployment_stage' '$remote_root/scripts/remote_build_release.sh' '$release_id' '$version_name' '$commit'"
+atlas_ssh "$remote_ssh" "chmod 755 '$remote_root/scripts/remote_build_release.sh' '$remote_root/scripts/postgres_backup.sh' &&
+ATLAS_REMOTE_ROOT='$remote_root' ATLAS_BOOTSTRAP='$bootstrap' ATLAS_CONFIG_TEMPLATE='$config_template' ATLAS_DEPLOYMENT_STAGE='$deployment_stage' '$remote_root/scripts/remote_build_release.sh' '$release_id' '$version_name' '$commit'"
 
 echo "Verifying deployed service"
 status="$(curl -fsS --max-time 8 "${remote_url%/}/api/v1/status")"
 health="$(curl -fsS --max-time 8 "${remote_url%/}/health")"
 echo "$status"
 echo "$health"
-if [[ "$status" != *"\"commit\":\"$commit\""* ]]; then
+if ! printf '%s' "$status" | jq -e --arg commit "$commit" --arg version "$version_name" '.commit == $commit and .version == $version' >/dev/null; then
   echo "Deployed commit does not match $commit" >&2
   exit 1
 fi

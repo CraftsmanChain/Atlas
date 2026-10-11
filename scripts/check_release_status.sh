@@ -2,9 +2,7 @@
 set -euo pipefail
 
 mode="${1:-check}"
-remote_url="${REMOTE_URL:-http://10.111.201.1:7077}"
-remote_ssh="${REMOTE_SSH:-root@10.111.201.1}"
-remote_root="${REMOTE_ROOT:-/ops/atlas}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deployment_target.sh"
 service_name="${SERVICE_NAME:-atlas.service}"
 git_remote="${GIT_REMOTE:-origin}"
 extra_git_remote="${EXTRA_GIT_REMOTE:-github}"
@@ -12,7 +10,6 @@ branch="${BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
 skip_npm_install="${SKIP_NPM_INSTALL:-0}"
 version_name="${VERSION_NAME:-prod}"
 release_strategy="${RELEASE_STRATEGY:-remote-source}"
-rsync_rsh="${RSYNC_RSH:-ssh}"
 deployment_stage="${ATLAS_DEPLOYMENT_STAGE:-development}"
 
 case "$deployment_stage" in
@@ -50,8 +47,11 @@ usage() {
   all     等同 deploy
 
 常用环境变量:
-  REMOTE_URL=http://10.111.201.1:7077
-  REMOTE_SSH=root@10.111.201.1
+  ATLAS_DEPLOY_TARGET=xiaozhen-zhiyuan # legacy-zhiyuan 保留原集群入口
+  REMOTE_URL=http://10.80.192.232:7077
+  REMOTE_SSH=root@10.80.192.232
+  ATLAS_BOOTSTRAP=1                 # 仅用于确认无已有服务/数据的首次部署
+  ATLAS_SSH_CONFIG=/path/to/config  # 所有 SSH/rsync 共用的连接配置，不含明文密码
   REMOTE_ROOT=/ops/atlas
   SERVICE_NAME=atlas.service
   GIT_REMOTE=origin
@@ -214,7 +214,7 @@ ensure_rsync_available() {
     echo "本机缺少 rsync，无法同步发布产物。" >&2
     exit 1
   fi
-  if ! ssh "$remote_ssh" "command -v rsync >/dev/null 2>&1"; then
+  if ! atlas_ssh "$remote_ssh" "command -v rsync >/dev/null 2>&1"; then
     echo "远端缺少 rsync，无法同步发布产物: $remote_ssh" >&2
     exit 1
   fi
@@ -236,7 +236,7 @@ deploy_remote() {
   sync_to_remote "$repo_root/scripts/postgres_backup.sh" "$remote_root/postgres_backup.sh.new"
   sync_to_remote "$dist_tarball" "$remote_root/dist.tar.gz"
 
-  ssh "$remote_ssh" "set -euo pipefail
+  atlas_ssh "$remote_ssh" "set -euo pipefail
 mkdir -p '$remote_root/web'
 mkdir -p '$remote_root/scripts'
 timestamp=\$(date +%Y%m%d%H%M%S)

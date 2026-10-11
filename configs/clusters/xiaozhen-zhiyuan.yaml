@@ -1,0 +1,46 @@
+gateway:
+  port: ":7077"
+  ingestion_source_mode: "local-live"
+  ingestion_stale_after: "15m"
+storage:
+  driver: "postgres"
+  dsn: ""
+branding:
+  instance_name: "算力小镇-智元"
+  product_name: "ATLAS"
+  product_tagline: "HARDWARE RELIABILITY"
+  environment: "DEVELOPMENT / 7077"
+logging:
+  dir: "/ops/atlas/logs"
+web:
+  static_dir: "/ops/atlas/web/dist"
+prometheus:
+  # The client appends /api/v1/query; do not put the complete query URL here.
+  base_url: "http://10.80.192.236:28481/select/0/prometheus"
+  request_timeout: "15s"
+inventory:
+  # Asset API pending; VM select does not implement Prometheus /api/v1/targets.
+  enabled: false
+  asset_file: ""
+health:
+  enabled: false
+  history_retention: "365d"
+history:
+  enabled: false
+  dataset_dir: "/ops/atlas/training"
+  max_concurrency: 1
+  sources:
+    - id: "xiaozhen-zhiyuan-vm"
+      name: "算力小镇-智元 VictoriaMetrics"
+      type: "victoriametrics-cluster"
+      base_url: "http://10.80.192.236:28481"
+      tenant_id: "0"
+      enabled: false
+node_access:
+  # 10.80.16.42 is a future physical-disk test node, not a synthetic GPU asset.
+  enabled: false
+  known_hosts_file: "/root/.ssh/known_hosts"
+  max_concurrent_nodes: 1
+  credential_profiles: []
+feishu:
+  bots: []
