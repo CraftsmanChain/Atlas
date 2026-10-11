@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -133,7 +134,7 @@ func assess(r *Result, in Input, raw, baseline []byte, asOf time.Time) Result {
 	}
 	r.Support = "fixture_verified"
 	namespaces, namespaceErr := integer(o, "nvme_number_of_namespaces", 32)
-	if namespaceErr != nil || namespaces.Int64() != 1 {
+	if namespaceErr != nil || namespaces.Sign() == 0 || (namespaces.Int64() != 1 && !explicitNVMeControllerScope(o)) {
 		r.block("namespace_scope_unverified")
 	}
 	log := o.child("nvme_smart_health_information_log")
@@ -206,6 +207,33 @@ func assess(r *Result, in Input, raw, baseline []byte, asOf time.Time) Result {
 	}
 	r.finish()
 	return *r
+}
+
+var nvmeControllerPath = regexp.MustCompile(`^/dev/nvme[0-9]+$`)
+
+// NN is not an active physical-disk count. Multi-namespace devices require an
+// explicit broadcast read on a controller path, never a namespace-shaped disk.
+func explicitNVMeControllerScope(o object) bool {
+	device := o.child("device")
+	if !nvmeControllerPath.MatchString(device.text("name")) || device.text("type") != "nvme" {
+		return false
+	}
+	var argv []string
+	if json.Unmarshal(o.child("smartctl")["argv"], &argv) != nil || len(argv) < 4 || argv[len(argv)-1] != device.text("name") {
+		return false
+	}
+	count := 0
+	for i, arg := range argv {
+		if arg == "-d" || arg == "--device" {
+			if i+1 >= len(argv) || argv[i+1] != "nvme,0xffffffff" {
+				return false
+			}
+			count++
+		} else if strings.HasPrefix(arg, "--device=") || strings.HasPrefix(arg, "-d") {
+			return false
+		}
+	}
+	return count == 1
 }
 
 func applyBaseline(r *Result, in Input, raw []byte, media *big.Int, asOf time.Time) {

@@ -36,6 +36,12 @@ func TestAssessmentBoundaries(t *testing.T) {
 	}{
 		{"clear_subset", "clear_for_checked_signals", "", func(_ map[string]any, _ *Input) {}},
 		{"multi_namespace", "unknown", "namespace_scope_unverified", func(d map[string]any, _ *Input) { d["nvme_number_of_namespaces"] = 2 }},
+		{"zero_namespace", "unknown", "namespace_scope_unverified", func(d map[string]any, _ *Input) { d["nvme_number_of_namespaces"] = 0 }},
+		{"broadcast_controller_nn132", "clear_for_checked_signals", "", func(d map[string]any, _ *Input) {
+			d["nvme_number_of_namespaces"] = 132
+			d["device"] = map[string]any{"name": "/dev/nvme0", "type": "nvme", "protocol": "NVMe"}
+			d["smartctl"].(map[string]any)["argv"] = []string{"smartctl", "-d", "nvme,0xffffffff", "-j", "-a", "/dev/nvme0"}
+		}},
 		{"spare_bit", "warning", "", func(d map[string]any, _ *Input) {
 			d["nvme_smart_health_information_log"].(map[string]any)["critical_warning"] = 1
 		}},
@@ -148,6 +154,37 @@ func TestAssessmentBoundaries(t *testing.T) {
 			}
 			if tc.blocker != "" && !contains(got.Blockers, tc.blocker) {
 				t.Fatalf("missing blocker %s: %+v", tc.blocker, got)
+			}
+		})
+	}
+}
+
+func TestNVMeBroadcastScope(t *testing.T) {
+	for _, test := range []struct {
+		name, path string
+		argv       []string
+		valid      bool
+	}{
+		{"controller", "/dev/nvme0", []string{"smartctl", "-d", "nvme,0xffffffff", "-j", "-a", "/dev/nvme0"}, true},
+		{"namespace", "/dev/nvme0n1", []string{"smartctl", "-d", "nvme,0xffffffff", "-j", "-a", "/dev/nvme0n1"}, false},
+		{"unspecified", "/dev/nvme0", []string{"smartctl", "-d", "nvme", "-j", "-a", "/dev/nvme0"}, false},
+		{"specific_namespace", "/dev/nvme0", []string{"smartctl", "-d", "nvme,1", "-j", "-a", "/dev/nvme0"}, false},
+		{"conflicting_type", "/dev/nvme0", []string{"smartctl", "-d", "nvme,0xffffffff", "--device=nvme,1", "/dev/nvme0"}, false},
+		{"duplicate_type", "/dev/nvme0", []string{"smartctl", "-d", "nvme,0xffffffff", "-d", "nvme,0xffffffff", "/dev/nvme0"}, false},
+		{"different_device", "/dev/nvme0", []string{"smartctl", "-d", "nvme,0xffffffff", "-j", "-a", "/dev/nvme1"}, false},
+		{"missing_argv", "/dev/nvme0", nil, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			d := sampleJSON()
+			d["nvme_number_of_namespaces"] = 132
+			d["device"] = map[string]any{"name": test.path, "type": "nvme", "protocol": "NVMe"}
+			d["smartctl"].(map[string]any)["argv"] = test.argv
+			got := Assess(sampleInput(), marshal(t, d), nil, cutoff)
+			if (got.AssessmentStatus == "assessed") != test.valid || got.EntityType != "nvme_controller" {
+				t.Fatalf("scope result: %+v", got)
+			}
+			if !test.valid && !strings.Contains(strings.Join(got.Blockers, ","), "namespace_scope_unverified") {
+				t.Fatal("unverified scope must remain blocked")
 			}
 		})
 	}
