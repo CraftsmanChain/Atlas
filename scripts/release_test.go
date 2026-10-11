@@ -14,7 +14,7 @@ import (
 func shell(t *testing.T, env []string, args ...string) (string, error) {
 	t.Helper()
 	// Register shell source files with Go's test cache as well as executing them.
-	for _, path := range []string{"deployment_target.sh", "bootstrap_remote.sh", "prepare_native_deployment.sh", "deploy_remote_source.sh", "remote_build_release.sh"} {
+	for _, path := range []string{"deployment_target.sh", "bootstrap_remote.sh", "prepare_native_deployment.sh", "deploy_remote_source.sh", "remote_build_release.sh", "postgres_backup.sh"} {
 		if _, err := os.ReadFile(path); err != nil {
 			t.Fatal(err)
 		}
@@ -23,6 +23,37 @@ func shell(t *testing.T, env []string, args ...string) (string, error) {
 	command.Env = append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()}, env...)
 	output, err := command.CombinedOutput()
 	return string(output), err
+}
+
+func TestNativeBackupUsesConfiguredDirectory(t *testing.T) {
+	root := t.TempDir()
+	mocks := filepath.Join(root, "tools")
+	configured := filepath.Join(root, "configured-backups")
+	override := filepath.Join(root, "override-backups")
+	writeFixture(t, filepath.Join(mocks, "runuser"), "#!/bin/sh\nshift 3\nexec \"$@\"\n", 0o755)
+	writeFixture(t, filepath.Join(mocks, "pg_dump"), "#!/bin/sh\nprintf 'fake custom dump'\n", 0o755)
+	writeFixture(t, filepath.Join(mocks, "pg_restore"), "#!/bin/sh\ncat >/dev/null\n", 0o755)
+	writeFixture(t, filepath.Join(mocks, "sha256sum"), "#!/bin/sh\nprintf 'verified checksum\\n'\n", 0o755)
+	writeFixture(t, filepath.Join(mocks, "flock"), "#!/bin/sh\nexit 0\n", 0o755)
+	envFile := filepath.Join(root, "postgres.env")
+	writeFixture(t, envFile, "POSTGRES_USER=postgres\nPOSTGRES_DB=atlas\nATLAS_PG_RUNTIME=systemd\nATLAS_PG_BACKUP_DIR="+configured+"\nATLAS_PG_BIN_DIR="+mocks+"\n", 0o600)
+	for _, directory := range []string{configured, override} {
+		env := []string{"PATH=" + mocks + ":" + os.Getenv("PATH"), "ATLAS_POSTGRES_ENV=" + envFile}
+		if directory == override {
+			env = append(env, "ATLAS_PG_BACKUP_DIR="+override)
+		}
+		output, err := shell(t, env, "./postgres_backup.sh")
+		if err != nil || !strings.Contains(output, directory) {
+			t.Fatalf("backup output=%s err=%v", output, err)
+		}
+		dumps, _ := filepath.Glob(filepath.Join(directory, "atlas_*.dump"))
+		if len(dumps) != 1 {
+			t.Fatalf("dump paths=%v", dumps)
+		}
+		if _, err := os.Stat(dumps[0] + ".sha256"); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestDeploymentTargetSelection(t *testing.T) {

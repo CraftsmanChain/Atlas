@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-backup_dir="${ATLAS_PG_BACKUP_DIR:-/mnt/public/pg}"
+requested_backup_dir="${ATLAS_PG_BACKUP_DIR:-}"
 retention_days="${ATLAS_PG_BACKUP_RETENTION_DAYS:-14}"
 container_name="${ATLAS_POSTGRES_CONTAINER:-atlas-postgres}"
 postgres_env="${ATLAS_POSTGRES_ENV:-/etc/atlas/postgres.env}"
@@ -21,6 +21,7 @@ set -a
 # shellcheck disable=SC1090
 source "$postgres_env"
 set +a
+backup_dir="${requested_backup_dir:-${ATLAS_PG_BACKUP_DIR:-/mnt/public/pg}}"
 : "${POSTGRES_USER:?POSTGRES_USER is required}"
 : "${POSTGRES_DB:?POSTGRES_DB is required}"
 

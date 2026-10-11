@@ -17,7 +17,7 @@ test('frontend and framework release contracts stay aligned', () => {
   assert(version);
   assert(app.includes(`version: '${version}'`));
   assert(app.includes(`${version} ·`));
-  assert(app.includes('PLATFORM / v0.120.59'));
+  assert(app.includes('PLATFORM / v0.120.60'));
   assert(app.includes("id: 'component-health'"));
 });
 
@@ -104,6 +104,21 @@ test('D1 disk artifact preserves protocol-specific wear and four health dimensio
     (r: HealthReport) => { r.rows.find(row => row.reference === ssd.reference)!.disk!.profile = 'nvme-standard-v1'; },
     (r: HealthReport) => { r.rows.find(row => row.reference === ssd.reference)!.disk!.counter_deltas.push({field:'ata.199.raw', value:'1', unit:'count', evidence_id:'f'.repeat(64)}); },
   ]) { const candidate = structuredClone(parsed.report); mutate(candidate); assert.throws(() => validateReport(candidate)); }
+});
+
+test('field controller report is supported without weakening older rule-version checks', { skip: !process.env.ATLAS_FIELD_TEST_BUNDLE }, async () => {
+  const parsed = await parseHealthBundle(readFileSync(process.env.ATLAS_FIELD_TEST_BUNDLE!, 'utf8'), 'field-bundle.json');
+  assert.equal(parsed.report.rule_version, 'hardware-health-v1.2.1');
+  assert.equal(parsed.report.rows.length, 6);
+  assert.equal(parsed.report.summary.assessed, 4);
+  assert.equal(parsed.report.summary.unknown, 2);
+  assert.equal(parsed.report.rows.filter(row => row.entity_type === 'nvme_controller' && row.assessment_status === 'assessed').length, 4);
+  const mismatch = structuredClone(parsed.report);
+  mismatch.rows[0].rule_version = 'disk-health-v1.1.0';
+  assert.throws(() => validateReport(mismatch), /invalid_disk_rule_version/);
+  const previousContract = structuredClone(parsed.report);
+  previousContract.rule_version = 'hardware-health-v1.2.0';
+  assert.throws(() => validateReport(previousContract), /invalid_disk_rule_version/);
 });
 
 test('controlled audit bundle retains actual execution provenance', { skip: !process.env.ATLAS_AUDIT_TEST_BUNDLE }, async () => {
