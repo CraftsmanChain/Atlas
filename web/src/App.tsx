@@ -32,6 +32,8 @@ type Report = { status: string; model: string; severity: string; summary: string
 type ServerStatus = { status: string; version: string; commit: string; build_time: string; server_time: string };
 type PlatformConfig = { instance_name: string; product_name: string; product_tagline: string; environment: string; updated_at?: string };
 type LXOPAssetConfig = {
+  auth_type: 'api_key' | 'oauth_client_credentials'; token_url: string;
+  client_id_configured: boolean; client_secret_configured: boolean; ca_cert_pem: string;
   ops_host_url: string; asset_machine_url: string; data_center_id: string;
   insecure_skip_verify: boolean; enabled: boolean; api_key_configured: boolean;
   last_sync_status: string; last_sync_error?: string; last_sync_at?: string;
@@ -602,6 +604,7 @@ function AssetStatistics({ tx, lang }: { tx: Tx; lang: string }) {
   const [scope, setScope] = useState('');
   const [category, setCategory] = useState('');
   const [query, setQuery] = useState('');
+  const [assetPage, setAssetPage] = useState(0);
   const initialLoadComplete = useRef(false);
   useEffect(() => {
     let cancelled = false;
@@ -634,9 +637,12 @@ function AssetStatistics({ tx, lang }: { tx: Tx; lang: string }) {
   const maxCategory = Math.max(1, ...(summary?.by_category || []).map(item => item.count));
   const maxGPUModel = Math.max(1, ...(summary?.gpu_models || []).map(item => item.count));
   const visible = rows.filter(row => (!scope || (row.scope === scope && row.category === 'gpu')) && (!category || row.category === category) && (!query.trim() || [row.ip_address, row.name, row.sn, row.type, row.gpu_model].join(' ').toLowerCase().includes(query.trim().toLowerCase())));
+  const pageCount = Math.max(1, Math.ceil(visible.length / 50));
+  const currentPage = Math.min(assetPage, pageCount - 1);
+  const pageRows = visible.slice(currentPage * 50, (currentPage + 1) * 50);
   const sourceLabel = (value: string) => value === 'both' ? tx('双边共有', 'In both') : value === 'ops_only' ? tx('仅运维主机', 'Ops only') : tx('仅资产设备', 'Asset only');
   return <div className="grid asset-statistics">
-    <Card className="span-12 capability-note"><Layers3 size={19} /><div><CardHead code="LXOP CROSS VALIDATION" title={tx('实时在用资产分类与双接口交叉验证', 'Live In-use Asset Classification & Cross-validation')} /><p>{tx('仅统计状态为 on 或已上架使用中的实时资产；停机、下架、非在线状态以及已从接口移除的 IP 不进入监控和异常统计。按 SN 优先、IP 补充关联同一设备，点击图形可下钻。', 'Only live assets in on or 已上架使用中 state are counted. Stopped, retired, non-online, or API-removed IPs are excluded from monitoring and anomaly statistics. Devices are linked by serial first and IP second; click a chart to drill down.')}</p></div><Badge value={loading ? 'SYNCING' : `${summary?.total || 0} IN USE`} kind={error ? 'warning' : 'info'} /></Card>
+    <Card className="span-12 capability-note"><Layers3 size={19} /><div><CardHead code="LXOP CROSS VALIDATION" title={tx('实时在用资产分类与双接口交叉验证', 'Live In-use Asset Classification & Cross-validation')} /><p>{tx('仅统计状态为 on、已上架使用中或运行的实时资产；停机、下架、非在线状态以及已从接口移除的 IP 不进入监控和异常统计。按 SN 优先、IP 补充关联同一设备，点击图形可下钻。', 'Only live assets in on, 已上架使用中 or 运行 state are counted. Stopped, retired, non-online, or API-removed IPs are excluded from monitoring and anomaly statistics. Devices are linked by serial first and IP second; click a chart to drill down.')}</p></div><Badge value={loading ? 'SYNCING' : `${summary?.total || 0} IN USE`} kind={error ? 'warning' : 'info'} /></Card>
     <Card className="span-7 asset-category-chart">
       <CardHead code="DEVICE TYPES" title={tx('设备类型分布', 'Device Type Distribution')} action={category ? <button className="link" onClick={() => setCategory('')}>{tx('显示全部', 'Show all')}<X size={12} /></button> : undefined} />
       <div className="asset-bars">{(summary?.by_category || []).map(item => <button key={item.name} className={category === item.name ? 'active' : ''} onClick={() => setCategory(current => current === item.name ? '' : item.name)}><span><b>{categoryLabels[item.name] || item.name}</b><strong>{item.count}</strong></span><i><em style={{ width: `${Math.max(4, item.count / maxCategory * 100)}%` }} /></i></button>)}</div>
@@ -652,9 +658,9 @@ function AssetStatistics({ tx, lang }: { tx: Tx; lang: string }) {
       </div>
     </Card>
     <Card className="span-12">
-      <div className="toolbar asset-reconcile-toolbar"><label><Search size={15} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder={tx('IP / 名称 / SN / 类型 / GPU 型号', 'IP / name / SN / type / GPU model')} /></label><span>{visible.length} / {rows.length}</span></div>
+      <div className="toolbar asset-reconcile-toolbar"><label><Search size={15} /><input value={query} onChange={event => { setQuery(event.target.value); setAssetPage(0); }} placeholder={tx('IP / 名称 / SN / 类型 / GPU 型号', 'IP / name / SN / type / GPU model')} /></label><div className="table-actions"><span>{visible.length} / {rows.length}</span><button aria-label={tx('上一页资产', 'Previous asset page')} disabled={currentPage === 0} onClick={() => setAssetPage(currentPage - 1)}><ChevronLeft size={15} /></button><span>{currentPage + 1} / {pageCount}</span><button aria-label={tx('下一页资产', 'Next asset page')} disabled={currentPage + 1 >= pageCount} onClick={() => setAssetPage(currentPage + 1)}><ChevronRight size={15} /></button></div></div>
       {error && <p className="form-error">{error}</p>}
-      <div className="table-wrap"><table className="asset-reconcile-table"><thead><tr><th>{tx('对账结果', 'Result')}</th><th>{tx('分类 / 类型', 'Category / Type')}</th><th>{tx('设备', 'Device')}</th><th>{tx('运维主机接口', 'Ops Host API')}</th><th>{tx('资产设备接口', 'Asset Machine API')}</th><th>{tx('数据时间', 'Data Time')}</th></tr></thead><tbody>{visible.map(row => <tr key={row.key}><td><Badge value={sourceLabel(row.scope)} kind={row.scope === 'both' ? 'healthy' : 'warning'} /></td><td><b>{categoryLabels[row.category] || row.category}</b><small>{row.gpu_model || row.type || 'UNKNOWN'}</small></td><td><b>{row.ip_address || row.name || '—'}</b><small>{row.name || '—'} · <code>{row.sn || 'NO SN'}</code></small></td><td>{row.ops_host ? <><Badge value="PRESENT" kind="healthy" /><small>{row.ops_host.ip_address || 'NO IP'} · {row.ops_host.state}</small></> : <Badge value="MISSING" kind="warning" />}</td><td>{row.asset_machine ? <><Badge value="PRESENT" kind="healthy" /><small>{row.asset_machine.type || 'UNKNOWN'} · {row.asset_machine.state}</small></> : <Badge value="MISSING" kind="warning" />}</td><td>{time(summary?.generated_at, lang)}</td></tr>)}</tbody></table>{!loading && visible.length === 0 && <Empty tx={tx} title={tx('没有匹配的资产记录', 'No matching asset records')} />}</div>
+      <div className="table-wrap"><table className="asset-reconcile-table"><thead><tr><th>{tx('对账结果', 'Result')}</th><th>{tx('分类 / 类型', 'Category / Type')}</th><th>{tx('设备', 'Device')}</th><th>{tx('运维主机接口', 'Ops Host API')}</th><th>{tx('资产设备接口', 'Asset Machine API')}</th><th>{tx('数据时间', 'Data Time')}</th></tr></thead><tbody>{pageRows.map(row => <tr key={row.key}><td><Badge value={sourceLabel(row.scope)} kind={row.scope === 'both' ? 'healthy' : 'warning'} /></td><td><b>{categoryLabels[row.category] || row.category}</b><small>{row.gpu_model || row.type || 'UNKNOWN'}</small></td><td><b>{row.ip_address || row.name || '—'}</b><small>{row.name || '—'} · <code>{row.sn || 'NO SN'}</code></small></td><td>{row.ops_host ? <><Badge value="PRESENT" kind="healthy" /><small>{row.ops_host.ip_address || 'NO IP'} · {row.ops_host.state}</small></> : <Badge value="MISSING" kind="warning" />}</td><td>{row.asset_machine ? <><Badge value="PRESENT" kind="healthy" /><small>{row.asset_machine.type || 'UNKNOWN'} · {row.asset_machine.state}</small></> : <Badge value="MISSING" kind="warning" />}</td><td>{time(summary?.generated_at, lang)}</td></tr>)}</tbody></table>{!loading && visible.length === 0 && <Empty tx={tx} title={tx('没有匹配的资产记录', 'No matching asset records')} />}</div>
     </Card>
   </div>;
 }
@@ -2536,7 +2542,13 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   ];
   const releaseModule = { id: 'release', name: tx('发布与产物同步', 'Release & Artifact Sync'), version: 'v0.2.0', status: tx('环境感知数据库备份', 'STAGE-AWARE DB BACKUP'), desc: tx('开发发布默认跳过 PostgreSQL 备份以缩短迭代时间；正式发布通过 production 阶段强制先备份，再执行原子切换和健康回滚。源码、前端和辅助脚本继续使用 rsync 校验同步。', 'Development releases skip PostgreSQL backup by default to shorten iteration time; production-stage releases require a successful backup before atomic switching and health rollback. Source, web, and helper scripts continue to use checksum-aware rsync.'), history: [tx('v0.2.0 · ATLAS_DEPLOYMENT_STAGE=development 默认跳过数据库备份，production 强制执行备份', 'v0.2.0 · ATLAS_DEPLOYMENT_STAGE=development skips database backup by default; production requires it'), tx('v0.1.0 · 默认远端源码发布和 legacy 二进制发布全部由 scp 切换为 rsync，并增加本机/远端依赖预检', 'v0.1.0 · Replaced scp with rsync in both remote-source and legacy-binary release paths, adding local and remote dependency preflight checks')] };
   const componentHealthModule = { id: 'component-health', name: tx('硬盘与内存健康', 'Disk and Memory Health'), version: 'v0.3.0', status: tx('离线证据回放', 'OFFLINE EVIDENCE'), desc: tx('本地回放 NVMe、有限型号 SATA HDD/SSD 与已有 EDAC 证据，展示健康维度、精确增量和适用性；受控 SMART 审计快照可离线转换。硬 RAID 成员映射、持续采集和概率模型尚未交付，不发送告警。', 'Locally replays NVMe, limited SATA HDD/SSD profiles and existing EDAC evidence with health dimensions, exact deltas and applicability. Controlled SMART audit snapshots convert offline. Hardware RAID member mapping, continuous collection and probability models are not delivered; no alerts.'), history: [tx('v0.3.0 · SATA 物理盘有限规则、健康维度与磨损语义分离、受控快照只读转换；未知型号不作健康', 'v0.3.0 · limited SATA physical-disk rules, health dimensions, distinct wear semantics and read-only snapshot conversion; unmatched models are not healthy'), tx('v0.2.0 · 增加 EDAC 原始快照与 CE/UE 精确增量，内存页复用筛选、分页和证据追溯；公共样例缺口不隐瞒', 'v0.2.0 · adds raw EDAC snapshots and exact CE/UE deltas; memory view reuses filters, pagination and traceable evidence without hiding public fixture gaps'), tx('v0.1.0 · 有界盘 CLI、SHA256 证据包与本地阅读页', 'v0.1.0 · bounded disk CLI, SHA256 bundles and local report reader')] };
-  const modules = [...baseModules, componentHealthModule, releaseModule].map(module => module.id === 'component-health' ? {
+  const modules = [...baseModules, componentHealthModule, releaseModule].map(module => module.id === 'asset' || module.id === 'platform' ? {
+    ...module,
+    version: module.id === 'asset' ? 'v1.3.0' : 'v0.3.0',
+    status: tx('聚合平台资产源', 'AGGREGATED ASSET SOURCE'),
+    desc: tx('通过统一运维聚合平台的 OAuth 客户端凭证和数据中心范围读取完整双源资产快照；仅手动元数据同步，不触发设备采集、GPU 评分或通知。', 'Reads complete dual-source asset snapshots from the shared operations aggregation platform using OAuth client credentials and explicit data-center scope. Manual metadata sync does not trigger device collection, GPU scoring or notifications.'),
+    history: [tx('v0.120.63 · OAuth 服务端鉴权、Token 刷新、有界分页、CA/TLS 配置与独立手动同步；错误或部分响应保留上次快照', 'v0.120.63 · server-side OAuth, token refresh, bounded pagination, CA/TLS configuration and independent manual sync; failed or partial responses preserve the previous snapshot'), ...module.history],
+  } : module).map(module => module.id === 'component-health' ? {
     ...module,
     version: 'v0.4.0',
     history: [tx('v0.4.0 · 增加实际三星企业 SATA 型号/固件规则，兼容旧解码器错误计数名称；pending 为当前状态，磨损归一值不作健康百分比', 'v0.4.0 · adds the field Samsung enterprise SATA model/firmware profile and legacy counter name; pending is a current gauge and normalized wear is not a health percentage'), tx('v0.3.2 · 修复内网 HTTP 页面报告导入；使用固定版本 SHA-256 实现，篡改和契约不一致仍阻断', 'v0.3.2 · fixes intranet HTTP report imports with a pinned SHA-256 implementation; tampering and inconsistent contracts remain blocked'), tx('v0.3.1 · 修正多 namespace NVMe 的控制器级显式广播读取；型号未匹配和范围不足仍阻断', 'v0.3.1 · fixes explicit controller-wide broadcast reads for multi-namespace NVMe; unmatched models and unverified scope remain blocked'), ...module.history],
@@ -2548,13 +2560,14 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
     history: [tx('v1.12.0 · 历史正例、健康对照和人工反馈按同一截止点聚合 8 项结构可观测性特征，缺失保持 unknown 并独立报告覆盖与查询失败', 'v1.12.0 · historical positives, healthy controls, and manual feedback aggregate eight structural-observability features at the same cutoff, preserve missing as unknown, and report coverage/query failures separately'), tx('v1.11.0 · 为 7 天目标增加 3d/7d/30d 一小时粒度趋势，并保持 24h 五分钟特征和全链路变换一致', 'v1.11.0 · adds hourly 3d/7d/30d trends for the 7-day target while preserving 5-minute 24h features and end-to-end transform parity'), tx('v1.10.0 · 拆分核心覆盖与可选信号，扩展线上已核验的历史预测指标', 'v1.10.0 · separates core coverage from optional signals and expands production-verified historical prediction metrics'), ...module.history],
   } : module).map(module => module.id === 'prediction' ? {
     ...module,
-		version: 'v0.27.64',
+		version: 'v0.27.65',
     status: tx('故障预警工作台', 'EARLY-WARNING WORKBENCH'),
     desc: tx(
       '当前故障预警能力保持 GPU-only、read-only shadow：已具备训练数据、标签 Manifest、训练样本 Evidence Bundle、模型治理卡、影子门禁、成熟 outcome、Ranking@K、naive baseline、HeaRank 7d node-risk challenger、数据/校准漂移、训练侧和 live-shadow 特征分布快照，并把故障前后数据反馈包列为重点入口；不触发告警、调度、维修或自动隔离。',
       'Early warning remains GPU-only and read-only shadow: training data, label manifest, training-sample Evidence Bundle, model governance cards, shadow gates, mature outcomes, Ranking@K, naive baselines, a HeaRank 7d node-risk challenger, data/calibration drift, and training/live-shadow feature-distribution snapshots are available, with the pre/post-fault feedback pack promoted as a priority entry; no alert, scheduling, repair or automatic isolation is triggered.',
     ),
 		history: [
+			tx('v0.27.65 · 资产接入改用统一聚合平台，可独立同步元数据；保持硬盘规则、GPU 暂停、shadow/无概率及无通知边界', 'v0.27.65 · integrates the shared aggregation platform with independent metadata synchronization; disk rules, paused GPU work, shadow/no-probability and no-notification boundaries remain unchanged'),
 			tx('v0.27.64 · 已存实机快照新增企业 SATA profile 与版本化页面契约，旧报告仍可回放；不新增采样、GPU 模型或故障概率', 'v0.27.64 · adds an enterprise SATA profile and versioned UI contract from stored field snapshots while retaining old replays; no additional sampling, GPU model or failure probability'),
 			tx('v0.27.63 · 修复新集群 HTTP 页证据导入并校验篡改拒绝；仅影响本地报告展示，不新增采样、概率输出或通知', 'v0.27.63 · fixes evidence imports on the new cluster HTTP page and verifies tamper rejection; local report display only, with no additional sampling, probability outputs or notifications'),
 			tx('v0.27.62 · 实机发现并修复 NVMe namespace 范围误判，控制器广播读取有证据及反例；GPU 模型、预警通知与概率输出不变', 'v0.27.62 · fixes a field-discovered NVMe namespace-scope defect with explicit controller-broadcast evidence and counterexamples; GPU models, notifications and probability outputs are unchanged'),
@@ -2766,7 +2779,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.62" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.63" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>
@@ -2826,14 +2839,19 @@ function PlatformSettings({ tx, value, onSaved }: { tx: Tx; value: PlatformConfi
   </div>;
 }
 
+const emptyAssetConfig: LXOPAssetConfig = {
+  auth_type: 'oauth_client_credentials', token_url: '', client_id_configured: false, client_secret_configured: false, ca_cert_pem: '',
+  ops_host_url: '', asset_machine_url: '', data_center_id: '', insecure_skip_verify: false,
+  enabled: true, api_key_configured: false, last_sync_status: 'not_configured',
+  last_ops_host_count: 0, last_machine_count: 0,
+};
 function LXOPAssetSettings({ tx }: { tx: Tx }) {
-  const empty: LXOPAssetConfig = {
-    ops_host_url: '', asset_machine_url: '', data_center_id: '', insecure_skip_verify: true,
-    enabled: true, api_key_configured: false, last_sync_status: 'not_configured',
-    last_ops_host_count: 0, last_machine_count: 0,
-  };
+  const empty = emptyAssetConfig;
   const [config, setConfig] = useState<LXOPAssetConfig>(empty);
   const [apiKey, setAPIKey] = useState('');
+  const [clientID, setClientID] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+  const [assetConfigLoaded, setAssetConfigLoaded] = useState(false);
   const [adminToken, setAdminToken] = useState('');
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
@@ -2842,18 +2860,20 @@ function LXOPAssetSettings({ tx }: { tx: Tx }) {
     let cancelled = false;
     void fetch('/api/v1/platform-config/assets').then(async response => {
       const payload = await response.json();
-      if (!cancelled && response.ok && payload.data) setConfig({ ...empty, ...payload.data });
-    }).catch(() => undefined);
+      if (!response.ok || !payload.data) throw new Error(`HTTP ${response.status}`);
+      if (!cancelled) { setConfig({ ...empty, ...payload.data }); setAssetConfigLoaded(true); }
+    }).catch(() => { if (!cancelled) setError('asset_config_load_failed'); });
     return () => { cancelled = true; };
-  }, []);
+  }, [empty]);
   const update = <K extends keyof LXOPAssetConfig>(field: K, next: LXOPAssetConfig[K]) => setConfig(current => ({ ...current, [field]: next }));
-  const save = async () => {
+  const save = async (syncOnly = false) => {
     setSaving(true); setMessage(''); setError('');
     try {
-      const response = await fetch('/api/v1/platform-config/assets', {
-        method: 'PUT',
+      const response = await fetch(`/api/v1/platform-config/assets${syncOnly ? '/sync' : ''}`, {
+        method: syncOnly ? 'POST' : 'PUT',
         headers: { 'Content-Type': 'application/json', 'X-Atlas-Admin-Token': adminToken },
-        body: JSON.stringify({
+        body: syncOnly ? undefined : JSON.stringify({
+          auth_type: config.auth_type, token_url: config.token_url, client_id: clientID, client_secret: clientSecret, ca_cert_pem: config.ca_cert_pem,
           ops_host_url: config.ops_host_url, asset_machine_url: config.asset_machine_url,
           data_center_id: config.data_center_id, api_key: apiKey,
           insecure_skip_verify: config.insecure_skip_verify, enabled: config.enabled,
@@ -2861,27 +2881,39 @@ function LXOPAssetSettings({ tx }: { tx: Tx }) {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error?.message || `HTTP ${response.status}`);
-      setConfig({ ...empty, ...payload.data }); setAPIKey(''); setAdminToken('');
-      setMessage(tx('资产源配置已加密保存；下一轮同步开始使用', 'Asset source saved encrypted and will be used by the next sync'));
+      if (syncOnly) {
+        const current = await fetch('/api/v1/platform-config/assets');
+        if (!current.ok) throw new Error(`HTTP ${current.status}`);
+        const refreshed = await current.json(); setConfig({ ...empty, ...refreshed.data });
+      } else setConfig({ ...empty, ...payload.data });
+      setAPIKey(''); setClientID(''); setClientSecret(''); setAdminToken('');
+      setMessage(syncOnly ? tx('资产元数据同步完成', 'Asset metadata synchronized') : tx('资产源配置已加密保存', 'Asset source saved encrypted'));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : tx('保存失败', 'Save failed'));
     } finally { setSaving(false); }
   };
-  const valid = config.ops_host_url.trim() && config.asset_machine_url.trim() && config.data_center_id.trim() && (config.api_key_configured || apiKey.trim()) && adminToken.trim();
+  const oauth = config.auth_type === 'oauth_client_credentials';
+  const valid = assetConfigLoaded && config.ops_host_url.trim() && config.asset_machine_url.trim() && config.data_center_id.trim() && adminToken.trim() && (oauth ? config.token_url.trim() && (clientID.trim() || config.client_id_configured) && (clientSecret.trim() || config.client_secret_configured) && (!clientID.trim() || !!clientSecret.trim()) : config.api_key_configured || apiKey.trim());
   return <>
     <Card className="span-8 lxop-settings">
-      <CardHead code="LXOP ASSET SOURCE" title={tx('实时资产源配置', 'Real-time Asset Source')} action={<Badge value={config.enabled ? 'ENABLED' : 'DISABLED'} kind={config.enabled ? 'healthy' : 'neutral'} />} />
-      <p className="settings-intro">{tx('每轮库存对账只读调用两个 LXOP OpenAPI。API Key 使用 AES-256-GCM 加密保存，保存后不回显；dataCenterId 必须明确配置。', 'Each inventory reconciliation reads both LXOP OpenAPIs. The API key is AES-256-GCM encrypted and never returned; dataCenterId must be explicit.')}</p>
+      <CardHead code="ASSET SOURCE" title={tx('资产数据源', 'Asset Data Source')} action={<Badge value={config.enabled ? 'ENABLED' : 'DISABLED'} kind={config.enabled ? 'healthy' : 'neutral'} />} />
       <form className="settings-form" onSubmit={event => { event.preventDefault(); void save(); }}>
+        <label><span>{tx('鉴权方式', 'Authentication')}</span><select aria-label={tx('鉴权方式', 'Authentication')} value={config.auth_type} onChange={event => { update('auth_type', event.target.value as LXOPAssetConfig['auth_type']); setAPIKey(''); setClientID(''); setClientSecret(''); }}><option value="oauth_client_credentials">OAuth 2.0 · Client Credentials</option><option value="api_key">X-API-Key · Legacy</option></select></label>
         <label><span>{tx('运维主机接口', 'Ops host endpoint')}<small>GET · FULL URL</small></span><input value={config.ops_host_url} onChange={event => update('ops_host_url', event.target.value)} placeholder="https://host:7090/openapi/v1/ops/host/list" /></label>
         <label><span>{tx('资产设备接口', 'Asset machine endpoint')}<small>GET · FULL URL</small></span><input value={config.asset_machine_url} onChange={event => update('asset_machine_url', event.target.value)} placeholder="https://host:7090/openapi/v1/asset/machine/list" /></label>
-        <label><span>{tx('数据中心 ID', 'Data center ID')}<small>dataCenterId · REQUIRED</small></span><input value={config.data_center_id} onChange={event => update('data_center_id', event.target.value)} /></label>
-        <label><span>X-API-Key<small>{config.api_key_configured ? tx('已加密保存 · 留空保持不变', 'ENCRYPTED · BLANK KEEPS CURRENT') : tx('首次配置必填', 'REQUIRED INITIALLY')}</small></span><input type="password" autoComplete="new-password" value={apiKey} onChange={event => setAPIKey(event.target.value)} placeholder={config.api_key_configured ? '••••••••••••' : 'X-API-Key'} /></label>
+        <label><span>{tx('数据中心 ID', 'Data center ID')}<small>{oauth ? 'X-Dc-Id' : 'dataCenterId'}</small></span><input value={config.data_center_id} onChange={event => update('data_center_id', event.target.value)} /></label>
+        {oauth ? <>
+          <label><span>{tx('Token 接口', 'Token endpoint')}</span><input aria-label={tx('Token 接口', 'Token endpoint')} value={config.token_url} onChange={event => update('token_url', event.target.value)} placeholder="https://host/openapi/v1/oauth/token" /></label>
+          <label><span>Client ID<small>{config.client_id_configured ? tx('已配置 · 留空保持', 'CONFIGURED · BLANK KEEPS CURRENT') : tx('首次配置必填', 'REQUIRED INITIALLY')}</small></span><input aria-label="Client ID" type="password" autoComplete="off" value={clientID} onChange={event => setClientID(event.target.value)} /></label>
+          <label><span>Client Secret<small>{config.client_secret_configured ? tx('已加密保存 · 留空保持', 'ENCRYPTED · BLANK KEEPS CURRENT') : tx('首次配置必填', 'REQUIRED INITIALLY')}</small></span><input aria-label="Client Secret" type="password" autoComplete="new-password" value={clientSecret} onChange={event => setClientSecret(event.target.value)} /></label>
+          <label><span>{tx('CA 证书（可选）', 'CA certificate (optional)')}</span><textarea aria-label={tx('CA 证书', 'CA certificate')} rows={3} value={config.ca_cert_pem} onChange={event => update('ca_cert_pem', event.target.value)} /></label>
+        </> : <label><span>X-API-Key<small>{config.api_key_configured ? tx('已加密保存 · 留空保持不变', 'ENCRYPTED · BLANK KEEPS CURRENT') : tx('首次配置必填', 'REQUIRED INITIALLY')}</small></span><input type="password" autoComplete="new-password" value={apiKey} onChange={event => setAPIKey(event.target.value)} placeholder={config.api_key_configured ? '••••••••••••' : 'X-API-Key'} /></label>}
         <label><span>{tx('管理口令', 'Management token')}<small>X-Atlas-Admin-Token</small></span><input type="password" autoComplete="off" value={adminToken} onChange={event => setAdminToken(event.target.value)} /></label>
-        <label className="settings-check"><span>{tx('连接选项', 'Connection options')}<small>INTERNAL COMPATIBILITY</small></span><span className="check-options"><input type="checkbox" checked={config.enabled} onChange={event => update('enabled', event.target.checked)} />{tx('启用实时同步', 'Enable live sync')}<input type="checkbox" checked={config.insecure_skip_verify} onChange={event => update('insecure_skip_verify', event.target.checked)} />{tx('允许自签名 TLS', 'Allow self-signed TLS')}</span></label>
-        {error && <p className="form-error">{error}</p>}
+        <label className="settings-check"><span>{tx('连接选项', 'Connection options')}</span><span className="check-options"><input type="checkbox" checked={config.enabled} onChange={event => update('enabled', event.target.checked)} />{tx('启用资产源', 'Enable asset source')}<input type="checkbox" checked={config.insecure_skip_verify} onChange={event => update('insecure_skip_verify', event.target.checked)} />{tx('跳过证书验证（仅开发）', 'Skip certificate verification (development only)')}</span></label>
+        {error && <p className="form-error">{error === 'asset_config_load_failed' ? tx('资产配置读取失败', 'Failed to load asset configuration') : error}</p>}
         {message && <p className="form-success">{message}</p>}
         <button className="primary-action" type="submit" disabled={saving || !valid}><Save size={15} />{saving ? tx('保存中', 'Saving') : tx('加密保存', 'Save Encrypted')}</button>
+        <button className="primary-action" type="button" onClick={() => void save(true)} disabled={saving || !assetConfigLoaded || !adminToken.trim() || !config.enabled || config.last_sync_status === 'not_configured'}><RefreshCw size={15} />{tx('同步资产', 'Sync Assets')}</button>
       </form>
     </Card>
     <Card className="span-4 settings-preview lxop-status">
@@ -2890,8 +2922,9 @@ function LXOPAssetSettings({ tx }: { tx: Tx }) {
       <dl>
         <div><dt>{tx('运维主机', 'Ops hosts')}</dt><dd>{config.last_ops_host_count}</dd></div>
         <div><dt>{tx('资产设备', 'Machines')}</dt><dd>{config.last_machine_count}</dd></div>
-        <div><dt>API KEY</dt><dd>{config.api_key_configured ? tx('已加密保存', 'Encrypted at rest') : tx('未配置', 'Not configured')}</dd></div>
-        <div><dt>{tx('在用状态', 'In-use states')}</dt><dd><code>on</code> · <code>已上架使用中</code></dd></div>
+        <div><dt>{tx('鉴权方式', 'Authentication')}</dt><dd>{oauth ? 'OAuth 2.0' : 'X-API-Key'}</dd></div>
+        <div><dt>{tx('凭据', 'Credentials')}</dt><dd>{(oauth ? config.client_secret_configured : config.api_key_configured) ? tx('已加密保存', 'Encrypted at rest') : tx('未配置', 'Not configured')}</dd></div>
+        <div><dt>TLS</dt><dd>{config.insecure_skip_verify ? tx('开发兼容 · 未验证证书', 'Development · certificate unverified') : tx('验证证书', 'Certificate verification')}</dd></div>
       </dl>
       {config.last_sync_error && <p className="form-error">{config.last_sync_error}</p>}
     </Card>

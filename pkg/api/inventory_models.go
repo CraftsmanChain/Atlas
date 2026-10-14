@@ -8,6 +8,7 @@ type InfrastructureAsset struct {
 	ID           uint      `json:"id" gorm:"primaryKey;autoIncrement"`
 	AssetKey     string    `json:"asset_key" gorm:"uniqueIndex;not null"`
 	Source       string    `json:"source" gorm:"index;not null"` // ops_host/asset_machine
+	SourceID     string    `json:"source_id" gorm:"index"`
 	DataCenterID string    `json:"data_center_id" gorm:"index"`
 	IPAddress    string    `json:"ip_address" gorm:"index"`
 	Name         string    `json:"name" gorm:"index"`

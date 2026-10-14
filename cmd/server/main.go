@@ -242,6 +242,7 @@ func main() {
 	mux.HandleFunc("/api/v1/issues/", issueHandler.HandleSubresource)
 	mux.HandleFunc("/api/v1/platform-config", platformConfigHandler.Handle)
 	mux.HandleFunc("/api/v1/platform-config/assets", assetConfigHandler.Handle)
+	mux.HandleFunc("/api/v1/platform-config/assets/sync", assetConfigHandler.HandleSync)
 	mux.HandleFunc("/api/v1/node-access/overview", nodeAccessHandler.HandleOverview)
 	mux.HandleFunc("/api/v1/node-access/credentials", nodeAccessHandler.HandleCredentials)
 	mux.HandleFunc("/api/v1/node-access/credentials/", nodeAccessHandler.HandleCredential)
