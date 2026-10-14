@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { AlertTriangle, ArrowDownWideNarrow, CheckCircle2, ChevronLeft, ChevronRight, Download, FileCheck2, HardDrive, Loader2, MemoryStick, Network, Search, ShieldAlert, Trash2, Upload, X } from 'lucide-react';
-import { MAX_BUNDLE_BYTES, diskDimensionForRule, levels, parseHealthBundle, selectRows, type HealthLevel, type HealthRow, type ImportedHealthReport } from './hardwareHealthReport';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { AlertTriangle, ArrowDownWideNarrow, CheckCircle2, ChevronLeft, ChevronRight, Download, FileCheck2, HardDrive, Loader2, MemoryStick, Network, RefreshCw, Search, ShieldAlert, Trash2, Upload, X } from 'lucide-react';
+import { MAX_BUNDLE_BYTES, diskDimensionForRule, levels, parseHealthBundle, selectRows, type HealthLevel, type HealthReport, type HealthRow, type ImportedHealthReport } from './hardwareHealthReport';
 import './HardwareHealth.css';
 
 type Tx = (zh: string, en: string) => string;
@@ -48,10 +48,12 @@ function timestamp(value: string, lang: string): string {
   if (value.startsWith('0001')) return '—';
   return new Intl.DateTimeFormat(lang, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
 }
+type DiskListPayload = { data?: HealthRow[]; summary?: { total?: number; assessed?: number; unknown?: number; by_level?: Record<string, number> }; meta?: { generated_at?: string } };
 export default function HardwareHealth({ tx, lang }: { tx: Tx; lang: string }) {
   const [imported, setImported] = useState<ImportedHealthReport | null>(null);
   const [original, setOriginal] = useState('');
   const [busy, setBusy] = useState(false);
+  const [onlineBusy, setOnlineBusy] = useState(false);
   const [error, setError] = useState('');
   const [tab, setTab] = useState('disk');
   const [query, setQuery] = useState('');
@@ -65,7 +67,6 @@ export default function HardwareHealth({ tx, lang }: { tx: Tx; lang: string }) {
   const [detailTab, setDetailTab] = useState('evidence');
   const fileInput = useRef<HTMLInputElement>(null);
   const revision = useRef(0);
-  useEffect(() => () => { revision.current += 1; }, []);
   const rows = useMemo(() => imported?.report.rows ?? [], [imported]);
   const diskRows = useMemo(() => rows.filter(row => row.entity_type !== 'memory_controller'), [rows]);
   const memoryRows = useMemo(() => rows.filter(row => row.entity_type === 'memory_controller'), [rows]);
@@ -76,6 +77,52 @@ export default function HardwareHealth({ tx, lang }: { tx: Tx; lang: string }) {
   const detail = rows.find(row => row.reference === selected);
   const riskCount = rows.filter(row => ['critical', 'warning', 'attention'].includes(row.level)).length;
   const staleCount = rows.filter(row => row.freshness === 'stale').length;
+
+  const loadOnline = useCallback(async (reportError = true, signal?: AbortSignal) => {
+    const ticket = ++revision.current; setOnlineBusy(true);
+    try {
+      const response = await fetch('/api/v1/hardware/disks?limit=1000', { signal });
+      if (!response.ok) throw new Error(`online_cache_${response.status}`);
+      const payload = await response.json() as DiskListPayload;
+      const onlineRows = Array.isArray(payload.data) ? payload.data : [];
+      if (ticket !== revision.current || signal?.aborted) return;
+      if (!onlineRows.length) {
+        if (reportError) setError('online_cache_empty');
+        return;
+      }
+      const byLevel = levels.reduce<Record<string, number>>((acc, value) => ({ ...acc, [value]: 0 }), {});
+      for (const row of onlineRows) byLevel[row.level] = (byLevel[row.level] || 0) + 1;
+      const report: HealthReport = {
+        schema: 'hardware-health-report-v1',
+        input_manifest_sha256: '0'.repeat(64),
+        rule_version: 'hardware-health-v1.3.0',
+        mode: 'online_cache',
+        as_of: payload.meta?.generated_at || new Date().toISOString(),
+        alerts_emitted: false,
+        actions_executed: false,
+        summary: {
+          total: payload.summary?.total ?? onlineRows.length,
+          assessed: payload.summary?.assessed ?? onlineRows.filter(row => row.assessment_status === 'assessed').length,
+          unknown: payload.summary?.unknown ?? onlineRows.filter(row => row.assessment_status !== 'assessed').length,
+          by_level: payload.summary?.by_level ?? byLevel,
+        },
+        rows: onlineRows,
+      };
+      setImported({ report, sha256: 'online-cache', fileName: tx('在线硬盘缓存', 'Online disk cache') });
+      setOriginal(''); setSelected(null); setTab('disk'); setQuery(''); setLevel(''); setQuality(''); setMedia(''); setPage(0); setError('');
+    } catch (cause) {
+      if (signal?.aborted || ticket !== revision.current) return;
+      if (reportError) setError(cause instanceof Error ? cause.message : 'online_cache_failed');
+    } finally {
+      if (!signal?.aborted && ticket === revision.current) setOnlineBusy(false);
+    }
+  }, [tx]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadOnline(false, controller.signal);
+    return () => { controller.abort(); revision.current += 1; };
+  }, [loadOnline]);
 
   async function importFile(file?: File) {
     if (!file) return;
@@ -91,7 +138,7 @@ export default function HardwareHealth({ tx, lang }: { tx: Tx; lang: string }) {
   }
   function clear() { revision.current += 1; setImported(null); setOriginal(''); setSelected(null); setTab('disk'); setQuery(''); setLevel(''); setQuality(''); setMedia(''); setPage(0); setError(''); setBusy(false); }
   function exportBundle() {
-    if (!imported) return;
+    if (!imported || !original) return;
     const url = URL.createObjectURL(new Blob([original], { type: 'application/json' }));
     const link = document.createElement('a'); link.href = url; link.download = 'hardware-health-bundle.json'; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -99,16 +146,17 @@ export default function HardwareHealth({ tx, lang }: { tx: Tx; lang: string }) {
 
   return <div className="hh-page" aria-busy={busy}>
     <div className="hh-reportbar">
-      <div><FileCheck2 size={18} /><div><b>{imported?.fileName || tx('未载入健康证据', 'No health evidence loaded')}</b><span>{tx('离线快照 · 非实时 · 生产采集未启用', 'Offline snapshot · not live · collection disabled')}</span></div></div>
+      <div><FileCheck2 size={18} /><div><b>{imported?.fileName || tx('未载入健康证据', 'No health evidence loaded')}</b><span>{imported?.report.mode === 'online_cache' ? tx('在线缓存 · 只读 API · 不触发采集', 'Online cache · read-only API · no collection') : tx('离线快照 · 非实时 · 生产采集未启用', 'Offline snapshot · not live · collection disabled')}</span></div></div>
       <div className="hh-actions">
         <input ref={fileInput} type="file" accept=".json,application/json" className="hh-file" aria-label={tx('选择报告文件', 'Select report file')} onChange={event => { void importFile(event.target.files?.[0]); event.target.value = ''; }} />
+        <button className="icon-btn" onClick={() => { void loadOnline(true); }} disabled={onlineBusy || busy} title={tx('刷新在线缓存', 'Refresh online cache')} aria-label={tx('刷新在线缓存', 'Refresh online cache')}>{onlineBusy ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}</button>
         <button className="hh-command" onClick={() => fileInput.current?.click()} disabled={busy}>{busy ? <Loader2 size={15} className="spin" /> : <Upload size={15} />}{tx('导入报告', 'Import report')}</button>
-        <button className="icon-btn" onClick={exportBundle} disabled={!imported || busy} title={tx('导出原始报告', 'Export original report')} aria-label={tx('导出原始报告', 'Export original report')}><Download size={16} /></button>
+        <button className="icon-btn" onClick={exportBundle} disabled={!imported || !original || busy} title={tx('导出原始报告', 'Export original report')} aria-label={tx('导出原始报告', 'Export original report')}><Download size={16} /></button>
         <button className="icon-btn" onClick={clear} disabled={!imported && !error && !busy} title={tx('清除本地报告', 'Clear local report')} aria-label={tx('清除本地报告', 'Clear local report')}><Trash2 size={16} /></button>
       </div>
     </div>
     {error && <div className="hh-error" role="alert"><AlertTriangle size={17} /><div><b>{tx('报告未通过校验', 'Report validation failed')}</b><code>{error}</code></div><button className="icon-btn" onClick={() => setError('')} aria-label={tx('关闭错误', 'Dismiss error')}><X size={15} /></button></div>}
-    {imported && <div className="hh-provenance"><span>{tx('评估时点', 'Evaluation cutoff')} <b>{timestamp(imported.report.as_of, lang)}</b></span><span>{imported.report.rule_version}</span><span title={imported.sha256}>SHA256 <code>{imported.sha256.slice(0, 16)}</code></span><span className="hh-integrity"><CheckCircle2 size={13} />{tx('文件完整性已校验', 'File integrity checked')}</span></div>}
+    {imported && <div className="hh-provenance"><span>{tx('评估时点', 'Evaluation cutoff')} <b>{timestamp(imported.report.as_of, lang)}</b></span><span>{imported.report.rule_version}</span><span title={imported.sha256}>{imported.sha256 === 'online-cache' ? tx('在线缓存', 'Online cache') : <>SHA256 <code>{imported.sha256.slice(0, 16)}</code></>}</span><span className="hh-integrity"><CheckCircle2 size={13} />{imported.report.mode === 'online_cache' ? tx('只读 API 已加载', 'Read-only API loaded') : tx('文件完整性已校验', 'File integrity checked')}</span></div>}
     <section className="hh-metrics" aria-label={tx('报告摘要', 'Report summary')}>
       {[{ label: tx('证据记录', 'Evidence records'), value: imported ? rows.length : '—', icon: HardDrive }, { label: tx('需复核风险', 'Risks to review'), value: imported ? riskCount : '—', icon: ShieldAlert }, { label: tx('数据不足', 'Insufficient data'), value: imported?.report.summary.unknown ?? '—', icon: AlertTriangle }, { label: tx('时点已过期', 'Stale at cutoff'), value: imported ? staleCount : '—', icon: Network }].map(metric => <div key={metric.label}><metric.icon size={17} /><span>{metric.label}</span><strong>{metric.value}</strong></div>)}
     </section>

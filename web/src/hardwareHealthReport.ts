@@ -21,7 +21,7 @@ export type HealthRow = {
   blockers: string[]; hits: HealthHit[]; evidence: HealthEvidence[];
 };
 export type HealthReport = {
-  schema: 'hardware-health-report-v1'; input_manifest_sha256: string; rule_version: 'disk-health-v1.0.0' | 'hardware-health-v1.1.0' | 'hardware-health-v1.2.0' | 'hardware-health-v1.2.1' | 'hardware-health-v1.3.0'; mode: 'offline_replay'; as_of: string;
+  schema: 'hardware-health-report-v1'; input_manifest_sha256: string; rule_version: 'disk-health-v1.0.0' | 'hardware-health-v1.1.0' | 'hardware-health-v1.2.0' | 'hardware-health-v1.2.1' | 'hardware-health-v1.3.0'; mode: 'offline_replay' | 'online_cache'; as_of: string;
   alerts_emitted: false; actions_executed: false;
   summary: { total: number; assessed: number; unknown: number; by_level: Record<string, number> }; rows: HealthRow[];
 };
