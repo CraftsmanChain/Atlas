@@ -16,9 +16,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"atlas/pkg/api"
+	"atlas/pkg/opsplatform"
 	"atlas/pkg/storage"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -27,6 +29,7 @@ import (
 const lxopKeyVersion = "aes-256-gcm-v1"
 
 type LXOPAsset struct {
+	ID           string `json:"id"`
 	DataCenterID string `json:"dataCenterId"`
 	IPAddress    string `json:"ipAddress"`
 	Name         string `json:"name"`
@@ -45,10 +48,13 @@ type AssetSyncResult struct {
 }
 
 type AssetSource struct {
-	db     *storage.DB
-	aead   cipher.AEAD
-	client func(bool) *http.Client
-	now    func() time.Time
+	db               *storage.DB
+	aead             cipher.AEAD
+	client           func(bool) *http.Client
+	now              func() time.Time
+	syncMu           sync.Mutex
+	oauth            *opsplatform.Client
+	oauthFingerprint string
 }
 
 func NewAssetSource(db *storage.DB, encodedKey string) (*AssetSource, error) {
@@ -113,22 +119,29 @@ func (s *AssetSource) decryptAPIKey(config api.LXOPAssetConfig) (string, error) 
 }
 
 type AssetConfigView struct {
-	OpsHostURL         string     `json:"ops_host_url"`
-	AssetMachineURL    string     `json:"asset_machine_url"`
-	DataCenterID       string     `json:"data_center_id"`
-	InsecureSkipVerify bool       `json:"insecure_skip_verify"`
-	Enabled            bool       `json:"enabled"`
-	APIKeyConfigured   bool       `json:"api_key_configured"`
-	LastSyncStatus     string     `json:"last_sync_status"`
-	LastSyncError      string     `json:"last_sync_error,omitempty"`
-	LastSyncAt         *time.Time `json:"last_sync_at,omitempty"`
-	LastOpsHostCount   int        `json:"last_ops_host_count"`
-	LastMachineCount   int        `json:"last_machine_count"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	AuthType               string     `json:"auth_type"`
+	TokenURL               string     `json:"token_url"`
+	ClientIDConfigured     bool       `json:"client_id_configured"`
+	ClientSecretConfigured bool       `json:"client_secret_configured"`
+	CACertPEM              string     `json:"ca_cert_pem"`
+	OpsHostURL             string     `json:"ops_host_url"`
+	AssetMachineURL        string     `json:"asset_machine_url"`
+	DataCenterID           string     `json:"data_center_id"`
+	InsecureSkipVerify     bool       `json:"insecure_skip_verify"`
+	Enabled                bool       `json:"enabled"`
+	APIKeyConfigured       bool       `json:"api_key_configured"`
+	LastSyncStatus         string     `json:"last_sync_status"`
+	LastSyncError          string     `json:"last_sync_error,omitempty"`
+	LastSyncAt             *time.Time `json:"last_sync_at,omitempty"`
+	LastOpsHostCount       int        `json:"last_ops_host_count"`
+	LastMachineCount       int        `json:"last_machine_count"`
+	UpdatedAt              time.Time  `json:"updated_at"`
 }
 
 func assetConfigView(row api.LXOPAssetConfig) AssetConfigView {
 	return AssetConfigView{
+		AuthType: assetAuthType(row.AuthType), TokenURL: row.TokenURL, CACertPEM: row.CACertPEM,
+		ClientIDConfigured: row.ClientID != "", ClientSecretConfigured: len(row.ClientSecretCiphertext) > 0,
 		OpsHostURL: row.OpsHostURL, AssetMachineURL: row.AssetMachineURL,
 		DataCenterID: row.DataCenterID, InsecureSkipVerify: row.InsecureSkipVerify,
 		Enabled: row.Enabled, APIKeyConfigured: len(row.APIKeyCiphertext) > 0,
@@ -139,6 +152,11 @@ func assetConfigView(row api.LXOPAssetConfig) AssetConfigView {
 }
 
 type AssetConfigInput struct {
+	AuthType           string `json:"auth_type"`
+	TokenURL           string `json:"token_url"`
+	ClientID           string `json:"client_id"`
+	ClientSecret       string `json:"client_secret"`
+	CACertPEM          string `json:"ca_cert_pem"`
 	OpsHostURL         string `json:"ops_host_url"`
 	AssetMachineURL    string `json:"asset_machine_url"`
 	DataCenterID       string `json:"data_center_id"`
@@ -154,13 +172,15 @@ func (s *AssetSource) GetConfig() (api.LXOPAssetConfig, error) {
 }
 
 func (s *AssetSource) SaveConfig(input AssetConfigInput) (api.LXOPAssetConfig, error) {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
 	input.OpsHostURL = strings.TrimSpace(input.OpsHostURL)
 	input.AssetMachineURL = strings.TrimSpace(input.AssetMachineURL)
 	input.DataCenterID = strings.TrimSpace(input.DataCenterID)
 	input.APIKey = strings.TrimSpace(input.APIKey)
 	for label, value := range map[string]string{"ops_host_url": input.OpsHostURL, "asset_machine_url": input.AssetMachineURL} {
 		parsed, err := url.ParseRequestURI(value)
-		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 			return api.LXOPAssetConfig{}, fmt.Errorf("%s must be an absolute HTTP(S) URL", label)
 		}
 	}
@@ -175,20 +195,37 @@ func (s *AssetSource) SaveConfig(input AssetConfigInput) (api.LXOPAssetConfig, e
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		row.ID = singletonID
 	}
-	if input.APIKey != "" {
+	connectionChanged := row.OpsHostURL != input.OpsHostURL || row.AssetMachineURL != input.AssetMachineURL || row.DataCenterID != input.DataCenterID || (input.AuthType != "" && assetAuthType(row.AuthType) != input.AuthType) || row.TokenURL != input.TokenURL || input.ClientSecret != "" || input.APIKey != ""
+	if input.AuthType == "" {
+		input.AuthType = assetAuthType(row.AuthType)
+	}
+	if input.AuthType != "api_key" && input.AuthType != "oauth_client_credentials" {
+		return row, errors.New("unsupported asset auth_type")
+	}
+	if input.AuthType == "oauth_client_credentials" {
+		if err := s.saveOAuthConfig(&row, input); err != nil {
+			return row, err
+		}
+	} else if input.APIKey != "" {
 		row.APIKeyCiphertext, err = s.encryptAPIKey(input.APIKey)
 		if err != nil {
 			return row, err
 		}
 		row.KeyVersion = lxopKeyVersion
 	}
-	if len(row.APIKeyCiphertext) == 0 {
+	if input.AuthType == "api_key" && len(row.APIKeyCiphertext) == 0 {
 		return row, errors.New("api_key is required for initial configuration")
 	}
 	row.OpsHostURL, row.AssetMachineURL, row.DataCenterID = input.OpsHostURL, input.AssetMachineURL, input.DataCenterID
 	row.InsecureSkipVerify, row.Enabled = input.InsecureSkipVerify, input.Enabled
-	if row.LastSyncStatus == "" {
+	row.AuthType = input.AuthType
+	s.oauth = nil
+	s.oauthFingerprint = ""
+	if row.LastSyncStatus == "" || connectionChanged {
 		row.LastSyncStatus = "never"
+		row.LastSyncError = ""
+		row.LastSyncAt = nil
+		row.LastOpsHostCount, row.LastMachineCount = 0, 0
 	}
 	err = s.db.Save(&row).Error
 	input.APIKey = ""
@@ -196,25 +233,25 @@ func (s *AssetSource) SaveConfig(input AssetConfigInput) (api.LXOPAssetConfig, e
 }
 
 func (s *AssetSource) Sync(ctx context.Context) (*AssetSyncResult, error) {
+	if !s.syncMu.TryLock() {
+		return nil, errors.New("asset synchronization or configuration update already running")
+	}
+	defer s.syncMu.Unlock()
 	config, err := s.GetConfig()
-	if errors.Is(err, gorm.ErrRecordNotFound) || !config.Enabled {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return &AssetSyncResult{Configured: false}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	key, err := s.decryptAPIKey(config)
+	if !config.Enabled {
+		return &AssetSyncResult{Configured: false}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	ops, machines, err := s.fetchSources(ctx, config)
 	if err != nil {
 		return nil, s.recordFailure(config, err)
-	}
-	defer func() { key = "" }()
-	ops, err := s.fetch(ctx, config.OpsHostURL, config.DataCenterID, key, config.InsecureSkipVerify)
-	if err != nil {
-		return nil, s.recordFailure(config, fmt.Errorf("ops host API: %w", err))
-	}
-	machines, err := s.fetch(ctx, config.AssetMachineURL, config.DataCenterID, key, config.InsecureSkipVerify)
-	if err != nil {
-		return nil, s.recordFailure(config, fmt.Errorf("asset machine API: %w", err))
 	}
 	now := s.now()
 	if err := s.persistSnapshot(now, ops, machines); err != nil {
@@ -269,7 +306,7 @@ func (s *AssetSource) fetch(ctx context.Context, endpoint, dataCenterID, key str
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	if payload.Code != nil && *payload.Code != http.StatusOK {
-		return nil, fmt.Errorf("LXOP code %d: %s", *payload.Code, payload.Message)
+		return nil, fmt.Errorf("LXOP code %d", *payload.Code)
 	}
 	return payload.Data.List, nil
 }
@@ -287,7 +324,7 @@ func (s *AssetSource) persistSnapshot(now time.Time, ops, machines []LXOPAsset) 
 				record := infrastructureRecord(batch.source, item, now)
 				if err := tx.Clauses(clause.OnConflict{
 					Columns:   []clause.Column{{Name: "asset_key"}},
-					DoUpdates: clause.AssignmentColumns([]string{"data_center_id", "ip_address", "name", "type", "model", "state", "serial_number", "in_use", "present", "entity_kind", "last_seen_at", "last_synced_at", "updated_at"}),
+					DoUpdates: clause.AssignmentColumns([]string{"source_id", "data_center_id", "ip_address", "name", "type", "model", "state", "serial_number", "in_use", "present", "entity_kind", "last_seen_at", "last_synced_at", "updated_at"}),
 				}).Create(&record).Error; err != nil {
 					return err
 				}
@@ -299,9 +336,12 @@ func (s *AssetSource) persistSnapshot(now time.Time, ops, machines []LXOPAsset) 
 
 func infrastructureRecord(source string, item LXOPAsset, now time.Time) api.InfrastructureAsset {
 	identity := strings.Join([]string{source, item.DataCenterID, item.IPAddress, item.SerialNumber, item.Name}, "|")
+	if item.ID != "" {
+		identity = strings.Join([]string{source, item.DataCenterID, item.ID}, "|")
+	}
 	sum := sha256.Sum256([]byte(identity))
 	return api.InfrastructureAsset{
-		AssetKey: fmt.Sprintf("lxop-%x", sum[:12]), Source: source,
+		AssetKey: fmt.Sprintf("lxop-%x", sum[:12]), Source: source, SourceID: item.ID,
 		DataCenterID: strings.TrimSpace(item.DataCenterID), IPAddress: strings.TrimSpace(item.IPAddress),
 		Name: strings.TrimSpace(item.Name), Type: strings.TrimSpace(item.Type), Model: strings.TrimSpace(item.Model),
 		State: strings.TrimSpace(item.State), SerialNumber: strings.TrimSpace(item.SerialNumber),
@@ -312,7 +352,7 @@ func infrastructureRecord(source string, item LXOPAsset, now time.Time) api.Infr
 
 func isInUseState(state string) bool {
 	value := strings.ToLower(strings.TrimSpace(state))
-	return value == "on" || value == "已上架使用中"
+	return value == "on" || value == "已上架使用中" || value == "运行"
 }
 
 func classifyAsset(item LXOPAsset) string {
@@ -351,8 +391,12 @@ func (s *AssetSource) gpuCatalog(ops, machines []LXOPAsset) map[string]string {
 }
 
 func (s *AssetSource) LastGPUCatalog() (map[string]string, error) {
+	config, err := s.GetConfig()
+	if err != nil {
+		return nil, err
+	}
 	var rows []api.InfrastructureAsset
-	if err := s.db.Where("present = ? AND in_use = ? AND entity_kind = ?", true, true, "gpu_node").Find(&rows).Error; err != nil {
+	if err := s.db.Where("present = ? AND in_use = ? AND entity_kind = ? AND data_center_id = ?", true, true, "gpu_node", config.DataCenterID).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	result := make(map[string]string, len(rows))
@@ -383,7 +427,7 @@ func (h *AssetConfigHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		row, err := h.source.GetConfig()
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			writeJSON(w, http.StatusOK, map[string]any{"data": AssetConfigView{LastSyncStatus: "not_configured"}})
+			writeJSON(w, http.StatusOK, map[string]any{"data": AssetConfigView{AuthType: "oauth_client_credentials", LastSyncStatus: "not_configured"}})
 			return
 		}
 		if err != nil {
@@ -408,7 +452,7 @@ func (h *AssetConfigHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		row, err := h.source.SaveConfig(input)
-		input.APIKey = ""
+		input.APIKey, input.ClientSecret, input.ClientID = "", "", ""
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -423,4 +467,36 @@ func (h *AssetConfigHandler) Handle(w http.ResponseWriter, r *http.Request) {
 func (h *AssetConfigHandler) authorized(r *http.Request) bool {
 	provided := r.Header.Get("X-Atlas-Admin-Token")
 	return h.adminToken != "" && len(provided) == len(h.adminToken) && subtle.ConstantTimeCompare([]byte(provided), []byte(h.adminToken)) == 1
+}
+
+// HandleSync only reconciles platform asset metadata. It never invokes the
+// Prometheus/GPU discovery loop, SSH collection or operational notifications.
+func (h *AssetConfigHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.source == nil {
+		writeError(w, http.StatusServiceUnavailable, "asset configuration encryption is unavailable")
+		return
+	}
+	if r.TLS == nil && !h.allowInsecureHTTP {
+		writeError(w, http.StatusUpgradeRequired, "asset sync requires HTTPS or approved HTTP compatibility mode")
+		return
+	}
+	if !h.authorized(r) {
+		writeError(w, http.StatusUnauthorized, "invalid management credential")
+		return
+	}
+	result, err := h.source.Sync(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if !result.Configured {
+		writeError(w, http.StatusConflict, "asset source is disabled or not configured")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"ops_hosts": result.OpsHosts, "machines": result.Machines, "synced_at": result.SyncedAt, "no_device_actions": true}})
 }
