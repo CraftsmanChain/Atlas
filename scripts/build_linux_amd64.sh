@@ -32,8 +32,10 @@ server_ldflags="-X main.Version=$version -X main.Commit=$commit -X main.BuildTim
 go build -ldflags "$server_ldflags" -o "$output_dir/atlas-server" ./cmd/server
 go build -o "$output_dir/atlas-agent" ./cmd/agent
 go build -o "$output_dir/atlas-db-migrate" ./cmd/dbmigrate
+go build -o "$output_dir/hardware-health-replay" ./cmd/hardware-health-replay
 
 echo "构建完成:"
 echo "  - $output_dir/atlas-server"
 echo "  - $output_dir/atlas-agent"
 echo "  - $output_dir/atlas-db-migrate"
+echo "  - $output_dir/hardware-health-replay"

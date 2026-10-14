@@ -200,7 +200,8 @@ if [[ "$1" == run ]]; then
       output="${2%:/out}"
       printf 'new binary' > "$output/atlas-server"
       printf 'migration binary' > "$output/atlas-db-migrate"
-      chmod 755 "$output/atlas-server" "$output/atlas-db-migrate"
+      printf 'replay binary' > "$output/hardware-health-replay"
+      chmod 755 "$output/atlas-server" "$output/atlas-db-migrate" "$output/hardware-health-replay"
     fi
     shift
   done
@@ -220,7 +221,13 @@ fi
 				writeFixture(t, filepath.Join(root, "toolchains/go1.24.10/bin/go"), `#!/usr/bin/env bash
 while [[ $# -gt 0 ]]; do
   if [[ "$1" == -o ]]; then
-    if [[ "$2" == */atlas-server ]]; then printf 'new binary' > "$2"; else printf 'migration binary' > "$2"; fi
+    if [[ "$2" == */atlas-server ]]; then
+      printf 'new binary' > "$2"
+    elif [[ "$2" == */hardware-health-replay ]]; then
+      printf 'replay binary' > "$2"
+    else
+      printf 'migration binary' > "$2"
+    fi
     chmod 755 "$2"
     exit 0
   fi
@@ -265,6 +272,14 @@ exec "$@"
 				}
 				if string(binary) != wantBinary || string(web) != wantWeb {
 					t.Fatalf("binary=%q web=%q output=%s", binary, web, output)
+				}
+				replay, replayErr := os.ReadFile(filepath.Join(root, "hardware-health-replay"))
+				if mismatch {
+					if !os.IsNotExist(replayErr) && string(replay) != "" {
+						t.Fatalf("failed release left replay binary=%q err=%v output=%s", replay, replayErr, output)
+					}
+				} else if replayErr != nil || string(replay) != "replay binary" {
+					t.Fatalf("replay binary=%q err=%v output=%s", replay, replayErr, output)
 				}
 				operations, _ := os.ReadFile(logPath)
 				if !previous && (strings.Contains(string(operations), "docker ") || !strings.Contains(string(operations), "systemd-run")) {
