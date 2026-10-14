@@ -14,6 +14,7 @@ import (
 
 	"atlas/internal/analyzer"
 	"atlas/internal/degradation"
+	diskhealthapi "atlas/internal/diskhealth"
 	"atlas/internal/evidence"
 	"atlas/internal/features"
 	"atlas/internal/freshness"
@@ -107,6 +108,7 @@ func main() {
 	)
 	inventoryHandler := inventory.NewHandler(db)
 	healthHandler := health.NewHandler(db)
+	diskHealthHandler := diskhealthapi.NewHandler(diskhealthapi.NewService(db))
 	evidenceHandler := evidence.NewHandler(evidence.NewService(db))
 	inventoryFreshAfter := 2 * parseDurationOrDefault("target status", cfg.Inventory.TargetSyncInterval, 10*time.Minute)
 	healthFreshAfter := 2 * parseDurationOrDefault("GPU health score", cfg.Health.ScoreInterval, 30*time.Minute)
@@ -266,6 +268,8 @@ func main() {
 	mux.HandleFunc("/api/v1/fault-events", healthHandler.HandleEvents)
 	mux.HandleFunc("/api/v1/fault-events/summary", healthHandler.HandleEventSummary)
 	mux.HandleFunc("/api/v1/fault-events/", evidenceHandler.HandleEventSubresource)
+	mux.HandleFunc("/api/v1/hardware/disks", diskHealthHandler.HandleDisks)
+	mux.HandleFunc("/api/v1/hardware/disks/", diskHealthHandler.HandleDiskSubresource)
 	mux.HandleFunc("/api/v1/degradation/summary", degradationHandler.HandleSummary)
 	mux.HandleFunc("/api/v1/degradation/candidates", degradationHandler.HandleCandidates)
 	mux.HandleFunc("/api/v1/prediction/overview", predictionHandler.HandleOverview)

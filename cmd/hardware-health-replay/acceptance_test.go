@@ -81,6 +81,16 @@ func TestAcceptanceBridgeEndToEnd(t *testing.T) {
 	if report.InputManifestSHA256 == report.Rows[0].InputSHA256 {
 		t.Fatal("audit and device stream hashes conflated")
 	}
+	dbPath := filepath.Join(t.TempDir(), "atlas.db")
+	outDir = filepath.Join(t.TempDir(), "persisted-report")
+	out.Reset()
+	stderr.Reset()
+	if run([]string{"--acceptance-audit", path, "--generation", "fixture-1", "--source-kind", "fixture", "--as-of", audit.FinishedAt.Format(time.RFC3339), "--out-dir", outDir, "--db-dsn", dbPath}, &out, &stderr) != 0 {
+		t.Fatal(stderr.String())
+	}
+	if !strings.Contains(out.String(), "Persisted report: snapshots_created=1") {
+		t.Fatalf("persistence summary missing: %s", out.String())
+	}
 }
 
 func TestAcceptanceBridgeSafety(t *testing.T) {

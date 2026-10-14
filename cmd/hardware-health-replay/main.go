@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"atlas/internal/diskhealth"
+	"atlas/pkg/storage"
 )
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -19,6 +20,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	sourceKind := flags.String("source-kind", "operator_snapshot", "Audit source: operator_snapshot or fixture")
 	asOf := flags.String("as-of", "", "Fixed RFC3339 evaluation time")
 	output := flags.String("out-dir", "", "New output directory (must not exist)")
+	dbDriver := flags.String("db-driver", "sqlite", "Optional database driver for report persistence")
+	dbDSN := flags.String("db-dsn", "", "Optional database DSN; when set, persist disk snapshots and episodes after report generation")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -37,6 +40,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if err == nil {
 		err = diskhealth.WriteReport(report, inputPath, *output)
+	}
+	if err == nil && *dbDSN != "" {
+		var db *storage.DB
+		db, err = storage.InitDBWithDriver(*dbDriver, *dbDSN)
+		if err == nil {
+			var persisted diskhealth.PersistResult
+			persisted, err = diskhealth.NewService(db).PersistReport(report, "")
+			if err == nil {
+				fmt.Fprintf(stdout, "Persisted report: snapshots_created=%d duplicate=%d episodes_upserted=%d current_promoted=%d\n", persisted.SnapshotsCreated, persisted.SnapshotsDuplicate, persisted.EpisodesUpserted, persisted.CurrentPromoted)
+			}
+		}
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "health replay failed: %v\n", err)
