@@ -34,6 +34,20 @@ func TestInvalidArguments(t *testing.T) {
 	}
 }
 
+func TestPersistenceEnvironmentReference(t *testing.T) {
+	t.Setenv("ATLAS_TEST_DSN", filepath.Join(t.TempDir(), "health.db"))
+	var stdout, stderr bytes.Buffer
+	args := []string{"--manifest", "../../internal/diskhealth/testdata/input.json", "--as-of", "2021-11-16T04:10:00Z", "--out-dir", filepath.Join(t.TempDir(), "report"), "--db-dsn-env", "ATLAS_TEST_DSN"}
+	if code := run(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("env persistence: %s", stderr.String())
+	}
+	for _, extra := range [][]string{{"--db-dsn", "conflict"}, {"--db-dsn-env", "ATLAS_MISSING_DSN"}} {
+		if run(append(args, extra...), &stdout, &stderr) != 2 {
+			t.Fatal("invalid DSN source accepted")
+		}
+	}
+}
+
 func TestMemoryFixturesEndToEnd(t *testing.T) {
 	outDir := filepath.Join(t.TempDir(), "report")
 	var stdout, stderr bytes.Buffer
