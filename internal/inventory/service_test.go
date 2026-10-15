@@ -19,6 +19,54 @@ type fakeAssetSource struct {
 	catalog map[string]string
 }
 
+func TestVMHostLabelsMapBMCWithoutPrefixGuessing(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.InventoryConfig{NodePrefix: "10.80.", BMCFromHostLabel: true, ExpectedGPUCount: 1, TargetJobs: []string{"node_exporter", "dcgm_exporter", "ipmi_exporter"}}
+	reader := &fakePrometheus{
+		targets: []prometheus.Target{
+			{Labels: map[string]string{"job": "ipmi_exporter", "host_ip": "10.80.16.1", "instance": "10.80.249.101"}, Health: "up"},
+			{Labels: map[string]string{"job": "dcgm_exporter", "instance": "10.80.174.9"}, Health: "up"},
+			{Labels: map[string]string{"job": "node_exporter", "instance": "10.80.32.3"}, Health: "up"},
+		},
+		current: []prometheus.Sample{
+			{Metric: map[string]string{"host_ip": "10.80.16.1", "Hostname": "H100-node001", "gpu": "0", "UUID": "GPU-1"}},
+			{Metric: map[string]string{"host_ip": "10.80.174.9", "Hostname": "H100-node009", "gpu": "0", "UUID": "GPU-9"}},
+		},
+	}
+	service := NewService(db, reader, cfg)
+	run, err := service.SyncIdentity(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.NodeCount != 2 || run.KnownUUIDCount != 2 {
+		t.Fatalf("unexpected inventory: %+v", run)
+	}
+	var node api.GPUNode
+	if err := db.Where("node_ip = ?", "10.80.16.1").First(&node).Error; err != nil {
+		t.Fatal(err)
+	}
+	if node.BMCIP != "10.80.249.101" || node.State != "degraded" {
+		t.Fatalf("wrong BMC mapping: %+v", node)
+	}
+	var target api.CollectorTarget
+	if err := db.Where("target_key = ?", "ipmi_exporter|10.80.16.1").First(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	if target.TargetIP != node.BMCIP || target.Health != "up" {
+		t.Fatalf("wrong target: %+v", target)
+	}
+	if ip, _ := bmcTarget("10.80.174.9", indexTargets(reader.targets, cfg), cfg); ip != "" {
+		t.Fatalf("invented BMC: %s", ip)
+	}
+	filtered := filterGPUNodeIPs([]string{"10.80.16.1", "10.80.174.9"}, reader.current, map[string]string{"10.80.174.9": "canonical"})
+	if len(filtered) != 1 || filtered[0] != "10.80.174.9" {
+		t.Fatalf("authoritative scope lost: %v", filtered)
+	}
+}
+
 func (f *fakeAssetSource) Sync(context.Context) (*platformconfig.AssetSyncResult, error) {
 	return &platformconfig.AssetSyncResult{Configured: true, GPUCatalog: f.catalog}, nil
 }

@@ -327,7 +327,7 @@ export default function App() {
   const [nodeAccess, setNodeAccess] = useState<NodeAccessOverview | null>(null);
   const [subPage, setSubPage] = useState<Record<PageId, string>>({ overview: '', gpus: 'health', hardware: '', issues: 'ledger', incidents: 'hardware', validations: 'degradation', quality: 'targets', models: 'prediction', about: 'definition' });
 
-  const navigate = (id: PageId) => { setPage(id); setSidebar(false); window.location.hash = `/${id}`; window.scrollTo(0, 0); };
+  const navigate = (id: PageId, view?: string) => { if (view) setSubPage(current => ({ ...current, [id]: view })); setPage(id); setSidebar(false); window.location.hash = `/${id}`; window.scrollTo(0, 0); };
   const load = async () => {
     if (!initialLoadComplete.current) setLoading(true);
     setRefreshing(true);
@@ -561,16 +561,59 @@ function ThemeButton({ tx }: { tx: Tx }) {
   return <div className="theme-menu"><button className="icon-btn" onClick={() => setOpen(!open)} title={tx('外观', 'Appearance')}><Palette size={16} /></button>{open && <div className="popover">{themes.map(x => <button key={x.id} className={theme === x.id ? 'active' : ''} onClick={() => { setTheme(x.id); setOpen(false); }}><x.icon size={15} />{x.label}{theme === x.id && <CheckCircle2 size={14} />}</button>)}</div>}</div>;
 }
 
-function Overview({ tx, faults, faultSummary, hosts, loading, summary, models, inventoryError, navigate }: { tx: Tx; faults: FaultEvent[]; faultSummary: FaultEventSummary | null; hosts: number; loading: boolean; summary: FleetSummary | null; models: { model: string; short: string; count: number }[]; inventoryError: boolean; navigate: (p: PageId) => void }) {
+function Overview({ tx, faults, faultSummary, hosts, loading, summary, models, inventoryError, navigate }: { tx: Tx; faults: FaultEvent[]; faultSummary: FaultEventSummary | null; hosts: number; loading: boolean; summary: FleetSummary | null; models: { model: string; short: string; count: number }[]; inventoryError: boolean; navigate: (p: PageId, view?: string) => void }) {
   const gpuTotal = summary?.gpus.total;
   const nodeTotal = summary?.nodes.total;
   return <div className="grid">
+    <IntegrationStatus tx={tx} summary={summary} inventoryError={inventoryError} navigate={navigate} />
     {[['GPU', loading ? '—' : (gpuTotal == null ? '—' : String(gpuTotal)), inventoryError ? tx('资产 API 不可用', 'Inventory API unavailable') : tx(`${nodeTotal ?? '—'} 节点 · ${summary?.gpus.known_uuid ?? '—'} UUID`, `${nodeTotal ?? '—'} nodes · ${summary?.gpus.known_uuid ?? '—'} UUIDs`), Cpu], [tx('未恢复事件', 'Open events'), loading ? '—' : String(faultSummary?.open ?? 0), `${faultSummary?.open_by_severity.critical || 0} CRITICAL`, Bell], [tx('涉及主机', 'Affected hosts'), loading ? '—' : String(hosts), tx('未恢复事件范围', 'Open event scope'), Server], [tx('已恢复事件', 'Recovered events'), loading ? '—' : String(faultSummary?.by_state.recovered || 0), `${faultSummary?.total || 0} TOTAL EPISODES`, CheckCircle2]].map(([label, value, note, Icon]) => { const I = Icon as typeof Cpu; return <Card className="metric" key={String(label)}><I size={18} /><span>{String(label)}</span><strong>{String(value)}</strong><small>{String(note)}</small></Card>; })}
     <Card className="span-8 fleet-card"><CardHead code="FLEET" title={tx('GPU 型号', 'GPU Models')} action={<Badge value={summary?.latest_sync ? tx('已同步', 'SYNCED') : tx('等待同步', 'WAITING')} kind={summary?.latest_sync ? 'healthy' : 'warning'} />} /><div className="fleet-list">{models.map(x => <div key={x.model}><span><b>{x.short}</b><small>{x.model}</small></span><div><i style={{ width: `${gpuTotal ? x.count / gpuTotal * 100 : 0}%` }} /></div><strong>{x.count}</strong></div>)}{models.length === 0 && <Empty tx={tx} title={tx('无资产数据', 'No inventory data')} />}</div></Card>
     <Card className="span-4"><CardHead code="STATUS" title={tx('交付状态', 'Delivery')} /><div className="delivery">{[[tx('数据治理', 'Data governance'), 'P0', tx('基线完成', 'BASELINE')], [tx('健康评分', 'Health scoring'), 'P1', tx('基线完成', 'BASELINE')], [tx('故障闭环', 'Incident workflow'), 'P2', tx('进行中', 'ACTIVE')], [tx('性能验证', 'Performance validation'), 'P2.5', tx('规划', 'PLANNED')]].map(x => <div key={x[1]}><code>{x[1]}</code><b>{x[0]}</b><Badge value={x[2]} kind={x[1] === 'P2' ? 'healthy' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-8"><CardHead code="LIVE" title={tx('未恢复硬件事件', 'Open Hardware Events')} action={<button className="link" onClick={() => navigate('incidents')}>{tx('全部', 'View all')}<ChevronRight size={13} /></button>} /><FaultEventList tx={tx} items={faults.slice(0, 6)} /></Card>
     <Card className="span-4"><CardHead code="SCOPE" title={tx('检测范围', 'Detection Scope')} /><div className="scope-list">{[[ShieldAlert, tx('硬故障', 'Hard failure'), 'XID · DBE · DROP'], [Gauge, tx('性能衰减', 'Degradation'), 'COMPUTE · MEMORY · LINK'], [Activity, tx('异常', 'Anomaly'), 'PEER · HISTORY · DRIFT'], [BrainCircuit, tx('预测', 'Prediction'), '1H · 6H · 24H']].map(([Icon, title, code]) => { const I = Icon as typeof Cpu; return <div key={String(code)}><I size={16} /><span><b>{String(title)}</b><small>{String(code)}</small></span></div>; })}</div></Card>
   </div>;
+}
+
+function IntegrationStatus({ tx, summary, inventoryError, navigate }: { tx: Tx; summary: FleetSummary | null; inventoryError: boolean; navigate: (p: PageId, view?: string) => void }) {
+  const [assets, setAssets] = useState<{ total: number; syncedAt?: string; status: string } | null>(null);
+  const [disks, setDisks] = useState<{ total: number; observedAt?: string } | null>(null);
+  const [assetError, setAssetError] = useState(false);
+  const [diskError, setDiskError] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    const read = async (url: string) => {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    };
+    const load = async () => {
+      const results = await Promise.allSettled([
+        Promise.all([read('/api/v1/inventory/reconciliation?limit=1'), read('/api/v1/platform-config/assets')]),
+        read('/api/v1/hardware/disks?limit=1&order=observed'),
+      ]);
+      if (controller.signal.aborted) return;
+      const [assetResult, diskResult] = results;
+      setAssetError(assetResult.status === 'rejected');
+      setDiskError(diskResult.status === 'rejected');
+      if (assetResult.status === 'fulfilled') {
+        const [reconciliation, config] = assetResult.value;
+        setAssets({ total: reconciliation.summary.total, syncedAt: config.data.last_sync_at, status: config.data.last_sync_status });
+      }
+      if (diskResult.status === 'fulfilled') setDisks({ total: diskResult.value.meta.total, observedAt: diskResult.value.data[0]?.observed_at });
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 60000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, []);
+  const date = (value?: string) => value ? new Date(value).toLocaleString(tx('zh-CN', 'en-US')) : tx('尚无记录', 'No record');
+  return <section className="integration-status span-12" aria-label={tx('数据接入状态', 'Data integration status')}>
+    <h2>{tx('数据接入状态', 'Data integration status')}</h2>
+    <div className="integration-status-grid">
+      <div><Database size={18} /><h3>{tx('资产', 'Assets')}</h3><strong>{assetError ? tx('读取失败', 'Unavailable') : assets ? tx(`${assets.total} 台在用设备`, `${assets.total} in-use devices`) : tx('加载中', 'Loading')}</strong><small>{tx('最近同步：', 'Last sync: ')}{date(assets?.syncedAt)}</small><small>{assets?.status === 'success' ? tx('双源对账已完成', 'Dual-source reconciliation complete') : assets?.status || tx('等待同步', 'Awaiting sync')}</small><button className="link" onClick={() => navigate('issues', 'assets')}>{tx('资产对账', 'Asset reconciliation')}<ChevronRight size={13} /></button></div>
+      <div><Activity size={18} /><h3>{tx('监控', 'Monitoring')}</h3><strong>{inventoryError ? tx('读取失败', 'Unavailable') : summary ? tx(`${summary.nodes.total} 节点 · ${summary.gpus.known_uuid} 已识别 GPU`, `${summary.nodes.total} nodes · ${summary.gpus.known_uuid} identified GPUs`) : tx('加载中', 'Loading')}</strong><small>{tx('最近同步：', 'Last sync: ')}{date(summary?.latest_sync?.finished_at)}</small><small>{tx('按在用资产范围对齐', 'Matched to in-use asset scope')}</small><button className="link" onClick={() => navigate('quality')}>{tx('监控覆盖', 'Monitoring coverage')}<ChevronRight size={13} /></button></div>
+      <div><Layers3 size={18} /><h3>{tx('物理硬盘', 'Physical disks')}</h3><strong>{diskError ? tx('读取失败', 'Unavailable') : disks ? tx(`${disks.total} 块有快照`, `${disks.total} disks with snapshots`) : tx('加载中', 'Loading')}</strong><small>{tx('最新观测：', 'Latest observation: ')}{date(disks?.observedAt)}</small><small>{tx('持续采集待接入 · 未来故障预测未验证', 'Continuous collection pending · failure prediction unvalidated')}</small><button className="link" onClick={() => navigate('hardware')}>{tx('硬盘证据与历史', 'Disk evidence and history')}<ChevronRight size={13} /></button></div>
+    </div>
+  </section>;
 }
 
 function Issues({ tx, view, summary, rows, meta, page, loading, category, setCategory, status, setStatus, query, setQuery, previousPage, nextPage, select, lang }: { tx: Tx; view: string; summary: IssueSummary | null; rows: PlatformIssue[]; meta: CursorMeta; page: number; loading: boolean; category: string; setCategory: (value: string) => void; status: string; setStatus: (value: string) => void; query: string; setQuery: (value: string) => void; previousPage: () => void; nextPage: () => void; select: (id: number) => void; lang: string }) {
@@ -2547,7 +2590,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
     version: module.id === 'asset' ? 'v1.3.0' : 'v0.3.0',
     status: tx('聚合平台资产源', 'AGGREGATED ASSET SOURCE'),
     desc: tx('通过统一运维聚合平台的 OAuth 客户端凭证和数据中心范围读取完整双源资产快照；仅手动元数据同步，不触发设备采集、GPU 评分或通知。', 'Reads complete dual-source asset snapshots from the shared operations aggregation platform using OAuth client credentials and explicit data-center scope. Manual metadata sync does not trigger device collection, GPU scoring or notifications.'),
-    history: [tx('v0.120.63 · OAuth 服务端鉴权、Token 刷新、有界分页、CA/TLS 配置与独立手动同步；错误或部分响应保留上次快照', 'v0.120.63 · server-side OAuth, token refresh, bounded pagination, CA/TLS configuration and independent manual sync; failed or partial responses preserve the previous snapshot'), ...module.history],
+    history: [tx('v0.120.65 · 接通开发实例资产与 VM 监控；目标接口不支持时查询 up，多网段按 host_ip 对齐 BMC，总览显示资产、监控和硬盘快照时间', 'v0.120.65 · connects development assets and VM monitoring; unsupported targets use up, multi-subnet BMC mapping uses host_ip, and overview shows assets, monitoring and disk observation times'), tx('v0.120.63 · OAuth 服务端鉴权、Token 刷新、有界分页、CA/TLS 配置与独立手动同步；错误或部分响应保留上次快照', 'v0.120.63 · server-side OAuth, token refresh, bounded pagination, CA/TLS configuration and independent manual sync; failed or partial responses preserve the previous snapshot'), ...module.history],
   } : module).map(module => module.id === 'component-health' ? {
     ...module,
     version: 'v0.5.0',
@@ -2782,7 +2825,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.64" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.65" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>

@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -75,5 +76,74 @@ func TestClientTargetsAndQuery(t *testing.T) {
 func TestClientRejectsInvalidURL(t *testing.T) {
 	if _, err := NewClient("file:///tmp/prometheus", time.Second); err == nil {
 		t.Fatal("expected invalid URL error")
+	}
+}
+
+func TestActiveTargetsFallsBackToUpQuery(t *testing.T) {
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/api/v1/targets"):
+			return &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(bytes.NewBufferString(`{"status":"error","error":"unsupported path"}`)), Header: make(http.Header)}, nil
+		case strings.HasSuffix(r.URL.Path, "/api/v1/query"):
+			if r.URL.Query().Get("query") != "up" {
+				t.Fatalf("unexpected fallback query: %s", r.URL.RawQuery)
+			}
+			body := `{"status":"success","data":{"resultType":"vector","result":[{"metric":{"job":"dcgm_exporter","instance":"10.80.16.42","host_ip":"10.80.16.42"},"value":[1791971969,"1"]},{"metric":{"job":"rdma_exporter","instance":"10.80.16.42"},"value":[1791971969,"0"]}]}}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewBufferString(body)), Header: make(http.Header)}, nil
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(bytes.NewBuffer(nil)), Header: make(http.Header)}, nil
+		}
+	})
+
+	client, err := NewClient("http://vmselect.test/select/0/prometheus", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.http.Transport = transport
+	targets, err := client.ActiveTargets(context.Background())
+	if err != nil || len(targets) != 2 {
+		t.Fatalf("targets=%+v err=%v", targets, err)
+	}
+	if targets[0].Health != "up" || !targets[0].LastScrape.IsZero() {
+		t.Fatalf("unexpected up target: %+v", targets[0])
+	}
+	if targets[1].Health != "down" {
+		t.Fatalf("unexpected down target: %+v", targets[1])
+	}
+}
+
+func TestTargetsFallbackRejectsFailuresAndInvalidSamples(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		status      int
+		body        string
+		queryCalled bool
+	}{
+		{"unauthorized", 401, "", false},
+		{"server error", 500, "", false},
+		{"other bad request", 400, "bad request", false},
+		{"partial", 404, `{"status":"success","isPartial":true,"data":{"result":[]}}`, true},
+		{"NaN", 404, `{"status":"success","data":{"result":[{"metric":{"job":"node_exporter","instance":"node"},"value":[1,"NaN"]}]}}`, true},
+		{"malformed", 404, `{"status":"success","data":{"result":[{"metric":{"job":"node_exporter","instance":"node"},"value":[1,"broken"]}]}}`, true},
+		{"missing labels", 404, `{"status":"success","data":{"result":[{"metric":{},"value":[1,"1"]}]}}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, _ := NewClient("http://vm.test", time.Second)
+			called := false
+			client.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				status, body := tc.status, tc.body
+				if strings.HasSuffix(r.URL.Path, "/query") {
+					called = true
+					status = 200
+				}
+				return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+			})
+			if _, err := client.ActiveTargets(context.Background()); err == nil {
+				t.Fatal("expected discovery rejection")
+			}
+			if called != tc.queryCalled {
+				t.Fatalf("query called=%v", called)
+			}
+		})
 	}
 }

@@ -361,7 +361,7 @@ func (s *Service) persistInventory(now time.Time, runID uint, nodeIPs []string, 
 			if assetModel != "" {
 				node.AssetModel = assetModel
 			}
-			node.BMCIP = mapPrefix(nodeIP, s.config.NodePrefix, s.config.BMCPrefix)
+			node.BMCIP, _ = bmcTarget(nodeIP, targets, s.config)
 			node.ExpectedGPUCount = s.config.ExpectedGPUCount
 			node.LastSyncedAt = now
 			node.State = nodeState(nodeIP, targets, s.config)
@@ -550,10 +550,10 @@ func (s *Service) persistTargets(now time.Time, runID uint, nodeIPs []string, ta
 
 			for _, job := range s.config.TargetJobs {
 				targetIP := nodeIP
-				if job == "ipmi_exporter" {
-					targetIP = mapPrefix(nodeIP, s.config.NodePrefix, s.config.BMCPrefix)
-				}
 				t := targets[targetKey(job, targetIP)]
+				if job == "ipmi_exporter" {
+					targetIP, t = bmcTarget(nodeIP, targets, s.config)
+				}
 				health := strings.ToLower(strings.TrimSpace(t.Health))
 				if health == "" {
 					health = "missing"
@@ -626,20 +626,19 @@ func filterGPUNodeIPs(nodeIPs []string, samples []prometheus.Sample, catalog map
 		})
 		return filtered
 	}
-	telemetryNames := make(map[string]string)
+	telemetryNodes := make(map[string]bool)
 	for _, sample := range samples {
 		ip := sample.Metric["host_ip"]
 		if ip == "" {
 			ip = instanceIP(sample.Metric["instance"])
 		}
-		if hostname := strings.TrimSpace(sample.Metric["Hostname"]); hostname != "" {
-			telemetryNames[ip] = hostname
+		if slot, err := strconv.Atoi(sample.Metric["gpu"]); err == nil && slot >= 0 && sample.Metric["UUID"] != "" {
+			telemetryNodes[ip] = true
 		}
 	}
 	filtered := make([]string, 0, len(nodeIPs))
 	for _, nodeIP := range nodeIPs {
-		hostname := telemetryNames[nodeIP]
-		if isGPUHostname(hostname) {
+		if telemetryNodes[nodeIP] {
 			filtered = append(filtered, nodeIP)
 		}
 	}
@@ -650,7 +649,9 @@ func discoverNodes(targets []prometheus.Target, samples []prometheus.Sample, cfg
 	set := make(map[string]struct{})
 	for _, target := range targets {
 		job, ip := target.Labels["job"], instanceIP(target.Labels["instance"])
-		if job == "ipmi_exporter" && strings.HasPrefix(ip, cfg.BMCPrefix) && lastOctet(ip) >= cfg.BMCLastOctetMin {
+		if hostIP := target.Labels["host_ip"]; contains(cfg.TargetJobs, job) && net.ParseIP(hostIP) != nil && strings.HasPrefix(hostIP, cfg.NodePrefix) {
+			set[hostIP] = struct{}{}
+		} else if job == "ipmi_exporter" && !cfg.BMCFromHostLabel && strings.HasPrefix(ip, cfg.BMCPrefix) && lastOctet(ip) >= cfg.BMCLastOctetMin {
 			set[mapPrefix(ip, cfg.BMCPrefix, cfg.NodePrefix)] = struct{}{}
 		} else if contains(cfg.TargetJobs, job) && strings.HasPrefix(ip, cfg.NodePrefix) {
 			set[ip] = struct{}{}
@@ -683,6 +684,9 @@ func indexTargets(targets []prometheus.Target, cfg config.InventoryConfig) map[s
 			continue
 		}
 		result[targetKey(job, ip)] = target
+		if hostIP := target.Labels["host_ip"]; job == "ipmi_exporter" && net.ParseIP(hostIP) != nil {
+			result[targetKey("ipmi_host", hostIP)] = target
+		}
 	}
 	return result
 }
@@ -711,11 +715,22 @@ func nodeState(nodeIP string, targets map[string]prometheus.Target, cfg config.I
 	if strings.EqualFold(targets[targetKey("dcgm_exporter", nodeIP)].Health, "up") || strings.EqualFold(targets[targetKey("gpu_exporter", nodeIP)].Health, "up") {
 		return "degraded"
 	}
-	bmcIP := mapPrefix(nodeIP, cfg.NodePrefix, cfg.BMCPrefix)
-	if strings.EqualFold(targets[targetKey("ipmi_exporter", bmcIP)].Health, "up") {
+	_, bmc := bmcTarget(nodeIP, targets, cfg)
+	if strings.EqualFold(bmc.Health, "up") {
 		return "degraded"
 	}
 	return "offline"
+}
+
+func bmcTarget(nodeIP string, targets map[string]prometheus.Target, cfg config.InventoryConfig) (string, prometheus.Target) {
+	if target, ok := targets[targetKey("ipmi_host", nodeIP)]; ok {
+		return instanceIP(target.Labels["instance"]), target
+	}
+	if cfg.BMCFromHostLabel {
+		return "", prometheus.Target{}
+	}
+	ip := mapPrefix(nodeIP, cfg.NodePrefix, cfg.BMCPrefix)
+	return ip, targets[targetKey("ipmi_exporter", ip)]
 }
 
 func slotKey(ip string, slot int) string { return fmt.Sprintf("%s:%d", ip, slot) }
