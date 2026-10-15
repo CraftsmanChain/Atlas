@@ -22,8 +22,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 	output := flags.String("out-dir", "", "New output directory (must not exist)")
 	dbDriver := flags.String("db-driver", "sqlite", "Optional database driver for report persistence")
 	dbDSN := flags.String("db-dsn", "", "Optional database DSN; when set, persist disk snapshots and episodes after report generation")
+	dbDSNEnv := flags.String("db-dsn-env", "", "Environment variable containing optional DB DSN (keeps secrets out of argv)")
 	if err := flags.Parse(args); err != nil {
 		return 2
+	}
+	if *dbDSNEnv != "" {
+		if *dbDSN != "" || os.Getenv(*dbDSNEnv) == "" {
+			fmt.Fprintln(stderr, "db-dsn-env must be set and cannot be combined with db-dsn")
+			return 2
+		}
+		*dbDSN = os.Getenv(*dbDSNEnv)
 	}
 	cutoff, err := time.Parse(time.RFC3339, *asOf)
 	if err != nil || (*manifest == "") == (*audit == "") || (*audit != "" && *generation == "") || (*manifest != "" && *generation != "") || *output == "" || flags.NArg() != 0 {

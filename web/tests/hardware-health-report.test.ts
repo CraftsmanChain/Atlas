@@ -18,8 +18,16 @@ test('frontend and framework release contracts stay aligned', () => {
   assert(version);
   assert(app.includes(`version: '${version}'`));
   assert(app.includes(`${version} ·`));
-  assert(app.includes('PLATFORM / v0.120.63'));
+  assert(app.includes('PLATFORM / v0.120.67'));
   assert(app.includes("id: 'component-health'"));
+});
+
+test('online age filters do not rewrite frozen report freshness', () => {
+  const report = validateReport(fixture());
+  const row = { ...report.rows[0], observation: { state: 'stale' as const, evaluated_at: '2026-10-15T00:00:00Z', max_age_seconds: 3600, age_seconds: 10000 } };
+  assert.equal(selectRows([row], '', '', 'stale', 'risk').length, 1);
+  assert.equal(row.freshness, 'fresh_at_cutoff');
+  assert.equal(selectRows(report.rows, '', '', 'stale', 'risk').length, 0);
 });
 
 test('exact counters survive parsing without Number conversion', async () => {

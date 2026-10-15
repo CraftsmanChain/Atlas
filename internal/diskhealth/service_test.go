@@ -156,3 +156,48 @@ func TestDiskHealthHandlerIsReadOnlyListAndHistory(t *testing.T) {
 		t.Fatalf("unexpected history payload: %+v", history)
 	}
 }
+
+func TestObservationAgeDoesNotRewriteHistoricalAssessment(t *testing.T) {
+	_, service := newDiskServiceTestDB(t)
+	observed := cutoff.Add(-2 * time.Hour)
+	report := diskServiceReport(t, observed, "0")
+	service.now = func() time.Time { return cutoff }
+	if _, err := service.PersistReport(report, ""); err != nil {
+		t.Fatal(err)
+	}
+	rows, _, err := service.ListCurrentSnapshots(ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows[0].Observation.State != "stale" || rows[0].Freshness != "fresh_at_cutoff" || rows[0].AssessmentStatus != "assessed" {
+		t.Fatalf("historical and live age confused: %+v", rows[0])
+	}
+	summary, err := service.Summary()
+	if err != nil || summary.StaleCount != 1 {
+		t.Fatalf("stale count: %+v %v", summary, err)
+	}
+	detail, err := service.Detail(rows[0].EntityID)
+	if err != nil || detail.Observation.State != "stale" {
+		t.Fatalf("detail age: %+v %v", detail, err)
+	}
+	history, err := service.History(rows[0].EntityID, 1, 0)
+	if err != nil || history.Rows[0].Observation.State != "stale" {
+		t.Fatalf("history age: %+v %v", history, err)
+	}
+	service.now = func() time.Time { return observed.Add(time.Hour) }
+	rows, _, _ = service.ListCurrentSnapshots(ListOptions{})
+	if rows[0].Observation.State != "fresh" {
+		t.Fatal("exact age boundary rejected")
+	}
+	for _, test := range []struct {
+		observed, available time.Time
+		want                string
+	}{
+		{time.Time{}, cutoff, "unknown"}, {cutoff, cutoff.Add(-time.Second), "unknown"},
+		{cutoff, cutoff.Add(time.Second), "future"}, {cutoff.Add(time.Second), cutoff.Add(time.Second), "future"},
+	} {
+		if got := observationStatus(test.observed, test.available, cutoff); got.State != test.want {
+			t.Fatalf("got %+v want %s", got, test.want)
+		}
+	}
+}

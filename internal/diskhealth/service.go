@@ -15,11 +15,12 @@ import (
 )
 
 type Service struct {
-	db *storage.DB
+	db  *storage.DB
+	now func() time.Time
 }
 
 func NewService(db *storage.DB) *Service {
-	return &Service{db: db}
+	return &Service{db: db, now: time.Now}
 }
 
 type PersistResult struct {
@@ -41,9 +42,39 @@ type ListOptions struct {
 }
 
 type SnapshotView struct {
-	SnapshotID uint `json:"snapshot_id"`
-	Current    bool `json:"current"`
+	SnapshotID  uint              `json:"snapshot_id"`
+	Current     bool              `json:"current"`
+	Observation ObservationStatus `json:"observation"`
 	Result
+}
+
+// Live cache age is separate from the immutable report's cutoff assessment.
+// The one-hour budget tolerates one missed 30-minute pilot observation.
+const ObservationMaxAge = time.Hour
+
+type ObservationStatus struct {
+	State         string    `json:"state"`
+	EvaluatedAt   time.Time `json:"evaluated_at"`
+	MaxAgeSeconds int64     `json:"max_age_seconds"`
+	AgeSeconds    *int64    `json:"age_seconds"`
+}
+
+func observationStatus(observed, available, now time.Time) ObservationStatus {
+	status := ObservationStatus{State: "unknown", EvaluatedAt: now.UTC(), MaxAgeSeconds: int64(ObservationMaxAge.Seconds())}
+	if observed.IsZero() || available.IsZero() || available.Before(observed) {
+		return status
+	}
+	if observed.After(now) || available.After(now) {
+		status.State = "future"
+		return status
+	}
+	age := int64(now.Sub(observed).Seconds())
+	status.AgeSeconds = &age
+	status.State = "fresh"
+	if now.Sub(observed) > ObservationMaxAge {
+		status.State = "stale"
+	}
+	return status
 }
 
 type CurrentSummary struct {
@@ -129,7 +160,7 @@ func (s *Service) PersistReport(report Report, reportSHA256 string) (PersistResu
 }
 
 func (s *Service) Summary() (CurrentSummary, error) {
-	summary := CurrentSummary{ByLevel: map[string]int{}, GeneratedAt: time.Now().UTC()}
+	summary := CurrentSummary{ByLevel: map[string]int{}, GeneratedAt: s.now().UTC()}
 	var rows []api.PhysicalDiskSnapshot
 	if err := s.db.Where("current = ? AND entity_type <> ?", true, "memory_controller").Find(&rows).Error; err != nil {
 		return summary, err
@@ -145,7 +176,7 @@ func (s *Service) Summary() (CurrentSummary, error) {
 		if row.Level == "critical" || row.Level == "warning" || row.Level == "attention" {
 			summary.RiskCount++
 		}
-		if row.Freshness == "stale" {
+		if observationStatus(row.ObservedAt, row.AvailableAt, summary.GeneratedAt).State == "stale" {
 			summary.StaleCount++
 		}
 	}
@@ -170,11 +201,13 @@ func (s *Service) ListCurrentSnapshots(options ListOptions) ([]SnapshotView, int
 		end = total
 	}
 	views := make([]SnapshotView, 0, end-offset)
+	now := s.now()
 	for _, snapshot := range snapshots[offset:end] {
 		view, err := snapshotView(snapshot)
 		if err != nil {
 			return nil, 0, err
 		}
+		view.Observation = observationStatus(view.ObservedAt, view.AvailableAt, now)
 		views = append(views, view)
 	}
 	return views, total, nil
@@ -193,6 +226,7 @@ func (s *Service) Detail(entityID string) (DetailResponse, error) {
 	if err != nil {
 		return DetailResponse{}, err
 	}
+	view.Observation = observationStatus(view.ObservedAt, view.AvailableAt, s.now())
 	var episodes []api.DiskHealthEpisode
 	if err := s.db.Where("entity_id = ?", entityID).Order("state ASC, severity DESC, last_observed_at DESC").Find(&episodes).Error; err != nil {
 		return DetailResponse{}, err
@@ -213,11 +247,13 @@ func (s *Service) History(entityID string, limit, offset int) (HistoryResponse, 
 		return HistoryResponse{}, fmt.Errorf("disk entity not found")
 	}
 	allViews := make([]SnapshotView, 0, len(snapshots))
+	now := s.now()
 	for _, snapshot := range snapshots {
 		view, err := snapshotView(snapshot)
 		if err != nil {
 			return HistoryResponse{}, err
 		}
+		view.Observation = observationStatus(view.ObservedAt, view.AvailableAt, now)
 		allViews = append(allViews, view)
 	}
 	windows := trendWindows(allViews)

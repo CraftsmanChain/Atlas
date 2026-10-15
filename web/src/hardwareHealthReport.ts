@@ -11,6 +11,7 @@ export type DiskDetails = {
 };
 export type MemoryDetails = { controller: string; driver: string; kernel_release: string; location_precision: 'controller'; ce_delta: string | null; ue_delta: string | null };
 export type HealthRow = {
+	observation?: { state: 'fresh' | 'stale' | 'unknown' | 'future'; evaluated_at: string; max_age_seconds: number; age_seconds: number | null };
   rule_version?: string; memory?: MemoryDetails; disk?: DiskDetails;
   reference: string; entity_id: string; entity_type: 'disk' | 'nvme_controller' | 'memory_controller'; identity_status: 'bound' | 'provisional' | 'conflict';
   scope: string; node: string; generation: string; boot_id: string; serial: string; model: string; firmware: string; protocol: string; device: string;
@@ -194,7 +195,7 @@ export async function parseHealthBundle(content: string, fileName: string): Prom
 
 export function selectRows(rows: HealthRow[], query: string, level: string, quality: string, order: string): HealthRow[] {
   const needle = query.trim().toLocaleLowerCase();
-  const result = rows.filter(row => (!needle || [row.reference, row.node, row.serial, row.model, row.device, row.scope].some(value => value.toLocaleLowerCase().includes(needle))) && (!level || row.level === level) && (!quality || (quality === 'stale' ? row.freshness === 'stale' : row.assessment_status === quality)));
+  const result = rows.filter(row => (!needle || [row.reference, row.node, row.serial, row.model, row.device, row.scope].some(value => value.toLocaleLowerCase().includes(needle))) && (!level || row.level === level) && (!quality || (quality === 'stale' ? (row.observation?.state ?? row.freshness) === 'stale' : row.assessment_status === quality)));
   const priority = { critical: 4, warning: 3, attention: 2, unknown: 1, clear_for_checked_signals: 0 };
   return result.sort((a, b) => (order === 'observed' ? Date.parse(b.observed_at) - Date.parse(a.observed_at) : priority[b.level] - priority[a.level]) || a.reference.localeCompare(b.reference));
 }
