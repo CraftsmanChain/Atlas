@@ -237,7 +237,10 @@ def collect(args, state):
         save(manifest, {"schema": "hardware-health-input-v1", "inputs": inputs})
         replay = [str(args.replay), "--manifest", str(manifest), "--as-of", utcnow().isoformat(),
                   "--out-dir", str(run_dir / "report"), "--db-driver", "postgres", "--db-dsn-env", "ATLAS_DATABASE_DSN"]
-        result = bounded_process(replay, 60, MAX_BYTES)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ValueError("batch_budget_exhausted_before_persistence")
+        result = bounded_process(replay, min(60, remaining), MAX_BYTES)
         # Logs may contain database diagnostics: private only, never journaled.
         for stream in ("stdout", "stderr"):
             (run_dir / ("replay." + stream)).write_bytes(result[stream])
