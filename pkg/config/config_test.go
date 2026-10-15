@@ -53,7 +53,7 @@ node_access:
 	}
 }
 
-func TestXiaozhenDeploymentConfigIsIndependentAndPassive(t *testing.T) {
+func TestXiaozhenDeploymentConfigUsesReadOnlyVMMonitoring(t *testing.T) {
 	cfg, err := LoadConfig("../../configs/clusters/xiaozhen-zhiyuan.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -67,10 +67,16 @@ func TestXiaozhenDeploymentConfigIsIndependentAndPassive(t *testing.T) {
 	if cfg.Prometheus.BaseURL != "http://10.80.192.236:28481/select/0/prometheus" {
 		t.Fatal("VM base URL must not include /api/v1/query")
 	}
-	if cfg.Inventory.Enabled || cfg.Inventory.AssetFile != "" || cfg.Health.Enabled || cfg.History.Enabled || cfg.NodeAccess.Enabled || len(cfg.Feishu.Bots) != 0 || len(cfg.NodeAccess.CredentialProfiles) != 0 {
-		t.Fatal("new cluster must not inherit active GPU/SSH/asset/notification loops")
+	if !cfg.Inventory.Enabled || cfg.Inventory.AssetFile != "" || !cfg.Health.Enabled || !cfg.History.Enabled {
+		t.Fatal("new cluster must use VM-backed inventory, health, and history without a local asset file")
 	}
-	if len(cfg.History.Sources) != 1 || cfg.History.Sources[0].Enabled || cfg.History.Sources[0].Type != "victoriametrics-cluster" || cfg.History.Sources[0].TenantID != "0" || cfg.History.Sources[0].BaseURL != "http://10.80.192.236:28481" {
+	if cfg.Inventory.ExpectedGPUCount != 8 || cfg.Inventory.NodePrefix != "10.80." || !cfg.Inventory.BMCFromHostLabel || len(cfg.Inventory.TargetJobs) != 4 {
+		t.Fatalf("unexpected VM inventory defaults: %#v", cfg.Inventory)
+	}
+	if cfg.NodeAccess.Enabled || len(cfg.Feishu.Bots) != 0 || len(cfg.NodeAccess.CredentialProfiles) != 0 {
+		t.Fatal("new cluster must not inherit active SSH credentials or notification loops")
+	}
+	if len(cfg.History.Sources) != 1 || !cfg.History.Sources[0].Enabled || cfg.History.Sources[0].Type != "victoriametrics-cluster" || cfg.History.Sources[0].TenantID != "0" || cfg.History.Sources[0].BaseURL != "http://10.80.192.236:28481" {
 		t.Fatal("VM history source must retain its tenant without duplicating the select prefix")
 	}
 	legacy, err := LoadConfig("../../configs/config.yaml")

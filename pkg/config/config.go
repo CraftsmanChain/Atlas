@@ -76,6 +76,7 @@ type InventoryConfig struct {
 	ExpectedGPUCount     int      `yaml:"expected_gpu_count"`
 	NodePrefix           string   `yaml:"node_prefix"`
 	BMCPrefix            string   `yaml:"bmc_prefix"`
+	BMCFromHostLabel     bool     `yaml:"bmc_from_host_label"`
 	BMCLastOctetMin      int      `yaml:"bmc_last_octet_min"`
 	TargetJobs           []string `yaml:"target_jobs"`
 }

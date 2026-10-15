@@ -3,10 +3,12 @@ package prometheus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -101,9 +103,41 @@ func (c *Client) ActiveTargets(ctx context.Context) ([]Target, error) {
 		ActiveTargets []Target `json:"activeTargets"`
 	}
 	if err := c.get(ctx, "/api/v1/targets", nil, &result); err != nil {
-		return nil, err
+		var statusErr *httpStatusError
+		if !errors.As(err, &statusErr) || !(statusErr.code == http.StatusNotFound || statusErr.code == http.StatusNotImplemented ||
+			(statusErr.code == http.StatusBadRequest && strings.Contains(strings.ToLower(statusErr.body), "unsupported path"))) {
+			return nil, err
+		}
+		targets, fallbackErr := c.activeTargetsFromUp(ctx)
+		if fallbackErr != nil {
+			return nil, fmt.Errorf("Prometheus targets unavailable: %v; up fallback failed: %w", err, fallbackErr)
+		}
+		return targets, nil
 	}
 	return result.ActiveTargets, nil
+}
+
+func (c *Client) activeTargetsFromUp(ctx context.Context) ([]Target, error) {
+	samples, err := c.Query(ctx, "up")
+	if err != nil {
+		return nil, err
+	}
+	targets := make([]Target, 0, len(samples))
+	for _, sample := range samples {
+		if sample.Metric["job"] == "" || sample.Metric["instance"] == "" || (sample.Value != 0 && sample.Value != 1) {
+			return nil, fmt.Errorf("invalid up sample for target discovery")
+		}
+		health := "down"
+		if sample.Value > 0 {
+			health = "up"
+		}
+		targets = append(targets, Target{
+			Labels: sample.Metric,
+			Health: health,
+			// Instant-query timestamps are evaluation times, not scrape times.
+		})
+	}
+	return targets, nil
 }
 
 func (c *Client) Query(ctx context.Context, query string) ([]Sample, error) {
@@ -120,14 +154,13 @@ func (c *Client) Query(ctx context.Context, query string) ([]Sample, error) {
 	for _, row := range result.Result {
 		var valueText string
 		var timestampSeconds float64
-		if len(row.Value) > 0 {
-			_ = json.Unmarshal(row.Value[0], &timestampSeconds)
+		if len(row.Value) != 2 || json.Unmarshal(row.Value[0], &timestampSeconds) != nil || json.Unmarshal(row.Value[1], &valueText) != nil {
+			return nil, fmt.Errorf("invalid Prometheus instant-query sample")
 		}
-		if len(row.Value) > 1 {
-			_ = json.Unmarshal(row.Value[1], &valueText)
+		value, err := strconv.ParseFloat(valueText, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Prometheus instant-query value")
 		}
-		var value float64
-		_, _ = fmt.Sscan(valueText, &value)
 		seconds := int64(timestampSeconds)
 		nanos := int64((timestampSeconds - float64(seconds)) * float64(time.Second))
 		samples = append(samples, Sample{Metric: row.Metric, Value: value, Timestamp: time.Unix(seconds, nanos)})
@@ -176,6 +209,15 @@ func (c *Client) QueryRange(ctx context.Context, query string, start, end time.T
 	return series, nil
 }
 
+type httpStatusError struct {
+	code int
+	body string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("Prometheus returned HTTP %d: %s", e.code, e.body)
+}
+
 func (c *Client) get(ctx context.Context, path string, query url.Values, result any) error {
 	endpoint := c.baseURL + path
 	if len(query) > 0 {
@@ -192,19 +234,23 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, result 
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("Prometheus returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return &httpStatusError{code: resp.StatusCode, body: strings.TrimSpace(string(body))}
 	}
 	var envelope struct {
 		Status    string          `json:"status"`
 		Data      json.RawMessage `json:"data"`
 		ErrorType string          `json:"errorType"`
 		Error     string          `json:"error"`
+		IsPartial bool            `json:"isPartial"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 		return fmt.Errorf("decode Prometheus response: %w", err)
 	}
 	if envelope.Status != "success" {
 		return fmt.Errorf("Prometheus %s: %s", envelope.ErrorType, envelope.Error)
+	}
+	if envelope.IsPartial {
+		return fmt.Errorf("Prometheus returned partial data")
 	}
 	if err := json.Unmarshal(envelope.Data, result); err != nil {
 		return fmt.Errorf("decode Prometheus data: %w", err)

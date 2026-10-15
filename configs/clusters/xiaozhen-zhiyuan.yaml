@@ -19,14 +19,32 @@ prometheus:
   base_url: "http://10.80.192.236:28481/select/0/prometheus"
   request_timeout: "15s"
 inventory:
-  # Asset API pending; VM select does not implement Prometheus /api/v1/targets.
-  enabled: false
+  # VM select does not implement /api/v1/targets; Atlas falls back to the
+  # standard up{} query to build this read-only target matrix.
+  enabled: true
   asset_file: ""
+  target_sync_interval: "10m"
+  identity_sync_interval: "10m"
+  full_sync_interval: "24h"
+  history_window: "365d"
+  expected_gpu_count: 8
+  node_prefix: "10.80."
+  bmc_from_host_label: true
+  bmc_last_octet_min: 20
+  target_jobs:
+    - dcgm_exporter
+    - gpu_exporter
+    - node_exporter
+    - ipmi_exporter
 health:
-  enabled: false
+  enabled: true
+  score_interval: "10m"
+  rule_version: "gpu-health-v1.6.0"
   history_retention: "365d"
 history:
-  enabled: false
+  enabled: true
+  audit_interval: "6h"
+  request_timeout: "60s"
   dataset_dir: "/ops/atlas/training"
   max_concurrency: 1
   sources:
@@ -35,7 +53,7 @@ history:
       type: "victoriametrics-cluster"
       base_url: "http://10.80.192.236:28481"
       tenant_id: "0"
-      enabled: false
+      enabled: true
 node_access:
   # 10.80.16.42 is a future physical-disk test node, not a synthetic GPU asset.
   enabled: false
