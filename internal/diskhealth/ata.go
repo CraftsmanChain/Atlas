@@ -29,6 +29,11 @@ func ataProfile(o object) (string, string) {
 	if model == "SAMSUNG MZ7L3480HCHQ-00B7C" && o.text("firmware_version") == "JXTC404Q" {
 		return "SSD", "ata-samsung-pm893-v1"
 	}
+	if model == "SAMSUNG MZ7LH480HAHQ-00005" && o.text("firmware_version") == "HXT7B04Q" {
+		// This exact PM883 field fixture supports the common SSD core only.
+		// It does not inherit the PM893-specific 187 alias or 197 gauge rule.
+		return "SSD", "ata-samsung-pm883-v1"
+	}
 	return "SSD", ""
 }
 

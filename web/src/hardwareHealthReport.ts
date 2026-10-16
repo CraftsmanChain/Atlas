@@ -22,7 +22,7 @@ export type HealthRow = {
   blockers: string[]; hits: HealthHit[]; evidence: HealthEvidence[];
 };
 export type HealthReport = {
-  schema: 'hardware-health-report-v1'; input_manifest_sha256: string; rule_version: 'disk-health-v1.0.0' | 'hardware-health-v1.1.0' | 'hardware-health-v1.2.0' | 'hardware-health-v1.2.1' | 'hardware-health-v1.3.0'; mode: 'offline_replay' | 'online_cache'; as_of: string;
+  schema: 'hardware-health-report-v1'; input_manifest_sha256: string; rule_version: 'disk-health-v1.0.0' | 'hardware-health-v1.1.0' | 'hardware-health-v1.2.0' | 'hardware-health-v1.2.1' | 'hardware-health-v1.3.0' | 'hardware-health-v1.4.0'; mode: 'offline_replay' | 'online_cache'; as_of: string;
   alerts_emitted: false; actions_executed: false;
   summary: { total: number; assessed: number; unknown: number; by_level: Record<string, number> }; rows: HealthRow[];
 };
@@ -56,11 +56,12 @@ export function diskDimensionForRule(rule: string): DiskDimension['id'] {
 function validateDisk(row: Record<string, unknown>, evidence: HealthEvidence[], hits: HealthHit[], reportRule: string): DiskDetails {
   const disk = object(row.disk);
   choice(disk.media_type, ['HDD', 'SSD', 'unknown']);
-  choice(disk.profile, ['', 'nvme-standard-v1', 'ata-wdc-hdd-v1', 'ata-samsung-860-evo-v1', 'ata-samsung-pm893-v1']);
+  choice(disk.profile, ['', 'nvme-standard-v1', 'ata-wdc-hdd-v1', 'ata-samsung-860-evo-v1', 'ata-samsung-pm893-v1', 'ata-samsung-pm883-v1']);
   if ((disk.profile === 'nvme-standard-v1' && (row.protocol !== 'NVMe' || disk.media_type !== 'SSD')) ||
       (disk.profile === 'ata-wdc-hdd-v1' && (row.protocol !== 'ATA' || disk.media_type !== 'HDD' || row.model !== 'WDC WD140EDFZ-11A0VA0' || row.firmware !== '81.00A81')) ||
       (disk.profile === 'ata-samsung-860-evo-v1' && (row.protocol !== 'ATA' || disk.media_type !== 'SSD' || row.model !== 'Samsung SSD 860 EVO 500GB' || row.firmware !== 'RVT02B6Q')) ||
-      (disk.profile === 'ata-samsung-pm893-v1' && (reportRule !== 'hardware-health-v1.3.0' || row.rule_version !== 'disk-health-v1.2.0' || row.protocol !== 'ATA' || disk.media_type !== 'SSD' || row.model !== 'SAMSUNG MZ7L3480HCHQ-00B7C' || row.firmware !== 'JXTC404Q'))) fail('invalid_disk_profile');
+      (disk.profile === 'ata-samsung-pm893-v1' && (!['hardware-health-v1.3.0', 'hardware-health-v1.4.0'].includes(reportRule) || !['disk-health-v1.2.0', 'disk-health-v1.3.0'].includes(String(row.rule_version)) || row.protocol !== 'ATA' || disk.media_type !== 'SSD' || row.model !== 'SAMSUNG MZ7L3480HCHQ-00B7C' || row.firmware !== 'JXTC404Q')) ||
+      (disk.profile === 'ata-samsung-pm883-v1' && (reportRule !== 'hardware-health-v1.4.0' || row.rule_version !== 'disk-health-v1.3.0' || row.protocol !== 'ATA' || disk.media_type !== 'SSD' || row.model !== 'SAMSUNG MZ7LH480HAHQ-00005' || row.firmware !== 'HXT7B04Q'))) fail('invalid_disk_profile');
   const linked = (field: unknown, value: unknown, unit: unknown, id?: unknown) => {
     text(field, 160); decimal(value); text(unit, 40);
     if (!evidence.some(item => item.field === field && item.value === value && item.unit === unit && (id === undefined || item.id === hash(id)))) fail('missing_disk_evidence');
@@ -70,7 +71,7 @@ function validateDisk(row: Record<string, unknown>, evidence: HealthEvidence[], 
     const wear = object(disk.wear);
     linked(wear.field, wear.value, wear.unit, wear.evidence_id);
     if (BigInt(String(wear.value)) > 255n || !((disk.profile === 'nvme-standard-v1' && wear.field === 'nvme.percentage_used' && wear.kind === 'consumed_percent' && wear.unit === 'percent') ||
-      (['ata-samsung-860-evo-v1', 'ata-samsung-pm893-v1'].includes(String(disk.profile)) && wear.field === 'ata.177.normalized' && wear.kind === 'normalized_index' && wear.unit === 'normalized'))) fail('invalid_wear_semantics');
+      (['ata-samsung-860-evo-v1', 'ata-samsung-pm893-v1', 'ata-samsung-pm883-v1'].includes(String(disk.profile)) && wear.field === 'ata.177.normalized' && wear.kind === 'normalized_index' && wear.unit === 'normalized'))) fail('invalid_wear_semantics');
   }
   const severity = { critical: 3, warning: 2, attention: 1, unknown: 0, clear_for_checked_signals: 0 };
   const dimensionIDs = new Set<string>();
@@ -102,13 +103,14 @@ function validateDisk(row: Record<string, unknown>, evidence: HealthEvidence[], 
   if (row.assessment_status === 'assessed' && (!disk.profile || disk.temperature_celsius === null || (disk.media_type === 'SSD' && disk.wear === null))) fail('missing_assessed_disk_details');
   if (disk.profile === 'ata-samsung-pm893-v1' && row.assessment_status === 'assessed' && ![5, 187, 199, 197].every(id =>
     evidence.some(item => item.field === `ata.${id}.raw` && item.unit === (id === 197 ? 'sectors' : 'count')))) fail('missing_pm893_checked_evidence');
+  if (disk.profile === 'ata-samsung-pm883-v1' && row.assessment_status === 'assessed' && ![5, 187, 199].every(id => evidence.some(item => item.field === `ata.${id}.raw` && item.unit === 'count'))) fail('missing_pm883_checked_evidence');
   return { ...disk, dimensions, counter_deltas: deltas } as DiskDetails;
 }
 
 export function validateReport(value: unknown): HealthReport {
   const report = object(value);
-  if (report.schema !== 'hardware-health-report-v1' || !['disk-health-v1.0.0', 'hardware-health-v1.1.0', 'hardware-health-v1.2.0', 'hardware-health-v1.2.1', 'hardware-health-v1.3.0'].includes(String(report.rule_version)) || report.mode !== 'offline_replay' || report.alerts_emitted !== false || report.actions_executed !== false) fail('unsupported_report_contract');
-  const dimensionalReport = ['hardware-health-v1.2.0', 'hardware-health-v1.2.1', 'hardware-health-v1.3.0'].includes(String(report.rule_version));
+  if (report.schema !== 'hardware-health-report-v1' || !['disk-health-v1.0.0', 'hardware-health-v1.1.0', 'hardware-health-v1.2.0', 'hardware-health-v1.2.1', 'hardware-health-v1.3.0', 'hardware-health-v1.4.0'].includes(String(report.rule_version)) || report.mode !== 'offline_replay' || report.alerts_emitted !== false || report.actions_executed !== false) fail('unsupported_report_contract');
+  const dimensionalReport = ['hardware-health-v1.2.0', 'hardware-health-v1.2.1', 'hardware-health-v1.3.0', 'hardware-health-v1.4.0'].includes(String(report.rule_version));
   date(report.as_of);
   hash(report.input_manifest_sha256);
   const refs = new Set<string>();
@@ -123,7 +125,7 @@ export function validateReport(value: unknown): HealthReport {
     choice(row.entity_type, ['disk', 'nvme_controller', 'memory_controller']); choice(row.identity_status, ['bound', 'provisional', 'conflict']);
     const isMemory = row.entity_type === 'memory_controller';
     if (isMemory) {
-      if (!['hardware-health-v1.1.0', 'hardware-health-v1.2.0', 'hardware-health-v1.2.1', 'hardware-health-v1.3.0'].includes(String(report.rule_version)) || row.rule_version !== 'memory-health-v0.1.0' || row.protocol !== 'EDAC' || row.media_delta !== null || row.disk !== undefined) fail('invalid_memory_contract');
+      if (!['hardware-health-v1.1.0', 'hardware-health-v1.2.0', 'hardware-health-v1.2.1', 'hardware-health-v1.3.0', 'hardware-health-v1.4.0'].includes(String(report.rule_version)) || row.rule_version !== 'memory-health-v0.1.0' || row.protocol !== 'EDAC' || row.media_delta !== null || row.disk !== undefined) fail('invalid_memory_contract');
       const memory = object(row.memory);
       for (const field of ['controller', 'driver', 'kernel_release']) text(memory[field], 160);
       if (memory.location_precision !== 'controller') fail('invalid_memory_location');
@@ -165,7 +167,7 @@ export function validateReport(value: unknown): HealthReport {
         !((row.protocol === 'NVMe' && row.entity_type === 'nvme_controller') || (dimensionalReport && row.protocol === 'ATA' && row.entity_type === 'disk')) || row.exit_code === null || (Number(row.exit_code) & 7) !== 0) fail('invalid_assessed_metadata');
     } else if (!blockers.length || (max === 0 && row.level !== 'unknown')) fail('invalid_insufficient_state');
     if (row.freshness === 'fresh_at_cutoff' && (Date.parse(String(row.available_at)) > Date.parse(String(report.as_of)) || Date.parse(String(row.observed_at)) > Date.parse(String(row.available_at)))) fail('cutoff_violation');
-    const diskRule = report.rule_version === 'hardware-health-v1.3.0' ? 'disk-health-v1.2.0' : report.rule_version === 'hardware-health-v1.2.1' ? 'disk-health-v1.1.1' : 'disk-health-v1.1.0';
+    const diskRule = report.rule_version === 'hardware-health-v1.4.0' ? 'disk-health-v1.3.0' : report.rule_version === 'hardware-health-v1.3.0' ? 'disk-health-v1.2.0' : report.rule_version === 'hardware-health-v1.2.1' ? 'disk-health-v1.1.1' : 'disk-health-v1.1.0';
     if (!isMemory && dimensionalReport && row.rule_version !== diskRule) fail('invalid_disk_rule_version');
     if (!isMemory && row.disk !== undefined) row.disk = validateDisk(row, evidence, hits, String(report.rule_version));
     if (!isMemory && dimensionalReport && row.assessment_status === 'assessed' && row.disk === undefined) fail('missing_disk_details');

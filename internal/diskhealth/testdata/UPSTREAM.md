@@ -79,3 +79,6 @@ They exercise baseline, zero and new-UE paths in the Linux sysfs format.
 Only controller-scope, boot-scoped identity is supported; no DIMM serial is inferred.
 Sources: [Linux EDAC sysfs ABI](https://github.com/torvalds/linux/blob/master/Documentation/ABI/testing/sysfs-devices-edac)
 and [node_exporter EDAC collector](https://github.com/prometheus/node_exporter/blob/1271bc244266457fd225dcef9b8a33641b582c64/collector/edac_linux.go).
+
+PM883 fixture provenance and its exact scope are documented in Atlas-Docs:
+`docs/pm883-field-profile-delivery-2026-10-16.md`.

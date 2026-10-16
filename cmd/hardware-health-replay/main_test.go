@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"atlas/internal/diskhealth"
 )
 
 func TestPublicFixturesEndToEnd(t *testing.T) {
@@ -63,7 +65,7 @@ func TestMemoryFixturesEndToEnd(t *testing.T) {
 		RuleVersion string                                 `json:"rule_version"`
 		Summary     struct{ Total, Assessed, Unknown int } `json:"summary"`
 	}
-	if json.Unmarshal(raw, &report) != nil || report.RuleVersion != "hardware-health-v1.3.0" || report.Summary.Total != 3 || report.Summary.Assessed != 2 || report.Summary.Unknown != 1 {
+	if json.Unmarshal(raw, &report) != nil || report.RuleVersion != diskhealth.ReportRuleVersion || report.Summary.Total != 3 || report.Summary.Assessed != 2 || report.Summary.Unknown != 1 {
 		t.Fatalf("invalid memory CLI report: %s", raw)
 	}
 }
