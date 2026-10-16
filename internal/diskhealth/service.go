@@ -87,18 +87,6 @@ type CurrentSummary struct {
 	GeneratedAt time.Time      `json:"generated_at"`
 }
 
-type TrendWindow struct {
-	Window              string         `json:"window"`
-	SampleCount         int            `json:"sample_count"`
-	FirstObservedAt     *time.Time     `json:"first_observed_at,omitempty"`
-	LastObservedAt      *time.Time     `json:"last_observed_at,omitempty"`
-	MaxGapSeconds       *int64         `json:"max_gap_seconds,omitempty"`
-	CoverageStatus      string         `json:"coverage_status"`
-	LatestTrendStatus   string         `json:"latest_trend_status"`
-	LatestCounterDeltas []CounterDelta `json:"latest_counter_deltas"`
-	LatestMediaDelta    *string        `json:"latest_media_delta,omitempty"`
-}
-
 type HistoryResponse struct {
 	EntityID string         `json:"entity_id"`
 	Windows  []TrendWindow  `json:"windows"`
@@ -128,6 +116,7 @@ func (s *Service) PersistReport(report Report, reportSHA256 string) (PersistResu
 		reportSHA256 = Digest(encoded)
 	}
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		affectedEntities := map[string]struct{}{}
 		for _, row := range report.Rows {
 			if row.EntityType == "memory_controller" {
 				continue
@@ -148,7 +137,15 @@ func (s *Service) PersistReport(report Report, reportSHA256 string) (PersistResu
 			if promoted {
 				result.CurrentPromoted++
 			}
-			episodes, err := upsertEpisodes(tx, snapshot, row)
+			affectedEntities[snapshot.EntityID] = struct{}{}
+		}
+		entityIDs := make([]string, 0, len(affectedEntities))
+		for entityID := range affectedEntities {
+			entityIDs = append(entityIDs, entityID)
+		}
+		sort.Strings(entityIDs)
+		for _, entityID := range entityIDs {
+			episodes, err := upsertEpisodes(tx, entityID)
 			if err != nil {
 				return err
 			}
@@ -256,7 +253,7 @@ func (s *Service) History(entityID string, limit, offset int) (HistoryResponse, 
 		view.Observation = observationStatus(view.ObservedAt, view.AvailableAt, now)
 		allViews = append(allViews, view)
 	}
-	windows := trendWindows(allViews)
+	windows := trendWindows(allViews, now)
 	sort.SliceStable(allViews, func(i, j int) bool {
 		if allViews[i].ObservedAt.Equal(allViews[j].ObservedAt) {
 			return allViews[i].SnapshotID > allViews[j].SnapshotID
@@ -326,33 +323,87 @@ func promoteCurrentSnapshot(tx *gorm.DB, snapshot api.PhysicalDiskSnapshot) (boo
 	return true, nil
 }
 
-func upsertEpisodes(tx *gorm.DB, snapshot api.PhysicalDiskSnapshot, row Result) (int, error) {
-	count := 0
-	for _, hit := range row.Hits {
-		keyRaw, _ := json.Marshal([]string{row.EntityID, hit.Rule})
-		key := Digest(keyRaw)
-		var episode api.DiskHealthEpisode
-		err := tx.Where("episode_key = ?", key).First(&episode).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			episode = api.DiskHealthEpisode{
-				EpisodeKey:       key,
-				EntityID:         row.EntityID,
-				EntityType:       row.EntityType,
-				Node:             row.Node,
-				Device:           row.Device,
-				Serial:           row.Serial,
-				Model:            row.Model,
-				RuleCode:         hit.Rule,
-				Severity:         hit.Level,
-				State:            "active",
-				EvidenceID:       hit.EvidenceID,
-				OccurrenceCount:  1,
-				LatestSnapshotID: snapshot.ID,
-				RuleVersion:      row.RuleVersion,
-				FirstObservedAt:  row.ObservedAt,
-				LastObservedAt:   row.ObservedAt,
+func upsertEpisodes(tx *gorm.DB, entityID string) (int, error) {
+	// Rebuild from saved evidence even for a duplicate/no-hit import. Incrementing
+	// the last aggregate cannot distinguish an old replay from a new occurrence,
+	// and cannot repair counts polluted by older versions of that algorithm.
+	var snapshots []api.PhysicalDiskSnapshot
+	if err := tx.Select("id", "snapshot_key", "entity_type", "node", "device", "serial", "model",
+		"rule_version", "input_sha256", "observed_at", "available_at", "hits_json").
+		Where("entity_id = ? AND entity_type <> ?", entityID, "memory_controller").Find(&snapshots).Error; err != nil {
+		return 0, err
+	}
+	// Compare instants in Go: SQLite text ordering can otherwise order distinct
+	// timezone offsets differently from PostgreSQL timestamps.
+	sort.Slice(snapshots, func(i, j int) bool {
+		a, b := snapshots[i], snapshots[j]
+		if !a.ObservedAt.Equal(b.ObservedAt) {
+			return a.ObservedAt.Before(b.ObservedAt)
+		}
+		if !a.AvailableAt.Equal(b.AvailableAt) {
+			return a.AvailableAt.Before(b.AvailableAt)
+		}
+		return a.SnapshotKey < b.SnapshotKey
+	})
+	type aggregation struct {
+		episode      api.DiskHealthEpisode
+		observations map[string]struct{}
+	}
+	aggregates := map[string]*aggregation{}
+	for _, snapshot := range snapshots {
+		var hits []Hit
+		if err := json.Unmarshal([]byte(snapshot.HitsJSON), &hits); err != nil {
+			return 0, fmt.Errorf("decode disk snapshot %d rule hits: %w", snapshot.ID, err)
+		}
+		// Duplicate hits in one snapshot are still one rule occurrence. Choosing a
+		// stable representative also makes its evidence independent of hit order.
+		rules := map[string]Hit{}
+		for _, hit := range hits {
+			previous, exists := rules[hit.Rule]
+			if !exists || riskPriority(hit.Level) > riskPriority(previous.Level) ||
+				(hit.Level == previous.Level && hit.EvidenceID > previous.EvidenceID) {
+				rules[hit.Rule] = hit
 			}
-			if err := tx.Create(&episode).Error; err != nil {
+		}
+		observation, _ := json.Marshal([]string{entityID, snapshot.InputSHA256, snapshot.ObservedAt.UTC().Format(time.RFC3339Nano)})
+		for rule, hit := range rules {
+			aggregate := aggregates[rule]
+			if aggregate == nil {
+				keyRaw, _ := json.Marshal([]string{entityID, rule})
+				aggregate = &aggregation{
+					episode: api.DiskHealthEpisode{
+						EpisodeKey: Digest(keyRaw), EntityID: entityID, RuleCode: rule,
+						State: "active", FirstObservedAt: snapshot.ObservedAt,
+					},
+					observations: map[string]struct{}{},
+				}
+				aggregates[rule] = aggregate
+			}
+			aggregate.observations[string(observation)] = struct{}{}
+			episode := &aggregate.episode
+			episode.OccurrenceCount = len(aggregate.observations)
+			episode.Severity = strongerSeverity(episode.Severity, hit.Level)
+			// The sorted order selects the newest observed/available source with a
+			// content-based final tie, never the last imported database ID.
+			episode.LastObservedAt = snapshot.ObservedAt
+			episode.EntityType, episode.Node, episode.Device = snapshot.EntityType, snapshot.Node, snapshot.Device
+			episode.Serial, episode.Model = snapshot.Serial, snapshot.Model
+			episode.LatestSnapshotID, episode.RuleVersion = snapshot.ID, snapshot.RuleVersion
+			episode.EvidenceID = hit.EvidenceID
+		}
+	}
+	rules := make([]string, 0, len(aggregates))
+	for rule := range aggregates {
+		rules = append(rules, rule)
+	}
+	sort.Strings(rules)
+	count := 0
+	for _, rule := range rules {
+		desired := aggregates[rule].episode
+		var existing api.DiskHealthEpisode
+		err := tx.Where("episode_key = ?", desired.EpisodeKey).First(&existing).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if err := tx.Create(&desired).Error; err != nil {
 				return count, err
 			}
 			count++
@@ -361,32 +412,32 @@ func upsertEpisodes(tx *gorm.DB, snapshot api.PhysicalDiskSnapshot, row Result) 
 		if err != nil {
 			return count, err
 		}
-		if episode.LatestSnapshotID == snapshot.ID {
+		desired.Severity = strongerSeverity(existing.Severity, desired.Severity)
+		if sameEpisodeAggregation(existing, desired) {
 			continue
 		}
+		// Review state/recovery are deliberately not rebuilt from rule hits.
 		updates := map[string]any{
-			"state":              "active",
-			"recovered_at":       nil,
-			"severity":           strongerSeverity(episode.Severity, hit.Level),
-			"evidence_id":        hit.EvidenceID,
-			"latest_snapshot_id": snapshot.ID,
-			"last_observed_at":   row.ObservedAt,
-			"rule_version":       row.RuleVersion,
-			"occurrence_count":   episode.OccurrenceCount + 1,
-			"node":               row.Node,
-			"device":             row.Device,
-			"serial":             row.Serial,
-			"model":              row.Model,
+			"entity_type": desired.EntityType, "node": desired.Node, "device": desired.Device,
+			"serial": desired.Serial, "model": desired.Model, "severity": desired.Severity,
+			"evidence_id": desired.EvidenceID, "latest_snapshot_id": desired.LatestSnapshotID,
+			"rule_version": desired.RuleVersion, "occurrence_count": desired.OccurrenceCount,
+			"first_observed_at": desired.FirstObservedAt, "last_observed_at": desired.LastObservedAt,
 		}
-		if row.ObservedAt.Before(episode.FirstObservedAt) {
-			updates["first_observed_at"] = row.ObservedAt
-		}
-		if err := tx.Model(&api.DiskHealthEpisode{}).Where("id = ?", episode.ID).Updates(updates).Error; err != nil {
+		if err := tx.Model(&api.DiskHealthEpisode{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
 			return count, err
 		}
 		count++
 	}
 	return count, nil
+}
+
+func sameEpisodeAggregation(a, b api.DiskHealthEpisode) bool {
+	return a.EntityType == b.EntityType && a.Node == b.Node && a.Device == b.Device &&
+		a.Serial == b.Serial && a.Model == b.Model && a.Severity == b.Severity &&
+		a.EvidenceID == b.EvidenceID && a.LatestSnapshotID == b.LatestSnapshotID &&
+		a.RuleVersion == b.RuleVersion && a.OccurrenceCount == b.OccurrenceCount &&
+		a.FirstObservedAt.Equal(b.FirstObservedAt) && a.LastObservedAt.Equal(b.LastObservedAt)
 }
 
 func snapshotFromResult(report Report, row Result, reportSHA256, key string) (api.PhysicalDiskSnapshot, error) {
@@ -555,55 +606,6 @@ func sortSnapshots(snapshots []api.PhysicalDiskSnapshot, order string) {
 		}
 		return a.ObservedAt.After(b.ObservedAt)
 	})
-}
-
-func trendWindows(rows []SnapshotView) []TrendWindow {
-	if len(rows) == 0 {
-		return []TrendWindow{}
-	}
-	latest := rows[len(rows)-1]
-	defs := []struct {
-		name     string
-		duration time.Duration
-	}{
-		{"1h", time.Hour},
-		{"24h", 24 * time.Hour},
-		{"7d", 7 * 24 * time.Hour},
-	}
-	result := make([]TrendWindow, 0, len(defs))
-	for _, def := range defs {
-		cutoff := latest.ObservedAt.Add(-def.duration)
-		var selected []SnapshotView
-		for _, row := range rows {
-			if !row.ObservedAt.Before(cutoff) && !row.ObservedAt.After(latest.ObservedAt) {
-				selected = append(selected, row)
-			}
-		}
-		window := TrendWindow{Window: def.name, CoverageStatus: "collecting", LatestTrendStatus: latest.TrendStatus, LatestMediaDelta: latest.MediaDelta}
-		if latest.Disk != nil {
-			window.LatestCounterDeltas = latest.Disk.Deltas
-		} else {
-			window.LatestCounterDeltas = []CounterDelta{}
-		}
-		if len(selected) > 0 {
-			first, last := selected[0].ObservedAt, selected[len(selected)-1].ObservedAt
-			window.FirstObservedAt, window.LastObservedAt = &first, &last
-			window.SampleCount = len(selected)
-			var maxGap int64
-			for i := 1; i < len(selected); i++ {
-				gap := int64(selected[i].ObservedAt.Sub(selected[i-1].ObservedAt).Seconds())
-				if gap > maxGap {
-					maxGap = gap
-				}
-			}
-			if len(selected) > 1 {
-				window.MaxGapSeconds = &maxGap
-				window.CoverageStatus = "available"
-			}
-		}
-		result = append(result, window)
-	}
-	return result
 }
 
 func snapshotKey(row Result) string {

@@ -3,12 +3,76 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { levels, parseHealthBundle, selectRows, validateReport, type HealthReport } from '../src/hardwareHealthReport.ts';
+import { parseDiskHistoryPayload, parseDiskHistoryWindow } from '../src/diskHistoryWindows.ts';
 
 const digest = async (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
 const fixture = () => ({
   schema: 'hardware-health-report-v1', input_manifest_sha256: 'd'.repeat(64), rule_version: 'disk-health-v1.0.0', mode: 'offline_replay', as_of: '2026-10-09T00:00:00Z', alerts_emitted: false, actions_executed: false,
   summary: { total: 1, assessed: 1, unknown: 0, by_level: { clear_for_checked_signals: 1 } },
   rows: [{ reference: 'fixture-a', entity_id: 'a'.repeat(64), entity_type: 'nvme_controller', identity_status: 'bound', scope: 'fixture', node: 'node-a', generation: '1', boot_id: 'boot-a', serial: 'serial-a', model: 'fixture-model', firmware: '1', protocol: 'NVMe', device: '/dev/nvme0', tool_version: 'smartctl 7.4', source: 'fixture', source_kind: 'fixture', input_sha256: 'b'.repeat(64), observed_at: '2026-10-08T23:59:00Z', available_at: '2026-10-08T23:59:01Z', freshness: 'fresh_at_cutoff', support: 'fixture_verified', assessment_status: 'assessed', level: 'clear_for_checked_signals', exit_code: 0, media_delta: null, baseline_sha256: '', trend_status: 'unavailable', blockers: [], hits: [], evidence: [{ id: 'c'.repeat(64), field: 'nvme.media_errors', value: '340282366920938463463374607431768211455', unit: 'count' }] }],
+});
+
+const historyWindow = (status = 'complete') => ({
+  contract_version: 'disk-history-window-v2', window: '1h', sample_count: 3,
+  first_observed_at: '2026-10-15T00:00:00Z', last_observed_at: '2026-10-15T01:00:00Z', max_gap_seconds: 1800,
+  window_start_at: '2026-10-15T00:00:00Z', window_end_at: '2026-10-15T01:00:00Z',
+  coverage_status: status, expected_sample_count: 3, occupied_sample_count: 3, coverage_ratio: 1, covered_seconds: 3600,
+  excluded_future_count: 0, excluded_invalid_time_count: 0, duplicate_observation_count: 0,
+  blockers: [], features: [{ field: 'nvme.media_errors', kind: 'counter_delta', value: '340282366920938463463374607431768211455', unit: 'count', status: 'available', blockers: [], start_at: '2026-10-15T00:00:00Z', end_at: '2026-10-15T01:00:00Z' }],
+});
+
+test('history windows preserve v2 completeness and independent exact feature values', () => {
+  const values = ['9007199254740993', '9007199254740994', '340282366920938463463374607431768211455'];
+  const windows = ['1h', '24h', '7d'].map((window, index) => ({ ...historyWindow(), window, features: [{ ...historyWindow().features[0], value: values[index] }] }));
+  const parsed = parseDiskHistoryPayload({ data: [], meta: { total: 0 }, windows });
+  assert.deepEqual(parsed.windows.map(window => window.features[0].value), values);
+  assert.deepEqual(parsed.windows.map(window => window.coverage_status), ['complete', 'complete', 'complete']);
+  assert.equal(parsed.meta.total, 0);
+});
+
+test('history legacy and unsupported contracts never imply completeness or window growth', () => {
+  for (const contract_version of [undefined, 'disk-history-window-v99']) {
+    const parsed = parseDiskHistoryWindow({ ...historyWindow(), contract_version });
+    assert.equal(parsed.coverage_status, 'unknown');
+    assert.equal(parsed.coverage_ratio, undefined);
+    assert.deepEqual(parsed.features, []);
+    assert.equal(parsed.blockers.length, 1);
+  }
+  const old = parseDiskHistoryWindow({ window: '24h', sample_count: 2, coverage_status: 'available', latest_media_delta: '123' });
+  assert.equal(old.coverage_status, 'unknown');
+  assert.equal(old.sample_count, 2);
+  assert.deepEqual(old.features, []);
+});
+
+test('history partial values, signed gauges, means and missing blocked values stay distinct', () => {
+  const row = historyWindow('partial');
+  const partial = { ...row.features[0], status: 'partial', blockers: ['window_start_anchor_missing'] };
+  const features = [partial, { ...partial, field: 'nvme.available_spare', kind: 'gauge_change', value: '-2' }, { ...partial, field: 'nvme.temperature', kind: 'mean', value: '30.333' }, { ...partial, field: 'nvme.percentage_used', kind: 'gauge_change', value: undefined, status: 'blocked', blockers: ['missing_field'] }];
+  const parsed = parseDiskHistoryWindow({ ...row, features, blockers: ['window_start_anchor_missing'], occupied_sample_count: 2, coverage_ratio: 2 / 3 });
+  assert.equal(parsed.coverage_status, 'partial');
+  assert.deepEqual(parsed.features.map(feature => feature.value), [row.features[0].value, '-2', '30.333', undefined]);
+  assert.equal(parsed.features[0].status, 'partial');
+  assert.deepEqual(parsed.features[3].blockers, ['missing_field']);
+  const collecting = parseDiskHistoryWindow({ ...row, coverage_status: 'collecting', sample_count: 1, features: [], occupied_sample_count: 1, coverage_ratio: 1 / 3, covered_seconds: 0, max_gap_seconds: undefined });
+  assert.equal(collecting.coverage_status, 'collecting');
+  assert.equal(collecting.max_gap_seconds, undefined);
+});
+
+test('history v2 rejects lossy counters, invalid metadata and misleading feature availability', () => {
+  const cases = [
+    { ...historyWindow(), coverage_status: 'available' },
+    { ...historyWindow(), expected_sample_count: undefined },
+    { ...historyWindow(), coverage_ratio: 1.1 },
+    { ...historyWindow(), occupied_sample_count: 4 },
+    { ...historyWindow(), sample_count: Number.MAX_SAFE_INTEGER + 1 },
+    { ...historyWindow(), first_observed_at: 'invalid' },
+    { ...historyWindow(), features: [{ ...historyWindow().features[0], value: 42 }] },
+    { ...historyWindow(), features: [{ ...historyWindow().features[0], value: '340282366920938463463374607431768211456' }] },
+    { ...historyWindow(), features: [{ ...historyWindow().features[0], value: '1e6' }] },
+    { ...historyWindow(), features: [{ ...historyWindow().features[0], status: 'blocked' }] },
+    { ...historyWindow(), features: [{ ...historyWindow().features[0], value: undefined }] },
+  ];
+  cases.forEach(value => assert.throws(() => parseDiskHistoryWindow(value), /invalid_disk_history_contract/));
 });
 
 test('frontend and framework release contracts stay aligned', () => {
@@ -18,7 +82,7 @@ test('frontend and framework release contracts stay aligned', () => {
   assert(version);
   assert(app.includes(`version: '${version}'`));
   assert(app.includes(`${version} ·`));
-  assert(app.includes('PLATFORM / v0.120.67'));
+  assert(app.includes('PLATFORM / v0.120.68'));
   assert(app.includes("id: 'component-health'"));
 });
 

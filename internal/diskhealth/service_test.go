@@ -98,8 +98,8 @@ func TestDiskHealthPersistenceCurrentHistoryAndEpisodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history.Rows) != 2 || history.Total != 2 || history.Windows[1].Window != "24h" || history.Windows[1].SampleCount != 2 || history.Windows[1].CoverageStatus != "available" {
-		t.Fatalf("history window missing two samples: %+v", history)
+	if len(history.Rows) != 2 || history.Total != 2 || history.Windows[1].Window != "24h" || history.Windows[1].SampleCount != 2 || history.Windows[1].CoverageStatus != "partial" {
+		t.Fatalf("two observations must not complete the 24h window: %+v", history)
 	}
 	pagedHistory, err := service.History(rows[0].EntityID, 1, 0)
 	if err != nil {

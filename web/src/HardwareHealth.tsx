@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { AlertTriangle, ArrowDownWideNarrow, CheckCircle2, ChevronLeft, ChevronRight, Download, FileCheck2, HardDrive, Loader2, MemoryStick, Network, RefreshCw, Search, ShieldAlert, Trash2, Upload, X } from 'lucide-react';
 import { MAX_BUNDLE_BYTES, diskDimensionForRule, levels, parseHealthBundle, selectRows, type HealthLevel, type HealthReport, type HealthRow, type ImportedHealthReport } from './hardwareHealthReport';
+import { parseDiskHistoryPayload, type DiskHistoryPayload, type DiskHistoryWindow, type DiskWindowFeature } from './diskHistoryWindows';
 import './HardwareHealth.css';
 
 type Tx = (zh: string, en: string) => string;
@@ -193,7 +194,6 @@ function EvidenceDetail({ row, tx, lang, activeTab, setTab, close }: { row: Heal
   </section>;
 }
 
-type DiskHistoryPayload = { data: HealthRow[]; meta: { total: number }; windows: { window: string; sample_count: number; first_observed_at?: string; last_observed_at?: string; max_gap_seconds?: number }[] };
 function DiskHistory({ entityID, tx, lang }: { entityID: string; tx: Tx; lang: string }) {
   const [payload, setPayload] = useState<DiskHistoryPayload | null>(null);
   const [offset, setOffset] = useState(0);
@@ -202,17 +202,41 @@ function DiskHistory({ entityID, tx, lang }: { entityID: string; tx: Tx; lang: s
   useEffect(() => {
     const controller = new AbortController();
     void fetch(`/api/v1/hardware/disks/${encodeURIComponent(entityID)}/history?limit=20&offset=${offset}`, { signal: controller.signal })
-      .then(async response => { if (!response.ok) throw new Error('history_failed'); return response.json() as Promise<DiskHistoryPayload>; })
+      .then(async response => { if (!response.ok) throw new Error('history_failed'); return parseDiskHistoryPayload(await response.json()); })
       .then(value => { if (!controller.signal.aborted) setPayload(value); })
       .catch(() => { if (!controller.signal.aborted) setError(true); });
     return () => controller.abort();
   }, [entityID, offset]);
-  return <section aria-label={tx('观测历史', 'Observation history')}>
-    <header><h3>{tx('观测历史', 'Observation history')}</h3><div className="hh-actions"><button className="icon-btn" title={tx('上一页历史', 'Previous history page')} aria-label={tx('上一页历史', 'Previous history page')} disabled={offset === 0 || !payload} onClick={() => changePage(Math.max(0, offset - 20))}><ChevronLeft size={16} /></button><span>{payload ? `${offset + 1}-${Math.min(offset + 20, payload.meta.total)} / ${payload.meta.total}` : '—'}</span><button className="icon-btn" title={tx('下一页历史', 'Next history page')} aria-label={tx('下一页历史', 'Next history page')} disabled={!payload || offset + 20 >= payload.meta.total} onClick={() => changePage(offset + 20)}><ChevronRight size={16} /></button></div></header>
+  return <section className="hh-history" aria-label={tx('观测历史', 'Observation history')}>
+    <header><h3>{tx('观测历史', 'Observation history')}</h3><div className="hh-actions"><button className="icon-btn" title={tx('上一页历史', 'Previous history page')} aria-label={tx('上一页历史', 'Previous history page')} disabled={offset === 0 || !payload} onClick={() => changePage(Math.max(0, offset - 20))}><ChevronLeft size={16} /></button><span>{payload ? `${payload.meta.total ? offset + 1 : 0}-${Math.min(offset + 20, payload.meta.total)} / ${payload.meta.total}` : '—'}</span><button className="icon-btn" title={tx('下一页历史', 'Next history page')} aria-label={tx('下一页历史', 'Next history page')} disabled={!payload || offset + 20 >= payload.meta.total} onClick={() => changePage(offset + 20)}><ChevronRight size={16} /></button></div></header>
     {error ? <p role="alert">{tx('历史读取失败', 'History unavailable')}</p> : !payload ? <p role="status">{tx('加载历史', 'Loading history')}</p> : <>
-      <dl className="hh-disk-readings">{payload.windows.map(window => <div key={window.window}><dt>{window.window}</dt><dd>{tx(`${window.sample_count} 次观测`, `${window.sample_count} observations`)}</dd><small>{tx('最大间隔：', 'Largest gap: ')}{window.max_gap_seconds == null ? '—' : `${window.max_gap_seconds}s`}</small><small>{window.first_observed_at ? timestamp(window.first_observed_at, lang) : '—'} / {window.last_observed_at ? timestamp(window.last_observed_at, lang) : '—'}</small></div>)}</dl>
-      <div className="hh-table-scroll"><table className="hh-evidence-table"><thead><tr><th>{tx('观测时间', 'Observed')}</th><th>{tx('观测温度', 'Observed temperature')}</th><th>{tx('趋势状态', 'Trend state')}</th><th>{tx('精确错误增量', 'Exact error deltas')}</th></tr></thead><tbody>{payload.data.map(row => <tr key={row.input_sha256 + row.observed_at}><td>{timestamp(row.observed_at, lang)}</td><td>{row.disk?.temperature_celsius == null ? '—' : `${row.disk.temperature_celsius} °C`}</td><td>{row.trend_status}</td><td>{row.media_delta !== null ? `media +${row.media_delta}` : row.disk?.counter_deltas.length ? row.disk.counter_deltas.map(delta => `${delta.field} +${delta.value}`).join(' · ') : '—'}</td></tr>)}</tbody></table></div>
+      <div className="hh-windows">{payload.windows.map(window => <DiskWindow key={window.window} window={window} tx={tx} lang={lang} />)}</div>
+      {!payload.windows.length && <p className="hh-history-note">{tx('尚无窗口覆盖证据', 'No window coverage evidence')}</p>}
+      <h4>{tx('逐次观测与最新两点增量', 'Observations and latest-pair deltas')}</h4>
+      <p className="hh-history-note">{tx('下表增量只对应该次观测的基线，不代表上方整窗增长。', 'Each delta below uses that observation’s baseline; window growth is shown above.')}</p>
+      {payload.data.length ? <div className="hh-table-scroll"><table className="hh-evidence-table"><thead><tr><th>{tx('观测时间', 'Observed')}</th><th>{tx('观测温度', 'Observed temperature')}</th><th>{tx('两点趋势状态', 'Pair trend state')}</th><th>{tx('精确两点错误增量', 'Exact pair error deltas')}</th></tr></thead><tbody>{payload.data.map(row => <tr key={row.input_sha256 + row.observed_at}><td>{timestamp(row.observed_at, lang)}</td><td>{row.disk?.temperature_celsius == null ? '—' : `${row.disk.temperature_celsius} °C`}</td><td>{row.trend_status}</td><td>{row.media_delta !== null ? `media +${row.media_delta}` : row.disk?.counter_deltas.length ? row.disk.counter_deltas.map(delta => `${delta.field} +${delta.value}`).join(' · ') : '—'}</td></tr>)}</tbody></table></div> : <p className="hh-history-note">{tx('尚无观测记录', 'No observation records')}</p>}
     </>}
+  </section>;
+}
+
+function DiskWindow({ window, tx, lang }: { window: DiskHistoryWindow; tx: Tx; lang: string }) {
+  const duration = { '1h': 3600, '24h': 86400, '7d': 604800 }[window.window];
+  const state = { collecting: tx('采集中', 'Collecting'), partial: tx('覆盖不完整', 'Partial'), complete: tx('窗口完整', 'Complete'), unknown: tx('旧版 / 完整性未验证', 'Legacy / completeness unverified') }[window.coverage_status];
+  const kinds: Record<DiskWindowFeature['kind'], string> = { counter_delta: tx('累计增长', 'Counter growth'), gauge_change: tx('端点变化', 'Endpoint change'), minimum: tx('最小值', 'Minimum'), maximum: tx('最大值', 'Maximum'), mean: tx('均值', 'Mean') };
+  const statuses = { available: tx('可用', 'Available'), partial: tx('部分数据', 'Partial data'), blocked: tx('阻断', 'Blocked') };
+  return <section className="hh-window" aria-label={`${window.window} ${tx('历史窗口', 'history window')}`}>
+    <header><h4>{window.window}</h4><span className={`hh-window-state hh-window-${window.coverage_status}`}>{state}</span></header>
+    <dl className="hh-window-coverage">
+      <div><dt>{tx('去重观测', 'Unique observations')}</dt><dd>{window.sample_count}</dd></div>
+      <div><dt>{tx('30 分钟槽覆盖', '30-minute slot coverage')}</dt><dd>{window.coverage_ratio === undefined ? '—' : `${window.occupied_sample_count} / ${window.expected_sample_count} · ${(window.coverage_ratio * 100).toFixed(1)}%`}</dd></div>
+      <div><dt>{tx('实际端点跨度 / 名义窗口', 'Endpoint span / nominal window')}</dt><dd>{window.covered_seconds === undefined ? '—' : `${window.covered_seconds}s / ${duration}s`}</dd></div>
+      <div><dt>{tx('最大相邻间隔', 'Largest adjacent gap')}</dt><dd>{window.max_gap_seconds === undefined ? '—' : `${window.max_gap_seconds}s`}</dd></div>
+    </dl>
+    <p className="hh-history-note">{tx('名义起止：', 'Nominal range: ')}{window.window_start_at ? timestamp(window.window_start_at, lang) : '—'} / {window.window_end_at ? timestamp(window.window_end_at, lang) : '—'}</p>
+    <p className="hh-history-note">{tx('实际观测：', 'Observed range: ')}{window.first_observed_at ? timestamp(window.first_observed_at, lang) : '—'} / {window.last_observed_at ? timestamp(window.last_observed_at, lang) : '—'}</p>
+    {window.contract_version ? <p className="hh-history-note">{tx('排除未来 / 无效时间 / 重复观测：', 'Excluded future / invalid time / duplicate observations: ')}{window.excluded_future_count} / {window.excluded_invalid_time_count} / {window.duplicate_observation_count}</p> : <p className="hh-history-note">{tx('旧版接口未提供覆盖契约，样本数不能证明窗口完整。', 'This API lacks a verified coverage contract; sample count cannot establish completeness.')}</p>}
+    {window.blockers.length > 0 && <ul className="hh-window-blockers" aria-label={tx('窗口阻断原因', 'Window blockers')}>{window.blockers.map((reason, index) => <li key={`${reason}-${index}`}><code>{reason}</code></li>)}</ul>}
+    {window.features.length ? <div className="hh-table-scroll"><table className="hh-window-features"><thead><tr><th>{tx('窗口特征', 'Window feature')}</th><th>{tx('精确值 / 单位', 'Exact value / unit')}</th><th>{tx('可用性 / 实际跨度', 'Availability / actual range')}</th></tr></thead><tbody>{window.features.map(feature => <tr key={`${feature.field}-${feature.kind}`}><td><code>{feature.field}</code><small>{kinds[feature.kind]}</small></td><td><code>{feature.value ?? '—'}</code><small>{feature.unit}</small></td><td><span className={`hh-window-state hh-feature-${feature.status}`}>{statuses[feature.status]}</span><small>{feature.start_at ? timestamp(feature.start_at, lang) : '—'} / {feature.end_at ? timestamp(feature.end_at, lang) : '—'}</small>{feature.blockers.map((reason, index) => <small className="hh-blocked" key={`${reason}-${index}`}><code>{reason}</code></small>)}</td></tr>)}</tbody></table></div> : <p className="hh-history-note">{tx('尚无可验证的窗口特征', 'No verified window features')}</p>}
   </section>;
 }
 
