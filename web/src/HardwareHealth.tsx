@@ -96,7 +96,7 @@ export default function HardwareHealth({ tx, lang }: { tx: Tx; lang: string }) {
       const report: HealthReport = {
         schema: 'hardware-health-report-v1',
         input_manifest_sha256: '0'.repeat(64),
-        rule_version: 'hardware-health-v1.3.0',
+        rule_version: 'hardware-health-v1.4.0',
         mode: 'online_cache',
         as_of: payload.meta?.generated_at || new Date().toISOString(),
         alerts_emitted: false,

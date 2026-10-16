@@ -82,7 +82,7 @@ test('frontend and framework release contracts stay aligned', () => {
   assert(version);
   assert(app.includes(`version: '${version}'`));
   assert(app.includes(`${version} ·`));
-  assert(app.includes('PLATFORM / v0.120.68'));
+  assert(app.includes('PLATFORM / v0.120.69'));
   assert(app.includes("id: 'component-health'"));
 });
 
@@ -99,6 +99,28 @@ test('exact counters survive parsing without Number conversion', async () => {
   const content = JSON.stringify({ schema: 'hardware-health-bundle-v1', report_json: reportJSON, report_sha256: await digest(reportJSON) });
   const result = await parseHealthBundle(content, 'fixture.json');
   assert.equal(result.report.rows[0].evidence[0].value, '340282366920938463463374607431768211455');
+});
+
+test('PM883 requires the exact versioned profile and preserves partial health coverage', () => {
+  const report = fixture() as unknown as HealthReport;
+  report.rule_version = 'hardware-health-v1.4.0';
+  const row = report.rows[0];
+  Object.assign(row, { rule_version: 'disk-health-v1.3.0', entity_type: 'disk', protocol: 'ATA', model: 'SAMSUNG MZ7LH480HAHQ-00005', firmware: 'HXT7B04Q' });
+  row.evidence = ['ata.5.raw', 'ata.187.raw', 'ata.199.raw', 'ata.177.normalized', 'ata.temperature'].map((field, index) => ({ id: String(index + 1).repeat(64), field, value: index === 3 ? '99' : index === 4 ? '24' : '0', unit: index === 3 ? 'normalized' : index === 4 ? 'celsius' : 'count' }));
+  row.disk = { media_type: 'SSD', profile: 'ata-samsung-pm883-v1', temperature_celsius: '24', wear: { field: 'ata.177.normalized', value: '99', unit: 'normalized', kind: 'normalized_index', evidence_id: row.evidence[3].id }, dimensions: [{ id: 'media', state: 'checked', level: 'clear_for_checked_signals' }, { id: 'endurance', state: 'insufficient_data', level: 'unknown' }, { id: 'temperature', state: 'insufficient_data', level: 'unknown' }, { id: 'path_power', state: 'checked', level: 'clear_for_checked_signals' }], counter_deltas: [] };
+  const parsed = validateReport(report).rows[0];
+  assert.equal(parsed.disk?.wear?.kind, 'normalized_index');
+  assert.equal(parsed.disk?.dimensions[1].state, 'insufficient_data');
+  for (const change of [
+    (r: HealthReport) => { r.rows[0].firmware = 'unverified'; },
+    (r: HealthReport) => { r.rows[0].model = 'SAMSUNG MZ7LH960HAJR-00005'; },
+    (r: HealthReport) => { r.rule_version = 'hardware-health-v1.3.0'; r.rows[0].rule_version = 'disk-health-v1.2.0'; },
+    (r: HealthReport) => { r.rows[0].disk!.wear!.field = 'ata.202.normalized'; },
+    (r: HealthReport) => { r.rows[0].evidence = r.rows[0].evidence.filter(e => e.field !== 'ata.187.raw'); },
+    (r: HealthReport) => { r.rows[0].disk!.dimensions[1] = { id: 'endurance', state: 'checked', level: 'clear_for_checked_signals' }; },
+  ]) {
+    const candidate = structuredClone(report); change(candidate); assert.throws(() => validateReport(candidate));
+  }
 });
 
 test('reject tampering and unsupported safety contract', async () => {
