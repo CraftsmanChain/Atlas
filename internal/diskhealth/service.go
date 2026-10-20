@@ -128,50 +128,59 @@ func (s *Service) PersistReport(report Report, reportSHA256 string) (PersistResu
 		if err := lockInstallationIdentity(tx); err != nil {
 			return err
 		}
-		affectedEntities := map[string]struct{}{}
-		for _, row := range report.Rows {
-			if row.EntityType == "memory_controller" {
-				continue
-			}
-			if err := validateRegisteredSnapshotBinding(tx, row); err != nil {
-				return err
-			}
-			snapshot, created, err := upsertSnapshot(tx, report, row, reportSHA256)
-			if err != nil {
-				return err
-			}
-			if created {
-				result.SnapshotsCreated++
-			} else {
-				result.SnapshotsDuplicate++
-			}
-			promoted, err := promoteCurrentSnapshot(tx, snapshot)
-			if err != nil {
-				return err
-			}
-			if promoted {
-				result.CurrentPromoted++
-			}
-			affectedEntities[snapshot.EntityID] = struct{}{}
-		}
-		entityIDs := make([]string, 0, len(affectedEntities))
-		for entityID := range affectedEntities {
-			entityIDs = append(entityIDs, entityID)
-		}
-		sort.Strings(entityIDs)
-		for _, entityID := range entityIDs {
-			episodes, err := upsertEpisodes(tx, entityID)
-			if err != nil {
-				return err
-			}
-			result.EpisodesUpserted += episodes
-		}
-		return nil
+		_, err := persistReportTransaction(tx, report, reportSHA256, &result)
+		return err
 	})
 	if err != nil {
 		return PersistResult{}, err
 	}
 	return result, nil
+}
+
+// persistReportTransaction is shared by ordinary replay and frozen pilot replay.
+// Callers own the transaction and identity lock; no nested transaction is used.
+func persistReportTransaction(tx *gorm.DB, report Report, reportSHA256 string, result *PersistResult) ([]api.PhysicalDiskSnapshot, error) {
+	affectedEntities := map[string]struct{}{}
+	snapshots := make([]api.PhysicalDiskSnapshot, 0, len(report.Rows))
+	for _, row := range report.Rows {
+		if row.EntityType == "memory_controller" {
+			continue
+		}
+		if err := validateRegisteredSnapshotBinding(tx, row); err != nil {
+			return nil, err
+		}
+		snapshot, created, err := upsertSnapshot(tx, report, row, reportSHA256)
+		if err != nil {
+			return nil, err
+		}
+		snapshots = append(snapshots, snapshot)
+		if created {
+			result.SnapshotsCreated++
+		} else {
+			result.SnapshotsDuplicate++
+		}
+		promoted, err := promoteCurrentSnapshot(tx, snapshot)
+		if err != nil {
+			return nil, err
+		}
+		if promoted {
+			result.CurrentPromoted++
+		}
+		affectedEntities[snapshot.EntityID] = struct{}{}
+	}
+	entityIDs := make([]string, 0, len(affectedEntities))
+	for entityID := range affectedEntities {
+		entityIDs = append(entityIDs, entityID)
+	}
+	sort.Strings(entityIDs)
+	for _, entityID := range entityIDs {
+		episodes, err := upsertEpisodes(tx, entityID)
+		if err != nil {
+			return nil, err
+		}
+		result.EpisodesUpserted += episodes
+	}
+	return snapshots, nil
 }
 
 func (s *Service) Summary() (CurrentSummary, error) { return s.SummaryForView("active") }
