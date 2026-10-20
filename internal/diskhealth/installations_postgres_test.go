@@ -1,6 +1,7 @@
 package diskhealth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -248,4 +249,63 @@ func TestInstallationPostgresTwoConnectionTransactions(t *testing.T) {
 	if registerErr == nil && raceActive != 1 || registerErr != nil && raceActive != 0 {
 		t.Fatal("first-registration race left inconsistent installed state")
 	}
+	t.Run("observation-binding-rechecked-after-writer-lock", func(t *testing.T) {
+		observed := installationTestSnapshot(t, db1, "PG-OBSERVATION-BINDING")
+		manifest := installationTestManifest(observed)
+		manifest.ScopeID = "fixture-observation-binding-roster"
+		manifest.AssetKey = "fixture:observation-binding-host"
+		installationTestApply(t, s1, manifest)
+		binding := observationTestBinding(t, db1, manifest.ScopeID)
+		if err := s2.CheckObservationBinding(context.Background(), binding); err != nil {
+			t.Fatal(err)
+		}
+		entered := make(chan struct{})
+		var once sync.Once
+		callback := "test:observation-before-identity-lock"
+		if err := db2.Callback().Raw().Before("gorm:raw").Register(callback, func(tx *gorm.DB) {
+			if strings.Contains(tx.Statement.SQL.String(), "pg_advisory_xact_lock") {
+				once.Do(func() { close(entered) })
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		defer db2.Callback().Raw().Remove(callback)
+		finished := make(chan error, 1)
+		report := observationTestReport(observed)
+		// Hold the actual registry writer lock while a second physical connection
+		// attempts persistence with the formerly valid, frozen roster version.
+		err := db1.Transaction(func(tx *gorm.DB) error {
+			if err := lockInstallationIdentity(tx); err != nil {
+				return err
+			}
+			go func() {
+				_, err := s2.PersistReportWithBinding(context.Background(), report, Digest([]byte("pg-bound-report")), binding)
+				finished <- err
+			}()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				return errors.New("bound writer did not reach identity lock")
+			}
+			return tx.Model(&api.DiskObservationScope{}).Where("scope_id = ?", binding.ScopeID).Update("roster_version", 2).Error
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-finished:
+			if err == nil || !strings.Contains(err.Error(), "expected roster version changed") {
+				t.Fatalf("stale bound writer was not rejected after lock: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("bound writer did not finish after registry commit")
+		}
+		var count int64
+		if err := db1.Model(&api.PhysicalDiskSnapshot{}).Where("entity_id = ?", observed.EntityID).Count(&count).Error; err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("stale PG bound writer persisted a snapshot: %d", count)
+		}
+	})
 }

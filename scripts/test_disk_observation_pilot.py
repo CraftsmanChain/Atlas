@@ -17,13 +17,18 @@ spec.loader.exec_module(pilot)
 class PilotTests(unittest.TestCase):
     def approval(self):
         now = pilot.utcnow()
-        return dict(node=pilot.NODE, devices=list(pilot.DEVICES), interval_seconds=1800,
-                    issued_at=(now-dt.timedelta(seconds=1)).isoformat(), expires_at=(now+dt.timedelta(hours=23)).isoformat())
+        issued = now-dt.timedelta(seconds=1)
+        return dict(schema=pilot.SCHEMA, run_id="synthetic-s21", node=pilot.NODE,
+                    devices=list(pilot.DEVICES), interval_seconds=1800,
+                    issued_at=issued.isoformat(), expires_at=(issued+dt.timedelta(hours=24)).isoformat(),
+                    **{k:"a"*64 for k in ("binding_sha256", "seed_sha256", "collector_sha256", "replay_sha256",
+                       "known_hosts_sha256", "smartctl_sha256", "drivedb_sha256", "expected_boot_id_sha256")})
 
     def test_approval_limits(self):
         good = self.approval()
         pilot.validate_approval(good, pilot.utcnow())
         for change in [dict(node="10.80.16.43"), dict(devices=["sda"]), dict(interval_seconds=60),
+                       dict(schema="legacy"), dict(binding_sha256=""),
                        dict(expires_at=(pilot.utcnow()+dt.timedelta(days=2)).isoformat()),
                        dict(expires_at=(pilot.utcnow()-dt.timedelta(seconds=1)).isoformat())]:
             with self.assertRaises(ValueError):
@@ -72,29 +77,52 @@ class PilotTests(unittest.TestCase):
         for device in pilot.DEVICES:
             raw = json.dumps(dict(serial_number=device, model_name="model", firmware_version="fw", device=dict(name="/dev/"+device, protocol="ATA" if device.startswith("sd") else "NVMe"), smartctl=dict(exit_status=0))).encode()
             (seed_dir / (device+".json")).write_bytes(raw)
-            inputs.append(dict(file=device+".json", sha256=pilot.digest(raw), node=pilot.NODE, boot_id="a"*36, reference=device))
+            inputs.append(dict(file=device+".json", sha256=pilot.digest(raw), node=pilot.NODE, boot_id="a"*36,
+                               scope="synthetic-scope", generation="synthetic-generation", reference=device))
         seed = seed_dir / "input.json"
         pilot.save(seed, dict(schema="hardware-health-input-v1", inputs=inputs))
         approval = root / "approval.json"
-        pilot.save(approval, self.approval())
         state_dir = root / "state"
         state_dir.mkdir()
-        return SimpleNamespace(seed=seed, approval=approval, state_dir=state_dir, replay=Path("/replay"), known_hosts=Path("/known_hosts"))
+        replay=root/"replay"; replay.write_text("synthetic replay")
+        known=root/"known_hosts"; known.write_text("synthetic trusted host")
+        pilot.save(state_dir/"binding.json", dict(schema="disk-observation-binding-v1",node=pilot.NODE,
+                   scope_id="synthetic-installation",expected_roster_version="1",snapshot_scope="synthetic-scope",
+                   snapshot_generation="synthetic-generation",entity_ids=sorted(pilot.digest(d.encode()) for d in pilot.DEVICES)))
+        approved=self.approval()
+        for key,path in dict(seed=seed,binding=state_dir/"binding.json",collector=Path(pilot.__file__),replay=replay,known_hosts=known).items():
+            approved[key+"_sha256"]=pilot.digest(path.read_bytes())
+        approved["expected_boot_id_sha256"]=pilot.digest(("a"*36).encode())
+        pilot.save(approval,approved)
+        pilot.save_bytes(state_dir/"approval.json",approval.read_bytes())
+        return SimpleNamespace(seed=seed, approval=approval, state_dir=state_dir, replay=replay, known_hosts=known)
 
     def test_complete_batch_and_failed_batch_preserves_previous(self):
-        for failure in (None, "standby", "replacement", "timeout"):
+        for failure in (None, "standby", "replacement", "timeout", "registry", "receipt", "late_persistence"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp:
                 args = self.setup_seed(Path(temp))
                 calls = []
+                clock=[pilot.time.monotonic()]
                 def fake(argv, timeout, limit):
                     calls.append(argv)
-                    if argv[0] == "/replay":
+                    if "--check-installation-binding" in argv:
+                        return dict(status="completed", exit_code=1 if failure=="registry" else 0,stdout=b"{}",stderr=b"")
+                    if argv[0] == str(args.replay):
                         directory = Path(argv[argv.index("--out-dir")+1]); directory.mkdir()
-                        pilot.save(directory/"report.json", {"rows":[{"assessment_status":"assessed", "trend_status":"available"}]*6})
+                        entities=json.loads((args.state_dir/"binding.json").read_text())["entity_ids"]
+                        pilot.save(directory/"report.json", {"rows":[{"entity_id":e,"assessment_status":"assessed", "trend_status":"available"} for e in entities]})
+                        now=pilot.utcnow().isoformat()
+                        pilot.save(Path(argv[argv.index("--persistence-receipt")+1]),dict(verified=failure!="receipt",
+                            binding_sha256=json.loads(args.approval.read_text())["binding_sha256"],scope_id="synthetic-installation",
+                            roster_version="1",completed_at=now,report_sha256=pilot.digest((directory/"report.json").read_bytes()),
+                            entities=[dict(entity_id=e,snapshot_id=str(i+1),observed_at=now,available_at=now) for i,e in enumerate(entities)]))
+                        if failure=="late_persistence":clock[0]+=121
                         return dict(status="completed", exit_code=0, stdout=b"", stderr=b"")
                     line = argv[-1]
                     obj = {}
-                    if "boot_id" in line:
+                    if "sha256sum" in line:
+                        raw=("a"*64+"  "+pilot.SMARTCTL+"\n"+"a"*64+"  "+pilot.DRIVEDB+"\n").encode()
+                    elif "boot_id" in line:
                         raw = b"a"*36
                     elif " -a " not in line:
                         raw = json.dumps(dict(power_mode="STANDBY" if failure == "standby" else "ACTIVE or IDLE", smartctl=dict(exit_status=0))).encode()
@@ -107,20 +135,34 @@ class PilotTests(unittest.TestCase):
                         raw = json.dumps(obj).encode()
                     return dict(status="timeout_remote_termination_unknown" if failure == "timeout" else "completed", exit_code=0, stdout=raw, stderr=b"")
                 state = {}
-                with patch.object(pilot, "bounded_process", side_effect=fake):
+                with patch.object(pilot, "bounded_process", side_effect=fake),patch.object(pilot.time,"monotonic",side_effect=lambda:clock[0]):
                     if failure:
                         with self.assertRaises(ValueError): pilot.collect(args, state)
                         self.assertTrue(state["paused"])
                         self.assertNotIn("manifest", state)
-                        self.assertFalse(any(call[0] == "/replay" for call in calls))
+                        if failure in ("standby","replacement","timeout","registry"):
+                            self.assertFalse(any("--persistence-receipt" in call for call in calls))
+                        audit=json.loads(Path(state["last_run"],"audit.json").read_text())
+                        self.assertEqual(audit["status"],"paused")
+                        self.assertIn("reason_code",audit)
                     else:
                         pilot.collect(args, state)
                         self.assertFalse(state["in_progress"])
                         manifest = json.loads(Path(state["manifest"]).read_text())
                         self.assertEqual(len(manifest["inputs"]), 6)
                         self.assertTrue(all("baseline" in item for item in manifest["inputs"]))
-                        self.assertEqual(len(calls), 10)
+                        self.assertEqual(len(calls), 12)
                         self.assertIn("--db-dsn-env", calls[-1])
+                        with self.assertRaises(ValueError):pilot.collect(args,state,0)
+
+    def test_frozen_scope_changes_are_rejected_before_execution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args=self.setup_seed(Path(temp))
+            (args.state_dir/"binding.json").write_text("{}")
+            with patch.object(pilot,"bounded_process") as execute:
+                with self.assertRaisesRegex(ValueError,"frozen_binding_changed"):
+                    pilot.collect(args,{})
+                execute.assert_not_called()
 
 
 if __name__ == "__main__":
