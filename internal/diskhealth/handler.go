@@ -16,13 +16,58 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
+// This audit view exposes installation segments separately from the latest
+// snapshot view. It never reconciles a roster or queries a device.
+func (h *Handler) HandleInstallationRegistry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if values, ok := r.URL.Query()["scope_id"]; ok && (len(values) != 1 || values[0] == "" || len(values[0]) > 128) {
+		writeError(w, http.StatusBadRequest, "one scope_id required")
+		return
+	}
+	scopeID := r.URL.Query().Get("scope_id")
+	limit, offset := pagination(r, 100, 2000)
+	scopes, installations, total, err := h.service.installationRegistry(scopeID, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// uint64 versions use decimal strings in read contracts, like evidence counters.
+	scopeViews := make([]map[string]any, 0, len(scopes))
+	for _, scope := range scopes {
+		scopeViews = append(scopeViews, map[string]any{"scope_id": scope.ScopeID, "asset_key": scope.AssetKey, "asset_identity_sha256": scope.AssetIdentitySHA256, "snapshot_scope": scope.SnapshotScope, "snapshot_generation": scope.SnapshotGeneration, "observed_at": scope.ObservedAt, "available_at": scope.AvailableAt, "host_generation": scope.HostGeneration, "node": scope.Node, "disposition": scope.Disposition, "roster_version": strconv.FormatUint(scope.RosterVersion, 10), "host_identity_evidence_sha256": scope.HostIdentityEvidenceSHA256, "manifest_sha256": scope.ManifestSHA256, "reconciled_at": scope.ReconciledAt})
+	}
+	segmentViews := make([]map[string]any, 0, len(installations))
+	for _, installation := range installations {
+		item := map[string]any{"installation_id": installation.InstallationID, "scope_id": installation.ScopeID, "entity_id": installation.EntityID, "state": installation.State, "opened_at": installation.OpenedAt, "closed_at": installation.ClosedAt, "open_evidence_sha256": installation.OpenEvidenceSHA256, "close_evidence_sha256": installation.CloseEvidenceSHA256, "close_reason": installation.CloseReason, "open_roster_version": strconv.FormatUint(installation.OpenRosterVersion, 10)}
+		if installation.CloseRosterVersion != nil {
+			item["close_roster_version"] = strconv.FormatUint(*installation.CloseRosterVersion, 10)
+		}
+		segmentViews = append(segmentViews, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"contract_version": InstallationViewContract, "data": segmentViews, "scopes": scopeViews, "meta": map[string]any{"total": total, "limit": limit, "offset": offset}})
+}
+
 func (h *Handler) HandleDisks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	values, hasView := r.URL.Query()["view"]
+	if hasView && (len(values) != 1 || values[0] == "") {
+		writeError(w, http.StatusBadRequest, "one nonempty view required")
+		return
+	}
+	view, err := normalizeInstallationView(r.URL.Query().Get("view"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	limit, offset := pagination(r, 100, 2000)
 	options := ListOptions{
+		View:             view,
 		Limit:            limit,
 		Offset:           offset,
 		Query:            r.URL.Query().Get("q"),
@@ -32,21 +77,16 @@ func (h *Handler) HandleDisks(w http.ResponseWriter, r *http.Request) {
 		MediaType:        r.URL.Query().Get("media_type"),
 		Order:            r.URL.Query().Get("order"),
 	}
-	rows, total, err := h.service.ListCurrentSnapshots(options)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	summary, err := h.service.Summary()
+	result, err := h.service.ListDisks(options)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"data":    rows,
-		"summary": summary,
+		"data":    result.Data,
+		"summary": result.Summary,
 		"meta": map[string]any{
-			"total":        total,
+			"total":        result.Total,
 			"limit":        limit,
 			"offset":       offset,
 			"generated_at": time.Now().UTC().Format(time.RFC3339),

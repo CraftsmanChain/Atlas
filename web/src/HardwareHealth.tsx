@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent }
 import { AlertTriangle, ArrowDownWideNarrow, CheckCircle2, ChevronLeft, ChevronRight, Download, FileCheck2, HardDrive, Loader2, MemoryStick, Network, RefreshCw, Search, ShieldAlert, Trash2, Upload, X } from 'lucide-react';
 import { MAX_BUNDLE_BYTES, diskDimensionForRule, levels, parseHealthBundle, selectRows, type HealthLevel, type HealthReport, type HealthRow, type ImportedHealthReport } from './hardwareHealthReport';
 import { parseDiskHistoryPayload, type DiskHistoryPayload, type DiskHistoryWindow, type DiskWindowFeature } from './diskHistoryWindows';
+import { diskInstallationListURL, diskInstallationView, diskInstallationViews, parseDiskInstallationPayload, type DiskInstallationSummary, type DiskInstallationView } from './diskInstallationViews';
 import './HardwareHealth.css';
 
 type Tx = (zh: string, en: string) => string;
@@ -49,12 +50,16 @@ function timestamp(value: string, lang: string): string {
   if (value.startsWith('0001')) return '—';
   return new Intl.DateTimeFormat(lang, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
 }
-type DiskListPayload = { data?: HealthRow[]; summary?: { total?: number; assessed?: number; unknown?: number; by_level?: Record<string, number> }; meta?: { generated_at?: string } };
+function installationLabel(state: string | undefined, tx: Tx): string {
+  return state === 'active' ? tx('已确认在用', 'Confirmed active') : state === 'historical' ? tx('历史安装', 'Historical installation') : state === 'unregistered' ? tx('待确认安装', 'Unregistered installation') : tx('安装未验证', 'Installation unverified');
+}
 export default function HardwareHealth({ tx, lang }: { tx: Tx; lang: string }) {
   const [imported, setImported] = useState<ImportedHealthReport | null>(null);
   const [original, setOriginal] = useState('');
   const [busy, setBusy] = useState(false);
   const [onlineBusy, setOnlineBusy] = useState(false);
+  const [installationView, setInstallationView] = useState<DiskInstallationView>('active');
+  const [installationSummary, setInstallationSummary] = useState<DiskInstallationSummary | null>(null);
   const [error, setError] = useState('');
   const [tab, setTab] = useState('disk');
   const [query, setQuery] = useState('');
@@ -78,38 +83,31 @@ export default function HardwareHealth({ tx, lang }: { tx: Tx; lang: string }) {
   const detail = rows.find(row => row.reference === selected);
   const riskCount = rows.filter(row => ['critical', 'warning', 'attention'].includes(row.level)).length;
   const staleCount = rows.filter(row => (row.observation?.state ?? row.freshness) === 'stale').length;
+  const online = imported?.report.mode === 'online_cache';
+  const installationVerified = online && installationSummary !== null;
 
-  const loadOnline = useCallback(async (reportError = true, signal?: AbortSignal) => {
+  const loadOnline = useCallback(async (view: DiskInstallationView = 'active', reportError = true, signal?: AbortSignal) => {
     const ticket = ++revision.current; setOnlineBusy(true);
     try {
-      const response = await fetch('/api/v1/hardware/disks?limit=1000', { signal });
+      const response = await fetch(diskInstallationListURL(view), { signal });
       if (!response.ok) throw new Error(`online_cache_${response.status}`);
-      const payload = await response.json() as DiskListPayload;
-      const onlineRows = Array.isArray(payload.data) ? payload.data : [];
+      const payload = parseDiskInstallationPayload(await response.json(), view);
+      const onlineRows = payload.data;
       if (ticket !== revision.current || signal?.aborted) return;
-      if (!onlineRows.length) {
-        if (reportError) setError('online_cache_empty');
-        return;
-      }
-      const byLevel = levels.reduce<Record<string, number>>((acc, value) => ({ ...acc, [value]: 0 }), {});
-      for (const row of onlineRows) byLevel[row.level] = (byLevel[row.level] || 0) + 1;
       const report: HealthReport = {
         schema: 'hardware-health-report-v1',
         input_manifest_sha256: '0'.repeat(64),
         rule_version: 'hardware-health-v1.4.0',
         mode: 'online_cache',
-        as_of: payload.meta?.generated_at || new Date().toISOString(),
+        as_of: payload.meta.generated_at || new Date().toISOString(),
         alerts_emitted: false,
         actions_executed: false,
-        summary: {
-          total: payload.summary?.total ?? onlineRows.length,
-          assessed: payload.summary?.assessed ?? onlineRows.filter(row => row.assessment_status === 'assessed').length,
-          unknown: payload.summary?.unknown ?? onlineRows.filter(row => row.assessment_status !== 'assessed').length,
-          by_level: payload.summary?.by_level ?? byLevel,
-        },
+        summary: payload.summary,
         rows: onlineRows,
       };
-      setImported({ report, sha256: 'online-cache', fileName: tx('在线硬盘缓存', 'Online disk cache') });
+      setImported({ report, sha256: 'online-cache', fileName: 'online-cache' });
+      setInstallationSummary(payload.installation);
+      setTab('disk');
       setOriginal(''); setSelected(current => onlineRows.some(row => row.reference === current) ? current : null); setError('');
     } catch (cause) {
       if (signal?.aborted || ticket !== revision.current) return;
@@ -117,27 +115,34 @@ export default function HardwareHealth({ tx, lang }: { tx: Tx; lang: string }) {
     } finally {
       if (!signal?.aborted && ticket === revision.current) setOnlineBusy(false);
     }
-  }, [tx]);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
-    void loadOnline(false, controller.signal);
+    void loadOnline('active', false, controller.signal);
     return () => { controller.abort(); revision.current += 1; };
   }, [loadOnline]);
 
+  function changeInstallationView(value: string) {
+    const view = diskInstallationView(value);
+    setInstallationView(view); setInstallationSummary(null); setSelected(null); setPage(0); setError('');
+    if (online) { setImported(null); setOriginal(''); }
+    void loadOnline(view);
+  }
+
   async function importFile(file?: File) {
     if (!file) return;
-    const ticket = ++revision.current; setBusy(true); setError('');
+    const ticket = ++revision.current; setBusy(true); setOnlineBusy(false); setError('');
     try {
       if (file.size > MAX_BUNDLE_BYTES) throw new Error('bundle_too_large');
       const content = await file.text();
       const value = await parseHealthBundle(content, file.name);
       if (ticket !== revision.current) return;
-      setImported(value); setOriginal(content); setSelected(null); setTab(value.report.rows.some(row => row.entity_type !== 'memory_controller') ? 'disk' : 'memory'); setQuery(''); setLevel(''); setQuality(''); setMedia(''); setPage(0);
+      setImported(value); setInstallationSummary(null); setOriginal(content); setSelected(null); setTab(value.report.rows.some(row => row.entity_type !== 'memory_controller') ? 'disk' : 'memory'); setQuery(''); setLevel(''); setQuality(''); setMedia(''); setPage(0);
     } catch (cause) { if (ticket === revision.current) setError(cause instanceof Error ? cause.message : 'import_failed'); }
     finally { if (ticket === revision.current) setBusy(false); }
   }
-  function clear() { revision.current += 1; setImported(null); setOriginal(''); setSelected(null); setTab('disk'); setQuery(''); setLevel(''); setQuality(''); setMedia(''); setPage(0); setError(''); setBusy(false); }
+  function clear() { revision.current += 1; setImported(null); setInstallationSummary(null); setOriginal(''); setSelected(null); setTab('disk'); setQuery(''); setLevel(''); setQuality(''); setMedia(''); setPage(0); setError(''); setBusy(false); setOnlineBusy(false); }
   function exportBundle() {
     if (!imported || !original) return;
     const url = URL.createObjectURL(new Blob([original], { type: 'application/json' }));
@@ -147,10 +152,10 @@ export default function HardwareHealth({ tx, lang }: { tx: Tx; lang: string }) {
 
   return <div className="hh-page" aria-busy={busy}>
     <div className="hh-reportbar">
-      <div><FileCheck2 size={18} /><div><b>{imported?.fileName || tx('未载入健康证据', 'No health evidence loaded')}</b><span>{imported?.report.mode === 'online_cache' ? tx('在线缓存 · 只读 API · 不触发采集', 'Online cache · read-only API · no collection') : tx('离线快照 · 非实时 · 生产采集未启用', 'Offline snapshot · not live · collection disabled')}</span></div></div>
+      <div><FileCheck2 size={18} /><div><b>{online ? tx('在线硬盘缓存', 'Online disk cache') : imported?.fileName || tx('未载入健康证据', 'No health evidence loaded')}</b><span>{online ? tx('在线缓存 · 只读 API · 不触发采集', 'Online cache · read-only API · no collection') : tx('离线快照 · 非实时 · 生产采集未启用', 'Offline snapshot · not live · collection disabled')}</span></div></div>
       <div className="hh-actions">
         <input ref={fileInput} type="file" accept=".json,application/json" className="hh-file" aria-label={tx('选择报告文件', 'Select report file')} onChange={event => { void importFile(event.target.files?.[0]); event.target.value = ''; }} />
-        <button className="icon-btn" onClick={() => { void loadOnline(true); }} disabled={onlineBusy || busy} title={tx('刷新在线缓存', 'Refresh online cache')} aria-label={tx('刷新在线缓存', 'Refresh online cache')}>{onlineBusy ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}</button>
+        <button className="icon-btn" onClick={() => { void loadOnline(installationView); }} disabled={onlineBusy || busy} title={tx('刷新在线缓存', 'Refresh online cache')} aria-label={tx('刷新在线缓存', 'Refresh online cache')}>{onlineBusy ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}</button>
         <button className="hh-command" onClick={() => fileInput.current?.click()} disabled={busy}>{busy ? <Loader2 size={15} className="spin" /> : <Upload size={15} />}{tx('导入报告', 'Import report')}</button>
         <button className="icon-btn" onClick={exportBundle} disabled={!imported || !original || busy} title={tx('导出原始报告', 'Export original report')} aria-label={tx('导出原始报告', 'Export original report')}><Download size={16} /></button>
         <button className="icon-btn" onClick={clear} disabled={!imported && !error && !busy} title={tx('清除本地报告', 'Clear local report')} aria-label={tx('清除本地报告', 'Clear local report')}><Trash2 size={16} /></button>
@@ -158,6 +163,11 @@ export default function HardwareHealth({ tx, lang }: { tx: Tx; lang: string }) {
     </div>
     {error && <div className="hh-error" role="alert"><AlertTriangle size={17} /><div><b>{tx('报告未通过校验', 'Report validation failed')}</b><code>{error}</code></div><button className="icon-btn" onClick={() => setError('')} aria-label={tx('关闭错误', 'Dismiss error')}><X size={15} /></button></div>}
     {imported && <div className="hh-provenance"><span>{tx('评估时点', 'Evaluation cutoff')} <b>{timestamp(imported.report.as_of, lang)}</b></span><span>{imported.report.rule_version}</span><span title={imported.sha256}>{imported.sha256 === 'online-cache' ? tx('在线缓存', 'Online cache') : <>SHA256 <code>{imported.sha256.slice(0, 16)}</code></>}</span><span className="hh-integrity"><CheckCircle2 size={13} />{imported.report.mode === 'online_cache' ? tx('只读 API 已加载', 'Read-only API loaded') : tx('文件完整性已校验', 'File integrity checked')}</span></div>}
+    <section className="hh-installations" aria-label={tx('安装名册', 'Installation registry')}>
+      <header><h3>{tx('物理盘安装成员', 'Disk installation membership')}</h3><label>{tx('在线安装视图', 'Online installation view')}<select aria-label={tx('在线安装视图', 'Online installation view')} value={installationView} disabled={busy} onChange={event => changeInstallationView(event.target.value)}>{diskInstallationViews.map(view => <option key={view} value={view}>{({ active: tx('已确认在用', 'Confirmed active'), historical: tx('历史安装', 'Historical installations'), unregistered: tx('待确认安装', 'Unregistered installations'), all: tx('全部证据', 'All evidence') })[view]}</option>)}</select></label></header>
+      <dl>{[[tx('已确认在用', 'Confirmed active'), installationSummary?.active_count], [tx('历史安装', 'Historical installations'), installationSummary?.historical_count], [tx('待确认安装', 'Unregistered installations'), installationSummary?.unregistered_count], [tx('已登记范围', 'Registered scopes'), installationSummary?.registered_scope_count]].map(([label, count]) => <div key={String(label)}><dt>{label}</dt><dd>{count ?? '—'}</dd></div>)}</dl>
+      <p>{onlineBusy ? tx('正在读取所选安装视图', 'Loading selected installation view') : installationVerified ? tx('全局安装计数独立于当前筛选；观测更新不会自动确认安装或退役。', 'Global membership counts are separate from filters; observations do not confirm installation or retirement.') : online ? tx('旧版接口未提供已验证安装名册；以下证据的安装状态未验证。', 'This API has no verified installation registry; membership of the evidence below is unverified.') : imported ? tx('离线报告只提供观测证据，不能确认当前安装成员。', 'Offline reports provide observations and cannot confirm current installation membership.') : tx('等待安装名册证据；未确认的观测不会计为在用盘。', 'Awaiting registry evidence; unregistered observations do not count as active disks.')}</p>
+    </section>
     <section className="hh-metrics" aria-label={tx('报告摘要', 'Report summary')}>
       {[{ label: tx('证据记录', 'Evidence records'), value: imported ? rows.length : '—', icon: HardDrive }, { label: tx('需复核风险', 'Risks to review'), value: imported ? riskCount : '—', icon: ShieldAlert }, { label: tx('数据不足', 'Insufficient data'), value: imported?.report.summary.unknown ?? '—', icon: AlertTriangle }, { label: imported?.report.mode === 'online_cache' ? tx('当前观测过期', 'Observation stale now') : tx('时点已过期', 'Stale at cutoff'), value: imported ? staleCount : '—', icon: Network }].map(metric => <div key={metric.label}><metric.icon size={17} /><span>{metric.label}</span><strong>{metric.value}</strong></div>)}
     </section>
@@ -172,25 +182,25 @@ export default function HardwareHealth({ tx, lang }: { tx: Tx; lang: string }) {
         {tab === 'disk' && <select aria-label={tx('硬盘类型', 'Disk type')} value={media} onChange={event => { setMedia(event.target.value); setPage(0); }}><option value="">{tx('全部硬盘类型', 'All disk types')}</option><option value="ATA:HDD">SATA HDD</option><option value="ATA:SSD">SATA SSD</option><option value="NVMe:SSD">NVMe SSD</option></select>}
         <label className="hh-sort"><ArrowDownWideNarrow size={15} /><select aria-label={tx('排序', 'Sort order')} value={order} onChange={event => { setOrder(event.target.value); setPage(0); }}><option value="risk">{tx('风险优先', 'Risk first')}</option><option value="observed">{tx('观测时间', 'Observed time')}</option></select></label>
       </div>
-      {tab === 'memory' && !memoryRows.length ? <div className="hh-empty"><AlertTriangle size={28} /><h2>{tx('当前报告无内存原始证据', 'No raw memory evidence in this report')}</h2><span>{tx('状态未知 · 未评分', 'Unknown · not scored')}</span></div> : !imported || !typeRows.length ? <div className="hh-empty"><HardDrive size={32} /><h2>{tx('尚无硬盘健康证据', 'No disk health evidence')}</h2><span>{tx('状态未知 · 未评分', 'Unknown · not scored')}</span></div> : <>
-        <div className="hh-table-scroll"><table className="hh-table"><thead><tr><th>{tx('硬件 / 身份', 'Hardware / identity')}</th><th>{tx('节点 / 设备', 'Node / device')}</th><th>{tx('健康检测', 'Health detection')}</th><th>{tx('数据 / 适用性', 'Data / support')}</th><th>{tx('观测时间', 'Observed')}</th><th><span className="hh-sr-only">{tx('证据详情', 'Evidence detail')}</span></th></tr></thead><tbody>{visible.map(row => <tr key={row.reference} className={selected === row.reference ? 'hh-selected' : ''}><td><b>{row.model || row.reference}</b><code>{row.memory ? `${row.memory.controller || '—'} · ${tx('启动内身份', 'Boot-scoped identity')}` : row.serial || tx('身份缺失', 'Identity missing')}</code><small>{row.protocol || '—'} · {row.memory ? tx('控制器级 · DIMM 未定位', 'Controller scope · DIMM not located') : row.entity_type === 'nvme_controller' ? tx('控制器级', 'Controller scope') : tx('盘级', 'Disk scope')}</small></td><td><b>{row.node || '—'}</b><code>{row.device || '—'}</code><small>{row.source_kind === 'fixture' ? tx('测试样例', 'Fixture') : row.source_kind === 'operator_snapshot' ? tx('人工快照', 'Operator snapshot') : tx('来源未知', 'Source unknown')}</small></td><td><State level={row.level} tx={tx} /><small>{row.hits.length ? tx(`${row.hits.length} 条规则命中`, `${row.hits.length} rule hits`) : '—'}</small></td><td><span className={`hh-quality ${row.assessment_status === 'insufficient_data' ? 'hh-blocked' : ''}`}>{row.assessment_status === 'assessed' ? tx('时点可评估', 'Assessable at cutoff') : tx('数据不足', 'Insufficient data')}</span><small>{row.support === 'unsupported' ? tx('协议或型号未匹配', 'Protocol or model unmatched') : tx('有限规则 · 未经实机验证', 'Limited rules · not pilot verified')}</small><small>{row.blockers.length ? tx(`${row.blockers.length} 项阻断`, `${row.blockers.length} blockers`) : '—'}</small></td><td>{timestamp(row.observed_at, lang)}<small>{row.observation ? (row.observation.state === 'fresh' ? tx('当前观测有效 · 1 小时内', 'Observation within 1h') : row.observation.state === 'stale' ? tx('当前观测已过期', 'Observation stale now') : tx('当前时钟/时间待核验', 'Observation time unverified')) : row.freshness === 'stale' ? tx('已过期', 'Stale') : row.freshness === 'fresh_at_cutoff' ? tx('报告时点有效', 'Fresh at report cutoff') : tx('时点未通过', 'Time not validated')}</small></td><td><button className="icon-btn" title={tx('查看证据', 'View evidence')} aria-label={`${tx('查看证据', 'View evidence')} ${row.reference}`} onClick={() => { setSelected(row.reference); setDetailTab('evidence'); }}><ChevronRight size={16} /></button></td></tr>)}</tbody></table>{visible.length === 0 && <div className="hh-empty hh-empty-filter"><Search size={25} /><h2>{tx('没有匹配记录', 'No matching records')}</h2><button className="hh-command" onClick={() => { setQuery(''); setLevel(''); setQuality(''); setMedia(''); setPage(0); }}>{tx('重置筛选', 'Reset filters')}</button></div>}</div>
+      {tab === 'memory' && !memoryRows.length ? <div className="hh-empty"><AlertTriangle size={28} /><h2>{tx('当前报告无内存原始证据', 'No raw memory evidence in this report')}</h2><span>{tx('状态未知 · 未评分', 'Unknown · not scored')}</span></div> : !imported || !typeRows.length ? <div className="hh-empty"><HardDrive size={32} /><h2>{installationVerified ? installationView === 'active' ? tx('尚无已确认安装的硬盘', 'No confirmed active disk installations') : tx('所选安装视图暂无记录', 'No records in this installation view') : tx('尚无硬盘健康证据', 'No disk health evidence')}</h2><span>{tx('状态未知 · 未评分', 'Unknown · not scored')}</span>{installationVerified && installationView === 'active' && installationSummary.unregistered_count > 0 && <button className="hh-command" onClick={() => changeInstallationView('unregistered')}>{tx('查看待确认安装', 'View unregistered installations')} ({installationSummary.unregistered_count})</button>}</div> : <>
+        <div className="hh-table-scroll"><table className="hh-table"><thead><tr><th>{tx('硬件 / 身份', 'Hardware / identity')}</th><th>{tx('节点 / 设备', 'Node / device')}</th><th>{tx('健康检测', 'Health detection')}</th><th>{tx('数据 / 适用性', 'Data / support')}</th><th>{tx('观测时间', 'Observed')}</th><th><span className="hh-sr-only">{tx('证据详情', 'Evidence detail')}</span></th></tr></thead><tbody>{visible.map(row => <tr key={row.reference} className={selected === row.reference ? 'hh-selected' : ''}><td><b>{row.model || row.reference}</b><code>{row.memory ? `${row.memory.controller || '—'} · ${tx('启动内身份', 'Boot-scoped identity')}` : row.serial || tx('身份缺失', 'Identity missing')}</code>{row.entity_type !== 'memory_controller' && <small className="hh-installation-state">{installationLabel(installationVerified ? row.installation?.state : undefined, tx)}</small>}<small>{row.protocol || '—'} · {row.memory ? tx('控制器级 · DIMM 未定位', 'Controller scope · DIMM not located') : row.entity_type === 'nvme_controller' ? tx('控制器级', 'Controller scope') : tx('盘级', 'Disk scope')}</small></td><td><b>{row.node || '—'}</b><code>{row.device || '—'}</code><small>{row.source_kind === 'fixture' ? tx('测试样例', 'Fixture') : row.source_kind === 'operator_snapshot' ? tx('人工快照', 'Operator snapshot') : tx('来源未知', 'Source unknown')}</small></td><td><State level={row.level} tx={tx} /><small>{row.hits.length ? tx(`${row.hits.length} 条规则命中`, `${row.hits.length} rule hits`) : '—'}</small></td><td><span className={`hh-quality ${row.assessment_status === 'insufficient_data' ? 'hh-blocked' : ''}`}>{row.assessment_status === 'assessed' ? tx('时点可评估', 'Assessable at cutoff') : tx('数据不足', 'Insufficient data')}</span><small>{row.support === 'unsupported' ? tx('协议或型号未匹配', 'Protocol or model unmatched') : tx('有限规则 · 未经实机验证', 'Limited rules · not pilot verified')}</small><small>{row.blockers.length ? tx(`${row.blockers.length} 项阻断`, `${row.blockers.length} blockers`) : '—'}</small></td><td>{timestamp(row.observed_at, lang)}<small>{row.observation ? (row.observation.state === 'fresh' ? tx('当前观测有效 · 1 小时内', 'Observation within 1h') : row.observation.state === 'stale' ? tx('当前观测已过期', 'Observation stale now') : tx('当前时钟/时间待核验', 'Observation time unverified')) : row.freshness === 'stale' ? tx('已过期', 'Stale') : row.freshness === 'fresh_at_cutoff' ? tx('报告时点有效', 'Fresh at report cutoff') : tx('时点未通过', 'Time not validated')}</small></td><td><button className="icon-btn" title={tx('查看证据', 'View evidence')} aria-label={`${tx('查看证据', 'View evidence')} ${row.reference}`} onClick={() => { setSelected(row.reference); setDetailTab('evidence'); }}><ChevronRight size={16} /></button></td></tr>)}</tbody></table>{visible.length === 0 && <div className="hh-empty hh-empty-filter"><Search size={25} /><h2>{tx('没有匹配记录', 'No matching records')}</h2><button className="hh-command" onClick={() => { setQuery(''); setLevel(''); setQuality(''); setMedia(''); setPage(0); }}>{tx('重置筛选', 'Reset filters')}</button></div>}</div>
         <div className="hh-pagination"><span>{filtered.length ? actualPage * size + 1 : 0}–{Math.min((actualPage + 1) * size, filtered.length)} / {filtered.length}</span><div><select aria-label={tx('每页条数', 'Page size')} value={size} onChange={event => { setSize(Number(event.target.value)); setPage(0); }}>{[25, 50, 100].map(value => <option key={value} value={value}>{value} / {tx('页', 'page')}</option>)}</select><button className="icon-btn" disabled={actualPage === 0} onClick={() => setPage(actualPage - 1)} title={tx('上一页', 'Previous page')} aria-label={tx('上一页', 'Previous page')}><ChevronLeft size={15} /></button><button className="icon-btn" disabled={(actualPage + 1) * size >= filtered.length} onClick={() => setPage(actualPage + 1)} title={tx('下一页', 'Next page')} aria-label={tx('下一页', 'Next page')}><ChevronRight size={15} /></button></div></div>
       </>}
     </section>
-    {detail && <EvidenceDetail row={detail} tx={tx} lang={lang} activeTab={detailTab} setTab={setDetailTab} close={() => setSelected(null)} />}
+    {detail && <EvidenceDetail row={detail} installationVerified={installationVerified} tx={tx} lang={lang} activeTab={detailTab} setTab={setDetailTab} close={() => setSelected(null)} />}
   </div>;
 }
 
-function EvidenceDetail({ row, tx, lang, activeTab, setTab, close }: { row: HealthRow; tx: Tx; lang: string; activeTab: string; setTab: (value: string) => void; close: () => void }) {
+function EvidenceDetail({ row, installationVerified, tx, lang, activeTab, setTab, close }: { row: HealthRow; installationVerified: boolean; tx: Tx; lang: string; activeTab: string; setTab: (value: string) => void; close: () => void }) {
   const hitByEvidence = (id: string) => row.hits.filter(hit => hit.evidence_id === id);
   return <section className="hh-detail" aria-label={tx('证据详情', 'Evidence detail')}>
-    <header><div><h2>{row.model || row.reference}</h2><code>{row.reference}</code></div><State tx={tx} level={row.level} /><button className="icon-btn" onClick={close} aria-label={tx('关闭证据', 'Close evidence')} title={tx('关闭证据', 'Close evidence')}><X size={16} /></button></header>
+    <header><div><h2>{row.model || row.reference}</h2><code>{row.reference}</code>{row.entity_type !== 'memory_controller' && <small className="hh-installation-state">{installationLabel(installationVerified ? row.installation?.state : undefined, tx)}</small>}</div><State tx={tx} level={row.level} /><button className="icon-btn" onClick={close} aria-label={tx('关闭证据', 'Close evidence')} title={tx('关闭证据', 'Close evidence')}><X size={16} /></button></header>
     {row.disk && <DiskHealthOverview row={row} tx={tx} />}
     {row.observation && <DiskHistory key={row.entity_id + row.input_sha256} entityID={row.entity_id} tx={tx} lang={lang} />}
     <div className="hh-detail-tabs" role="tablist" aria-label={tx('证据分区', 'Evidence sections')}>{[['evidence', tx('规则与字段', 'Rules & fields')], ['blockers', tx('数据缺口', 'Data gaps')], ['source', tx('来源与身份', 'Source & identity')]].map(([id, label]) => <button key={id} role="tab" tabIndex={activeTab === id ? 0 : -1} onKeyDown={navigateTabs} aria-selected={activeTab === id} onClick={() => setTab(id)}>{label}{id === 'blockers' && <span>{row.blockers.length}</span>}</button>)}</div>
     {activeTab === 'evidence' && <div className="hh-table-scroll"><table className="hh-evidence-table"><thead><tr><th>{tx('字段 / 证据 ID', 'Field / evidence ID')}</th><th>{tx('精确值', 'Exact value')}</th><th>{tx('单位', 'Unit')}</th><th>{tx('命中规则', 'Matched rules')}</th></tr></thead><tbody>{row.evidence.map(item => <tr key={item.id}><td><code>{item.field}</code><small title={item.id}>{item.id.slice(0, 16)}</small></td><td><code>{item.value}</code></td><td>{item.unit}</td><td>{hitByEvidence(item.id).map(hit => <div className="hh-hit" key={hit.rule}><State tx={tx} level={hit.level} /><span>{ruleTitle(hit.rule, tx)}</span><code>{hit.rule}</code></div>)}</td></tr>)}</tbody></table>{!row.evidence.length && <div className="hh-empty hh-empty-filter">{tx('无可解析字段', 'No parsable fields')}</div>}</div>}
     {activeTab === 'blockers' && <div className="hh-gaps">{row.blockers.length ? row.blockers.map(value => <div key={value}><AlertTriangle size={15} /><code>{value}</code></div>) : <span>{tx('本次有限规则无数据阻断', 'No blockers for the checked subset')}</span>}<dl><dt>{tx('趋势状态', 'Trend status')}</dt><dd>{row.trend_status}</dd>{row.memory ? <><dt>{tx('CE 新增量', 'CE delta')}</dt><dd>{row.memory.ce_delta ?? '—'}</dd><dt>{tx('UE 新增量', 'UE delta')}</dt><dd>{row.memory.ue_delta ?? '—'}</dd><dt>{tx('定位精度', 'Location precision')}</dt><dd>{tx('控制器级 · DIMM 未定位', 'Controller scope · DIMM not located')}</dd></> : <><dt>{tx('介质错误新增量', 'Media error delta')}</dt><dd>{row.media_delta ?? '—'}</dd></>}</dl></div>}
-    {activeTab === 'source' && <dl className="hh-source">{[[tx('实体标识', 'Entity ID'), row.entity_id], [tx('身份状态', 'Identity status'), row.identity_status], [tx('范围 / 代次', 'Scope / generation'), `${row.scope || '—'} / ${row.generation || '—'}`], [tx('启动标识', 'Boot ID'), row.boot_id || '—'], [row.memory ? tx('驱动 / 内核', 'Driver / kernel') : tx('序列号 / 固件', 'Serial / firmware'), row.memory ? `${row.memory.driver || '—'} / ${row.memory.kernel_release || '—'}` : `${row.serial || '—'} / ${row.firmware || '—'}`], [tx('工具 / 来源', 'Tool / source'), `${row.tool_version || '—'} / ${row.source || '—'}`], [tx('原始输入 SHA256', 'Raw input SHA256'), row.input_sha256], [tx('基线 SHA256', 'Baseline SHA256'), row.baseline_sha256 || '—'], [tx('观测 / 可用时间', 'Observed / available'), `${timestamp(row.observed_at, lang)} / ${timestamp(row.available_at, lang)}`], [tx('退出码', 'Exit code'), row.exit_code === null ? '—' : String(row.exit_code)]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd><code>{value}</code></dd></div>)}</dl>}
+    {activeTab === 'source' && <dl className="hh-source">{[...(installationVerified && row.installation ? [[tx('安装状态', 'Installation state'), installationLabel(row.installation.state, tx)], [tx('安装段标识', 'Installation ID'), row.installation.installation_id || '—'], [tx('登记范围 / 名册版本', 'Registry scope / roster version'), `${row.installation.scope_id || '—'} / ${row.installation.roster_version || '—'}`], [tx('安装起止', 'Installation range'), `${row.installation.opened_at ? timestamp(row.installation.opened_at, lang) : '—'} / ${row.installation.closed_at ? timestamp(row.installation.closed_at, lang) : '—'}`]] : []), [tx('实体标识', 'Entity ID'), row.entity_id], [tx('身份状态', 'Identity status'), row.identity_status], [tx('范围 / 代次', 'Scope / generation'), `${row.scope || '—'} / ${row.generation || '—'}`], [tx('启动标识', 'Boot ID'), row.boot_id || '—'], [row.memory ? tx('驱动 / 内核', 'Driver / kernel') : tx('序列号 / 固件', 'Serial / firmware'), row.memory ? `${row.memory.driver || '—'} / ${row.memory.kernel_release || '—'}` : `${row.serial || '—'} / ${row.firmware || '—'}`], [tx('工具 / 来源', 'Tool / source'), `${row.tool_version || '—'} / ${row.source || '—'}`], [tx('原始输入 SHA256', 'Raw input SHA256'), row.input_sha256], [tx('基线 SHA256', 'Baseline SHA256'), row.baseline_sha256 || '—'], [tx('观测 / 可用时间', 'Observed / available'), `${timestamp(row.observed_at, lang)} / ${timestamp(row.available_at, lang)}`], [tx('退出码', 'Exit code'), row.exit_code === null ? '—' : String(row.exit_code)]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd><code>{value}</code></dd></div>)}</dl>}
   </section>;
 }
 

@@ -80,7 +80,7 @@ func TestDiskHealthPersistenceCurrentHistoryAndEpisodes(t *testing.T) {
 		t.Fatalf("episode count changed on duplicate import: %+v", reimport)
 	}
 
-	rows, total, err := service.ListCurrentSnapshots(ListOptions{})
+	rows, total, err := service.ListCurrentSnapshots(ListOptions{View: "all"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestDiskHealthHandlerIsReadOnlyListAndHistory(t *testing.T) {
 	}
 	handler := NewHandler(service)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/hardware/disks?level=attention", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/hardware/disks?level=attention&view=all", nil)
 	handler.HandleDisks(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list failed: %d %s", rec.Code, rec.Body.String())
@@ -165,14 +165,14 @@ func TestObservationAgeDoesNotRewriteHistoricalAssessment(t *testing.T) {
 	if _, err := service.PersistReport(report, ""); err != nil {
 		t.Fatal(err)
 	}
-	rows, _, err := service.ListCurrentSnapshots(ListOptions{})
+	rows, _, err := service.ListCurrentSnapshots(ListOptions{View: "all"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rows[0].Observation.State != "stale" || rows[0].Freshness != "fresh_at_cutoff" || rows[0].AssessmentStatus != "assessed" {
 		t.Fatalf("historical and live age confused: %+v", rows[0])
 	}
-	summary, err := service.Summary()
+	summary, err := service.SummaryForView("all")
 	if err != nil || summary.StaleCount != 1 {
 		t.Fatalf("stale count: %+v %v", summary, err)
 	}
@@ -185,7 +185,7 @@ func TestObservationAgeDoesNotRewriteHistoricalAssessment(t *testing.T) {
 		t.Fatalf("history age: %+v %v", history, err)
 	}
 	service.now = func() time.Time { return observed.Add(time.Hour) }
-	rows, _, _ = service.ListCurrentSnapshots(ListOptions{})
+	rows, _, _ = service.ListCurrentSnapshots(ListOptions{View: "all"})
 	if rows[0].Observation.State != "fresh" {
 		t.Fatal("exact age boundary rejected")
 	}

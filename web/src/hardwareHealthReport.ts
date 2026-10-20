@@ -10,7 +10,9 @@ export type DiskDetails = {
   dimensions: DiskDimension[]; counter_deltas: { field: string; value: string; unit: string; evidence_id: string }[];
 };
 export type MemoryDetails = { controller: string; driver: string; kernel_release: string; location_precision: 'controller'; ce_delta: string | null; ue_delta: string | null };
+export type DiskInstallation = { state: 'active' | 'historical' | 'unregistered'; installation_id?: string; scope_id?: string; roster_version?: string; opened_at?: string; closed_at?: string };
 export type HealthRow = {
+	installation?: DiskInstallation;
 	observation?: { state: 'fresh' | 'stale' | 'unknown' | 'future'; evaluated_at: string; max_age_seconds: number; age_seconds: number | null };
   rule_version?: string; memory?: MemoryDetails; disk?: DiskDetails;
   reference: string; entity_id: string; entity_type: 'disk' | 'nvme_controller' | 'memory_controller'; identity_status: 'bound' | 'provisional' | 'conflict';

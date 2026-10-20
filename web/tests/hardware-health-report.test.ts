@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { levels, parseHealthBundle, selectRows, validateReport, type HealthReport } from '../src/hardwareHealthReport.ts';
 import { parseDiskHistoryPayload, parseDiskHistoryWindow } from '../src/diskHistoryWindows.ts';
+import { diskInstallationListURL, parseDiskInstallationPayload } from '../src/diskInstallationViews.ts';
 
 const digest = async (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
 const fixture = () => ({
@@ -19,6 +20,87 @@ const historyWindow = (status = 'complete') => ({
   coverage_status: status, expected_sample_count: 3, occupied_sample_count: 3, coverage_ratio: 1, covered_seconds: 3600,
   excluded_future_count: 0, excluded_invalid_time_count: 0, duplicate_observation_count: 0,
   blockers: [], features: [{ field: 'nvme.media_errors', kind: 'counter_delta', value: '340282366920938463463374607431768211455', unit: 'count', status: 'available', blockers: [], start_at: '2026-10-15T00:00:00Z', end_at: '2026-10-15T01:00:00Z' }],
+});
+
+const installationPayload = (view = 'active') => {
+  const states = view === 'all' ? ['active', 'historical', 'unregistered'] : [view];
+  return {
+    data: states.map((state, index) => ({ ...fixture().rows[0], entity_id: String(index + 1).repeat(64), installation: state === 'unregistered' ? { state } : { state, installation_id: String(index + 1).repeat(64), scope_id: 'node-generation:synthetic', roster_version: '18446744073709551615', opened_at: '2026-10-15T00:00:00Z', ...(state === 'historical' ? { closed_at: '2026-10-16T00:00:00Z' } : {}) }, current: true })),
+    summary: { contract_version: 'disk-installation-view-v1', view, active_count: 1, historical_count: 1, unregistered_count: 1, registered_scope_count: 1, total: states.length, assessed: states.length, unknown: 0, risk_count: 0, stale_count: 0, by_level: { clear_for_checked_signals: states.length } },
+    meta: { total: states.length, generated_at: '2026-10-20T00:00:00Z' },
+  };
+};
+
+test('installation views use explicit membership and preserve exact roster versions and counters', () => {
+  for (const view of ['active', 'historical', 'unregistered', 'all']) {
+    const parsed = parseDiskInstallationPayload(installationPayload(view), view);
+    assert.equal(parsed.installation?.view, view);
+    assert.equal(parsed.installation?.active_count, 1);
+    assert.equal(parsed.data[0].installation?.state, view === 'all' ? 'active' : view);
+    if (view !== 'unregistered') assert.equal(parsed.data[0].installation?.roster_version, '18446744073709551615');
+    assert.equal(parsed.data[0].evidence[0].value, '340282366920938463463374607431768211455');
+    assert(diskInstallationListURL(view).endsWith(`view=${view}`));
+  }
+  const historical = parseDiskInstallationPayload(installationPayload('historical'), 'historical');
+  assert.equal(historical.data[0].installation?.state, 'historical', 'per-entity latest flag does not imply active membership');
+});
+
+test('zero active installations remain empty with unregistered evidence available separately', () => {
+  const source = installationPayload();
+  source.data = [];
+  Object.assign(source.summary, { active_count: 0, historical_count: 0, unregistered_count: 6, registered_scope_count: 0, total: 0, assessed: 0, by_level: {} });
+  source.meta.total = 0;
+  const parsed = parseDiskInstallationPayload(source);
+  assert.equal(parsed.data.length, 0);
+  assert.equal(parsed.summary.total, 0);
+  assert.equal(parsed.installation?.active_count, 0);
+  assert.equal(parsed.installation?.unregistered_count, 6);
+});
+
+test('installation summaries permit a filtered page total below the view denominator', () => {
+  const source = installationPayload('all');
+  source.data = source.data.slice(0, 1);
+  source.meta.total = 1;
+  const parsed = parseDiskInstallationPayload(source, 'all');
+  assert.equal(parsed.meta.total, 1);
+  assert.equal(parsed.summary.total, 3);
+  assert.equal(parsed.data.length, 1);
+});
+
+test('legacy online evidence has unverified membership even when rows claim active or current', () => {
+  const source = installationPayload();
+  const { contract_version: _contract, ...legacySummary } = source.summary;
+  void _contract;
+  const parsed = parseDiskInstallationPayload({ ...source, summary: legacySummary });
+  assert.equal(parsed.installation, null);
+  assert.equal(parsed.data[0].installation, undefined);
+  assert.equal(source.data[0].installation.state, 'active', 'consumer must not mutate its input');
+  const old = parseDiskInstallationPayload({ data: source.data });
+  assert.equal(old.installation, null);
+  assert.equal(old.summary.total, 1);
+});
+
+test('installation consumers reject invalid views, counts and membership conflicts', () => {
+  for (const view of ['', 'invalid', 'active&view=all', null]) assert.throws(() => diskInstallationListURL(view));
+  const changes: Array<(source: ReturnType<typeof installationPayload>) => void> = [
+    source => { source.summary.view = 'invalid'; },
+    source => { source.summary.view = 'all'; },
+    source => { source.summary.active_count = -1; },
+    source => { source.summary.historical_count = -1; },
+    source => { source.summary.unregistered_count = -1; },
+    source => { source.summary.registered_scope_count = -1; },
+    source => { source.summary.active_count = 2; },
+    source => { source.summary.assessed = 0; },
+    source => { source.summary.by_level.clear_for_checked_signals = 0; },
+    source => { Object.assign(source.summary.by_level, { clear_for_checked_signals: 0, warning: 1 }); source.summary.risk_count = 1; },
+    source => { source.meta.total = 2; },
+    source => { source.data[0].installation.state = 'historical'; },
+    source => { source.data[0].installation.roster_version = '18446744073709551616'; },
+    source => { source.summary.contract_version = 'disk-installation-view-v2'; },
+  ];
+  changes.forEach(change => { const source = installationPayload(); change(source); assert.throws(() => parseDiskInstallationPayload(source), /invalid_disk_installation_contract/); });
+  const numeric = installationPayload();
+  assert.throws(() => parseDiskInstallationPayload({ ...numeric, data: [{ ...numeric.data[0], installation: { ...numeric.data[0].installation, roster_version: 42 } }] }));
 });
 
 test('history windows preserve v2 completeness and independent exact feature values', () => {
@@ -82,7 +164,7 @@ test('frontend and framework release contracts stay aligned', () => {
   assert(version);
   assert(app.includes(`version: '${version}'`));
   assert(app.includes(`${version} ·`));
-  assert(app.includes('PLATFORM / v0.120.69'));
+  assert(app.includes('PLATFORM / v0.120.70'));
   assert(app.includes("id: 'component-health'"));
 });
 

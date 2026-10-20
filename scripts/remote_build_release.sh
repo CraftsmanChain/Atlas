@@ -123,6 +123,7 @@ cd "$1"
 "$2" build -ldflags "$3" -o "$4/atlas-server" ./cmd/server
 "$2" build -o "$4/atlas-db-migrate" ./cmd/dbmigrate
 "$2" build -o "$4/hardware-health-replay" ./cmd/hardware-health-replay
+"$2" build -o "$4/disk-installation-reconcile" ./cmd/disk-installation-reconcile
 ' _ "$release_dir/source" "$go_bin" "-X main.Version=$version_name -X main.Commit=$commit -X main.BuildTime=$build_time" "$release_dir/output"
 else
 docker run --rm \
@@ -141,12 +142,14 @@ docker run --rm \
 go build -ldflags '-X main.Version=$version_name -X main.Commit=$commit -X main.BuildTime=$build_time' -o /out/atlas-server ./cmd/server
 go build -o /out/atlas-db-migrate ./cmd/dbmigrate
 go build -o /out/hardware-health-replay ./cmd/hardware-health-replay
+go build -o /out/disk-installation-reconcile ./cmd/disk-installation-reconcile
 "
 fi
 
 test -x "$release_dir/output/atlas-server"
 test -x "$release_dir/output/atlas-db-migrate"
 test -x "$release_dir/output/hardware-health-replay"
+test -x "$release_dir/output/disk-installation-reconcile"
 test -f "$release_dir/web/dist/index.html"
 
 if [[ "$bootstrap" == 1 ]]; then
@@ -167,9 +170,11 @@ timestamp="$(date +%Y%m%d%H%M%S)"
 mkdir -p "$remote_root/web"
 server_backup="$remote_root/atlas-server.bak.$timestamp"
 replay_backup="$remote_root/hardware-health-replay.bak.$timestamp"
+installation_backup="$remote_root/disk-installation-reconcile.bak.$timestamp"
 web_backup="$remote_root/web/dist.bak.$timestamp"
 previous_server=0
 previous_replay=0
+previous_installation=0
 if [[ -f "$remote_root/atlas-server" ]]; then
   cp "$remote_root/atlas-server" "$server_backup"
   previous_server=1
@@ -177,6 +182,10 @@ fi
 if [[ -f "$remote_root/hardware-health-replay" ]]; then
   cp "$remote_root/hardware-health-replay" "$replay_backup"
   previous_replay=1
+fi
+if [[ -f "$remote_root/disk-installation-reconcile" ]]; then
+  cp "$remote_root/disk-installation-reconcile" "$installation_backup"
+  previous_installation=1
 fi
 
 rollback() {
@@ -191,6 +200,12 @@ rollback() {
     mv -f "$remote_root/hardware-health-replay.rollback" "$remote_root/hardware-health-replay"
   else
     rm -f "$remote_root/hardware-health-replay"
+  fi
+  if [[ "$previous_installation" == 1 ]]; then
+    install -m 755 "$installation_backup" "$remote_root/disk-installation-reconcile.rollback"
+    mv -f "$remote_root/disk-installation-reconcile.rollback" "$remote_root/disk-installation-reconcile"
+  else
+    rm -f "$remote_root/disk-installation-reconcile"
   fi
   if [[ -d "$web_backup" ]]; then
     if [[ -d "$remote_root/web/dist" ]]; then
@@ -215,6 +230,8 @@ mv -f "$remote_root/atlas-server.next" "$remote_root/atlas-server"
 install -m 755 "$release_dir/output/atlas-db-migrate" "$remote_root/atlas-db-migrate"
 install -m 755 "$release_dir/output/hardware-health-replay" "$remote_root/hardware-health-replay.next"
 mv -f "$remote_root/hardware-health-replay.next" "$remote_root/hardware-health-replay"
+install -m 755 "$release_dir/output/disk-installation-reconcile" "$remote_root/disk-installation-reconcile.next"
+mv -f "$remote_root/disk-installation-reconcile.next" "$remote_root/disk-installation-reconcile"
 mv "$release_dir/web/dist" "$remote_root/web/dist"
 if [[ "$previous_server" == 1 ]]; then
   systemctl restart "$service_name"
