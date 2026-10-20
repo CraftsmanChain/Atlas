@@ -269,6 +269,7 @@ func main() {
 	mux.HandleFunc("/api/v1/fault-events/summary", healthHandler.HandleEventSummary)
 	mux.HandleFunc("/api/v1/fault-events/", evidenceHandler.HandleEventSubresource)
 	mux.HandleFunc("/api/v1/hardware/disks", diskHealthHandler.HandleDisks)
+	mux.HandleFunc("/api/v1/hardware/disk-installations", diskHealthHandler.HandleInstallationRegistry)
 	mux.HandleFunc("/api/v1/hardware/disks/", diskHealthHandler.HandleDiskSubresource)
 	mux.HandleFunc("/api/v1/degradation/summary", degradationHandler.HandleSummary)
 	mux.HandleFunc("/api/v1/degradation/candidates", degradationHandler.HandleCandidates)

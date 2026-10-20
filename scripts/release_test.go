@@ -185,6 +185,7 @@ func TestRemoteReleaseSwitchAndRollback(t *testing.T) {
 				writeFixture(t, filepath.Join(root, "postgres-data/retained"), "database", 0o600)
 				if previous {
 					writeFixture(t, filepath.Join(root, "atlas-server"), "old binary", 0o755)
+					writeFixture(t, filepath.Join(root, "disk-installation-reconcile"), "old installation binary", 0o755)
 					writeFixture(t, filepath.Join(root, "web/dist/index.html"), "old web", 0o644)
 				}
 				writeFixture(t, filepath.Join(root, "incoming/.placeholder"), "", 0o600)
@@ -201,7 +202,8 @@ if [[ "$1" == run ]]; then
       printf 'new binary' > "$output/atlas-server"
       printf 'migration binary' > "$output/atlas-db-migrate"
       printf 'replay binary' > "$output/hardware-health-replay"
-      chmod 755 "$output/atlas-server" "$output/atlas-db-migrate" "$output/hardware-health-replay"
+      printf 'installation binary' > "$output/disk-installation-reconcile"
+      chmod 755 "$output/atlas-server" "$output/atlas-db-migrate" "$output/hardware-health-replay" "$output/disk-installation-reconcile"
     fi
     shift
   done
@@ -225,6 +227,8 @@ while [[ $# -gt 0 ]]; do
       printf 'new binary' > "$2"
     elif [[ "$2" == */hardware-health-replay ]]; then
       printf 'replay binary' > "$2"
+    elif [[ "$2" == */disk-installation-reconcile ]]; then
+      printf 'installation binary' > "$2"
     else
       printf 'migration binary' > "$2"
     fi
@@ -280,6 +284,20 @@ exec "$@"
 					}
 				} else if replayErr != nil || string(replay) != "replay binary" {
 					t.Fatalf("replay binary=%q err=%v output=%s", replay, replayErr, output)
+				}
+				installation, installationErr := os.ReadFile(filepath.Join(root, "disk-installation-reconcile"))
+				if mismatch && !previous {
+					if !os.IsNotExist(installationErr) {
+						t.Fatalf("failed first release left installation CLI: %q %v", installation, installationErr)
+					}
+				} else {
+					want := "installation binary"
+					if mismatch {
+						want = "old installation binary"
+					}
+					if installationErr != nil || string(installation) != want {
+						t.Fatalf("installation CLI=%q want=%q err=%v", installation, want, installationErr)
+					}
 				}
 				operations, _ := os.ReadFile(logPath)
 				if !previous && (strings.Contains(string(operations), "docker ") || !strings.Contains(string(operations), "systemd-run")) {

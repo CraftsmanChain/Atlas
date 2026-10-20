@@ -31,6 +31,7 @@ type PersistResult struct {
 }
 
 type ListOptions struct {
+	View             string
 	Limit            int
 	Offset           int
 	Query            string
@@ -42,9 +43,11 @@ type ListOptions struct {
 }
 
 type SnapshotView struct {
-	SnapshotID  uint              `json:"snapshot_id"`
-	Current     bool              `json:"current"`
-	Observation ObservationStatus `json:"observation"`
+	SnapshotKey  string                 `json:"snapshot_key"`
+	Installation InstallationMembership `json:"installation"`
+	SnapshotID   uint                   `json:"snapshot_id"`
+	Current      bool                   `json:"current"`
+	Observation  ObservationStatus      `json:"observation"`
 	Result
 }
 
@@ -78,13 +81,19 @@ func observationStatus(observed, available, now time.Time) ObservationStatus {
 }
 
 type CurrentSummary struct {
-	Total       int            `json:"total"`
-	Assessed    int            `json:"assessed"`
-	Unknown     int            `json:"unknown"`
-	RiskCount   int            `json:"risk_count"`
-	StaleCount  int            `json:"stale_count"`
-	ByLevel     map[string]int `json:"by_level"`
-	GeneratedAt time.Time      `json:"generated_at"`
+	ContractVersion      string         `json:"contract_version"`
+	View                 string         `json:"view"`
+	ActiveCount          int            `json:"active_count"`
+	HistoricalCount      int            `json:"historical_count"`
+	UnregisteredCount    int            `json:"unregistered_count"`
+	RegisteredScopeCount int            `json:"registered_scope_count"`
+	Total                int            `json:"total"`
+	Assessed             int            `json:"assessed"`
+	Unknown              int            `json:"unknown"`
+	RiskCount            int            `json:"risk_count"`
+	StaleCount           int            `json:"stale_count"`
+	ByLevel              map[string]int `json:"by_level"`
+	GeneratedAt          time.Time      `json:"generated_at"`
 }
 
 type HistoryResponse struct {
@@ -116,10 +125,16 @@ func (s *Service) PersistReport(report Report, reportSHA256 string) (PersistResu
 		reportSHA256 = Digest(encoded)
 	}
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockInstallationIdentity(tx); err != nil {
+			return err
+		}
 		affectedEntities := map[string]struct{}{}
 		for _, row := range report.Rows {
 			if row.EntityType == "memory_controller" {
 				continue
+			}
+			if err := validateRegisteredSnapshotBinding(tx, row); err != nil {
+				return err
 			}
 			snapshot, created, err := upsertSnapshot(tx, report, row, reportSHA256)
 			if err != nil {
@@ -153,61 +168,17 @@ func (s *Service) PersistReport(report Report, reportSHA256 string) (PersistResu
 		}
 		return nil
 	})
-	return result, err
+	if err != nil {
+		return PersistResult{}, err
+	}
+	return result, nil
 }
 
-func (s *Service) Summary() (CurrentSummary, error) {
-	summary := CurrentSummary{ByLevel: map[string]int{}, GeneratedAt: s.now().UTC()}
-	var rows []api.PhysicalDiskSnapshot
-	if err := s.db.Where("current = ? AND entity_type <> ?", true, "memory_controller").Find(&rows).Error; err != nil {
-		return summary, err
-	}
-	for _, row := range rows {
-		summary.Total++
-		summary.ByLevel[row.Level]++
-		if row.AssessmentStatus == "assessed" {
-			summary.Assessed++
-		} else {
-			summary.Unknown++
-		}
-		if row.Level == "critical" || row.Level == "warning" || row.Level == "attention" {
-			summary.RiskCount++
-		}
-		if observationStatus(row.ObservedAt, row.AvailableAt, summary.GeneratedAt).State == "stale" {
-			summary.StaleCount++
-		}
-	}
-	return summary, nil
-}
+func (s *Service) Summary() (CurrentSummary, error) { return s.SummaryForView("active") }
 
 func (s *Service) ListCurrentSnapshots(options ListOptions) ([]SnapshotView, int, error) {
-	query := s.db.Where("current = ? AND entity_type <> ?", true, "memory_controller")
-	query = applySnapshotFilters(query, options)
-	var snapshots []api.PhysicalDiskSnapshot
-	if err := query.Find(&snapshots).Error; err != nil {
-		return nil, 0, err
-	}
-	sortSnapshots(snapshots, options.Order)
-	total := len(snapshots)
-	limit, offset := normalizePage(options.Limit, options.Offset, 100, 2000)
-	if offset > total {
-		offset = total
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-	views := make([]SnapshotView, 0, end-offset)
-	now := s.now()
-	for _, snapshot := range snapshots[offset:end] {
-		view, err := snapshotView(snapshot)
-		if err != nil {
-			return nil, 0, err
-		}
-		view.Observation = observationStatus(view.ObservedAt, view.AvailableAt, now)
-		views = append(views, view)
-	}
-	return views, total, nil
+	result, err := s.ListDisks(options)
+	return result.Data, result.Total, err
 }
 
 func (s *Service) Detail(entityID string) (DetailResponse, error) {
@@ -224,6 +195,10 @@ func (s *Service) Detail(entityID string) (DetailResponse, error) {
 		return DetailResponse{}, err
 	}
 	view.Observation = observationStatus(view.ObservedAt, view.AvailableAt, s.now())
+	view.Installation, err = s.installationMembership(view.EntityID)
+	if err != nil {
+		return DetailResponse{}, err
+	}
 	var episodes []api.DiskHealthEpisode
 	if err := s.db.Where("entity_id = ?", entityID).Order("state ASC, severity DESC, last_observed_at DESC").Find(&episodes).Error; err != nil {
 		return DetailResponse{}, err
@@ -243,6 +218,10 @@ func (s *Service) History(entityID string, limit, offset int) (HistoryResponse, 
 	if len(snapshots) == 0 {
 		return HistoryResponse{}, fmt.Errorf("disk entity not found")
 	}
+	membership, err := s.installationMembership(entityID)
+	if err != nil {
+		return HistoryResponse{}, err
+	}
 	allViews := make([]SnapshotView, 0, len(snapshots))
 	now := s.now()
 	for _, snapshot := range snapshots {
@@ -251,6 +230,7 @@ func (s *Service) History(entityID string, limit, offset int) (HistoryResponse, 
 			return HistoryResponse{}, err
 		}
 		view.Observation = observationStatus(view.ObservedAt, view.AvailableAt, now)
+		view.Installation = membership
 		allViews = append(allViews, view)
 	}
 	windows := trendWindows(allViews, now)
@@ -562,7 +542,7 @@ func snapshotView(snapshot api.PhysicalDiskSnapshot) (SnapshotView, error) {
 			return SnapshotView{}, err
 		}
 	}
-	return SnapshotView{SnapshotID: snapshot.ID, Current: snapshot.Current, Result: row}, nil
+	return SnapshotView{SnapshotID: snapshot.ID, SnapshotKey: snapshot.SnapshotKey, Current: snapshot.Current, Result: row}, nil
 }
 
 func applySnapshotFilters(query *gorm.DB, options ListOptions) *gorm.DB {
