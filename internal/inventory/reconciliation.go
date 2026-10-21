@@ -16,8 +16,10 @@ const (
 	reconcileMachineOnly = "asset_only"
 )
 
-var gpuTypePattern = regexp.MustCompile(`(?i)^(?:rtx[\s_-]*)?(?:4090|[ahbvltp]\d{2,4}[a-z]*)$`)
-var gpuModelInTextPattern = regexp.MustCompile(`(?i)(?:4090|[ahbvltp]\d{2,4})`)
+// Explicit model tokens prevent rack positions (A01/B16) and server SKUs
+// from becoming GPU models. Generic server types use hostname model evidence.
+var rackLocationPattern = regexp.MustCompile(`(?i)^\d+-[a-z]\d+-\d+u-`)
+var gpuModelInTextPattern = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])((?:rtx[ _-]*)?(?:4090|3090)|h200|h100|h800|a100|a800|a40|a10|l40s?|l4|v100|t4|p100|p40|b100|b200)(?:gpu)?(?:$|[^a-z0-9])`)
 
 type sourceAssetView struct {
 	AssetKey string `json:"asset_key"`
@@ -63,7 +65,7 @@ func (h *Handler) HandleReconciliation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var assets []api.InfrastructureAsset
-	if err := h.db.Where("present = ? AND in_use = ?", true, true).Order("source ASC, id ASC").Find(&assets).Error; err != nil {
+	if err := h.db.Where("present = ?", true).Order("source ASC, id ASC").Find(&assets).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -88,6 +90,9 @@ func (h *Handler) HandleReconciliation(w http.ResponseWriter, r *http.Request) {
 func reconcileAssets(assets []api.InfrastructureAsset) []reconciliationRow {
 	ops, machines := make([]api.InfrastructureAsset, 0), make([]api.InfrastructureAsset, 0)
 	for _, asset := range assets {
+		if !asset.Present {
+			continue
+		}
 		switch asset.Source {
 		case "ops_host":
 			ops = append(ops, asset)
@@ -98,28 +103,32 @@ func reconcileAssets(assets []api.InfrastructureAsset) []reconciliationRow {
 	machineBySN, machineByIP := make(map[string][]int), make(map[string][]int)
 	for index, asset := range machines {
 		if value := normalizedSN(asset.SerialNumber); value != "" {
-			machineBySN[value] = append(machineBySN[value], index)
+			machineBySN[asset.DataCenterID+"|"+value] = append(machineBySN[asset.DataCenterID+"|"+value], index)
 		}
 		if value := normalizedIP(asset.IPAddress); value != "" {
-			machineByIP[value] = append(machineByIP[value], index)
+			machineByIP[asset.DataCenterID+"|"+value] = append(machineByIP[asset.DataCenterID+"|"+value], index)
 		}
 	}
 	used := make(map[int]bool)
 	rows := make([]reconciliationRow, 0, len(ops)+len(machines))
 	for _, asset := range ops {
-		match := firstUnused(machineBySN[normalizedSN(asset.SerialNumber)], used)
+		match := firstUnused(machineBySN[asset.DataCenterID+"|"+normalizedSN(asset.SerialNumber)], used)
 		if match < 0 {
-			match = firstUnused(machineByIP[normalizedIP(asset.IPAddress)], used)
+			match = firstUnused(machineByIP[asset.DataCenterID+"|"+normalizedIP(asset.IPAddress)], used)
 		}
 		if match >= 0 {
 			used[match] = true
-			rows = append(rows, buildReconciliationRow(&asset, &machines[match]))
-		} else {
+			// Lifecycle is decided after identity matching. An unknown ops state
+			// does not erase source presence; the asset machine is authoritative.
+			if machines[match].InUse {
+				rows = append(rows, buildReconciliationRow(&asset, &machines[match]))
+			}
+		} else if asset.InUse {
 			rows = append(rows, buildReconciliationRow(&asset, nil))
 		}
 	}
 	for index := range machines {
-		if !used[index] {
+		if !used[index] && machines[index].InUse {
 			rows = append(rows, buildReconciliationRow(nil, &machines[index]))
 		}
 	}
@@ -188,28 +197,33 @@ func assetCategory(asset api.InfrastructureAsset) (category, assetType, gpuModel
 	case "存储":
 		return "storage", assetType, ""
 	}
-	if gpuTypePattern.MatchString(assetType) {
-		return "gpu", assetType, strings.ToUpper(strings.ReplaceAll(assetType, " ", ""))
+	// A dedicated model type is explicit evidence; generic server types are not.
+	if model := extractGPUModel(assetType); model != "" && normalizeGPUModel(assetType) == model {
+		return "gpu", model, model
 	}
-	if asset.EntityKind == "gpu_node" {
-		// ops_host exposes type=server, so an ops-only record has no
-		// authoritative device type. Prefer an explicit model embedded in the
-		// hostname (for example H200gpu-01) over its sometimes stale model
-		// field, then fall back to the model field.
-		model := extractGPUModel(asset.Name)
-		if model == "" {
-			model = extractGPUModel(asset.Model)
-		}
-		if model != "" {
-			return "gpu", model, model
-		}
+	if model := extractGPUModel(asset.Name); model != "" {
+		return "gpu", model, model
+	}
+	name := strings.ToLower(asset.Name)
+	if strings.Contains(name, "storage") || strings.Contains(name, "存储") || strings.Contains(name, "-obs") || strings.Contains(name, "-gpfs") {
+		return "storage", assetType, ""
+	}
+	if asset.EntityKind == "cpu_node" || asset.EntityKind == "gpu_node" || strings.Contains(name, "cpu") || normalized == "server" || normalized == "服务器" {
+		return "cpu", defaultString(assetType, "服务器"), ""
 	}
 	return "other", defaultString(assetType, "UNKNOWN"), ""
 }
 
 func extractGPUModel(value string) string {
-	match := gpuModelInTextPattern.FindString(strings.TrimSpace(value))
-	return strings.ToUpper(strings.ReplaceAll(match, " ", ""))
+	match := gpuModelInTextPattern.FindStringSubmatch(rackLocationPattern.ReplaceAllString(strings.TrimSpace(value), ""))
+	if len(match) < 2 {
+		return ""
+	}
+	return normalizeGPUModel(match[1])
+}
+
+func normalizeGPUModel(value string) string {
+	return strings.NewReplacer(" ", "", "_", "", "-", "", "RTX", "").Replace(strings.ToUpper(value))
 }
 
 func summarizeReconciliation(rows []reconciliationRow) reconciliationSummary {

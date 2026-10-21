@@ -71,7 +71,7 @@ func TestReconciliationFiltersDifferenceScope(t *testing.T) {
 	}
 	now := time.Now()
 	rows := []api.InfrastructureAsset{
-		{AssetKey: "ops-only", Source: "ops_host", IPAddress: "10.0.0.2", Type: "server", Model: "H200", InUse: true, Present: true, EntityKind: "gpu_node", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
+		{AssetKey: "ops-only", Source: "ops_host", IPAddress: "10.0.0.2", Type: "server", Name: "H200gpu-02", Model: "H200", InUse: true, Present: true, EntityKind: "gpu_node", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
 		{AssetKey: "machine-only", Source: "asset_machine", Type: "H100", Name: "H100gpu-3", InUse: true, Present: true, EntityKind: "gpu_node", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
 		{AssetKey: "ufm-only", Source: "asset_machine", Type: "UFM", Name: "ufm-1", InUse: true, Present: true, EntityKind: "unknown", FirstSeenAt: now, LastSeenAt: now, LastSyncedAt: now},
 	}
@@ -91,5 +91,68 @@ func TestReconciliationFiltersDifferenceScope(t *testing.T) {
 	}
 	if payload.Meta.Total != 1 || len(payload.Data) != 1 || payload.Data[0].Scope != reconcileOpsOnly {
 		t.Fatalf("unexpected filtered response: %+v", payload)
+	}
+}
+
+func TestGPUHostnameModelsIgnoreRackPositions(t *testing.T) {
+	for _, tc := range []struct{ name, kind, model string }{
+		{"204-A16-8U-H100-node016", "gpu", "H100"},
+		{"204-A10-8U-H100-node010", "gpu", "H100"},
+		{"301-A10-2U-CPU001", "cpu", ""},
+		{"201-B07-4U-Gpfs01", "storage", ""},
+		{"201-B07-4U-Obs01", "storage", ""},
+		{"204-B16-8U-H100-node032", "gpu", "H100"},
+		{"201-B07-12U-4090-node116", "gpu", "4090"},
+		{"H200gpu-01", "gpu", "H200"},
+		{"rack-RTX_4090-node", "gpu", "4090"},
+		{"rack-L40S-node", "gpu", "L40S"},
+		{"301-B13-19U-GC-CPU126(CPU-Master)", "cpu", ""},
+		{"201-A16-Storage01", "storage", ""},
+		{"201-B16-server01", "cpu", ""},
+		{"server-H1000-node", "cpu", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			category, _, model := assetCategory(api.InfrastructureAsset{Name: tc.name, Type: "服务器", EntityKind: "gpu_node", Model: "H100"})
+			if category != tc.kind || model != tc.model {
+				t.Fatalf("got %s/%s, want %s/%s", category, model, tc.kind, tc.model)
+			}
+		})
+	}
+}
+
+func TestReconciliationSourcePresenceBeforeLifecycle(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := []api.InfrastructureAsset{
+		{AssetKey: "ops-unknown", Source: "ops_host", DataCenterID: "dc1", IPAddress: "10.0.0.1", SerialNumber: "old-sn", Name: "h100-001", Present: true},
+		{AssetKey: "machine-live", Source: "asset_machine", DataCenterID: "dc1", IPAddress: "10.0.0.1", SerialNumber: "new-sn", Name: "204-B07-8U-H100-node001", Present: true, InUse: true},
+		{AssetKey: "ops-live", Source: "ops_host", DataCenterID: "dc1", IPAddress: "10.0.0.2", Name: "h100-002", Present: true, InUse: true},
+		{AssetKey: "machine-stopped", Source: "asset_machine", DataCenterID: "dc1", IPAddress: "10.0.0.2", Name: "H100-002", State: "停机", Present: true},
+		{AssetKey: "ops-removed", Source: "ops_host", DataCenterID: "dc1", IPAddress: "10.0.0.3", Present: false, InUse: true},
+		{AssetKey: "machine-only", Source: "asset_machine", DataCenterID: "dc1", IPAddress: "10.0.0.3", Name: "H100-003", Present: true, InUse: true},
+		{AssetKey: "ops-other-dc", Source: "ops_host", DataCenterID: "dc2", IPAddress: "10.0.0.3", Present: true},
+		{AssetKey: "unknown-only", Source: "ops_host", Name: "H100-004", Present: true},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	NewHandler(db).HandleReconciliation(response, httptest.NewRequest(http.MethodGet, "/api/v1/inventory/reconciliation?limit=100", nil))
+	var payload struct {
+		Data    []reconciliationRow
+		Summary reconciliationSummary
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != 200 || len(payload.Data) != 2 || payload.Summary.ByScope[reconcileBoth] != 1 || payload.Summary.ByScope[reconcileMachineOnly] != 1 {
+		t.Fatalf("unexpected reconciliation: %+v", payload)
+	}
+	for _, row := range payload.Data {
+		if row.IPAddress == "10.0.0.1" && (row.OpsHost == nil || row.OpsHost.InUse || row.OpsHost.State != "" || row.GPUModel != "H100") {
+			t.Fatalf("lost source state: %+v", row)
+		}
 	}
 }
