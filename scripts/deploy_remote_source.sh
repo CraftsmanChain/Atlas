@@ -34,6 +34,17 @@ fi
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+if [[ -n "${EXPECTED_COMMIT:-}" ]]; then
+  if [[ ! "$EXPECTED_COMMIT" =~ ^[0-9a-f]{7,40}$ ]]; then
+    echo "EXPECTED_COMMIT must be a 7-40 character lowercase commit SHA." >&2
+    exit 1
+  fi
+  actual_commit="$(git rev-parse HEAD)"
+  if [[ "$actual_commit" != "$EXPECTED_COMMIT"* ]]; then
+    echo "Source commit mismatch: expected $EXPECTED_COMMIT, current $actual_commit. No deployment performed." >&2
+    exit 1
+  fi
+fi
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "Working tree must be clean before deployment." >&2
   exit 1
