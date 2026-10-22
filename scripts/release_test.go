@@ -90,6 +90,18 @@ func TestBootstrapRequiresDevelopmentStageBeforeAnySSH(t *testing.T) {
 	}
 }
 
+func TestDeploymentRejectsWrongSourceCommitBeforeAnySSH(t *testing.T) {
+	for _, tc := range []struct{ commit, message string }{
+		{"0000000", "Source commit mismatch"},
+		{"main", "EXPECTED_COMMIT must be"},
+	} {
+		output, err := shell(t, []string{"EXPECTED_COMMIT=" + tc.commit}, "./deploy_remote_source.sh")
+		if err == nil || !strings.Contains(output, tc.message) {
+			t.Fatalf("output=%q err=%v", output, err)
+		}
+	}
+}
+
 func TestBootstrapPreflightNeverMutatesHost(t *testing.T) {
 	for _, test := range []struct{ name, state, listeners string }{
 		{"existing-unit", "loaded", ""},
