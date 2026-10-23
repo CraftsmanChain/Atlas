@@ -33,16 +33,19 @@ type sourceAssetView struct {
 }
 
 type reconciliationRow struct {
-	Key          string           `json:"key"`
-	Scope        string           `json:"scope"`
-	Category     string           `json:"category"`
-	Type         string           `json:"type"`
-	GPUModel     string           `json:"gpu_model,omitempty"`
-	IPAddress    string           `json:"ip_address"`
-	Name         string           `json:"name"`
-	SerialNumber string           `json:"sn"`
-	OpsHost      *sourceAssetView `json:"ops_host,omitempty"`
-	AssetMachine *sourceAssetView `json:"asset_machine,omitempty"`
+	Key            string            `json:"key"`
+	Scope          string            `json:"scope"`
+	Category       string            `json:"category"`
+	Type           string            `json:"type"`
+	SourceConflict bool              `json:"source_conflict,omitempty"`
+	OpsRecords     []sourceAssetView `json:"ops_host_records,omitempty"`
+	MachineRecords []sourceAssetView `json:"asset_machine_records,omitempty"`
+	GPUModel       string            `json:"gpu_model,omitempty"`
+	IPAddress      string            `json:"ip_address"`
+	Name           string            `json:"name"`
+	SerialNumber   string            `json:"sn"`
+	OpsHost        *sourceAssetView  `json:"ops_host,omitempty"`
+	AssetMachine   *sourceAssetView  `json:"asset_machine,omitempty"`
 }
 
 type namedCount struct {
@@ -100,6 +103,10 @@ func reconcileAssets(assets []api.InfrastructureAsset) []reconciliationRow {
 			machines = append(machines, asset)
 		}
 	}
+	// A source may publish multiple current records for the same endpoint.
+	// Preserve those records for audit, but count the endpoint once.
+	ops, opsRecords := collapseSourceEndpoints(ops, machines)
+	machines, machineRecords := collapseSourceEndpoints(machines, ops)
 	machineBySN, machineByIP := make(map[string][]int), make(map[string][]int)
 	for index, asset := range machines {
 		if value := normalizedSN(asset.SerialNumber); value != "" {
@@ -132,6 +139,16 @@ func reconcileAssets(assets []api.InfrastructureAsset) []reconciliationRow {
 			rows = append(rows, buildReconciliationRow(nil, &machines[index]))
 		}
 	}
+	for i := range rows {
+		row := &rows[i]
+		if row.OpsHost != nil {
+			row.OpsRecords = opsRecords[row.OpsHost.AssetKey]
+		}
+		if row.AssetMachine != nil {
+			row.MachineRecords = machineRecords[row.AssetMachine.AssetKey]
+		}
+		row.SourceConflict = len(row.OpsRecords) > 1 || len(row.MachineRecords) > 1
+	}
 	sort.Slice(rows, func(i, j int) bool {
 		if scopeOrder(rows[i].Scope) != scopeOrder(rows[j].Scope) {
 			return scopeOrder(rows[i].Scope) < scopeOrder(rows[j].Scope)
@@ -142,6 +159,56 @@ func reconcileAssets(assets []api.InfrastructureAsset) []reconciliationRow {
 		return compareAssetIdentity(rows[i], rows[j])
 	})
 	return rows
+}
+
+// Non-empty IPs identify current endpoints only within a data center and source.
+// Records without an IP retain their independent source identities.
+func collapseSourceEndpoints(records, peers []api.InfrastructureAsset) ([]api.InfrastructureAsset, map[string][]sourceAssetView) {
+	groups := map[string][]api.InfrastructureAsset{}
+	peerSN := map[string]map[string]bool{}
+	for _, peer := range peers {
+		key := peer.DataCenterID + "|" + normalizedIP(peer.IPAddress)
+		if peerSN[key] == nil {
+			peerSN[key] = map[string]bool{}
+		}
+		if sn := normalizedSN(peer.SerialNumber); sn != "" {
+			peerSN[key][sn] = true
+		}
+	}
+	for _, record := range records {
+		key := record.DataCenterID + "|" + normalizedIP(record.IPAddress)
+		if normalizedIP(record.IPAddress) == "" {
+			key = "asset:" + record.AssetKey
+		}
+		groups[key] = append(groups[key], record)
+	}
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]api.InfrastructureAsset, 0, len(groups))
+	audit := map[string][]sourceAssetView{}
+	for _, key := range keys {
+		group := groups[key]
+		sort.Slice(group, func(i, j int) bool {
+			if group[i].InUse != group[j].InUse {
+				return group[i].InUse
+			}
+			left, right := peerSN[key][normalizedSN(group[i].SerialNumber)], peerSN[key][normalizedSN(group[j].SerialNumber)]
+			if left != right {
+				return left
+			}
+			return group[i].AssetKey < group[j].AssetKey
+		})
+		result = append(result, group[0])
+		if len(group) > 1 {
+			for _, record := range group {
+				audit[group[0].AssetKey] = append(audit[group[0].AssetKey], toSourceAssetView(record))
+			}
+		}
+	}
+	return result, audit
 }
 
 func buildReconciliationRow(ops, machine *api.InfrastructureAsset) reconciliationRow {
