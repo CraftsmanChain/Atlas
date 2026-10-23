@@ -1,4 +1,4 @@
-import { Component, Fragment, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
+import { Component, Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from 'next-themes';
@@ -10,7 +10,8 @@ import {
   Thermometer, Trash2, X, Zap,
 } from 'lucide-react';
 import './App.css';
-import HardwareHealth from './HardwareHealth';
+const HardwareHealth = lazy(() => import('./HardwareHealth'));
+import { readPlatformBrand, writePlatformBrand, fetchJSON } from './progressiveLoading';
 
 type PageId = 'overview' | 'gpus' | 'hardware' | 'issues' | 'incidents' | 'validations' | 'quality' | 'models' | 'about';
 type SubPage = { id: string; label: string };
@@ -270,6 +271,7 @@ export default function App() {
   const initial = window.location.hash.replace('#/', '') as PageId;
   const [page, setPage] = useState<PageId>(pages.includes(initial) ? initial : 'overview');
   const [sidebar, setSidebar] = useState(false);
+  const [hardwareVisited, setHardwareVisited] = useState(initial === 'hardware');
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [ingestions, setIngestions] = useState<Ingestion[]>([]);
@@ -282,7 +284,7 @@ export default function App() {
   const [ingestionRefresh, setIngestionRefresh] = useState(0);
   const [failures, setFailures] = useState<Failure[]>([]);
   const [status, setStatus] = useState<ServerStatus | null>(null);
-  const [platformConfig, setPlatformConfig] = useState<PlatformConfig>({ instance_name: 'Atlas Cluster', product_name: 'ATLAS', product_tagline: 'GPU RELIABILITY', environment: 'LOCAL' });
+  const [platformConfig, setPlatformConfig] = useState<PlatformConfig>(() => readPlatformBrand({ instance_name: 'Atlas Cluster', product_name: 'ATLAS', product_tagline: 'GPU RELIABILITY', environment: 'LOCAL' }));
   const [freshness, setFreshness] = useState<DataFreshness | null>(null);
   const [summary, setSummary] = useState<FleetSummary | null>(null);
   const [gpuAssets, setGPUAssets] = useState<GPUAsset[]>([]);
@@ -300,7 +302,6 @@ export default function App() {
   const [inventoryError, setInventoryError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const initialLoadComplete = useRef(false);
   const [selected, setSelected] = useState<number | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [level, setLevel] = useState('');
@@ -327,51 +328,61 @@ export default function App() {
   const [nodeAccess, setNodeAccess] = useState<NodeAccessOverview | null>(null);
   const [subPage, setSubPage] = useState<Record<PageId, string>>({ overview: '', gpus: 'health', hardware: '', issues: 'ledger', incidents: 'hardware', validations: 'degradation', quality: 'targets', models: 'prediction', about: 'definition' });
 
-  const navigate = (id: PageId, view?: string) => { if (view) setSubPage(current => ({ ...current, [id]: view })); setPage(id); setSidebar(false); window.location.hash = `/${id}`; window.scrollTo(0, 0); };
-  const load = async () => {
-    if (!initialLoadComplete.current) setLoading(true);
+  const navigate = (id: PageId, view?: string) => { if (id === 'hardware') setHardwareVisited(true); if (view) setSubPage(current => ({ ...current, [id]: view })); setPage(id); setSidebar(false); window.location.hash = `/${id}`; window.scrollTo(0, 0); };
+  const load = useCallback(async (signal?: AbortSignal) => {
     setRefreshing(true);
-    try {
-      const [s, df, f, fs, ga, ct, sr, ac, hs, hg, fes, is, pc, ds, dc, tq, na] = await Promise.all([
-        fetch('/api/v1/status'), fetch('/api/v1/data-freshness'), fetch('/api/v1/alerts/failures?limit=8'),
-        fetch('/api/v1/fleet/summary'), fetch('/api/v1/gpus?limit=2000'), fetch('/api/v1/targets?limit=2000'),
-        fetch('/api/v1/sync-runs?limit=20'), fetch('/api/v1/inventory/changes?limit=50'),
-        fetch('/api/v1/health/summary'), fetch('/api/v1/health/gpus?limit=1000'), fetch('/api/v1/fault-events/summary'), fetch('/api/v1/issues/summary'),
-        fetch('/api/v1/platform-config'),
-        fetch('/api/v1/degradation/summary'), fetch('/api/v1/degradation/candidates'), fetch('/api/v1/health/telemetry-quality'),
-        fetch('/api/v1/node-access/overview'),
-      ]);
-      if (s.ok) setStatus(await s.json());
-      if (df.ok) setFreshness(await df.json()); else setFreshness({ overall_status: 'error', server_time: new Date().toISOString(), sources: {} });
-      if (f.ok) { const data = await f.json(); setFailures(Array.isArray(data.items) ? data.items : []); }
-      if (fs.ok && ga.ok && ct.ok) {
-        const [fleetData, gpuData, targetData] = await Promise.all([fs.json(), ga.json(), ct.json()]);
-        setSummary(fleetData.data || null);
-        setGPUAssets(Array.isArray(gpuData.data) ? gpuData.data : []);
-        setTargets(Array.isArray(targetData.data) ? targetData.data : []);
-        setInventoryError(false);
-      } else setInventoryError(true);
-      if (sr.ok) { const data = await sr.json(); setSyncRuns(Array.isArray(data.data) ? data.data : []); }
-      if (ac.ok) { const data = await ac.json(); setAssetChanges(Array.isArray(data.data) ? data.data : []); }
-      if (hs.ok) { const data = await hs.json(); setHealthSummary(data.data || null); }
-      if (hg.ok) { const data = await hg.json(); setHealthScores(Array.isArray(data.data) ? data.data : []); }
-      if (fes.ok) { const data = await fes.json(); setFaultSummary(data.data || null); }
-      if (is.ok) { const data = await is.json(); setIssueSummary(data.data || null); }
-      if (pc.ok) { const data = await pc.json(); if (data.data) setPlatformConfig(data.data); }
-      if (ds.ok) { const data = await ds.json(); setDegradationSummary(data.data || null); }
-      if (dc.ok) { const data = await dc.json(); setDegradationCandidates(Array.isArray(data.data) ? data.data : []); }
-      if (tq.ok) { const data = await tq.json(); setTelemetryQuality(Array.isArray(data.data) ? data.data : []); setTelemetryQualitySummary(data.summary || null); }
-      if (na.ok) { const data = await na.json(); setNodeAccess(data.data || null); }
-    } catch { setInventoryError(true); } finally {
-      initialLoadComplete.current = true;
-      setLoading(false);
-      setRefreshing(false);
+    const jobs: Promise<void>[] = [];
+    const read = (url: string, apply: (data: Awaited<ReturnType<typeof fetchJSON>>) => void, fail?: () => void) => {
+      jobs.push(fetchJSON(url, signal).then(data => { if (!signal?.aborted) apply(data); }).catch(() => { if (!signal?.aborted) fail?.(); }));
+    };
+    read('/api/v1/status', setStatus);
+    read('/api/v1/data-freshness', setFreshness);
+    if (page === 'overview' || page === 'gpus' || page === 'quality' || page === 'models') {
+      read('/api/v1/fleet/summary', data => { setSummary(data.data || null); setInventoryError(false); setLoading(false); }, () => { setInventoryError(true); setLoading(false); });
+      read('/api/v1/gpus?limit=2000', data => setGPUAssets(data.data || []));
     }
-  };
-  useEffect(() => { load(); const id = window.setInterval(load, 30000); return () => window.clearInterval(id); }, []);
+    if (page === 'overview' || page === 'incidents') {
+      read('/api/v1/fault-events/summary', data => setFaultSummary(data.data || null));
+      read('/api/v1/alerts/failures?limit=8', data => setFailures(data.items || []));
+    }
+    if (page === 'gpus') {
+      read('/api/v1/health/summary', data => setHealthSummary(data.data || null));
+      read('/api/v1/health/gpus?limit=1000', data => setHealthScores(data.data || []));
+    }
+    if (page === 'quality') {
+      read('/api/v1/targets?limit=2000', data => setTargets(data.data || []));
+      read('/api/v1/sync-runs?limit=20', data => setSyncRuns(data.data || []));
+      read('/api/v1/inventory/changes?limit=50', data => setAssetChanges(data.data || []));
+      read('/api/v1/health/telemetry-quality', data => { setTelemetryQuality(data.data || []); setTelemetryQualitySummary(data.summary || null); });
+    }
+    if (page === 'quality') read('/api/v1/node-access/overview', data => setNodeAccess(data.data || null));
+    if (page === 'issues' || page === 'quality') read('/api/v1/issues/summary', data => setIssueSummary(data.data || null));
+    if (page === 'validations') {
+      read('/api/v1/degradation/summary', data => setDegradationSummary(data.data || null));
+      read('/api/v1/degradation/candidates', data => setDegradationCandidates(data.data || []));
+    }
+    await Promise.allSettled(jobs);
+    if (!signal?.aborted) setRefreshing(false);
+  }, [page]);
+  useEffect(() => {
+    const controller = new AbortController();
+    let busy = false;
+    const refreshPage = async () => { if (busy) return; busy = true; await load(controller.signal); busy = false; };
+    void refreshPage();
+    const id = window.setInterval(refreshPage, 30000);
+    return () => { controller.abort(); window.clearInterval(id); };
+  }, [load]);
+  useEffect(() => {
+    const controller = new AbortController();
+    const update = () => { void fetchJSON('/api/v1/platform-config', controller.signal).then(payload => { if (!controller.signal.aborted && payload.data) setPlatformConfig(payload.data); }).catch(() => {}); };
+    update(); const timer = window.setInterval(update, 30000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, []);
+  useEffect(() => { writePlatformBrand(platformConfig); }, [platformConfig]);
   useEffect(() => { document.title = `${platformConfig.instance_name} · ${platformConfig.product_name}`; }, [platformConfig]);
   useEffect(() => {
     let cancelled = false;
+    if (page !== 'incidents' || subPage.incidents !== 'ingestion') return;
     const loadPage = async () => {
       setIngestionLoading(true);
       try {
@@ -399,10 +410,11 @@ export default function App() {
     const debounce = window.setTimeout(loadPage, ingestionQuery ? 250 : 0);
     const interval = window.setInterval(loadPage, 30000);
     return () => { cancelled = true; window.clearTimeout(debounce); window.clearInterval(interval); };
-  }, [ingestionBeforeID, ingestionQuery, ingestionLevel, ingestionRefresh]);
+  }, [page, subPage.incidents, ingestionBeforeID, ingestionQuery, ingestionLevel, ingestionRefresh]);
   useEffect(() => { setIngestionBeforeID(0); setIngestionCursorHistory([]); }, [ingestionQuery, ingestionLevel]);
   useEffect(() => {
     let cancelled = false;
+    if (page !== 'overview' && page !== 'incidents') return;
     const loadFaultPage = async () => {
       setFaultLoading(true);
       try {
@@ -421,10 +433,11 @@ export default function App() {
     };
     const debounce = window.setTimeout(loadFaultPage, query ? 250 : 0);
     return () => { cancelled = true; window.clearTimeout(debounce); };
-  }, [faultBeforeID, query, level, ingestionRefresh, issueRefresh]);
+  }, [page, faultBeforeID, query, level, ingestionRefresh, issueRefresh]);
   useEffect(() => { setFaultBeforeID(0); setFaultCursorHistory([]); }, [query, level]);
   useEffect(() => {
     let cancelled = false;
+    if (page !== 'issues' || subPage.issues !== 'ledger') return;
     const loadIssues = async () => {
       setIssueLoading(true);
       try {
@@ -444,7 +457,7 @@ export default function App() {
     };
     const debounce = window.setTimeout(loadIssues, issueQuery ? 250 : 0);
     return () => { cancelled = true; window.clearTimeout(debounce); };
-  }, [issueBeforeID, issueCategory, issueStatus, issueQuery, issueRefresh]);
+  }, [page, subPage.issues, issueBeforeID, issueCategory, issueStatus, issueQuery, issueRefresh]);
   useEffect(() => { setIssueBeforeID(0); setIssueCursorHistory([]); }, [issueCategory, issueStatus, issueQuery]);
   useEffect(() => {
     if (!selectedIssueID) { setIssueDetail(null); return; }
@@ -541,7 +554,7 @@ export default function App() {
           {page === 'models' && <PageErrorBoundary key={subPage.models} title={tx('故障预警页面数据异常', 'Failure early-warning page data error')}><Models tx={tx} view={subPage.models} lang={lang} assets={gpuAssets} /></PageErrorBoundary>}
           {page === 'about' && <About tx={tx} view={subPage.about} platformConfig={platformConfig} onPlatformConfig={setPlatformConfig} />}
         </motion.div></AnimatePresence>
-        <div hidden={page !== 'hardware'}><PageErrorBoundary title={tx('硬件健康报告异常', 'Hardware health report error')}><HardwareHealth tx={tx} lang={lang} /></PageErrorBoundary></div>
+        {hardwareVisited && <div hidden={page !== 'hardware'}><Suspense fallback={<div aria-busy="true">{tx('加载中…', 'Loading…')}</div>}><PageErrorBoundary title={tx('硬件健康报告异常', 'Hardware health report error')}><HardwareHealth tx={tx} lang={lang} /></PageErrorBoundary></Suspense></div>}
       </div>
     </main>
     <AnimatePresence>{searchOpen && <GlobalSearch tx={tx} query={query} setQuery={setQuery} pagesCopy={copy} items={ingestions} assets={gpuAssets} close={() => setSearchOpen(false)} navigate={navigate} select={id => { setSelected(id); navigate('incidents'); setSearchOpen(false); }} />}</AnimatePresence>
@@ -587,19 +600,13 @@ function IntegrationStatus({ tx, summary, inventoryError, navigate }: { tx: Tx; 
       return response.json();
     };
     const load = async () => {
-      const results = await Promise.allSettled([
-        Promise.all([read('/api/v1/inventory/reconciliation?limit=1'), read('/api/v1/platform-config/assets')]),
-        read('/api/v1/hardware/disks?limit=1&order=observed'),
-      ]);
-      if (controller.signal.aborted) return;
-      const [assetResult, diskResult] = results;
-      setAssetError(assetResult.status === 'rejected');
-      setDiskError(diskResult.status === 'rejected');
-      if (assetResult.status === 'fulfilled') {
-        const [reconciliation, config] = assetResult.value;
-        setAssets({ total: reconciliation.summary.total, syncedAt: config.data.last_sync_at, status: config.data.last_sync_status });
-      }
-      if (diskResult.status === 'fulfilled') setDisks({ total: diskResult.value.meta.total, observedAt: diskResult.value.data[0]?.observed_at });
+      const assetsJob = Promise.all([read('/api/v1/inventory/reconciliation?limit=1'), read('/api/v1/platform-config/assets')])
+        .then(([reconciliation, config]) => { if (!controller.signal.aborted) { setAssetError(false); setAssets({ total: reconciliation.summary.total, syncedAt: config.data.last_sync_at, status: config.data.last_sync_status }); } })
+        .catch(() => { if (!controller.signal.aborted) setAssetError(true); });
+      const disksJob = read('/api/v1/hardware/disks?limit=1&order=observed')
+        .then(payload => { if (!controller.signal.aborted) { setDiskError(false); setDisks({ total: payload.meta.total, observedAt: payload.data[0]?.observed_at }); } })
+        .catch(() => { if (!controller.signal.aborted) setDiskError(true); });
+      await Promise.allSettled([assetsJob, disksJob]);
     };
     void load();
     const timer = window.setInterval(() => void load(), 60000);
@@ -645,7 +652,7 @@ function AssetStatistics({ tx, lang }: { tx: Tx; lang: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [scope, setScope] = useState('');
-  const [category, setCategory] = useState('');
+  const [category, setCategory] = useState('gpu');
   const [query, setQuery] = useState('');
   const [assetPage, setAssetPage] = useState(0);
   const initialLoadComplete = useRef(false);
@@ -697,7 +704,7 @@ function AssetStatistics({ tx, lang }: { tx: Tx; lang: string }) {
     <Card className="span-12 asset-difference-card">
       <CardHead code="SOURCE DIFFERENCE" title={tx('GPU 双接口差值', 'GPU Cross-source Difference')} action={scope ? <button className="link" onClick={() => setScope('')}>{tx('取消筛选', 'Clear filter')}<X size={12} /></button> : undefined} />
       <div className="source-diff-grid">
-        {[['both', tx('双边共有', 'In both'), tx('SN 或 IP 匹配', 'Matched by SN or IP'), CheckCircle2], ['ops_only', tx('仅运维主机接口', 'Ops host only'), tx('当前资产源无匹配记录', 'No match in current machine source'), Server], ['asset_only', tx('仅资产设备接口', 'Asset machine only'), tx('当前运维源无匹配记录', 'No match in current ops source'), Database]].map(([key, label, note, Icon]) => { const I = Icon as typeof Server; const count = summary?.by_scope[String(key)] || 0; return <button key={String(key)} className={scope === key ? 'active' : ''} onClick={() => { setCategory(''); setScope(current => current === key ? '' : String(key)); }}><I size={19} /><span><b>{String(label)}</b><small>{String(note)}</small></span><strong>{count}</strong></button>; })}
+        {[['both', tx('双边共有', 'In both'), tx('SN 或 IP 匹配', 'Matched by SN or IP'), CheckCircle2], ['ops_only', tx('仅运维主机接口', 'Ops host only'), tx('当前资产源无匹配记录', 'No match in current machine source'), Server], ['asset_only', tx('仅资产设备接口', 'Asset machine only'), tx('当前运维源无匹配记录', 'No match in current ops source'), Database]].map(([key, label, note, Icon]) => { const I = Icon as typeof Server; const count = summary?.by_scope[String(key)] || 0; return <button key={String(key)} className={scope === key ? 'active' : ''} onClick={() => { setCategory('gpu'); setScope(current => current === key ? '' : String(key)); }}><I size={19} /><span><b>{String(label)}</b><small>{String(note)}</small></span><strong>{count}</strong></button>; })}
       </div>
     </Card>
     <Card className="span-12">
@@ -2590,7 +2597,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
     version: module.id === 'asset' ? 'v1.3.1' : 'v0.3.0',
     status: tx('聚合平台资产源', 'AGGREGATED ASSET SOURCE'),
     desc: tx('通过统一运维聚合平台的 OAuth 客户端凭证和数据中心范围读取完整双源资产快照；仅手动元数据同步，不触发设备采集、GPU 评分或通知。', 'Reads complete dual-source asset snapshots from the shared operations aggregation platform using OAuth client credentials and explicit data-center scope. Manual metadata sync does not trigger device collection, GPU scoring or notifications.'),
-    history: [tx('v0.120.73 · 同数据中心同 IP 的重复源记录合并统计，保留源记录与冲突标记，避免误报仅资产设备', 'v0.120.73 · groups duplicate source endpoints within a data center, preserves records and flags conflicts instead of false asset-only nodes'), tx('v0.120.72 · 主分支纳入资产统计修复；发布支持 EXPECTED_COMMIT 校验，错误源码提交在访问远端前阻断', 'v0.120.72 · integrates asset statistics fixes into main; EXPECTED_COMMIT blocks the wrong source commit before remote access'), tx('v0.120.71 · GPU 型号排除机柜/U 位；先对账再按设备生命周期筛选，保留未知运维状态与源存在性', 'v0.120.71 · excludes rack/U positions from GPU models; matches sources before machine lifecycle filtering and preserves unknown ops state and source presence'), tx('v0.120.66 · 稳定翻译函数引用，避免总览刷新取消硬盘请求或清空详情选择', 'v0.120.66 · stabilizes translation callbacks so overview refreshes do not cancel disk requests or clear detail selection'), tx('v0.120.65 · 接通开发实例资产与 VM 监控；目标接口不支持时查询 up，多网段按 host_ip 对齐 BMC，总览显示资产、监控和硬盘快照时间', 'v0.120.65 · connects development assets and VM monitoring; unsupported targets use up, multi-subnet BMC mapping uses host_ip, and overview shows assets, monitoring and disk observation times'), tx('v0.120.63 · OAuth 服务端鉴权、Token 刷新、有界分页、CA/TLS 配置与独立手动同步；错误或部分响应保留上次快照', 'v0.120.63 · server-side OAuth, token refresh, bounded pagination, CA/TLS configuration and independent manual sync; failed or partial responses preserve the previous snapshot'), ...module.history],
+    history: [tx('v0.120.74 · 品牌独立加载与缓存、页面数据渐进加载、资产统计默认 GPU', 'v0.120.74 · independent cached branding, progressive page data and GPU-first asset statistics'), tx('v0.120.73 · 同数据中心同 IP 的重复源记录合并统计，保留源记录与冲突标记，避免误报仅资产设备', 'v0.120.73 · groups duplicate source endpoints within a data center, preserves records and flags conflicts instead of false asset-only nodes'), tx('v0.120.72 · 主分支纳入资产统计修复；发布支持 EXPECTED_COMMIT 校验，错误源码提交在访问远端前阻断', 'v0.120.72 · integrates asset statistics fixes into main; EXPECTED_COMMIT blocks the wrong source commit before remote access'), tx('v0.120.71 · GPU 型号排除机柜/U 位；先对账再按设备生命周期筛选，保留未知运维状态与源存在性', 'v0.120.71 · excludes rack/U positions from GPU models; matches sources before machine lifecycle filtering and preserves unknown ops state and source presence'), tx('v0.120.66 · 稳定翻译函数引用，避免总览刷新取消硬盘请求或清空详情选择', 'v0.120.66 · stabilizes translation callbacks so overview refreshes do not cancel disk requests or clear detail selection'), tx('v0.120.65 · 接通开发实例资产与 VM 监控；目标接口不支持时查询 up，多网段按 host_ip 对齐 BMC，总览显示资产、监控和硬盘快照时间', 'v0.120.65 · connects development assets and VM monitoring; unsupported targets use up, multi-subnet BMC mapping uses host_ip, and overview shows assets, monitoring and disk observation times'), tx('v0.120.63 · OAuth 服务端鉴权、Token 刷新、有界分页、CA/TLS 配置与独立手动同步；错误或部分响应保留上次快照', 'v0.120.63 · server-side OAuth, token refresh, bounded pagination, CA/TLS configuration and independent manual sync; failed or partial responses preserve the previous snapshot'), ...module.history],
   } : module).map(module => module.id === 'component-health' ? {
     ...module,
     version: 'v0.9.0',
@@ -2827,7 +2834,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.73" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.74" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>
