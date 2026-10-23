@@ -156,3 +156,45 @@ func TestReconciliationSourcePresenceBeforeLifecycle(t *testing.T) {
 		}
 	}
 }
+
+func TestDuplicateEndpointRecordsDoNotBecomeMissingNodes(t *testing.T) {
+	records := []api.InfrastructureAsset{
+		{AssetKey: "ops", Source: "ops_host", DataCenterID: "dc", IPAddress: "10.0.0.1", SerialNumber: "NEW", Present: true, InUse: true},
+		{AssetKey: "machine-old", Source: "asset_machine", DataCenterID: "dc", IPAddress: "10.0.0.1", SerialNumber: "OLD", Name: "4090-node1", Present: true, InUse: true},
+		{AssetKey: "machine-new", Source: "asset_machine", DataCenterID: "dc", IPAddress: "10.0.0.1", SerialNumber: "NEW", Name: "4090-node1", Present: true, InUse: true},
+		{AssetKey: "ops-duplicate", Source: "ops_host", DataCenterID: "dc", IPAddress: "10.0.0.1", SerialNumber: "NEW", Present: true, InUse: true},
+	}
+	var key string
+	for i := 0; i < len(records); i++ {
+		records = append(records[1:], records[0])
+		rows := reconcileAssets(records)
+		if len(rows) != 1 || rows[0].Scope != reconcileBoth || !rows[0].SourceConflict || len(rows[0].MachineRecords) != 2 || len(rows[0].OpsRecords) != 2 || rows[0].SerialNumber != "NEW" {
+			t.Fatalf("duplicate endpoint misclassified: %+v", rows)
+		}
+		if i > 0 && key != rows[0].Key {
+			t.Fatal("input order changes identity")
+		}
+		key = rows[0].Key
+	}
+	// Removing a duplicate clears the conflict; removing the ops source still
+	// produces a genuine asset-only node. No sticky presence or debounce cache.
+	rows := reconcileAssets(records[:0])
+	if len(rows) != 0 {
+		t.Fatal(rows)
+	}
+	machine := api.InfrastructureAsset{AssetKey: "solo", Source: "asset_machine", IPAddress: "10.0.0.1", Name: "4090-node1", Present: true, InUse: true}
+	rows = reconcileAssets([]api.InfrastructureAsset{machine})
+	if len(rows) != 1 || rows[0].Scope != reconcileMachineOnly || rows[0].SourceConflict {
+		t.Fatal(rows)
+	}
+}
+
+func TestEndpointGroupingPreservesDataCentersAndMissingIPIdentities(t *testing.T) {
+	var records []api.InfrastructureAsset
+	for _, key := range []string{"a", "b"} {
+		records = append(records, api.InfrastructureAsset{AssetKey: key, Source: "asset_machine", DataCenterID: key, IPAddress: "10.0.0.1", Name: "H100-node", Present: true, InUse: true}, api.InfrastructureAsset{AssetKey: "noip" + key, Source: "asset_machine", Name: "H100-node", Present: true, InUse: true})
+	}
+	if rows := reconcileAssets(records); len(rows) != 4 {
+		t.Fatalf("unrelated endpoints collapsed: %+v", rows)
+	}
+}
