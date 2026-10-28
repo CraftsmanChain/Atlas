@@ -12,29 +12,45 @@ import (
 )
 
 const OutcomeVersion = "gpu-node-outcome-v1"
+const HistorySourceVersion = "gpu-host-history-source-v1"
+
+// HostContext is an explicitly reviewed physical-host assertion, never a lookup
+// of current inventory for an old prediction cutoff. Missing values stay null.
+type HostContext struct {
+	HostType     string `json:"host_type"`
+	GPUModel     string `json:"gpu_model"`
+	Manufacturer string `json:"manufacturer"`
+	MainBoard    string `json:"main_board"`
+	QuotaGroup   string `json:"quota_group"`
+	DataCenter   string `json:"data_center"`
+	Rack         string `json:"rack"`
+}
 
 // EvidenceInput is a controlled human assertion, not an automatic claim that
 // telemetry or incident ingestion was complete. All three coverage sources are
 // mandatory for a healthy negative: hardware_fault_ledger, monitoring, identity.
 type EvidenceInput struct {
-	Kind        string    `json:"kind"`
-	Key         string    `json:"key"`
-	PreviousSHA string    `json:"previous_sha"`
-	Owner       string    `json:"owner"`
-	EvidenceSHA string    `json:"evidence_sha"`
-	NodeID      uint      `json:"node_id"`
-	Generation  int       `json:"generation"`
-	QueryID     uint      `json:"query_id"`
-	EntityRef   string    `json:"entity_ref"`
-	From        time.Time `json:"from"`
-	Through     time.Time `json:"through"`
-	FeedbackID  uint      `json:"feedback_id"`
-	ReviewSHA   string    `json:"review_sha"`
-	GPUUUID     string    `json:"gpu_uuid"`
-	GPUIndex    *int      `json:"gpu_index,omitempty"`
-	Source      string    `json:"source"`
-	Complete    bool      `json:"complete"`
-	State       string    `json:"state"`
+	SourceVersion string       `json:"source_version,omitempty"`
+	Context       *HostContext `json:"context,omitempty"`
+	Severity      string       `json:"severity,omitempty"`
+	Kind          string       `json:"kind"`
+	Key           string       `json:"key"`
+	PreviousSHA   string       `json:"previous_sha"`
+	Owner         string       `json:"owner"`
+	EvidenceSHA   string       `json:"evidence_sha"`
+	NodeID        uint         `json:"node_id"`
+	Generation    int          `json:"generation"`
+	QueryID       uint         `json:"query_id"`
+	EntityRef     string       `json:"entity_ref"`
+	From          time.Time    `json:"from"`
+	Through       time.Time    `json:"through"`
+	FeedbackID    uint         `json:"feedback_id"`
+	ReviewSHA     string       `json:"review_sha"`
+	GPUUUID       string       `json:"gpu_uuid"`
+	GPUIndex      *int         `json:"gpu_index,omitempty"`
+	Source        string       `json:"source"`
+	Complete      bool         `json:"complete"`
+	State         string       `json:"state"`
 }
 
 func validSHA(v string) bool {
@@ -55,7 +71,14 @@ func evidenceValid(db *gorm.DB, in EvidenceInput, now time.Time) error {
 	if in.PreviousSHA != "" && !validSHA(in.PreviousSHA) {
 		return ErrInput
 	}
+	if in.Kind != "host_context" && in.Kind != "episode_state" && (in.SourceVersion != "" || in.Context != nil || in.Severity != "") {
+		return ErrInput
+	}
 	switch in.Kind {
+	case "host_context", "episode_state":
+		if err := historyEvidenceValid(db, in); err != nil {
+			return err
+		}
 	case "identity":
 		if in.FeedbackID == 0 || !validSHA(in.ReviewSHA) || in.EntityRef == "" || in.QueryID != 0 || in.Source != "" || in.State != "" {
 			return ErrInput

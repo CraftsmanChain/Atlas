@@ -15,8 +15,8 @@ import (
 	"gorm.io/gorm"
 )
 
-const DatasetVersion = "gpu-host-history-dataset-v1"
-const HistoryFeatureVersion = "gpu-host-history-v1"
+const DatasetVersion = "gpu-host-history-dataset-v2"
+const HistoryFeatureVersion = "gpu-host-history-v2"
 
 // DatasetSpec pins immutable outcome batches. There is deliberately no "latest"
 // selector, automatic training, label balancing or request-time asset lookup.
@@ -217,7 +217,8 @@ func historyAt(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs
 			conflict = true
 			continue
 		}
-		events[r.EpisodeKey] = historyEvent{r.EpisodeKey, r.ConfirmedFaultType, a, b, []string{r.ReviewSHA256, e.SHA}}
+		shas := append(events[r.EpisodeKey].sha, r.ReviewSHA256, e.SHA)
+		events[r.EpisodeKey] = historyEvent{r.EpisodeKey, r.ConfirmedFaultType, a, b, shas}
 	}
 	sorted := []historyEvent{}
 	for _, e := range events {
@@ -309,9 +310,7 @@ func historyAt(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs
 	if conflict {
 		f.Blockers = append(f.Blockers, "historical_episode_conflict")
 	}
-	// Existing reviews do not supply severity or a complete unresolved-at-cutoff
-	// contract; do not infer either from fault names or current repair state.
-	f.Blockers = append(f.Blockers, "static_context_not_in_frozen_scope", "severity_unresolved_semantics_pending")
+	applyHistorySources(&f, m, q, assertions, sorted)
 	sort.Strings(f.EvidenceSHAs)
 	return f, nil
 }
