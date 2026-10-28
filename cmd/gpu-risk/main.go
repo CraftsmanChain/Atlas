@@ -31,8 +31,21 @@ func run(args []string) error {
 	queryID := flags.Uint("query", 0, "frozen query ID for outcomes")
 	asOfText := flags.String("as-of", "", "RFC3339 outcome evaluation time; defaults to now")
 	input := flags.String("input", "", "frozen plan JSON (required for record)")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset") {
-		return fmt.Errorf("usage: gpu-risk [plan|record|evidence|outcome-plan|outcomes|dataset] [-driver postgres|sqlite] [-input plan.json]")
+	datasetFile := flags.String("dataset-file", "", "pinned local dataset JSON for verify-model")
+	artifactFile := flags.String("artifact-file", "", "local model JSON for verify-model")
+	scoresFile := flags.String("scores-file", "", "local scores JSON for verify-model")
+	datasetSHA := flags.String("dataset-sha", "", "exact dataset file SHA256")
+	artifactSHA := flags.String("artifact-sha", "", "exact model file SHA256")
+	scoresSHA := flags.String("scores-sha", "", "exact score file SHA256")
+	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model") {
+		return fmt.Errorf("usage: gpu-risk [plan|record|evidence|outcome-plan|outcomes|dataset|verify-model] [-driver postgres|sqlite] [-input plan.json]")
+	}
+	if command == "verify-model" {
+		report, err := gpurisk.VerifyRankerFiles(*datasetFile, *datasetSHA, *artifactFile, *artifactSHA, *scoresFile, *scoresSHA)
+		if err != nil {
+			return fmt.Errorf("model parity rejected: file fingerprint, contract or node scores")
+		}
+		return json.NewEncoder(os.Stdout).Encode(report)
 	}
 	dsn := os.Getenv("ATLAS_GPU_RISK_DSN")
 	if dsn == "" {

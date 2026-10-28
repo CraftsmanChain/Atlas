@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,4 +139,12 @@ func TestExplicitEvidenceAndOutcomeCommands(t *testing.T) {
 		t.Fatal("dataset export wrote results")
 	}
 
+}
+
+func TestVerifyModelHasNoDatabaseDependency(t *testing.T) {
+	t.Setenv("ATLAS_GPU_RISK_DSN", "")
+	err := run([]string{"verify-model"})
+	if err == nil || !strings.Contains(err.Error(), "parity rejected") {
+		t.Fatal("file-only verifier attempted database access", err)
+	}
 }

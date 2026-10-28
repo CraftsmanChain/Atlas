@@ -60,3 +60,13 @@ run-agent:
 
 run-dbmigrate:
 	$(GO) run ./cmd/dbmigrate
+
+# Isolated optional CPU runtime; never installs packages or accesses a database.
+RANKER_PYTHON ?= python3
+.PHONY: gpu-ranker-test
+gpu-ranker-test:
+	@ranker_test_dir=$$(mktemp -d /tmp/atlas-ranker-test.XXXXXX); \
+	trap 'rm -rf "$$ranker_test_dir"' EXIT; \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$ranker_test_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
+	$(GO_ENV) $(GO) build -o "$$ranker_test_dir/gpu-risk" ./cmd/gpu-risk && \
+	ATLAS_GPU_RISK_VERIFY_BIN="$$ranker_test_dir/gpu-risk" ATLAS_GPU_RISK_MLP_FIXTURE="$$ranker_test_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -v
