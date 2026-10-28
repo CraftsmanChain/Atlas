@@ -19,6 +19,7 @@ import (
 	"atlas/internal/features"
 	"atlas/internal/freshness"
 	ig "atlas/internal/gateway"
+	"atlas/internal/gpurisk"
 	"atlas/internal/health"
 	"atlas/internal/history"
 	"atlas/internal/inventory"
@@ -250,6 +251,12 @@ func main() {
 	mux.HandleFunc("/api/v1/node-access/credentials/", nodeAccessHandler.HandleCredential)
 	mux.HandleFunc("/api/v1/node-access/checks", nodeAccessHandler.HandleChecks)
 	mux.HandleFunc("/api/v1/node-access/collections", nodeAccessHandler.HandleCollections)
+
+	gpuRiskDailyEnabled := strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_DAILY_ENABLED"), "true")
+	gpurisk.Handler{DB: db.DB, AutomaticJobsEnabled: gpuRiskDailyEnabled}.Register(mux)
+	if gpuRiskDailyEnabled {
+		go gpurisk.RunDaily(context.Background(), db.DB)
+	}
 
 	// 6.4 GPU hardware inventory and collection coverage (read-only).
 	mux.HandleFunc("/api/v1/fleet/summary", inventoryHandler.HandleFleetSummary)

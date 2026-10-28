@@ -4,6 +4,7 @@
 SERVER_BIN=bin/atlas-server
 AGENT_BIN=bin/atlas-agent
 DBMIGRATE_BIN=bin/atlas-db-migrate
+GPU_RISK_BIN=bin/gpu-risk
 
 GO ?= go
 NPM ?= npm
@@ -22,6 +23,7 @@ build:
 	$(GO_ENV) $(GO) build -o $(SERVER_BIN) ./cmd/server
 	$(GO_ENV) $(GO) build -o $(AGENT_BIN) ./cmd/agent
 	$(GO_ENV) $(GO) build -o $(DBMIGRATE_BIN) ./cmd/dbmigrate
+	$(GO_ENV) $(GO) build -o $(GPU_RISK_BIN) ./cmd/gpu-risk
 	@echo "Build complete."
 
 test:

@@ -198,6 +198,7 @@ func TestRemoteReleaseSwitchAndRollback(t *testing.T) {
 				if previous {
 					writeFixture(t, filepath.Join(root, "atlas-server"), "old binary", 0o755)
 					writeFixture(t, filepath.Join(root, "disk-installation-reconcile"), "old installation binary", 0o755)
+					writeFixture(t, filepath.Join(root, "gpu-risk"), "old gpu-risk binary", 0o755)
 					writeFixture(t, filepath.Join(root, "web/dist/index.html"), "old web", 0o644)
 				}
 				writeFixture(t, filepath.Join(root, "incoming/.placeholder"), "", 0o600)
@@ -215,7 +216,8 @@ if [[ "$1" == run ]]; then
       printf 'migration binary' > "$output/atlas-db-migrate"
       printf 'replay binary' > "$output/hardware-health-replay"
       printf 'installation binary' > "$output/disk-installation-reconcile"
-      chmod 755 "$output/atlas-server" "$output/atlas-db-migrate" "$output/hardware-health-replay" "$output/disk-installation-reconcile"
+      printf 'gpu-risk binary' > "$output/gpu-risk"
+      chmod 755 "$output/gpu-risk" "$output/atlas-server" "$output/atlas-db-migrate" "$output/hardware-health-replay" "$output/disk-installation-reconcile"
     fi
     shift
   done
@@ -239,6 +241,8 @@ while [[ $# -gt 0 ]]; do
       printf 'new binary' > "$2"
     elif [[ "$2" == */hardware-health-replay ]]; then
       printf 'replay binary' > "$2"
+    elif [[ "$2" == */gpu-risk ]]; then
+      printf 'gpu-risk binary' > "$2"
     elif [[ "$2" == */disk-installation-reconcile ]]; then
       printf 'installation binary' > "$2"
     else
@@ -296,6 +300,20 @@ exec "$@"
 					}
 				} else if replayErr != nil || string(replay) != "replay binary" {
 					t.Fatalf("replay binary=%q err=%v output=%s", replay, replayErr, output)
+				}
+				riskCLI, riskErr := os.ReadFile(filepath.Join(root, "gpu-risk"))
+				if mismatch && !previous {
+					if !os.IsNotExist(riskErr) {
+						t.Fatal("failed release retained GPU CLI")
+					}
+				} else {
+					want := "gpu-risk binary"
+					if mismatch {
+						want = "old gpu-risk binary"
+					}
+					if riskErr != nil || string(riskCLI) != want {
+						t.Fatalf("GPU CLI=%q err=%v", riskCLI, riskErr)
+					}
 				}
 				installation, installationErr := os.ReadFile(filepath.Join(root, "disk-installation-reconcile"))
 				if mismatch && !previous {
