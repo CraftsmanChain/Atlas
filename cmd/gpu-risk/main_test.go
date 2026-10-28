@@ -115,4 +115,19 @@ func TestExplicitEvidenceAndOutcomeCommands(t *testing.T) {
 	if count != 1 {
 		t.Fatal("CLI retry duplicated outcome")
 	}
+	var batch api.GPURiskOutcomeBatch
+	store.First(&batch)
+	now := time.Now().UTC()
+	spec := gpurisk.DatasetSpec{BatchIDs: []uint{batch.ID}, Profile: "paper_core", Anchor: now.Add(-30 * 24 * time.Hour), TrainEnd: now.Add(-20 * 24 * time.Hour), ValidationEnd: now.Add(-10 * 24 * time.Hour), TestEnd: now}
+	encoded, _ := json.Marshal(spec)
+	specFile := filepath.Join(t.TempDir(), "dataset-spec.json")
+	os.WriteFile(specFile, encoded, 0600)
+	if e := run([]string{"dataset", "-driver", "sqlite", "-input", specFile}); e != nil {
+		t.Fatal(e)
+	}
+	store.Model(&api.GPURiskOutcomeBatch{}).Count(&count)
+	if count != 1 {
+		t.Fatal("dataset export wrote results")
+	}
+
 }
