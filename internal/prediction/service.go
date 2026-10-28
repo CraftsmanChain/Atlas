@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	FrameworkVersion       = "prediction-framework-v0.27.69"
+	FrameworkVersion       = "prediction-framework-v0.27.70"
 	FeatureContractVersion = "atlas-prediction-features-v1"
 	LabelContractVersion   = "atlas-failure-label-v1"
 	readinessFreshnessSLA  = 30 * time.Minute

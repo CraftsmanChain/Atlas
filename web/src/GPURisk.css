@@ -1,0 +1,14 @@
+.gpu-risk { padding: 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow-wrap: anywhere; }
+.gpu-risk p { margin: 14px 0; line-height: 1.6; }
+.gpu-risk-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; }
+.gpu-risk-toolbar h2 { flex: 1 1 260px; font-size: 18px; }
+.gpu-risk button, .gpu-risk select { padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: inherit; }
+.gpu-risk button:disabled { opacity: .45; }
+.gpu-risk-table { overflow-x: auto; margin: 16px 0; }
+.gpu-risk table { width: 100%; border-collapse: collapse; min-width: 640px; }
+.gpu-risk th, .gpu-risk td { padding: 12px; border-bottom: 1px solid var(--border); text-align: left; }
+.gpu-risk small { display: block; opacity: .65; }
+.gpu-risk summary { cursor: pointer; }
+
+.gpu-risk th { font-size: 12px; }
+.gpu-risk td { font-size: 13px; }
