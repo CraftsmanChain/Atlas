@@ -88,6 +88,22 @@ func TestHistoryCutoffKnownAtAndIndependentEpisodes(t *testing.T) {
 	if features.Numeric["episode_count"] == nil || *features.Numeric["episode_count"] != 1 || features.Numeric["mean_interval_days"] != nil {
 		t.Fatal(features)
 	}
+	// An uncertain incident straddling the 30-day boundary has no exact recent count.
+	uncertain := reviews[0]
+	a, b := q.Cutoff.Add(-31*24*time.Hour), q.Cutoff.Add(-29*24*time.Hour)
+	uncertain.ConfirmedOnsetAt = &a
+	uncertain.ConfirmedWindowStartAt = &a
+	uncertain.ConfirmedWindowEndAt = &b
+	var broad EvidenceInput
+	json.Unmarshal([]byte(ev[0].Data), &broad)
+	broad.From = q.Cutoff.Add(-40 * 24 * time.Hour)
+	uncertainBytes, _ := json.Marshal(broad)
+	uncertainEvidence := ev[0]
+	uncertainEvidence.Data = string(uncertainBytes)
+	uncertainFeatures, e := historyAt(context.Background(), member, q, []api.GPURiskEvidenceRevision{uncertainEvidence}, []api.HardwareFaultFeedbackReview{uncertain})
+	if e != nil || uncertainFeatures.Numeric["episode_count_30d"] != nil || uncertainFeatures.Numeric["recent_ratio"] != nil {
+		t.Fatal("uncertain onset became exact recent count", uncertainFeatures, e)
+	}
 	ev[0].AvailableAt = q.Cutoff
 	features, e = historyAt(context.Background(), member, q, ev, reviews)
 	if e != nil || features.Numeric["episode_count"] != nil {
