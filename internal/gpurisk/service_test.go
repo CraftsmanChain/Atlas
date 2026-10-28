@@ -43,13 +43,34 @@ func reseal(t *testing.T, p Snapshot) Snapshot {
 }
 func testDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, e := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "risk.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	var db *gorm.DB
+	var e error
+	pgDSN := os.Getenv("ATLAS_GPU_RISK_R2_TEST_PG")
+	schema := ""
+	if pgDSN != "" {
+		db, e = gorm.Open(postgres.Open(pgDSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+		if e == nil {
+			raw, _ := db.DB()
+			raw.SetMaxOpenConns(1)
+			schema = fmt.Sprintf("gpu_r2_test_%d", time.Now().UnixNano())
+			if e = db.Exec("CREATE SCHEMA " + schema).Error; e == nil {
+				e = db.Exec("SET search_path TO " + schema).Error
+			}
+		}
+	} else {
+		db, e = gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "risk.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	}
 	if e != nil {
 		t.Fatal(e)
 	}
 	raw, _ := db.DB()
 	raw.SetMaxOpenConns(1)
-	t.Cleanup(func() { raw.Close() })
+	t.Cleanup(func() {
+		if schema != "" {
+			db.Exec("DROP SCHEMA " + schema + " CASCADE")
+		}
+		raw.Close()
+	})
 	if e := Migrate(db); e != nil {
 		t.Fatal(e)
 	}
@@ -472,7 +493,7 @@ func TestOverviewCollectingFailedAndStale(t *testing.T) {
 		t.Fatal(e)
 	}
 	data = fetch()
-	if data["status"] != "stale" || data["probability_emitted"] != false || data["outcome_status"] != "not_implemented" {
+	if data["status"] != "stale" || data["probability_emitted"] != false || data["outcome_status"] != "available_on_explicit_record" {
 		t.Fatal(data)
 	}
 }

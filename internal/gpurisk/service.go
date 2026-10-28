@@ -153,17 +153,17 @@ func Capture(ctx context.Context, db *gorm.DB) (Snapshot, error) {
 					if n.IdentityChangedAt.After(lower) {
 						lower = n.IdentityChangedAt
 					}
-					err := tx.Where("gpu_asset_id = ? AND gpu_uuid = ? AND node_ip = ? AND evaluated_at >= ? AND evaluated_at < ? AND created_at < ?", a.ID, a.CurrentUUID, n.NodeIP, lower, p.Cutoff, p.Cutoff).Order("evaluated_at DESC, id DESC").First(&h).Error
+					err := tx.Where("gpu_asset_id = ? AND gpu_uuid = ? AND node_ip = ? AND "+timeSQL(tx, "evaluated_at", ">=")+" AND "+timeSQL(tx, "evaluated_at", "<")+" AND "+timeSQL(tx, "created_at", "<"), a.ID, a.CurrentUUID, n.NodeIP, lower, p.Cutoff, p.Cutoff).Order(timeOrder(tx, "evaluated_at")).First(&h).Error
 					if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 						return err
 					}
 					if err == nil {
 						var run api.HealthEvaluationRun
-						e := tx.Where("id = ? AND status = ? AND finished_at < ?", h.EvaluationRunID, "success", p.Cutoff).First(&run).Error
+						e := tx.Where("id = ? AND status = ? AND "+timeSQL(tx, "finished_at", "<"), h.EvaluationRunID, "success", p.Cutoff).First(&run).Error
 						if e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {
 							return e
 						}
-						if e == nil {
+						if e == nil && run.FinishedAt != nil && run.FinishedAt.Before(p.Cutoff) && h.EvaluatedAt.Before(p.Cutoff) && !h.EvaluatedAt.Before(lower) && h.CreatedAt.Before(p.Cutoff) {
 							card.HealthID = h.ID
 							card.RunID = h.EvaluationRunID
 							card.Rule = h.RuleVersion
@@ -342,7 +342,7 @@ func Build(p Snapshot) ([]api.GPURiskMember, []api.GPURiskScore, error) {
 }
 
 func Models() []any {
-	return []any{&api.GPURiskScope{}, &api.GPURiskQuery{}, &api.GPURiskMember{}, &api.GPURiskScore{}, &api.GPURiskJob{}}
+	return []any{&api.GPURiskEvidenceRevision{}, &api.GPURiskOutcomeBatch{}, &api.GPURiskNodeOutcome{}, &api.GPURiskScope{}, &api.GPURiskQuery{}, &api.GPURiskMember{}, &api.GPURiskScore{}, &api.GPURiskJob{}}
 }
 func Migrate(db *gorm.DB) error { return db.AutoMigrate(Models()...) }
 

@@ -253,7 +253,11 @@ func main() {
 	mux.HandleFunc("/api/v1/node-access/collections", nodeAccessHandler.HandleCollections)
 
 	gpuRiskDailyEnabled := strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_DAILY_ENABLED"), "true")
-	gpurisk.Handler{DB: db.DB, AutomaticJobsEnabled: gpuRiskDailyEnabled}.Register(mux)
+	gpuOutcomeEnabled := strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_OUTCOMES_ENABLED"), "true")
+	gpurisk.Handler{DB: db.DB, AutomaticJobsEnabled: gpuRiskDailyEnabled, OutcomeJobsEnabled: gpuOutcomeEnabled}.Register(mux)
+	if gpuOutcomeEnabled {
+		go gpurisk.RunOutcomes(context.Background(), db.DB)
+	}
 	if gpuRiskDailyEnabled {
 		go gpurisk.RunDaily(context.Background(), db.DB)
 	}

@@ -16,9 +16,11 @@ import (
 type Handler struct {
 	DB                   *gorm.DB
 	AutomaticJobsEnabled bool
+	OutcomeJobsEnabled   bool
 }
 
 func (h Handler) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/api/v1/gpu-risk/evidence", h.ServeHTTP)
 	mux.HandleFunc("/api/v1/gpu-risk/overview", h.ServeHTTP)
 	mux.HandleFunc("/api/v1/gpu-risk/queries", h.ServeHTTP)
 	mux.HandleFunc("/api/v1/gpu-risk/queries/", h.ServeHTTP)
@@ -66,6 +68,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	db := h.DB.WithContext(r.Context())
 	base := "/api/v1/gpu-risk/"
 	path := strings.TrimPrefix(r.URL.Path, base)
+	if path == "evidence" {
+		h.evidenceHTTP(w, r, v)
+		return
+	}
 	if path == "overview" {
 		if !params(v) {
 			http.Error(w, "invalid parameters", 400)
@@ -91,7 +97,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				status = "stale"
 			}
 		}
-		respond(w, 200, map[string]any{"data": map[string]any{"status": status, "latest": query, "jobs": jobs, "no_action": true, "probability_emitted": false, "automatic_jobs_enabled": h.AutomaticJobsEnabled, "outcome_status": "not_implemented", "blockers": []string{"ranking_value_unverified", "history_features_pending", "ranking_outcomes_pending"}}})
+		respond(w, 200, map[string]any{"data": map[string]any{"status": status, "latest": query, "jobs": jobs, "no_action": true, "probability_emitted": false, "automatic_jobs_enabled": h.AutomaticJobsEnabled, "outcome_jobs_enabled": h.OutcomeJobsEnabled, "outcome_status": "available_on_explicit_record", "blockers": []string{"ranking_value_unverified", "history_features_pending"}}})
 		return
 	}
 	if path == "queries" {
@@ -126,6 +132,15 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(path, "/")
+	if len(parts) == 3 && parts[0] == "queries" && parts[2] == "outcomes" {
+		id, e := number(parts[1], 0)
+		if e != nil || id == 0 {
+			http.Error(w, "invalid query", 400)
+			return
+		}
+		h.outcomeHTTP(w, r, id, v)
+		return
+	}
 	if len(parts) != 3 || parts[0] != "queries" || parts[2] != "nodes" {
 		http.NotFound(w, r)
 		return
