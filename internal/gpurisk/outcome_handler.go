@@ -82,7 +82,7 @@ func (h Handler) evidenceHTTP(w http.ResponseWriter, r *http.Request, v url.Valu
 	before, e2 := number(v.Get("before_id"), 0)
 	limit, e3 := number(v.Get("limit"), 25)
 	kind := v.Get("kind")
-	if e != nil || e2 != nil || e3 != nil || limit > 200 || (kind != "" && kind != "identity" && kind != "repair" && kind != "intervention" && kind != "coverage") {
+	if e != nil || e2 != nil || e3 != nil || limit > 200 || (kind != "" && kind != "identity" && kind != "repair" && kind != "intervention" && kind != "coverage" && kind != "host_context" && kind != "episode_state") {
 		http.Error(w, "invalid parameters", 400)
 		return
 	}

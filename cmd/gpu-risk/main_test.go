@@ -96,6 +96,14 @@ func TestExplicitEvidenceAndOutcomeCommands(t *testing.T) {
 	if e := run([]string{"evidence", "-driver", "sqlite", "-input", input}); e != nil {
 		t.Fatal(e)
 	}
+
+	// The same controlled command accepts versioned historical host context.
+	host := gpurisk.EvidenceInput{Kind: "host_context", Key: "cli-host", Owner: "operator", SourceVersion: gpurisk.HistorySourceVersion, EvidenceSHA: fmt.Sprintf("%064d", 2), NodeID: p.Nodes[0].ID, EntityRef: "serial:CLI-SN", From: q.Cutoff.Add(-time.Hour), Through: q.Cutoff, State: "active", Context: &gpurisk.HostContext{GPUModel: "fixture-only"}}
+	data, _ = json.Marshal(host)
+	os.WriteFile(input, data, 0600)
+	if e := run([]string{"evidence", "-driver", "sqlite", "-input", input}); e != nil {
+		t.Fatal(e)
+	}
 	asOf := time.Now().UTC().Format(time.RFC3339Nano)
 	args := []string{"-driver", "sqlite", "-query", fmt.Sprint(q.ID), "-as-of", asOf}
 	if e := run(append([]string{"outcome-plan"}, args...)); e != nil {
