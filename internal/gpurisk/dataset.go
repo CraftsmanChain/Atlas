@@ -109,9 +109,9 @@ type Dataset struct {
 	Choices           []string       `json:"implementation_choices"`
 }
 type historyEvent struct {
-	key, kind string
-	at        time.Time
-	sha       []string
+	key, kind   string
+	at, through time.Time
+	sha         []string
 }
 
 func numberPtr(v float64) *float64 { return &v }
@@ -213,11 +213,11 @@ func historyAt(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs
 			conflict = true
 			continue
 		}
-		if prior, ok := events[r.EpisodeKey]; ok && (!prior.at.Equal(a) || prior.kind != r.ConfirmedFaultType) {
+		if prior, ok := events[r.EpisodeKey]; ok && (!prior.at.Equal(a) || !prior.through.Equal(b) || prior.kind != r.ConfirmedFaultType) {
 			conflict = true
 			continue
 		}
-		events[r.EpisodeKey] = historyEvent{r.EpisodeKey, r.ConfirmedFaultType, a, []string{r.ReviewSHA256, e.SHA}}
+		events[r.EpisodeKey] = historyEvent{r.EpisodeKey, r.ConfirmedFaultType, a, b, []string{r.ReviewSHA256, e.SHA}}
 	}
 	sorted := []historyEvent{}
 	for _, e := range events {
@@ -262,8 +262,15 @@ func historyAt(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs
 	if len(sorted) > 0 || covered {
 		f.Numeric["episode_count"] = numberPtr(float64(len(sorted)))
 		recent := 0
+		recentAmbiguous, intervalAmbiguous := false, false
 		f.ByFaultType = map[string]int{}
 		for _, e := range sorted {
+			if !e.at.Equal(e.through) {
+				intervalAmbiguous = true
+			}
+			if e.at.Before(q.Cutoff.Add(-30*24*time.Hour)) && !e.through.Before(q.Cutoff.Add(-30*24*time.Hour)) {
+				recentAmbiguous = true
+			}
 			if !e.at.Before(q.Cutoff.Add(-30 * 24 * time.Hour)) {
 				recent++
 			}
@@ -272,25 +279,31 @@ func historyAt(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs
 		}
 		noHistory := len(sorted) == 0
 		f.NoHistory = &noHistory
-		if len(sorted) > 0 || covered && !start.After(q.Cutoff.Add(-30*24*time.Hour)) {
+		if !recentAmbiguous && (len(sorted) > 0 || covered && !start.After(q.Cutoff.Add(-30*24*time.Hour))) {
 			f.Numeric["episode_count_30d"] = numberPtr(float64(recent))
 		}
-		if len(sorted) > 0 {
+		if len(sorted) > 0 && !recentAmbiguous {
 			f.Numeric["recent_ratio"] = numberPtr(float64(recent) / float64(len(sorted)))
-		} else if covered {
+		} else if covered && !recentAmbiguous {
 			f.Numeric["recent_ratio"] = numberPtr(0)
 		}
-		if len(sorted) >= 2 {
+		if len(sorted) >= 2 && !intervalAmbiguous {
 			f.Numeric["mean_interval_days"] = numberPtr(sorted[len(sorted)-1].at.Sub(sorted[0].at).Hours() / 24 / float64(len(sorted)-1))
 		}
 		if f.HistoryCoverageDays != nil && *f.HistoryCoverageDays > 0 {
 			observed := 0
+			ambiguousExposure := false
 			for _, e := range sorted {
-				if !e.at.Before(start) && !e.at.After(end) {
+				if e.at.Before(start) && !e.through.Before(start) || !e.at.After(end) && e.through.After(end) {
+					ambiguousExposure = true
+				}
+				if !e.at.Before(start) && !e.through.After(end) {
 					observed++
 				}
 			}
-			f.Numeric["frequency_per_day"] = numberPtr(float64(observed) / *f.HistoryCoverageDays)
+			if !ambiguousExposure {
+				f.Numeric["frequency_per_day"] = numberPtr(float64(observed) / *f.HistoryCoverageDays)
+			}
 		}
 	}
 	if conflict {
