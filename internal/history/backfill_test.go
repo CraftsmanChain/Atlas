@@ -2,6 +2,7 @@ package history
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +10,27 @@ import (
 	"atlas/pkg/config"
 	"atlas/pkg/storage"
 )
+
+func TestSignalScanDefinitionsCoverLatchOnsetSemantics(t *testing.T) {
+	if alertBackfillQueryVersion != "gpu-fault-signal-onset-v3" {
+		t.Fatalf("unexpected query version %q", alertBackfillQueryVersion)
+	}
+	if !strings.Contains(xidLatchQuery, "DCGM_FI_DEV_XID_ERRORS offset 5m == 0") {
+		t.Fatalf("latched XID onset must require a known zero sample: %q", xidLatchQuery)
+	}
+	found := false
+	for _, scan := range historicalSignalScans {
+		if scan.SourceMetric == "DCGM_FI_DEV_XID_ERRORS" {
+			found = true
+			if scan.Query != xidLatchQuery {
+				t.Fatalf("latched XID scan query mismatch: %q", scan.Query)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("DCGM_FI_DEV_XID_ERRORS must be scanned for historical onsets")
+	}
+}
 
 func TestAlertBackfillCreatesReviewableEpisodes(t *testing.T) {
 	prometheus := newTestPrometheus(t)
@@ -41,17 +63,17 @@ func TestAlertBackfillCreatesReviewableEpisodes(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if run.Status != "completed" || run.ChunksCompleted != 1 || run.SignalPoints != 7 {
+	if run.Status != "completed" || run.ChunksCompleted != 1 || run.SignalPoints != 8 {
 		t.Fatalf("unexpected run: %+v", run)
 	}
 	summary, rows, err := service.Candidates(100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.Total != 4 || summary.Pending != 4 || len(rows) != 4 {
+	if summary.Total != 5 || summary.Pending != 5 || len(rows) != 5 {
 		t.Fatalf("summary=%+v rows=%+v", summary, rows)
 	}
-	if summary.ByEventCode["79"] != 2 || summary.ByEventCode["94"] != 1 {
+	if summary.ByEventCode["79"] != 2 || summary.ByEventCode["94"] != 1 || summary.ByEventCode["31"] != 1 {
 		t.Fatalf("unexpected event codes: %+v", summary.ByEventCode)
 	}
 	for _, row := range rows {
@@ -67,6 +89,10 @@ func TestAlertBackfillCreatesReviewableEpisodes(t *testing.T) {
 		if row.EventCode == "uncorrectable_remapped_rows" &&
 			(row.HardwareCertainty != "deterministic_hardware" || row.TrainingDisposition != "positive_after_identity_review") {
 			t.Fatalf("uncorrectable rows classification mismatch: %+v", row)
+		}
+		if row.EventCode == "31" && (row.SourceMetric != "DCGM_FI_DEV_XID_ERRORS" ||
+			row.QualityTier != "weak_proxy" || row.OperationalPriority != "low") {
+			t.Fatalf("latched XID classification mismatch: %+v", row)
 		}
 	}
 	reviewed, err := service.ReviewCandidate(rows[0].ID, CandidateReviewRequest{
