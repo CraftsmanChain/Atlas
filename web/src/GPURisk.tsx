@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import './GPURisk.css';
+import GPURiskModels from './GPURiskModels';
 
 type Tx = (zh: string, en: string) => string;
 type Query = { id: number; cutoff: string; member_count: number; scope_sha: string; result_sha: string; target: string; horizon_minutes: number };
@@ -55,7 +56,7 @@ export default function GPURisk({ tx, feedback }: { tx: Tx; feedback: () => void
   const reset = () => { setAfter(0); setCursors([]); };
   return <section className="gpu-risk" aria-busy={busy}>
     <div className="gpu-risk-toolbar"><h2>{tx('未来7天 · 节点风险优先级', 'Next 7 days · Node risk priority')}</h2><button onClick={() => { reset(); setRefresh(x => x + 1); }}>{tx('刷新', 'Refresh')}</button><button onClick={feedback}>{tx('故障登记与复核', 'Fault feedback and review')}</button></div>
-    <p>{tx('当前为只读基线榜单，排序价值待验证。分数是当前健康反分或等分对照；历史模型尚未实现；未来结果依赖已复核故障与来源完整性。', 'Read-only baseline with unverified ranking value. Scores use inverse current health or a uniform control; history models remain pending. Future outcomes require reviewed incidents and complete source coverage.')}</p>
+    <p>{tx('当前为只读基线榜单，排序价值待验证。分数是当前健康反分或等分对照；MLP候选需单独选择固定批次查看；未来结果依赖已复核故障与来源完整性。', 'Read-only baseline with unverified ranking value. Scores use inverse current health or a uniform control; MLP candidates require an explicitly selected frozen batch. Future outcomes require reviewed incidents and complete source coverage.')}</p>
     {error && <p role="alert">{tx('读取失败，可重试：', 'Read failed, retry: ')}{error}</p>}
     {!overview && busy && <p role="status">{tx('加载中…', 'Loading…')}</p>}
     {overview && <><p role="status"><b>{state(overview.status)}</b> · {overview.automatic_jobs_enabled ? tx('日批已启用', 'Daily jobs enabled') : tx('日批已关闭', 'Daily jobs disabled')} · {overview.outcome_jobs_enabled ? tx('结果任务已启用', 'Outcome jobs enabled') : tx('结果任务已关闭', 'Outcome jobs disabled')} · {tx('完整范围', 'Full scope')}: {overview.latest?.member_count ?? 0} {tx('节点', 'nodes')} · {tx('数据时间', 'As of')}: {overview.latest?.cutoff || '—'}</p>
@@ -73,5 +74,6 @@ export default function GPURisk({ tx, feedback }: { tx: Tx; feedback: () => void
       {outcomes?.batch && <p>{tx('结果批次 / as_of', 'Outcome batch / as_of')}: #{outcomes.batch.id} · {outcomes.batch.as_of}</p>}
       <details><summary>{tx('批次与验证边界', 'Query and validation boundaries')}</summary><p>query #{result.query.id} · {result.query.target} · {result.query.horizon_minutes} min</p><p>Scope SHA: {result.query.scope_sha}</p><p>Result SHA: {result.query.result_sha}</p><p>{tx('效果待验证；缺故障来源或完整性证明时保留未知，不将空台账解释为负例。', 'Value unverified. Missing incidents or completeness evidence remain unknown, not negatives.')}</p></details>
     </>}
+    <GPURiskModels tx={tx} queryID={overview?.latest?.id || 0} refreshKey={refresh} />
   </section>;
 }

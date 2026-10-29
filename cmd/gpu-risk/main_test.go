@@ -148,3 +148,29 @@ func TestVerifyModelHasNoDatabaseDependency(t *testing.T) {
 		t.Fatal("file-only verifier attempted database access", err)
 	}
 }
+
+func TestCandidateCLIReadOnlyRequestAndStrictRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "candidate-cli.db")
+	t.Setenv("ATLAS_GPU_RISK_DSN", path)
+	store, e := storage.InitDB(path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	raw, _ := store.DB.DB()
+	defer raw.Close()
+	if e := run([]string{"model-request", "-driver", "sqlite", "-query", "1", "-model", "1"}); e == nil {
+		t.Fatal("absent query/model accepted")
+	}
+	for _, model := range []any{&api.GPURiskModel{}, &api.GPURiskModelBatch{}, &api.GPURiskModelScore{}} {
+		var n int64
+		store.DB.Model(model).Count(&n)
+		if n != 0 {
+			t.Fatal("request wrote records")
+		}
+	}
+	input := filepath.Join(t.TempDir(), "request.json")
+	os.WriteFile(input, []byte(`{"query_id":1,"model_id":1,"unknown":true}`), 0600)
+	if e := run([]string{"model-record", "-driver", "sqlite", "-input", input}); e == nil {
+		t.Fatal("unknown request field accepted")
+	}
+}

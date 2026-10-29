@@ -342,7 +342,7 @@ func Build(p Snapshot) ([]api.GPURiskMember, []api.GPURiskScore, error) {
 }
 
 func Models() []any {
-	return []any{&api.GPURiskEvidenceRevision{}, &api.GPURiskOutcomeBatch{}, &api.GPURiskNodeOutcome{}, &api.GPURiskScope{}, &api.GPURiskQuery{}, &api.GPURiskMember{}, &api.GPURiskScore{}, &api.GPURiskJob{}}
+	return []any{&api.GPURiskModel{}, &api.GPURiskModelBatch{}, &api.GPURiskModelScore{}, &api.GPURiskEvidenceRevision{}, &api.GPURiskOutcomeBatch{}, &api.GPURiskNodeOutcome{}, &api.GPURiskScope{}, &api.GPURiskQuery{}, &api.GPURiskMember{}, &api.GPURiskScore{}, &api.GPURiskJob{}}
 }
 func Migrate(db *gorm.DB) error { return db.AutoMigrate(Models()...) }
 

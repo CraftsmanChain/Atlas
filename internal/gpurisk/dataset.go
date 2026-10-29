@@ -661,6 +661,15 @@ func BuildDataset(ctx context.Context, db *gorm.DB, spec DatasetSpec) (Dataset, 
 			out.Blockers = append(out.Blockers, split+":independent_episode_readiness_not_met")
 		}
 	}
+	// Explicitly expose the unresolved watermark semantics. Current controlled
+	// assertions require Through<=AvailableAt, while history coverage at q requires
+	// Through>=q and AvailableAt<q. Do not relax readiness or backdate evidence.
+	for _, row := range out.Rows {
+		if contains(row.Features.Blockers, "history_coverage_unknown") {
+			out.Blockers = append(out.Blockers, "history_coverage_watermark_contract_pending")
+			break
+		}
+	}
 	out.ExplorationReady = out.Ready
 	out.Ready = out.ExplorationReady && out.PaperCoreComplete
 	if !out.PaperCoreComplete {

@@ -47,6 +47,29 @@ gpu-risk verify-model \
   -scores-file /private/reloaded-scores/scores.json -scores-sha <scores-file-sha>
 ```
 
-The verifier checks all pinned bytes, Go dataset digest/schema, target/profile, model shape, preprocessing, BN statistics, finite values and complete unique query/node/generation coverage, then computes every logit in Go. It enforces abs=1e-6/rel=1e-5 and reports adjacent near ties separately; no arbitrary claim of identical ranks across tolerance-sized ties. This is an offline parity check and does not prove how a checkpoint was trained or promote it. New-query serving, registry admission, repeatable failure/evaluation ledgers and B0–B6 remain pending. The deployment script does not install Python dependencies on monitored machines.
+The verifier checks all pinned bytes, Go dataset digest/schema, target/profile, model shape, preprocessing, BN statistics, finite values and complete unique query/node/generation coverage, then computes every logit in Go. It enforces abs=1e-6/rel=1e-5 and reports adjacent near ties separately; no arbitrary claim of identical ranks across tolerance-sized ties. This is an offline parity check and does not prove how a checkpoint was trained or promote it. The R4-B CLI below adds candidate admission and new-query score records; automatic serving, promotion, full evaluation ledgers and B0–B6 remain pending. The deployment script does not install Python dependencies on monitored machines.
 
 Implementation references: [PyTorch 2.9 BatchNorm1d](https://docs.pytorch.org/docs/2.9/generated/torch.nn.BatchNorm1d.html) and [BCEWithLogitsLoss](https://docs.pytorch.org/docs/2.9/generated/torch.nn.BCEWithLogitsLoss.html).
+
+## Candidate admission and new query scoring (R4-B)
+
+`register-model` is an explicit CLI write, not an HTTP upload or automatic promotion. It first verifies the pinned original dataset/model/Python-score files, rejects synthetic markers, and then rebuilds that dataset from this database using its fixed batch IDs. A forged `ready` flag or a checkpoint detached from the authoritative dataset is rejected. A successful record is only `offline_candidate`; it does not certify predictive performance. The model JSON and training identity set are private database fields, omitted from API projections.
+
+```bash
+gpu-risk register-model -dataset-file /private/history-v2.json -dataset-sha <dataset-file-sha> \
+  -artifact-file /private/seed17/model.json -artifact-sha <model-file-sha> \
+  -scores-file /private/seed17/scores.json -scores-sha <scores-file-sha>
+# After a later R1 query has been frozen (model availability must precede cutoff):
+umask 077
+gpu-risk model-request -query <query-id> -model <model-id> > /private/model-request.json
+# Explicit controlled write, only when authorized for that database:
+gpu-risk model-record -input /private/model-request.json
+```
+
+`model-request` is read-only and consumes no future outcome labels. It binds query/scope/ranking SHA, model/preprocessor SHA, schema, cutoff and full-node historical features. The model registration time and training test-end must both precede query cutoff. A cold-start node may use missing/OOV channels; source conflicts, missing physical identity, or overlap with the training dataset's entities/physical GPUs are explicitly unranked. This conservative prospective cohort does not evaluate recurrence on entities already present in the training/validation/test dataset.
+
+`model-record` rebuilds and compares the entire request against authoritative rows, scores in Go under `gpu-host-mlp-go-f64-v1`, and atomically saves an independent immutable batch. Original R1 scores remain untouched. All nodes remain in the denominator; warnings describe source unknowns separately from blocking reasons. Exact Go logit ties use competition rank. This scorer is a pinned float64 implementation; PyTorch float32 tolerance evidence does not promise identical ordering near numerical ties. A numerical failure clears the whole candidate batch's scores and records `failed`, rather than publishing a partial ranking. Repeating the same request returns the same batch.
+
+GET `/api/v1/gpu-risk/models`, `/queries/{id}/model-batches` and `/queries/{id}/model-scores?batch_id=...` are read-only. Scores require an explicit batch ID; paginated reads stay pinned to that batch and carry ETag/integrity checks. The UI separately lists candidates and asks the reader to select a fixed batch, without a latest-model default. No registry activation, model training worker, promotion, calibration, operational alert or automatic scoring worker is introduced. R5 evaluation and actual source/runtime accumulation remain separate gates.
+
+Known source-contract blocker: the current controlled evidence writer enforces `Through <= AvailableAt`, while complete historical coverage at q requires `Through >= q` and `AvailableAt < q`. Controlled CLI assertions therefore cannot satisfy this historical completeness condition. Dataset exports explicitly report `history_coverage_watermark_contract_pending`; actual training/admission remains blocked. A versioned as-known/watermark contract must be designed next, before R5 or real training. Synthetic tests model historical database states directly and do not prove this production source path is operational.
