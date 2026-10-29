@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -362,6 +364,237 @@ func TestHistoryCandidateReviewHandler(t *testing.T) {
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("invalid candidate id status=%d body=%s", response.Code, response.Body.String())
 	}
+}
+
+func TestAuditUsesDeclaredRetentionWithoutFlagsEndpoint(t *testing.T) {
+	dataFloor := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
+	prometheus := newBoundedPrometheus(t, dataFloor)
+	defer prometheus.Close()
+	db, err := storage.InitDB(fmt.Sprintf("file:history-declared-retention-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.HistoryConfig{
+		Enabled: true, DatasetDir: "/ops/atlas/training",
+		Sources: []config.HistorySourceConfig{{
+			ID: "primary", Name: "Primary", Type: "prometheus", BaseURL: prometheus.URL,
+			Retention: "180d", Enabled: true,
+		}},
+	}
+	service := NewService(db, cfg, time.Second)
+	service.now = func() time.Time { return now }
+	rows, err := service.AuditAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows=%d", len(rows))
+	}
+	row := rows[0]
+	if row.Status != "success" {
+		t.Fatalf("declared retention must not degrade the audit: %+v", row)
+	}
+	if row.ConfiguredRetention != "180d" || row.Details["retention_source"] != "config" {
+		t.Fatalf("unexpected retention resolution: %+v", row)
+	}
+	if !strings.Contains(row.Details["flags_warning"], "HTTP 400") {
+		t.Fatalf("missing flags degradation notice: %+v", row.Details)
+	}
+	if row.EarliestSampleAt == nil || !row.EarliestSampleAt.Equal(dataFloor) {
+		t.Fatalf("earliest_sample_at=%v want %v", row.EarliestSampleAt, dataFloor)
+	}
+	if prometheus.oversized.Load() != 0 {
+		t.Fatalf("probe issued %d range windows beyond the bounded chunk", prometheus.oversized.Load())
+	}
+	if prometheus.probes.Load() < 2 {
+		t.Fatalf("expected a chunked backward scan, got %d probes", prometheus.probes.Load())
+	}
+}
+
+func TestEarliestSampleProbeDepthFollowsDeclaredRetention(t *testing.T) {
+	dataFloor := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		retention string
+		want      time.Time
+	}{
+		{"90d", now.Add(-90 * 24 * time.Hour)},
+		{"180d", dataFloor},
+	}
+	var previous *time.Time
+	for _, testCase := range cases {
+		prometheus := newBoundedPrometheus(t, dataFloor)
+		db, err := storage.InitDB(fmt.Sprintf("file:history-probe-depth-%s-%d?mode=memory&cache=shared", testCase.retention, time.Now().UnixNano()))
+		if err != nil {
+			prometheus.Close()
+			t.Fatal(err)
+		}
+		service := NewService(db, config.HistoryConfig{
+			Enabled: true, DatasetDir: "/ops/atlas/training",
+			Sources: []config.HistorySourceConfig{{
+				ID: "primary", Name: "Primary", Type: "prometheus", BaseURL: prometheus.URL,
+				Retention: testCase.retention, Enabled: true,
+			}},
+		}, time.Second)
+		service.now = func() time.Time { return now }
+		rows, err := service.AuditAll(context.Background())
+		prometheus.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 || rows[0].Status != "success" || rows[0].EarliestSampleAt == nil {
+			t.Fatalf("retention=%s audit=%+v", testCase.retention, rows)
+		}
+		earliest := rows[0].EarliestSampleAt.UTC()
+		if !earliest.Equal(testCase.want) {
+			t.Fatalf("retention=%s earliest_sample_at=%v want %v", testCase.retention, earliest, testCase.want)
+		}
+		if earliest.Before(dataFloor) {
+			t.Fatalf("retention=%s earliest_sample_at=%v predates the real data boundary %v", testCase.retention, earliest, dataFloor)
+		}
+		if previous != nil && !earliest.Before(*previous) {
+			t.Fatalf("retention=%s earliest_sample_at=%v did not reach deeper than %v", testCase.retention, earliest, *previous)
+		}
+		deepest := earliest
+		previous = &deepest
+	}
+}
+
+func TestAuditFailsWhenEarliestSampleProbeIsRejected(t *testing.T) {
+	dataFloor := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
+	prometheus := newBoundedPrometheus(t, dataFloor)
+	prometheus.rejectProbes.Store(true)
+	defer prometheus.Close()
+	db, err := storage.InitDB(fmt.Sprintf("file:history-probe-reject-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, config.HistoryConfig{
+		Enabled: true, DatasetDir: "/ops/atlas/training",
+		Sources: []config.HistorySourceConfig{{
+			ID: "primary", Name: "Primary", Type: "prometheus", BaseURL: prometheus.URL,
+			Retention: "180d", Enabled: true,
+		}},
+	}, time.Second)
+	service.now = func() time.Time { return now }
+	rows, err := service.AuditAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows=%d", len(rows))
+	}
+	row := rows[0]
+	if row.Status != "partial" || !strings.Contains(row.ErrorMessage, "earliest_sample:") ||
+		!strings.Contains(row.ErrorMessage, "HTTP 422") {
+		t.Fatalf("unprobed chunk must not be reported as absent data: %+v", row)
+	}
+	if row.EarliestSampleAt != nil {
+		t.Fatalf("rejected probe must not fabricate an earliest sample: %v", row.EarliestSampleAt)
+	}
+}
+
+func TestRetentionLookbackParsesDeclaredUnits(t *testing.T) {
+	cases := []struct {
+		value string
+		want  time.Duration
+	}{
+		{"180d", 180 * 24 * time.Hour},
+		{"90d", 90 * 24 * time.Hour},
+		{"12w", 12 * 7 * 24 * time.Hour},
+		{"5y", 5 * 365 * 24 * time.Hour},
+		{"72h", 72 * time.Hour},
+		{"", 365 * 24 * time.Hour},
+		{"nonsense", 365 * 24 * time.Hour},
+		{"0d", 365 * 24 * time.Hour},
+	}
+	for _, testCase := range cases {
+		if got := retentionLookback(testCase.value); got != testCase.want {
+			t.Fatalf("retentionLookback(%q)=%v want %v", testCase.value, got, testCase.want)
+		}
+	}
+}
+
+type boundedPrometheus struct {
+	*httptest.Server
+	oversized    atomic.Int64
+	probes       atomic.Int64
+	rejectProbes atomic.Bool
+}
+
+// newBoundedPrometheus emulates the production VictoriaMetrics cluster: the
+// flags endpoint is unsupported (HTTP 400) and any single range window wider
+// than 64 days is rejected with HTTP 422. GPU telemetry only exists from
+// dataFloor onwards, so a correct audit must find that boundary by probing
+// bounded chunks instead of asking for one unreadable wide window.
+func newBoundedPrometheus(t *testing.T, dataFloor time.Time) *boundedPrometheus {
+	t.Helper()
+	stub := &boundedPrometheus{}
+	stub.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/status/buildinfo":
+			_, _ = w.Write([]byte(`{"status":"success","data":{"version":"1.102.0","revision":"vm"}}`))
+		case "/api/v1/status/flags":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"status":"error","errorType":"bad_data","error":"unsupported path"}`))
+		case "/api/v1/targets":
+			_, _ = w.Write([]byte(`{"status":"success","data":{"activeTargets":[{"labels":{"job":"dcgm_exporter"},"health":"up"}]}}`))
+		case "/api/v1/label/__name__/values":
+			_, _ = w.Write([]byte(`{"status":"success","data":["DCGM_FI_DEV_GPU_TEMP","DCGM_FI_DEV_GPU_UTIL"]}`))
+		case "/api/v1/query":
+			value := "0"
+			timestamp := "1793260800"
+			switch r.URL.Query().Get("query") {
+			case "count(count by(UUID) (DCGM_FI_DEV_GPU_UTIL))":
+				value = "261"
+			case "quantile(0.5, count_over_time(DCGM_FI_DEV_GPU_UTIL[5m]))":
+				value = "20"
+			case "max(timestamp(DCGM_FI_DEV_GPU_UTIL))":
+			default:
+				t.Errorf("unexpected query %q", r.URL.Query().Get("query"))
+			}
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[%s,"%s"]}]}}`, timestamp, value)))
+		case "/api/v1/query_range":
+			if !strings.Contains(r.URL.Query().Get("query"), "DCGM_FI_DEV_GPU_UTIL") {
+				t.Errorf("unexpected range query %q", r.URL.Query().Get("query"))
+				http.NotFound(w, r)
+				return
+			}
+			stub.probes.Add(1)
+			start, startErr := time.Parse(time.RFC3339, r.URL.Query().Get("start"))
+			end, endErr := time.Parse(time.RFC3339, r.URL.Query().Get("end"))
+			step, stepErr := strconv.Atoi(r.URL.Query().Get("step"))
+			if startErr != nil || endErr != nil || stepErr != nil || step <= 0 || end.Before(start) {
+				t.Errorf("invalid range window %q", r.URL.RawQuery)
+				http.Error(w, "invalid window", http.StatusBadRequest)
+				return
+			}
+			if end.Sub(start) > 64*24*time.Hour || stub.rejectProbes.Load() {
+				stub.oversized.Add(1)
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"status":"error","errorType":"422","error":"cannot select more than -search.maxSamplesPerQuery=1000000000 samples"}`))
+				return
+			}
+			points := []string{}
+			for ts := start; !ts.After(end); ts = ts.Add(time.Duration(step) * time.Second) {
+				if ts.Before(dataFloor) {
+					continue
+				}
+				points = append(points, fmt.Sprintf(`[%d,"261"]`, ts.Unix()))
+			}
+			if len(points) == 0 {
+				_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+				return
+			}
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"status":"success","data":{"resultType":"matrix","result":[{"metric":{},"values":[%s]}]}}`, strings.Join(points, ","))))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	return stub
 }
 
 func newTestPrometheus(t *testing.T) *httptest.Server {

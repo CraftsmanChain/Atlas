@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -239,12 +240,18 @@ func (s *Service) auditSource(ctx context.Context, source config.HistorySourceCo
 	}
 	flags, err := client.Flags(ctx)
 	if err != nil {
-		errorsFound = append(errorsFound, "flags: "+err.Error())
+		if strings.TrimSpace(source.Retention) != "" {
+			// The operator already declared the lookback window, so a source
+			// without /status/flags is a degraded capability, not a failed audit.
+			row.Details["flags_warning"] = "flags: " + err.Error()
+		} else {
+			errorsFound = append(errorsFound, "flags: "+err.Error())
+		}
 	} else {
-		row.ConfiguredRetention = firstNonEmpty(flags["storage.tsdb.retention.time"], flags["storage.tsdb.retention"])
 		row.Details["query_max_samples"] = flags["query.max-samples"]
 		row.Details["query_max_concurrency"] = flags["query.max-concurrency"]
 	}
+	row.ConfiguredRetention, row.Details["retention_source"] = resolveRetention(source.Retention, flags)
 	targets, err := client.ActiveTargets(ctx)
 	if err != nil {
 		errorsFound = append(errorsFound, "targets: "+err.Error())
@@ -268,7 +275,7 @@ func (s *Service) auditSource(ctx context.Context, source config.HistorySourceCo
 		row.MetricFamilies = families
 		row.MissingMetricFamilies = missingFamilies(families, researchMetricFamilies)
 	}
-	if samples, queryErr := client.Query(ctx, "count(count by(UUID) (DCGM_FI_DEV_GPU_UTIL))"); queryErr != nil {
+	if samples, queryErr := client.Query(ctx, gpuSeriesCountQuery); queryErr != nil {
 		errorsFound = append(errorsFound, "gpu_series: "+queryErr.Error())
 	} else if len(samples) > 0 {
 		row.CurrentGPUSeries = int(samples[0].Value)
@@ -284,22 +291,11 @@ func (s *Service) auditSource(ctx context.Context, source config.HistorySourceCo
 		latest := time.Unix(int64(samples[0].Value), 0)
 		row.LatestSampleAt = &latest
 	}
-	if series, queryErr := client.QueryRange(ctx, "count(count by(UUID) (DCGM_FI_DEV_GPU_UTIL))", end.Add(-lookback), end, 24*time.Hour); queryErr != nil {
-		errorsFound = append(errorsFound, "earliest_sample: "+queryErr.Error())
+	earliest, probeErr := probeEarliestSample(ctx, client, end, lookback)
+	if probeErr != nil {
+		errorsFound = append(errorsFound, "earliest_sample: "+probeErr.Error())
 	} else {
-		for _, item := range series {
-			for _, point := range item.Values {
-				if point.Value <= 0 {
-					continue
-				}
-				earliest := point.Timestamp
-				row.EarliestSampleAt = &earliest
-				break
-			}
-			if row.EarliestSampleAt != nil {
-				break
-			}
-		}
+		row.EarliestSampleAt = earliest
 	}
 	if len(errorsFound) > 0 {
 		row.Status = "partial"
@@ -309,18 +305,111 @@ func (s *Service) auditSource(ctx context.Context, source config.HistorySourceCo
 	return row
 }
 
+const (
+	// gpuSeriesCountQuery is the cheapest series that proves GPU telemetry is
+	// present for a window: it collapses every DCGM UUID series into one point.
+	gpuSeriesCountQuery = "count(count by(UUID) (DCGM_FI_DEV_GPU_UTIL))"
+	// earliestProbeChunk bounds every earliest_sample probe. The production
+	// VictoriaMetrics cluster rejects a single range query that reads too many
+	// raw samples (HTTP 422 maxSamplesPerQuery), so no probe window may exceed
+	// this chunk regardless of how much retention the operator declares.
+	earliestProbeChunk = 30 * 24 * time.Hour
+	earliestProbeStep  = 6 * time.Hour
+	// defaultRetentionLookback is used only when neither the operator nor the
+	// source declares a retention window.
+	defaultRetentionLookback = 365 * 24 * time.Hour
+)
+
+// probeEarliestSample finds the oldest window that still holds GPU telemetry by
+// walking backwards from now in bounded chunks. It stops at the first empty
+// chunk, which is the real data boundary for the source. A chunk that cannot be
+// probed is returned as an error rather than silently being read as "no data",
+// because an unprobed chunk must never be mistaken for an absent sample.
+func probeEarliestSample(ctx context.Context, client *promclient.Client, end time.Time, lookback time.Duration) (*time.Time, error) {
+	if lookback <= 0 {
+		return nil, nil
+	}
+	floor := end.Add(-lookback)
+	cursor := end
+	var earliest *time.Time
+	for cursor.After(floor) {
+		chunkStart := cursor.Add(-earliestProbeChunk)
+		if chunkStart.Before(floor) {
+			chunkStart = floor
+		}
+		series, err := client.QueryRange(ctx, gpuSeriesCountQuery, chunkStart, cursor, earliestProbeStep)
+		if err != nil {
+			return nil, fmt.Errorf("%s..%s: %w", chunkStart.UTC().Format(time.RFC3339), cursor.UTC().Format(time.RFC3339), err)
+		}
+		found := false
+		for _, item := range series {
+			for _, point := range item.Values {
+				if point.Value <= 0 {
+					continue
+				}
+				found = true
+				if earliest == nil || point.Timestamp.Before(*earliest) {
+					timestamp := point.Timestamp
+					earliest = &timestamp
+				}
+			}
+		}
+		if !found {
+			break
+		}
+		cursor = chunkStart
+	}
+	return earliest, nil
+}
+
+// resolveRetention prefers the operator-declared retention window over the
+// value reported by the source, and reports where the answer came from so the
+// audit trail shows whether earliest_sample is a real probe or a default guess.
+func resolveRetention(configured string, flags map[string]string) (string, string) {
+	if value := strings.TrimSpace(configured); value != "" {
+		return value, "config"
+	}
+	if value := firstNonEmpty(flags["storage.tsdb.retention.time"], flags["storage.tsdb.retention"]); value != "" {
+		return value, "flags"
+	}
+	return "", "default"
+}
+
 func retentionLookback(value string) time.Duration {
 	value = strings.TrimSpace(value)
-	if strings.HasSuffix(value, "y") {
-		var years int
-		if _, err := fmt.Sscanf(value, "%dy", &years); err == nil && years > 0 {
-			return time.Duration(years) * 365 * 24 * time.Hour
+	if number, unit, ok := parseRetentionParts(value); ok {
+		switch unit {
+		case "y":
+			return time.Duration(number) * 365 * 24 * time.Hour
+		case "w":
+			return time.Duration(number) * 7 * 24 * time.Hour
+		case "d":
+			return time.Duration(number) * 24 * time.Hour
 		}
 	}
 	if parsed, err := time.ParseDuration(value); err == nil && parsed > 0 {
 		return parsed
 	}
-	return 365 * 24 * time.Hour
+	return defaultRetentionLookback
+}
+
+// parseRetentionParts reads the day/week/year forms that time.ParseDuration
+// rejects. A declared retention such as "180d" must never be silently replaced
+// by the conservative default, because that would widen every probe window
+// without the operator asking for it.
+func parseRetentionParts(value string) (int, string, bool) {
+	if len(value) < 2 {
+		return 0, "", false
+	}
+	unit := strings.ToLower(value[len(value)-1:])
+	if unit != "y" && unit != "w" && unit != "d" {
+		return 0, "", false
+	}
+	number, err := strconv.Atoi(value[:len(value)-1])
+	if err != nil || number <= 0 {
+		return 0, "", false
+	}
+	return number, unit, true
 }
 
 func missingFamilies(available, required []string) api.StringList {
