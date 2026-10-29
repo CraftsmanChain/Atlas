@@ -78,6 +78,54 @@ type HistoryFeatures struct {
 	EvidenceSHAs        []string            `json:"evidence_shas"`
 	Blockers            []string            `json:"blockers"`
 }
+
+// Feature maps are closed to the core columns. Count-map keys are categorical
+// values, not feature columns; unknown/null core values remain permitted.
+func validateCoreFeatures(f HistoryFeatures) error {
+	numeric, categorical := map[string]bool{}, map[string]bool{}
+	for _, field := range CoreSchema() {
+		switch field.Dtype {
+		case "float64", "nullable_float64":
+			numeric[field.Name] = true
+		case "nullable_category":
+			categorical[field.Name] = true
+		}
+	}
+	for name := range f.Numeric {
+		if !numeric[name] {
+			return fmt.Errorf("%w: non-core numeric feature %q", ErrInput, name)
+		}
+	}
+	for name := range f.Categorical {
+		if !categorical[name] {
+			return fmt.Errorf("%w: non-core categorical feature %q", ErrInput, name)
+		}
+	}
+	return nil
+}
+
+// Validate before constructing the rows consumed by either feature fingerprint.
+// A producer adding a column must not silently create a new core artifact.
+func coreFeatureRows(d Dataset) ([]any, error) {
+	core := CoreSchema()
+	if len(d.Schema) != len(core) {
+		return nil, ErrInput
+	}
+	for i, field := range core {
+		if d.Schema[i] != field {
+			return nil, ErrInput
+		}
+	}
+	rows := []any{}
+	for _, r := range d.Rows {
+		if err := validateCoreFeatures(r.Features); err != nil {
+			return nil, err
+		}
+		rows = append(rows, []any{r.QueryID, r.NodeID, r.Generation, r.Cutoff, r.Features})
+	}
+	return rows, nil
+}
+
 type DatasetRow struct {
 	QueryID     uint            `json:"query_id"`
 	BatchID     uint            `json:"batch_id"`
@@ -607,11 +655,10 @@ func BuildDataset(ctx context.Context, db *gorm.DB, spec DatasetSpec) (Dataset, 
 				out.Counts["excluded"]++
 			}
 		}
-		featureRows := []any{}
-		for _, r := range out.Rows {
-			featureRows = append(featureRows, []any{r.QueryID, r.NodeID, r.Generation, r.Cutoff, r.Features})
+		featureRows, e := coreFeatureRows(out)
+		if e != nil {
+			return e
 		}
-		var e error
 		out.InputSHA, e = digest([]any{inputs, featureRows, graphEvidence})
 		if e != nil {
 			return e
