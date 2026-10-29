@@ -12,3 +12,7 @@
 
 .gpu-risk th { font-size: 12px; }
 .gpu-risk td { font-size: 13px; }
+
+.gpu-risk-candidates { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--border, #334155); }
+.gpu-risk-candidates p, .gpu-risk-candidates small { overflow-wrap: anywhere; }
+.gpu-risk-candidates small { display: block; }

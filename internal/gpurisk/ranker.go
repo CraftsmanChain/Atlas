@@ -110,13 +110,8 @@ func pinnedJSON(path, sha string, out any) error {
 	if !validSHA(sha) {
 		return ErrInput
 	}
-	f, e := os.Open(path)
+	raw, e := readBoundedFile(path)
 	if e != nil {
-		return ErrInput
-	}
-	defer f.Close()
-	raw, e := io.ReadAll(io.LimitReader(f, 64*1024*1024+1))
-	if e != nil || len(raw) > 64*1024*1024 {
 		return ErrInput
 	}
 	h := sha256.Sum256(raw)
@@ -143,6 +138,19 @@ func pinnedJSON(path, sha string, out any) error {
 	}
 	return nil
 }
+func readBoundedFile(path string) ([]byte, error) {
+	f, e := os.Open(path)
+	if e != nil {
+		return nil, ErrInput
+	}
+	defer f.Close()
+	data, e := io.ReadAll(io.LimitReader(f, 64*1024*1024+1))
+	if e != nil || len(data) > 64*1024*1024 {
+		return nil, ErrInput
+	}
+	return data, nil
+}
+
 func jsonNull(value any) bool {
 	switch v := value.(type) {
 	case nil:

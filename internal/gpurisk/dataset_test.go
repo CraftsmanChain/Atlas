@@ -39,6 +39,9 @@ func TestDatasetPinnedDeterministicMissingAndReadOnly(t *testing.T) {
 	if len(a.Rows) != 2 || a.Ready || a.PaperCoreComplete || a.Rows[0].Features.Numeric["episode_count"] != nil || a.Rows[0].Features.NoHistory != nil {
 		t.Fatal("missing history became zero/ready", a)
 	}
+	if !contains(a.Blockers, "history_coverage_watermark_contract_pending") {
+		t.Fatal("coverage contract blocker is not exposed")
+	}
 	if a.Rows[0].Features.Categorical["gpu_model"] != nil || a.Rows[0].Features.BySeverity != nil {
 		t.Fatal("invented context")
 	}

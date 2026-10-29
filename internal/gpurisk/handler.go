@@ -20,6 +20,7 @@ type Handler struct {
 }
 
 func (h Handler) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/api/v1/gpu-risk/models", h.ServeHTTP)
 	mux.HandleFunc("/api/v1/gpu-risk/evidence", h.ServeHTTP)
 	mux.HandleFunc("/api/v1/gpu-risk/overview", h.ServeHTTP)
 	mux.HandleFunc("/api/v1/gpu-risk/queries", h.ServeHTTP)
@@ -68,6 +69,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	db := h.DB.WithContext(r.Context())
 	base := "/api/v1/gpu-risk/"
 	path := strings.TrimPrefix(r.URL.Path, base)
+	if path == "models" {
+		h.modelsHTTP(w, r, v)
+		return
+	}
 	if path == "evidence" {
 		h.evidenceHTTP(w, r, v)
 		return
@@ -97,7 +102,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				status = "stale"
 			}
 		}
-		respond(w, 200, map[string]any{"data": map[string]any{"status": status, "latest": query, "jobs": jobs, "no_action": true, "probability_emitted": false, "automatic_jobs_enabled": h.AutomaticJobsEnabled, "outcome_jobs_enabled": h.OutcomeJobsEnabled, "outcome_status": "available_on_explicit_record", "blockers": []string{"ranking_value_unverified", "history_features_pending"}}})
+		respond(w, 200, map[string]any{"data": map[string]any{"status": status, "latest": query, "jobs": jobs, "no_action": true, "probability_emitted": false, "automatic_jobs_enabled": h.AutomaticJobsEnabled, "outcome_jobs_enabled": h.OutcomeJobsEnabled, "outcome_status": "available_on_explicit_record", "blockers": []string{"ranking_value_unverified", "candidate_models_unvalidated"}}})
 		return
 	}
 	if path == "queries" {
@@ -132,6 +137,15 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(path, "/")
+	if len(parts) == 3 && parts[0] == "queries" && (parts[2] == "model-batches" || parts[2] == "model-scores") {
+		id, e := number(parts[1], 0)
+		if e != nil || id == 0 {
+			http.Error(w, "invalid query", 400)
+			return
+		}
+		h.modelQueryHTTP(w, r, id, parts[2], v)
+		return
+	}
 	if len(parts) == 3 && parts[0] == "queries" && parts[2] == "outcomes" {
 		id, e := number(parts[1], 0)
 		if e != nil || id == 0 {
