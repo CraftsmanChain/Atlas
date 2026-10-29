@@ -13,6 +13,11 @@ import (
 
 const OutcomeVersion = "gpu-node-outcome-v1"
 const HistorySourceVersion = "gpu-host-history-source-v1"
+const CoverageWatermarkContract = "gpu-host-coverage-watermark-v2"
+
+// evidenceNow is the server clock; tests can advance ingestion time without
+// importing timestamps or rewriting immutable revisions. Never sourced from input.
+var evidenceNow = time.Now
 
 // HostContext is an explicitly reviewed physical-host assertion, never a lookup
 // of current inventory for an old prediction cutoff. Missing values stay null.
@@ -43,14 +48,15 @@ type EvidenceInput struct {
 	QueryID       uint         `json:"query_id"`
 	EntityRef     string       `json:"entity_ref"`
 	From          time.Time    `json:"from"`
-	Through       time.Time    `json:"through"`
-	FeedbackID    uint         `json:"feedback_id"`
-	ReviewSHA     string       `json:"review_sha"`
-	GPUUUID       string       `json:"gpu_uuid"`
-	GPUIndex      *int         `json:"gpu_index,omitempty"`
-	Source        string       `json:"source"`
-	Complete      bool         `json:"complete"`
-	State         string       `json:"state"`
+	// For coverage, Through is complete_through and must not exceed ingestion time.
+	Through    time.Time `json:"through"`
+	FeedbackID uint      `json:"feedback_id"`
+	ReviewSHA  string    `json:"review_sha"`
+	GPUUUID    string    `json:"gpu_uuid"`
+	GPUIndex   *int      `json:"gpu_index,omitempty"`
+	Source     string    `json:"source"`
+	Complete   bool      `json:"complete"`
+	State      string    `json:"state"`
 }
 
 func validSHA(v string) bool {
@@ -132,7 +138,7 @@ func AppendEvidence(ctx context.Context, db *gorm.DB, in EvidenceInput) (api.GPU
 	in.Through = in.Through.UTC().Truncate(time.Microsecond)
 	var out api.GPURiskEvidenceRevision
 	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		now := time.Now().UTC().Truncate(time.Microsecond)
+		now := evidenceNow().UTC().Truncate(time.Microsecond)
 		if err := evidenceValid(tx, in, now); err != nil {
 			return err
 		}

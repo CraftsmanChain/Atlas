@@ -18,6 +18,9 @@ import (
 const DatasetVersion = "gpu-host-history-dataset-v2"
 const HistoryFeatureVersion = "gpu-host-history-v2"
 
+// MaxSourceLag bounds the unknown tail after the last complete source pull.
+const MaxSourceLag = 24 * time.Hour
+
 // DatasetSpec pins immutable outcome batches. There is deliberately no "latest"
 // selector, automatic training, label balancing or request-time asset lookup.
 type DatasetSpec struct {
@@ -230,8 +233,9 @@ func historyAt(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs
 		}
 		return sorted[i].at.Before(sorted[j].at)
 	})
-	// Only a contiguous source assertion ending at cutoff establishes observed
-	// exposure. Historical intervals ending earlier cannot prove zero recent events.
+	// Merge complete as-known source intervals; exposure ends at complete_through.
+	// R3-C permits a bounded unknown tail [complete_through, cutoff] of at most
+	// MaxSourceLag. It does not extend observed exposure or relax AvailableAt < cutoff.
 	sort.Slice(intervals, func(i, j int) bool { return intervals[i][0].Before(intervals[j][0]) })
 	var start, end time.Time
 	for _, x := range intervals {
@@ -249,7 +253,7 @@ func historyAt(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs
 			break
 		}
 	}
-	covered := !end.IsZero() && !end.Before(q.Cutoff)
+	covered := !end.IsZero() && !end.Before(q.Cutoff.Add(-MaxSourceLag))
 	f.HistoryUnknown = !covered
 	if !end.IsZero() {
 		days := end.Sub(start).Hours() / 24
@@ -348,7 +352,7 @@ func componentSplit(component string) string {
 // BuildDataset exports a read-only immutable file artifact. Unknown labels and
 // rejected rows are retained; readiness never substitutes row count for episodes.
 func BuildDataset(ctx context.Context, db *gorm.DB, spec DatasetSpec) (Dataset, error) {
-	out := Dataset{FeatureContract: HistoryFeatureVersion, Version: DatasetVersion, Target: Target, Spec: spec, Schema: CoreSchema(), Rows: []DatasetRow{}, Counts: map[string]int{}, Blockers: []string{}, Choices: []string{"paper_core only; unavailable source fields remain null", "3-day sampling from explicit UTC anchor; earliest pinned query per UTC date", "deterministic connected-component 60/20/20 assignment; time purge >=8d", "no preprocessing fit, no balancing, no training"}}
+	out := Dataset{FeatureContract: HistoryFeatureVersion, Version: DatasetVersion, Target: Target, Spec: spec, Schema: CoreSchema(), Rows: []DatasetRow{}, Counts: map[string]int{}, Blockers: []string{}, Choices: []string{CoverageWatermarkContract, "paper_core only; unavailable source fields remain null", "3-day sampling from explicit UTC anchor; earliest pinned query per UTC date", "deterministic connected-component 60/20/20 assignment; time purge >=8d", "no preprocessing fit, no balancing, no training"}}
 	if spec.Profile != "paper_core" || len(spec.BatchIDs) == 0 || len(spec.BatchIDs) > 200 || spec.Anchor.IsZero() || !spec.Anchor.Before(spec.TrainEnd) || !spec.TrainEnd.Before(spec.ValidationEnd) || !spec.ValidationEnd.Before(spec.TestEnd) || spec.TestEnd.After(time.Now()) {
 		return out, ErrInput
 	}
@@ -659,15 +663,6 @@ func BuildDataset(ctx context.Context, db *gorm.DB, spec DatasetSpec) (Dataset, 
 		if len(episodes[split]) < minEP || len(positiveNodes[split]) < minPositive || len(controls[split]) < minControl {
 			out.Ready = false
 			out.Blockers = append(out.Blockers, split+":independent_episode_readiness_not_met")
-		}
-	}
-	// Explicitly expose the unresolved watermark semantics. Current controlled
-	// assertions require Through<=AvailableAt, while history coverage at q requires
-	// Through>=q and AvailableAt<q. Do not relax readiness or backdate evidence.
-	for _, row := range out.Rows {
-		if contains(row.Features.Blockers, "history_coverage_unknown") {
-			out.Blockers = append(out.Blockers, "history_coverage_watermark_contract_pending")
-			break
 		}
 	}
 	out.ExplorationReady = out.Ready
