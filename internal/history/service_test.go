@@ -641,6 +641,12 @@ func newTestPrometheus(t *testing.T) *httptest.Server {
 				_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
 					{"metric":{"__name__":"DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS","UUID":"GPU-3","instance":"10.0.0.3:9400","modelName":"NVIDIA H100","pci_bus_id":"0000:03:00.0"},"values":[[1782864500,"8"]]}
 				]}}`))
+			} else if strings.Contains(r.URL.Query().Get("query"), "DCGM_FI_DEV_XID_ERRORS") {
+				// DCGM_FI_DEV_XID_ERRORS latches the XID code, so the series only
+				// shows up here on the sample where it transitions away from zero.
+				_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
+					{"metric":{"__name__":"DCGM_FI_DEV_XID_ERRORS","UUID":"GPU-4","err_code":"31","host_ip":"10.0.0.4","Hostname":"gpu-4","modelName":"NVIDIA H100","pci_bus_id":"0000:04:00.0"},"values":[[1782864600,"31"]]}
+				]}}`))
 			} else {
 				_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[{"metric":{},"values":[[1750000000,"0"],[1756425600,"472"]]}]}}`))
 			}
