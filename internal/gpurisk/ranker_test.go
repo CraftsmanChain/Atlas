@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -161,5 +162,66 @@ func TestRankerNullNumbersDoNotBecomeZero(t *testing.T) {
 	var artifact RankerArtifact
 	if pinnedJSON(p, sha, &artifact) == nil {
 		t.Fatal("numeric null accepted")
+	}
+}
+
+// Re-pin every dependent file after mutation: rejection must come from the
+// semantic guard, not a stale file/manifest SHA or a score mismatch (zero model).
+func TestRankerRejectsRepinnedNonCoreDataset(t *testing.T) {
+	cases := map[string]func(*Dataset){
+		"valid_core": func(d *Dataset) {},
+		"schema_extra": func(d *Dataset) {
+			d.Schema = append(d.Schema, featureField("telemetry", "float64", "count", "null", "extended"))
+		},
+		"schema_missing":   func(d *Dataset) { d.Schema = d.Schema[:len(d.Schema)-1] },
+		"schema_reordered": func(d *Dataset) { d.Schema[0], d.Schema[1] = d.Schema[1], d.Schema[0] },
+		"schema_renamed":   func(d *Dataset) { d.Schema[0].Name = "telemetry" },
+		"extended_profile": func(d *Dataset) { d.Spec.Profile = "atlas_extended" },
+		"extra_numeric":    func(d *Dataset) { d.Rows[0].Features.Numeric["telemetry"] = numberPtr(1) },
+		"extra_numeric_null_excluded": func(d *Dataset) {
+			d.Rows[0].Features.Numeric["telemetry"] = nil
+			d.Rows[0].Eligible = false
+		},
+		"extra_category":      func(d *Dataset) { v := "x"; d.Rows[0].Features.Categorical["repair"] = &v },
+		"misplaced_core_name": func(d *Dataset) { d.Rows[0].Features.Numeric["host_id"] = nil },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := rankerFixture(t)
+			mutate(&d)
+			if name != "extended_profile" {
+				rows, err := coreFeatureRows(d)
+				if name == "valid_core" {
+					if err != nil || len(rows) != len(d.Rows) {
+						t.Fatalf("valid core fingerprint input rejected: %v", err)
+					}
+				} else if !errors.Is(err, ErrInput) || rows != nil {
+					t.Fatalf("non-core columns reached fingerprint input: %v", err)
+				}
+			}
+			d.FeatureSHA, _ = digest(d.Rows)
+			d.SplitSHA, _ = digest(d.Spec)
+			d.InputSHA, _ = digest([]any{d.Rows, d.Spec})
+			d.SHA = ""
+			d.SHA, _ = digest(d)
+			root := t.TempDir()
+			dp, ap, sp := filepath.Join(root, "dataset.json"), filepath.Join(root, "model.json"), filepath.Join(root, "scores.json")
+			ds := testFile(t, dp, d)
+			a := zeroRanker(d, ds)
+			as := testFile(t, ap, a)
+			scores := RankerScores{Version: "gpu-host-mlp-scores-v1", ArtifactSHA: as, DatasetSHA: ds}
+			for _, r := range d.Rows {
+				scores.Rows = append(scores.Rows, RankerScore{QueryID: r.QueryID, NodeID: r.NodeID, Generation: r.Generation, UncalibratedScore: .5})
+			}
+			ss := testFile(t, sp, scores)
+			_, err := VerifyRankerFiles(dp, ds, ap, as, sp, ss)
+			if name == "valid_core" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if !errors.Is(err, ErrInput) {
+				t.Fatalf("non-core dataset accepted or wrong error: %v", err)
+			}
+		})
 	}
 }

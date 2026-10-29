@@ -182,6 +182,9 @@ func uniqueStrings(v []string) bool {
 	return true
 }
 func rankerVector(p RankerPreprocessor, f HistoryFeatures) ([]float64, error) {
+	if err := validateCoreFeatures(f); err != nil {
+		return nil, err
+	}
 	x := []float64{}
 	for _, c := range p.Numeric {
 		var value *float64
