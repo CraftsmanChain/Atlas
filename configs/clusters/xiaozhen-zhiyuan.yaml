@@ -53,6 +53,11 @@ history:
       type: "victoriametrics-cluster"
       base_url: "http://10.80.192.236:28481"
       tenant_id: "0"
+      # This cluster does not serve /api/v1/status/flags, so the audit lookback
+      # must be declared here. 180d is the window required to cover the oldest
+      # repair-ledger fault window (2026-07-08) with headroom; GPU telemetry in
+      # the VM store itself starts at 2026-06-30 and the probe stops there.
+      retention: "180d"
       enabled: true
 node_access:
   # 10.80.16.42 is a future physical-disk test node, not a synthetic GPU asset.

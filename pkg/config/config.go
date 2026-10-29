@@ -3,7 +3,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -108,6 +110,11 @@ type HistorySourceConfig struct {
 	TenantID  string `yaml:"tenant_id"`
 	AuthType  string `yaml:"auth_type"`
 	SecretRef string `yaml:"secret_ref"`
+	// Retention is the operator-declared lookback window for this source (for
+	// example "180d"). It takes precedence over /status/flags so an audit of a
+	// source without that endpoint, or with an unreliable answer, stays honest
+	// about how far back it is allowed to probe. Empty means "ask the source".
+	Retention string `yaml:"retention"`
 	Enabled   bool   `yaml:"enabled"`
 }
 
@@ -279,6 +286,9 @@ func LoadConfig(path string) (*Config, error) {
 				return nil, fmt.Errorf("authenticated history source %q must use a non-empty env: secret_ref", source.ID)
 			}
 		}
+		if err := validateRetentionLookback(source.Retention); err != nil {
+			return nil, fmt.Errorf("history source %q retention: %w", source.ID, err)
+		}
 	}
 	if cfg.NodeAccess.SkillID == "" {
 		cfg.NodeAccess.SkillID = "atlas-node-evidence"
@@ -327,4 +337,28 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// validateRetentionLookback rejects a declared retention window that the audit
+// could not honour. An unparsable value would otherwise be silently replaced by
+// the conservative default, widening every historical probe beyond what the
+// operator asked for. Empty is valid and means "ask the source".
+func validateRetentionLookback(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if len(value) >= 2 {
+		unit := strings.ToLower(value[len(value)-1:])
+		if unit == "y" || unit == "w" || unit == "d" {
+			if number, err := strconv.Atoi(value[:len(value)-1]); err == nil && number > 0 {
+				return nil
+			}
+			return fmt.Errorf("invalid duration %q", value)
+		}
+	}
+	if parsed, err := time.ParseDuration(value); err != nil || parsed <= 0 {
+		return fmt.Errorf("invalid duration %q", value)
+	}
+	return nil
 }

@@ -53,6 +53,55 @@ node_access:
 	}
 }
 
+func TestLoadConfigRejectsUnparsableHistoryRetention(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "atlas.yaml")
+	if err := os.WriteFile(path, []byte(`
+history:
+  enabled: true
+  sources:
+    - id: vm
+      name: VM
+      type: victoriametrics-cluster
+      base_url: http://10.0.0.1:8481
+      tenant_id: "0"
+      retention: "180 days"
+      enabled: true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), `retention: invalid duration "180 days"`) {
+		t.Fatalf("expected retention rejection, got %v", err)
+	}
+}
+
+func TestLoadConfigAcceptsDayWeekYearRetention(t *testing.T) {
+	for _, retention := range []string{"180d", "26w", "1y", "4320h"} {
+		path := filepath.Join(t.TempDir(), "atlas.yaml")
+		if err := os.WriteFile(path, []byte(`
+history:
+  enabled: true
+  sources:
+    - id: vm
+      name: VM
+      type: victoriametrics-cluster
+      base_url: http://10.0.0.1:8481
+      tenant_id: "0"
+      retention: "`+retention+`"
+      enabled: true
+`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("retention %q rejected: %v", retention, err)
+		}
+		if cfg.History.Sources[0].Retention != retention {
+			t.Fatalf("retention %q not preserved: %+v", retention, cfg.History.Sources[0])
+		}
+	}
+}
+
 func TestXiaozhenDeploymentConfigUsesReadOnlyVMMonitoring(t *testing.T) {
 	cfg, err := LoadConfig("../../configs/clusters/xiaozhen-zhiyuan.yaml")
 	if err != nil {
@@ -78,6 +127,9 @@ func TestXiaozhenDeploymentConfigUsesReadOnlyVMMonitoring(t *testing.T) {
 	}
 	if len(cfg.History.Sources) != 1 || !cfg.History.Sources[0].Enabled || cfg.History.Sources[0].Type != "victoriametrics-cluster" || cfg.History.Sources[0].TenantID != "0" || cfg.History.Sources[0].BaseURL != "http://10.80.192.236:28481" {
 		t.Fatal("VM history source must retain its tenant without duplicating the select prefix")
+	}
+	if cfg.History.Sources[0].Retention != "180d" {
+		t.Fatal("VM history source must declare its retention: the cluster serves no /status/flags endpoint")
 	}
 	legacy, err := LoadConfig("../../configs/config.yaml")
 	if err != nil || legacy.Prometheus.BaseURL != "http://10.111.201.1:9090" {
