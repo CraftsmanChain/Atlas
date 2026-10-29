@@ -352,7 +352,7 @@ func componentSplit(component string) string {
 // BuildDataset exports a read-only immutable file artifact. Unknown labels and
 // rejected rows are retained; readiness never substitutes row count for episodes.
 func BuildDataset(ctx context.Context, db *gorm.DB, spec DatasetSpec) (Dataset, error) {
-	out := Dataset{FeatureContract: HistoryFeatureVersion, Version: DatasetVersion, Target: Target, Spec: spec, Schema: CoreSchema(), Rows: []DatasetRow{}, Counts: map[string]int{}, Blockers: []string{}, Choices: []string{CoverageWatermarkContract, "paper_core only; unavailable source fields remain null", "3-day sampling from explicit UTC anchor; earliest pinned query per UTC date", "deterministic connected-component 60/20/20 assignment; time purge >=8d", "no preprocessing fit, no balancing, no training"}}
+	out := Dataset{FeatureContract: HistoryFeatureVersion, Version: DatasetVersion, Target: Target, Spec: spec, Schema: CoreSchema(), Rows: []DatasetRow{}, Counts: map[string]int{"eligible": 0, "unknown": 0, "history_unknown": 0, "no_signal": 0}, Blockers: []string{}, Choices: []string{CoverageWatermarkContract, "paper_core only; unavailable source fields remain null", "3-day sampling from explicit UTC anchor; earliest pinned query per UTC date", "deterministic connected-component 60/20/20 assignment; time purge >=8d", "no preprocessing fit, no balancing, no training"}}
 	if spec.Profile != "paper_core" || len(spec.BatchIDs) == 0 || len(spec.BatchIDs) > 200 || spec.Anchor.IsZero() || !spec.Anchor.Before(spec.TrainEnd) || !spec.TrainEnd.Before(spec.ValidationEnd) || !spec.ValidationEnd.Before(spec.TestEnd) || spec.TestEnd.After(time.Now()) {
 		return out, ErrInput
 	}
@@ -388,6 +388,7 @@ func BuildDataset(ctx context.Context, db *gorm.DB, spec DatasetSpec) (Dataset, 
 			generation  int
 		}
 		gpuComplete := map[rowKey]bool{}
+		noSignal := map[rowKey]bool{}
 		seenPinnedQuery := map[uint]bool{}
 		queryDay := map[string]uint{}
 		queryTimes := map[uint]time.Time{}
@@ -447,6 +448,12 @@ func BuildDataset(ctx context.Context, db *gorm.DB, spec DatasetSpec) (Dataset, 
 			expectedMembers, expectedScores, e := Build(snapshot)
 			if e != nil {
 				return e
+			}
+			// Count signal absence per frozen member, never per policy score.
+			for _, score := range expectedScores {
+				if score.Policy == HealthInverse && score.SignalStatus == "no_signal" {
+					noSignal[rowKey{q.ID, score.NodeID, score.Generation}] = true
+				}
 			}
 			resultSHA, _ := digest([]any{expectedMembers, expectedScores})
 			if resultSHA != q.ResultSHA {
@@ -597,11 +604,23 @@ func BuildDataset(ctx context.Context, db *gorm.DB, spec DatasetSpec) (Dataset, 
 			}
 			r.Eligible = len(r.Blockers) == 0
 			out.Counts["rows"]++
+			// These diagnostics overlap eligibility and each other; unknown means
+			// an unknown outcome label, history_unknown means missing coverage.
+			if r.Label == nil {
+				out.Counts["unknown"]++
+			}
+			if r.Features.HistoryUnknown {
+				out.Counts["history_unknown"]++
+			}
+			if noSignal[rowKey{r.QueryID, r.NodeID, r.Generation}] {
+				out.Counts["no_signal"]++
+			}
 			if !seenQuery[r.QueryID] {
 				out.Counts["queries"]++
 				seenQuery[r.QueryID] = true
 			}
 			if r.Eligible {
+				out.Counts["eligible"]++
 				out.Counts[r.Split+"_eligible"]++
 			} else {
 				out.Counts["excluded"]++
