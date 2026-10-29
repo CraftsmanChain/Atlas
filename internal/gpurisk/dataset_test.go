@@ -3,8 +3,10 @@ package gpurisk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +27,18 @@ func TestDatasetPinnedDeterministicMissingAndReadOnly(t *testing.T) {
 	a, e := BuildDataset(context.Background(), db, spec)
 	if e != nil {
 		t.Fatal(e)
+	}
+	// Compare the exported JSON contract, including metadata and column order.
+	raw, err := json.Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exported Dataset
+	if err := json.Unmarshal(raw, &exported); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(exported.Schema, CoreSchema()) {
+		t.Fatal("exported schema differs from ordered core whitelist")
 	}
 	again, e := BuildDataset(context.Background(), db, spec)
 	if e != nil || a.SHA != again.SHA || a.FeatureSHA != again.FeatureSHA || a.SplitSHA != again.SplitSHA {
@@ -59,7 +73,7 @@ func TestDatasetPinnedDeterministicMissingAndReadOnly(t *testing.T) {
 	}
 	spec = datasetSpec(q, b)
 	spec.Profile = "atlas_extended"
-	if _, e := BuildDataset(context.Background(), db, spec); e == nil {
+	if _, e := BuildDataset(context.Background(), db, spec); !errors.Is(e, ErrInput) {
 		t.Fatal("mixed profile")
 	}
 	spec = datasetSpec(q, b)
@@ -133,6 +147,30 @@ func TestComponentIsolationAndCoreSchema(t *testing.T) {
 		if strings.Contains(field.Name, "repair") || strings.Contains(field.Name, "90d") || strings.Contains(field.Name, "telemetry") {
 			t.Fatal("extended feature in core", field)
 		}
+	}
+}
+
+func TestCoreFeatureMapsRejectNonCoreColumns(t *testing.T) {
+	f := rankerFixture(t).Rows[0].Features
+	// New count-map values are vocabulary, not additional feature columns.
+	f.ByFaultType["previously_unseen_fault"] = 1
+	f.BySeverity["previously_unseen_severity"] = 1
+	if err := validateCoreFeatures(f); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"telemetry", "repair_count", "episode_count_90d"} {
+		t.Run(name, func(t *testing.T) {
+			f.Numeric[name] = nil // Even unknown extension columns must be rejected.
+			if err := validateCoreFeatures(f); !errors.Is(err, ErrInput) {
+				t.Fatalf("extra numeric column accepted: %v", err)
+			}
+			delete(f.Numeric, name)
+			f.Categorical[name] = nil
+			if err := validateCoreFeatures(f); !errors.Is(err, ErrInput) {
+				t.Fatalf("extra categorical column accepted: %v", err)
+			}
+			delete(f.Categorical, name)
+		})
 	}
 }
 
