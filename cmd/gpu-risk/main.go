@@ -29,6 +29,7 @@ func run(args []string) error {
 	flags := flag.NewFlagSet("gpu-risk", flag.ContinueOnError)
 	driver := flags.String("driver", "postgres", "postgres or sqlite")
 	modelID := flags.Uint("model", 0, "explicit candidate model ID")
+	mode := flags.String("mode", "full", "full or identity-only (evidence-ingest-prepare only)")
 	reviewID := flags.Uint("review", 0, "review row ID; selects latest feedback revision")
 	queryID := flags.Uint("query", 0, "frozen query ID for outcomes")
 	asOfText := flags.String("as-of", "", "RFC3339 outcome evaluation time; defaults to now")
@@ -41,6 +42,15 @@ func run(args []string) error {
 	scoresSHA := flags.String("scores-sha", "", "exact score file SHA256")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record") {
 		return fmt.Errorf("usage: gpu-risk [plan|record|evidence-ingest-prepare|evidence-ingest-apply|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record] [-driver postgres|sqlite] [-input plan.json]")
+	}
+	modeSet := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "mode" {
+			modeSet = true
+		}
+	})
+	if (modeSet && command != "evidence-ingest-prepare") || (*mode != "full" && *mode != "identity-only") {
+		return fmt.Errorf("-mode full|identity-only is only valid for evidence-ingest-prepare")
 	}
 	if command == "verify-model" {
 		report, err := gpurisk.VerifyRankerFiles(*datasetFile, *datasetSHA, *artifactFile, *artifactSHA, *scoresFile, *scoresSHA)
@@ -105,7 +115,7 @@ func run(args []string) error {
 			}
 		}
 		if command == "evidence-ingest-prepare" {
-			m, e := gpurisk.IngestPrepare(ctx, db, *reviewID, *queryID)
+			m, e := gpurisk.IngestPrepareMode(ctx, db, *reviewID, *queryID, *mode == "identity-only")
 			if e != nil {
 				return fmt.Errorf("ingest prepare rejected: %w", e)
 			}

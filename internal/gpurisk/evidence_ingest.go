@@ -47,6 +47,7 @@ type IngestMapping struct {
 	HistorySHA        string                              `json:"history_sha"`
 }
 type IngestManifest struct {
+	Mode       string            `json:"mode"`
 	Version    string            `json:"version"`
 	Review     IngestReview      `json:"review"`
 	Query      IngestQuery       `json:"query"`
@@ -60,16 +61,25 @@ type IngestManifest struct {
 // a review row; the latest revision of that row's feedback request is selected,
 // including withdrawals (never resurrect an older confirmed revision).
 func IngestPrepare(ctx context.Context, db *gorm.DB, reviewID, queryID uint) (IngestManifest, error) {
+	return IngestPrepareMode(ctx, db, reviewID, queryID, false)
+}
+
+// IngestPrepareMode uses the same frozen mapping checks in both modes.
+func IngestPrepareMode(ctx context.Context, db *gorm.DB, reviewID, queryID uint, identityOnly bool) (IngestManifest, error) {
 	var out IngestManifest
 	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var e error
-		out, e = ingestPrepare(tx, reviewID, queryID)
+		out, e = ingestPrepare(tx, reviewID, queryID, identityOnly)
 		return e
 	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	return out, err
 }
-func ingestPrepare(tx *gorm.DB, reviewID, queryID uint) (IngestManifest, error) {
-	m := IngestManifest{Version: "gpu-evidence-ingest-v1", Assertions: []IngestAssertion{}, Blockers: []string{}}
+func ingestPrepare(tx *gorm.DB, reviewID, queryID uint, identityOnly bool) (IngestManifest, error) {
+	mode := "full"
+	if identityOnly {
+		mode = "identity-only"
+	}
+	m := IngestManifest{Mode: mode, Version: "gpu-evidence-ingest-v1", Assertions: []IngestAssertion{}, Blockers: []string{}}
 	block := func(s string) { m.Blockers = append(m.Blockers, s) }
 	if reviewID == 0 || queryID == 0 {
 		return m, ErrInput
@@ -179,7 +189,7 @@ func ingestPrepare(tx *gorm.DB, reviewID, queryID uint) (IngestManifest, error) 
 	if r.ConfirmedGPUIndex < 0 {
 		block("slot_missing")
 	}
-	m.PinSHA, _ = digest([]any{m.Version, m.Review, m.Query, m.Mapping})
+	m.PinSHA, _ = digest([]any{m.Version, m.Mode, m.Review, m.Query, m.Mapping})
 	if len(m.Blockers) == 0 {
 		idx := r.ConfirmedGPUIndex
 		base := EvidenceInput{NodeID: m.Mapping.NodeID, Generation: m.Mapping.Generation, EntityRef: m.Mapping.EntityRef}
@@ -194,16 +204,18 @@ func ingestPrepare(tx *gorm.DB, reviewID, queryID uint) (IngestManifest, error) 
 		id.GPUIndex = &idx
 		id.EvidenceSHA = m.PinSHA
 		m.Assertions = append(m.Assertions, IngestAssertion{EvidenceInput: id})
-		for _, s := range []string{"hardware_fault_ledger", "monitoring", "identity"} {
-			v := base
-			v.Kind = "coverage"
-			v.Key = fmt.Sprintf("ingest-coverage-%d-%d-%d-%s", q.ID, base.NodeID, base.Generation, s)
-			v.QueryID = q.ID
-			v.Source = s
-			v.From = q.Cutoff
-			v.Through = q.Cutoff.Add(7 * 24 * time.Hour)
-			incomplete := false
-			m.Assertions = append(m.Assertions, IngestAssertion{EvidenceInput: v, Complete: &incomplete})
+		if !identityOnly {
+			for _, s := range []string{"hardware_fault_ledger", "monitoring", "identity"} {
+				v := base
+				v.Kind = "coverage"
+				v.Key = fmt.Sprintf("ingest-coverage-%d-%d-%d-%s", q.ID, base.NodeID, base.Generation, s)
+				v.QueryID = q.ID
+				v.Source = s
+				v.From = q.Cutoff
+				v.Through = q.Cutoff.Add(7 * 24 * time.Hour)
+				incomplete := false
+				m.Assertions = append(m.Assertions, IngestAssertion{EvidenceInput: v, Complete: &incomplete})
+			}
 		}
 		for i := range m.Assertions {
 			var latest []api.GPURiskEvidenceRevision
@@ -216,29 +228,54 @@ func ingestPrepare(tx *gorm.DB, reviewID, queryID uint) (IngestManifest, error) 
 			}
 		}
 	}
-	block("missing_three_source_signatures")
+	if identityOnly {
+		block("missing_identity_signature")
+	} else {
+		block("missing_three_source_signatures")
+	}
 	return m, nil
 }
 
 // IngestApply atomically revalidates provenance, then delegates validation,
 // timestamps, idempotence and CAS to AppendEvidence. No migration is performed.
 func IngestApply(ctx context.Context, db *gorm.DB, approved IngestManifest) ([]api.GPURiskEvidenceRevision, error) {
+	if approved.Mode == "" {
+		approved.Mode = "full"
+	}
+	if approved.Mode != "full" && approved.Mode != "identity-only" {
+		return nil, ErrInput
+	}
 	out := []api.GPURiskEvidenceRevision{}
 	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		fresh, e := ingestPrepare(tx, approved.Review.ID, approved.Query.ID)
+		fresh, e := ingestPrepare(tx, approved.Review.ID, approved.Query.ID, approved.Mode == "identity-only")
 		if e != nil {
 			return e
 		}
-		pin, _ := digest([]any{approved.Version, approved.Review, approved.Query, approved.Mapping})
+		pin, _ := digest([]any{approved.Version, approved.Mode, approved.Review, approved.Query, approved.Mapping})
 		if pin != approved.PinSHA || pin != fresh.PinSHA {
 			return ErrFence
 		}
-		if len(fresh.Blockers) != 1 || fresh.Blockers[0] != "missing_three_source_signatures" || len(approved.Assertions) != 4 {
-			return ErrInput
-		}
-		for _, b := range approved.Blockers {
-			if b != "missing_three_source_signatures" {
+		if approved.Mode == "identity-only" {
+			if fresh.Mode != "identity-only" || len(fresh.Blockers) != 1 || fresh.Blockers[0] != "missing_identity_signature" || len(approved.Assertions) != 1 {
 				return ErrInput
+			}
+			for _, b := range approved.Blockers {
+				if b != "missing_identity_signature" {
+					return ErrInput
+				}
+			}
+			a := approved.Assertions[0]
+			if a.Kind != "identity" || a.Complete != nil || strings.TrimSpace(a.Owner) == "" || a.EvidenceSHA != approved.PinSHA {
+				return ErrInput
+			}
+		} else {
+			if len(fresh.Blockers) != 1 || fresh.Blockers[0] != "missing_three_source_signatures" || len(approved.Assertions) != 4 {
+				return ErrInput
+			}
+			for _, b := range approved.Blockers {
+				if b != "missing_three_source_signatures" {
+					return ErrInput
+				}
 			}
 		}
 		for i, a := range approved.Assertions {

@@ -46,9 +46,9 @@ func ingestScope(t *testing.T, db *gorm.DB, q api.GPURiskQuery, p Snapshot) (api
 	}
 	return q, p
 }
-func prepared(t *testing.T, db *gorm.DB, q api.GPURiskQuery, r api.HardwareFaultFeedbackReview) IngestManifest {
+func prepared(t *testing.T, db *gorm.DB, q api.GPURiskQuery, r api.HardwareFaultFeedbackReview, identityOnly ...bool) IngestManifest {
 	t.Helper()
-	m, e := IngestPrepare(t.Context(), db, r.ID, q.ID)
+	m, e := IngestPrepareMode(t.Context(), db, r.ID, q.ID, len(identityOnly) > 0 && identityOnly[0])
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -56,7 +56,11 @@ func prepared(t *testing.T, db *gorm.DB, q api.GPURiskQuery, r api.HardwareFault
 }
 func signIngest(t *testing.T, m IngestManifest) IngestManifest {
 	t.Helper()
-	if len(m.Assertions) != 4 {
+	want := 4
+	if m.Mode == "identity-only" {
+		want = 1
+	}
+	if len(m.Assertions) != want {
 		t.Fatal(m.Blockers)
 	}
 	for i := range m.Assertions {
@@ -100,23 +104,25 @@ func TestIngestMappingFailClosed(t *testing.T) {
 			d.Model(r).Update("confirmed_onset_at", nil)
 		}},
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			db, q, r, p := ingestFixture(t)
-			c.change(t, db, &q, &r, &p)
-			m := prepared(t, db, q, r)
-			if !contains(m.Blockers, c.block) {
-				t.Fatal(m.Blockers)
-			}
-			if _, e := IngestApply(t.Context(), db, m); e == nil {
-				t.Fatal("accepted blocked mapping")
-			}
-			var n int64
-			db.Model(&api.GPURiskEvidenceRevision{}).Count(&n)
-			if n != 0 {
-				t.Fatal(n)
-			}
-		})
+	for _, identityOnly := range []bool{false, true} {
+		for _, c := range cases {
+			t.Run(fmt.Sprintf("identityOnly=%t/%s", identityOnly, c.name), func(t *testing.T) {
+				db, q, r, p := ingestFixture(t)
+				c.change(t, db, &q, &r, &p)
+				m := prepared(t, db, q, r, identityOnly)
+				if !contains(m.Blockers, c.block) {
+					t.Fatal(m.Blockers)
+				}
+				if _, e := IngestApply(t.Context(), db, m); e == nil {
+					t.Fatal("accepted blocked mapping")
+				}
+				var n int64
+				db.Model(&api.GPURiskEvidenceRevision{}).Count(&n)
+				if n != 0 {
+					t.Fatal(n)
+				}
+			})
+		}
 	}
 }
 func TestIngestLateAtomicIdempotentAndOldAsOf(t *testing.T) {
@@ -237,5 +243,182 @@ func TestIngestPrepareReadOnlyConnection(t *testing.T) {
 	}
 	if _, e := IngestApply(t.Context(), db, signIngest(t, m)); e == nil {
 		t.Fatal("read-only connection accepted apply")
+	}
+}
+
+func TestIngestIdentityOnlyLifecycle(t *testing.T) {
+	db, q, r, _ := ingestFixture(t)
+	old := time.Now().UTC().Truncate(time.Microsecond)
+	before, _, e := EvaluateOutcomes(t.Context(), db, q.ID, old)
+	if e != nil {
+		t.Fatal(e)
+	}
+	m := prepared(t, db, q, r, true)
+	if m.Mode != "identity-only" || len(m.Assertions) != 1 || m.Assertions[0].Kind != "identity" || len(m.Blockers) != 1 || m.Blockers[0] != "missing_identity_signature" {
+		t.Fatal(m)
+	}
+	full, e := IngestPrepare(t.Context(), db, r.ID, q.ID)
+	if e != nil || full.Mode != "full" || len(full.Assertions) != 4 || full.PinSHA == m.PinSHA {
+		t.Fatal(full, e)
+	}
+	for _, field := range []string{"owner", "sha", "complete", "kind", "blocker", "mode", "unknown mode", "assertion", "cas"} {
+		t.Run(field, func(t *testing.T) {
+			bad := signIngest(t, prepared(t, db, q, r, true))
+			switch field {
+			case "owner":
+				bad.Assertions[0].Owner = " "
+			case "sha":
+				bad.Assertions[0].EvidenceSHA = strings.Repeat("f", 64)
+			case "complete":
+				v := false
+				bad.Assertions[0].Complete = &v
+			case "kind":
+				bad.Assertions[0].Kind = "coverage"
+			case "blocker":
+				bad.Blockers = []string{"missing_three_source_signatures"}
+			case "mode":
+				bad.Mode = "full"
+			case "unknown mode":
+				bad.Mode = "other"
+			case "assertion":
+				bad.Assertions[0].Generation++
+			case "cas":
+				bad.Assertions[0].PreviousSHA = strings.Repeat("f", 64)
+			}
+			if _, e := IngestApply(t.Context(), db, bad); e == nil {
+				t.Fatal("accepted invalid identity-only package")
+			}
+		})
+	}
+	var count int64
+	if e := db.Model(&api.GPURiskEvidenceRevision{}).Count(&count).Error; e != nil || count != 0 {
+		t.Fatal(count, e)
+	}
+	m = signIngest(t, m)
+	start := time.Now().UTC().Truncate(time.Microsecond)
+	rows, e := IngestApply(t.Context(), db, m)
+	if e != nil || len(rows) != 1 || rows[0].Kind != "identity" || rows[0].AvailableAt.Before(start) {
+		t.Fatal(rows, e)
+	}
+	for _, retry := range []IngestManifest{m, signIngest(t, prepared(t, db, q, r, true))} {
+		same, e := IngestApply(t.Context(), db, retry)
+		if e != nil || len(same) != 1 || same[0].ID != rows[0].ID {
+			t.Fatal(same, e)
+		}
+	}
+	stale := m
+	stale.Assertions = append([]IngestAssertion(nil), m.Assertions...)
+	stale.Assertions[0].Owner = "changed signer"
+	if _, e := IngestApply(t.Context(), db, stale); !errors.Is(e, ErrFence) {
+		t.Fatal(e)
+	}
+	if e := db.Model(&api.GPURiskEvidenceRevision{}).Count(&count).Error; e != nil || count != 1 {
+		t.Fatal(count, e)
+	}
+	after, _, e := EvaluateOutcomes(t.Context(), db, q.ID, old)
+	if e != nil || before.SHA != after.SHA {
+		t.Fatal("old as_of drift", before.SHA, after.SHA, e)
+	}
+	var evs []api.GPURiskEvidenceRevision
+	if e := db.Find(&evs).Error; e != nil {
+		t.Fatal(e)
+	}
+	var member api.GPURiskMember
+	if e := db.Where("query_id = ? AND node_id = ?", q.ID, m.Mapping.NodeID).Take(&member).Error; e != nil {
+		t.Fatal(e)
+	}
+	h, e := historyAt(t.Context(), member, q, evs, []api.HardwareFaultFeedbackReview{r})
+	if e != nil || len(h.EvidenceSHAs) != 0 {
+		t.Fatal("old H(q) polluted", h, e)
+	}
+}
+
+func TestIngestIdentityOnlyFutureThroughRejected(t *testing.T) {
+	db, q, r, _ := ingestFixture(t)
+	// OBSERVED: a source-confirmed future window is rejected by AppendEvidence;
+	// the manifest's Through is never edited to evade the ingestion clock.
+	future := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
+	if e := db.Model(&r).Update("confirmed_onset_at", future).Error; e != nil {
+		t.Fatal(e)
+	}
+	if e := db.Model(&api.HistoricalGPUIdentityInterval{}).Where("id > 0").Update("last_seen_at", future).Error; e != nil {
+		t.Fatal(e)
+	}
+	m := signIngest(t, prepared(t, db, q, r, true))
+	if !m.Assertions[0].Through.After(time.Now()) {
+		t.Fatal(m)
+	}
+	if _, e := IngestApply(t.Context(), db, m); !errors.Is(e, ErrInput) {
+		t.Fatal(e)
+	}
+	var count int64
+	if e := db.Model(&api.GPURiskEvidenceRevision{}).Count(&count).Error; e != nil || count != 0 {
+		t.Fatal(count, e)
+	}
+}
+
+func TestIngestIdentityOnlyNewQueryAndReadOnly(t *testing.T) {
+	db, q, r, p := ingestFixture(t)
+	// DERIVED: an already confirmed fault can be attributed for a new query
+	// while full coverage still extends beyond real ingestion time.
+	p.Cutoff = time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	q.Cutoff = p.Cutoff
+	q, _ = ingestScope(t, db, q, p)
+	full := signIngest(t, prepared(t, db, q, r))
+	if _, e := IngestApply(t.Context(), db, full); !errors.Is(e, ErrInput) {
+		t.Fatal(e)
+	}
+	guard, off := "PRAGMA query_only = ON", "PRAGMA query_only = OFF"
+	if db.Dialector.Name() == "postgres" {
+		guard, off = "SET default_transaction_read_only = on", "SET default_transaction_read_only = off"
+	}
+	defer db.Exec(off)
+	if e := db.Exec(guard).Error; e != nil {
+		t.Fatal(e)
+	}
+	m := signIngest(t, prepared(t, db, q, r, true))
+	if _, e := IngestApply(t.Context(), db, m); e == nil {
+		t.Fatal("read-only apply accepted")
+	}
+	if e := db.Exec(off).Error; e != nil {
+		t.Fatal(e)
+	}
+	if rows, e := IngestApply(t.Context(), db, m); e != nil || len(rows) != 1 {
+		t.Fatal(rows, e)
+	}
+}
+
+func TestIngestIdentityOnlyPinnedDrift(t *testing.T) {
+	for _, change := range []string{"review", "history", "member", "scope"} {
+		t.Run(change, func(t *testing.T) {
+			db, q, r, _ := ingestFixture(t)
+			m := signIngest(t, prepared(t, db, q, r, true))
+			var e error
+			switch change {
+			case "review":
+				e = db.Model(&r).Update("review_sha256", strings.Repeat("e", 64)).Error
+			case "history":
+				e = db.Model(&api.HistoricalGPUIdentityInterval{}).Where("id > 0").Update("observation_count", 99).Error
+			case "member":
+				e = db.Model(&api.GPURiskMember{}).Where("query_id = ? AND node_id = ?", q.ID, m.Mapping.NodeID).Update("entity_ref", "serial:drift").Error
+			case "scope":
+				e = db.Model(&q).Update("scope_sha", strings.Repeat("d", 64)).Error
+			}
+			if e != nil {
+				t.Fatal(e)
+			}
+			if _, e := IngestApply(t.Context(), db, m); !errors.Is(e, ErrFence) {
+				t.Fatal(e)
+			}
+		})
+	}
+}
+
+func TestIngestEmptyModeMeansFull(t *testing.T) {
+	db, q, r, _ := ingestFixture(t)
+	m := signIngest(t, prepared(t, db, q, r))
+	m.Mode = ""
+	if rows, e := IngestApply(t.Context(), db, m); e != nil || len(rows) != 4 {
+		t.Fatal(rows, e)
 	}
 }
