@@ -29,6 +29,7 @@ func run(args []string) error {
 	flags := flag.NewFlagSet("gpu-risk", flag.ContinueOnError)
 	driver := flags.String("driver", "postgres", "postgres or sqlite")
 	modelID := flags.Uint("model", 0, "explicit candidate model ID")
+	reviewID := flags.Uint("review", 0, "review row ID; selects latest feedback revision")
 	queryID := flags.Uint("query", 0, "frozen query ID for outcomes")
 	asOfText := flags.String("as-of", "", "RFC3339 outcome evaluation time; defaults to now")
 	input := flags.String("input", "", "frozen plan JSON (required for record)")
@@ -38,8 +39,8 @@ func run(args []string) error {
 	datasetSHA := flags.String("dataset-sha", "", "exact dataset file SHA256")
 	artifactSHA := flags.String("artifact-sha", "", "exact model file SHA256")
 	scoresSHA := flags.String("scores-sha", "", "exact score file SHA256")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record") {
-		return fmt.Errorf("usage: gpu-risk [plan|record|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record] [-driver postgres|sqlite] [-input plan.json]")
+	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record") {
+		return fmt.Errorf("usage: gpu-risk [plan|record|evidence-ingest-prepare|evidence-ingest-apply|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record] [-driver postgres|sqlite] [-input plan.json]")
 	}
 	if command == "verify-model" {
 		report, err := gpurisk.VerifyRankerFiles(*datasetFile, *datasetSHA, *artifactFile, *artifactSHA, *scoresFile, *scoresSHA)
@@ -47,6 +48,12 @@ func run(args []string) error {
 			return fmt.Errorf("model parity rejected: file fingerprint, contract or node scores")
 		}
 		return json.NewEncoder(os.Stdout).Encode(report)
+	}
+	if command == "evidence-ingest-prepare" && (*queryID == 0 || *reviewID == 0) {
+		return fmt.Errorf("prepare requires -query and -review")
+	}
+	if command == "evidence-ingest-apply" && *input == "" {
+		return fmt.Errorf("apply requires -input approved.json")
 	}
 	dsn := os.Getenv("ATLAS_GPU_RISK_DSN")
 	if dsn == "" {
@@ -57,7 +64,7 @@ func run(args []string) error {
 	case "postgres":
 		dialector = postgres.Open(dsn)
 	case "sqlite":
-		if command == "plan" || command == "outcome-plan" || command == "dataset" || command == "model-request" {
+		if command == "plan" || command == "outcome-plan" || command == "dataset" || command == "model-request" || command == "evidence-ingest-prepare" {
 			if strings.Contains(dsn, "?") || strings.HasPrefix(dsn, "file:") || dsn == ":memory:" {
 				return fmt.Errorf("plan requires a plain existing SQLite path")
 			}
@@ -86,7 +93,7 @@ func run(args []string) error {
 	sqlDB.SetMaxOpenConns(1)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	if command == "plan" || command == "outcome-plan" || command == "dataset" || command == "model-request" {
+	if command == "plan" || command == "outcome-plan" || command == "dataset" || command == "model-request" || command == "evidence-ingest-prepare" {
 		// Enforce read-only at the database connection, not only by convention.
 		if *driver == "sqlite" {
 			if db.Exec("PRAGMA query_only = ON").Error != nil {
@@ -96,6 +103,13 @@ func run(args []string) error {
 			if db.Exec("SET default_transaction_read_only = on").Error != nil {
 				return fmt.Errorf("read-only guard failed")
 			}
+		}
+		if command == "evidence-ingest-prepare" {
+			m, e := gpurisk.IngestPrepare(ctx, db, *reviewID, *queryID)
+			if e != nil {
+				return fmt.Errorf("ingest prepare rejected: %w", e)
+			}
+			return json.NewEncoder(os.Stdout).Encode(m)
 		}
 		if command == "model-request" {
 			request, e := gpurisk.BuildModelRequest(ctx, db, *queryID, *modelID)
@@ -191,6 +205,21 @@ func run(args []string) error {
 	defer f.Close()
 	decoder := json.NewDecoder(io.LimitReader(f, 32*1024*1024))
 	decoder.DisallowUnknownFields()
+	if command == "evidence-ingest-apply" {
+		var approved gpurisk.IngestManifest
+		if decoder.Decode(&approved) != nil {
+			return fmt.Errorf("invalid approved manifest")
+		}
+		var extra any
+		if decoder.Decode(&extra) != io.EOF {
+			return fmt.Errorf("trailing approved manifest")
+		}
+		rows, e := gpurisk.IngestApply(ctx, db, approved)
+		if e != nil {
+			return fmt.Errorf("ingest apply rejected: %w", e)
+		}
+		return json.NewEncoder(os.Stdout).Encode(rows)
+	}
 	if command == "model-record" {
 		var request gpurisk.ModelScoreRequest
 		if decoder.Decode(&request) != nil {

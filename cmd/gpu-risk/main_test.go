@@ -174,3 +174,34 @@ func TestCandidateCLIReadOnlyRequestAndStrictRecord(t *testing.T) {
 		t.Fatal("unknown request field accepted")
 	}
 }
+
+func TestIngestExplicitFlagsAndStrictInput(t *testing.T) {
+	for _, args := range [][]string{{"evidence-ingest-prepare"}, {"evidence-ingest-prepare", "-query", "1"}, {"evidence-ingest-apply"}} {
+		if e := run(args); e == nil {
+			t.Fatal("missing required flags accepted", args)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "ingest.db")
+	t.Setenv("ATLAS_GPU_RISK_DSN", path)
+	if e := run([]string{"evidence-ingest-prepare", "-driver", "sqlite", "-query", "1", "-review", "1"}); e == nil {
+		t.Fatal("absent DB accepted")
+	}
+	if _, e := os.Stat(path); !os.IsNotExist(e) {
+		t.Fatal("prepare created database")
+	}
+	for _, payload := range []string{
+		`{"available_at":"2020-01-01T00:00:00Z"}`,
+		`{"assertions":[{"available_at":"2020-01-01T00:00:00Z"}]}`,
+		`{"review":{"available_at":"2020-01-01T00:00:00Z"}}`,
+		`{} {}`,
+	} {
+		file := filepath.Join(t.TempDir(), "approved.json")
+		if e := os.WriteFile(file, []byte(payload), 0600); e != nil {
+			t.Fatal(e)
+		}
+		e := run([]string{"evidence-ingest-apply", "-driver", "sqlite", "-input", file})
+		if e == nil || (!strings.Contains(e.Error(), "invalid approved manifest") && !strings.Contains(e.Error(), "trailing approved manifest")) {
+			t.Fatal("strict input failed", e)
+		}
+	}
+}
