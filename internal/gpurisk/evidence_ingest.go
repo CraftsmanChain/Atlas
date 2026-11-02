@@ -212,9 +212,27 @@ func ingestPrepare(tx *gorm.DB, reviewID, queryID uint, identityOnly bool) (Inge
 				v.QueryID = q.ID
 				v.Source = s
 				v.From = q.Cutoff
-				v.Through = q.Cutoff.Add(7 * 24 * time.Hour)
-				incomplete := false
-				m.Assertions = append(m.Assertions, IngestAssertion{EvidenceInput: v, Complete: &incomplete})
+				through := q.Cutoff.Add(7 * 24 * time.Hour)
+				complete := false
+				// A pull is only usable when its watermark still reaches into the
+				// bounded unknown tail (MaxSourceLag) and it never postdates the
+				// server clock. Otherwise fail closed to the unsigned placeholder.
+				var checks []api.GPURiskSourceCoverageCheck
+				if e := tx.Where("source = ?", s).Order("observed_at DESC, id DESC").Limit(1).Find(&checks).Error; e != nil {
+					return m, e
+				}
+				if len(checks) == 1 && !checks[0].VerifiedThrough.Before(q.Cutoff.Add(-MaxSourceLag)) && !checks[0].ObservedAt.After(evidenceNow()) {
+					through = checks[0].VerifiedThrough
+					if through.Before(v.From) {
+						// evidenceValid requires Through >= From; a watermark inside
+						// the tail is only ever asserted from itself forward.
+						v.From = through
+					}
+					complete = true
+				}
+				v.From = v.From.UTC().Truncate(time.Microsecond)
+				v.Through = through.UTC().Truncate(time.Microsecond)
+				m.Assertions = append(m.Assertions, IngestAssertion{EvidenceInput: v, Complete: &complete})
 			}
 		}
 		for i := range m.Assertions {

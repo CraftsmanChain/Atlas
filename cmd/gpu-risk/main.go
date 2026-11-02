@@ -32,6 +32,8 @@ func run(args []string) error {
 	mode := flags.String("mode", "full", "full or identity-only (evidence-ingest-prepare only)")
 	reviewID := flags.Uint("review", 0, "review row ID; selects latest feedback revision")
 	queryID := flags.Uint("query", 0, "frozen query ID for outcomes")
+	source := flags.String("source", "", "history source for coverage-check: hardware_fault_ledger or identity")
+	owner := flags.String("owner", "", "signing owner for coverage-check")
 	asOfText := flags.String("as-of", "", "RFC3339 outcome evaluation time; defaults to now")
 	input := flags.String("input", "", "frozen plan JSON (required for record)")
 	datasetFile := flags.String("dataset-file", "", "pinned local dataset JSON for verify-model")
@@ -40,8 +42,8 @@ func run(args []string) error {
 	datasetSHA := flags.String("dataset-sha", "", "exact dataset file SHA256")
 	artifactSHA := flags.String("artifact-sha", "", "exact model file SHA256")
 	scoresSHA := flags.String("scores-sha", "", "exact score file SHA256")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record") {
-		return fmt.Errorf("usage: gpu-risk [plan|record|evidence-ingest-prepare|evidence-ingest-apply|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record] [-driver postgres|sqlite] [-input plan.json]")
+	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "coverage-check" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record") {
+		return fmt.Errorf("usage: gpu-risk [plan|record|evidence-ingest-prepare|evidence-ingest-apply|coverage-check|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record] [-driver postgres|sqlite] [-input plan.json]")
 	}
 	modeSet := false
 	flags.Visit(func(f *flag.Flag) {
@@ -64,6 +66,9 @@ func run(args []string) error {
 	}
 	if command == "evidence-ingest-apply" && *input == "" {
 		return fmt.Errorf("apply requires -input approved.json")
+	}
+	if command == "coverage-check" && (*source == "" || *owner == "") {
+		return fmt.Errorf("coverage-check requires -source hardware_fault_ledger|identity and -owner")
 	}
 	dsn := os.Getenv("ATLAS_GPU_RISK_DSN")
 	if dsn == "" {
@@ -194,6 +199,16 @@ func run(args []string) error {
 			return fmt.Errorf("outcome record failed")
 		}
 		return json.NewEncoder(os.Stdout).Encode(batch)
+	}
+	if command == "coverage-check" {
+		if e := gpurisk.Migrate(db.WithContext(ctx)); e != nil {
+			return fmt.Errorf("coverage migration failed")
+		}
+		row, e := gpurisk.RecordSourceCoverage(ctx, db, gpurisk.CoverageCheckInput{Source: *source, Owner: *owner})
+		if e != nil {
+			return fmt.Errorf("coverage check rejected: %w", e)
+		}
+		return json.NewEncoder(os.Stdout).Encode(row)
 	}
 	if command == "register-model" {
 		if e := gpurisk.Migrate(db.WithContext(ctx)); e != nil {
