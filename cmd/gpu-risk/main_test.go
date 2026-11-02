@@ -205,3 +205,41 @@ func TestIngestExplicitFlagsAndStrictInput(t *testing.T) {
 		}
 	}
 }
+
+func TestCoverageCheckCLIStrictInput(t *testing.T) {
+	for _, args := range [][]string{
+		{"coverage-check"},
+		{"coverage-check", "-driver", "sqlite", "-source", "hardware_fault_ledger"},
+		{"coverage-check", "-driver", "sqlite", "-owner", "ops"},
+	} {
+		if e := run(args); e == nil {
+			t.Fatal("missing required flags accepted", args)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "coverage-cli.db")
+	t.Setenv("ATLAS_GPU_RISK_DSN", path)
+	store, e := storage.InitDB(path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	raw, _ := store.DB.DB()
+	defer raw.Close()
+	if e := run([]string{"coverage-check", "-driver", "sqlite", "-source", "monitoring", "-owner", "ops"}); e == nil || !strings.Contains(e.Error(), "no canonical durable table") {
+		t.Fatal("unsupported source accepted", e)
+	}
+	var count int64
+	store.DB.Model(&api.GPURiskSourceCoverageCheck{}).Count(&count)
+	if count != 0 {
+		t.Fatal("rejected source wrote a check row")
+	}
+	if e := run([]string{"coverage-check", "-driver", "sqlite", "-source", "hardware_fault_ledger", "-owner", "ops"}); e != nil {
+		t.Fatal(e)
+	}
+	var row api.GPURiskSourceCoverageCheck
+	if e := store.DB.Order("id DESC").First(&row).Error; e != nil {
+		t.Fatal(e)
+	}
+	if row.Source != "hardware_fault_ledger" || row.Owner != "ops" || row.RecordCount != 0 || !row.ObservedAt.Equal(row.VerifiedThrough) {
+		t.Fatalf("unexpected coverage row: %+v", row)
+	}
+}

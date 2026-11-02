@@ -15,7 +15,7 @@ import (
 func ingestFixture(t *testing.T) (*gorm.DB, api.GPURiskQuery, api.HardwareFaultFeedbackReview, Snapshot) {
 	t.Helper()
 	db, q, p := outcomeDB(t)
-	if e := db.AutoMigrate(&api.HistoricalGPUIdentityInterval{}); e != nil {
+	if e := db.AutoMigrate(&api.HistoricalGPUIdentityInterval{}, &api.GPURiskSourceCoverageCheck{}); e != nil {
 		t.Fatal(e)
 	}
 	p.Nodes[0].Cards = []Card{{AssetID: 1, UUID: "GPU-ingest", State: "active"}}
@@ -420,5 +420,107 @@ func TestIngestEmptyModeMeansFull(t *testing.T) {
 	m.Mode = ""
 	if rows, e := IngestApply(t.Context(), db, m); e != nil || len(rows) != 4 {
 		t.Fatal(rows, e)
+	}
+}
+
+// signFullWithLedgerComplete signs the four-assertion full package, marking only
+// the hardware_fault_ledger coverage (index 1) complete. Complete is not in the
+// pinned digest, so the signer still states it explicitly.
+func signFullWithLedgerComplete(t *testing.T, m IngestManifest) IngestManifest {
+	t.Helper()
+	if len(m.Assertions) != 4 {
+		t.Fatal(m.Blockers)
+	}
+	for i := range m.Assertions {
+		m.Assertions[i].Owner = fmt.Sprintf("responsible-%d", i)
+		if i > 0 {
+			m.Assertions[i].EvidenceSHA = strings.Repeat("a", 64)
+			v := i == 1
+			m.Assertions[i].Complete = &v
+		}
+	}
+	return m
+}
+
+func TestIngestCoverageFromSourceCheck(t *testing.T) {
+	db, q, r, _ := ingestFixture(t)
+	// No check: byte-for-byte the previous fail-closed placeholder.
+	ledger := prepared(t, db, q, r).Assertions[1]
+	if ledger.Source != "hardware_fault_ledger" || ledger.Complete == nil || *ledger.Complete || !ledger.Through.Equal(q.Cutoff.Add(7*24*time.Hour)) || !ledger.From.Equal(q.Cutoff) {
+		t.Fatal(ledger)
+	}
+	check, e := RecordSourceCoverage(t.Context(), db, CoverageCheckInput{Source: "hardware_fault_ledger", Owner: "platform-admin"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	m := prepared(t, db, q, r)
+	ledger = m.Assertions[1]
+	if ledger.Complete == nil || !*ledger.Complete || !ledger.Through.Equal(check.VerifiedThrough) || !ledger.From.Equal(q.Cutoff) {
+		t.Fatal(ledger)
+	}
+	// Untouched sources stay fail-closed.
+	for _, i := range []int{2, 3} {
+		if m.Assertions[i].Complete == nil || *m.Assertions[i].Complete {
+			t.Fatal(m.Assertions[i])
+		}
+	}
+	rows, e := IngestApply(t.Context(), db, signFullWithLedgerComplete(t, m))
+	if e != nil || len(rows) != 4 {
+		t.Fatal(rows, e)
+	}
+	// The honest assertion clears the structural gate for a later query whose
+	// cutoff is after its server AvailableAt, and only that gate.
+	var evs []api.GPURiskEvidenceRevision
+	if e := db.Order("id").Find(&evs).Error; e != nil {
+		t.Fatal(e)
+	}
+	var member api.GPURiskMember
+	if e := db.Where("query_id = ? AND node_id = ?", q.ID, m.Mapping.NodeID).Take(&member).Error; e != nil {
+		t.Fatal(e)
+	}
+	later := q
+	later.Cutoff = check.VerifiedThrough.Add(time.Hour)
+	f, e := historyAt(t.Context(), member, later, evs, []api.HardwareFaultFeedbackReview{r})
+	if e != nil || f.HistoryUnknown || contains(f.Blockers, "history_coverage_unknown") {
+		t.Fatal("structural gate not cleared", f, e)
+	}
+}
+
+func TestIngestCoverageCheckBoundaryAndExpiry(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		verified   time.Duration
+		observedAt time.Duration
+		accept     bool
+	}{
+		{"tail_equal_accepted", -MaxSourceLag, 0, true},
+		{"tail_minus_1us_rejected", -MaxSourceLag - time.Microsecond, 0, false},
+		{"future_observed_rejected", 0, time.Hour, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, q, r, _ := ingestFixture(t)
+			row := api.GPURiskSourceCoverageCheck{
+				Source:          "hardware_fault_ledger",
+				VerifiedThrough: q.Cutoff.Add(tc.verified).UTC().Truncate(time.Microsecond),
+				ObservedAt:      time.Now().UTC().Add(tc.observedAt).Truncate(time.Microsecond),
+				CheckSHA256:     strings.Repeat("c", 64),
+				Owner:           "platform-admin",
+				Contract:        CoverageWatermarkContract,
+			}
+			if e := db.Create(&row).Error; e != nil {
+				t.Fatal(e)
+			}
+			ledger := prepared(t, db, q, r).Assertions[1]
+			fallback := q.Cutoff.Add(7 * 24 * time.Hour)
+			if tc.accept {
+				if ledger.Complete == nil || !*ledger.Complete || !ledger.Through.Equal(row.VerifiedThrough) || ledger.From.After(ledger.Through) {
+					t.Fatal(ledger)
+				}
+				return
+			}
+			if ledger.Complete == nil || *ledger.Complete || !ledger.Through.Equal(fallback) {
+				t.Fatal("not fail-closed", ledger)
+			}
+		})
 	}
 }
