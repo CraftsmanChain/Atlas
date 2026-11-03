@@ -28,6 +28,22 @@ const maxScanTargets = 131072
 // with many ICMP-alive hosts still finishes quickly.
 const portCheckConcurrency = 64
 
+// minProbeTimeout is the floor for the TCP:22 and SSH-login deadlines. The
+// configured scan timeout is tuned for ICMP round trips, but an sshd that
+// resolves the client address or a loaded host can take several seconds to
+// finish the handshake, and a short deadline would silently drop reachable
+// nodes from the report.
+const minProbeTimeout = 5 * time.Second
+
+// probeTimeout applies minProbeTimeout to the configured scan timeout.
+func probeTimeout(configuredMS int) time.Duration {
+	timeout := time.Duration(configuredMS) * time.Millisecond
+	if timeout < minProbeTimeout {
+		timeout = minProbeTimeout
+	}
+	return timeout
+}
+
 // ScanFinding is one live address that has no record in the asset registry.
 type ScanFinding struct {
 	IPAddress string `json:"ip_address"`
@@ -246,7 +262,8 @@ func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Ti
 	}
 	// An address that answers ICMP but exposes no SSH listener is not a
 	// manageable node, so it is reported neither as live nor as unregistered.
-	reachable := s.reachablePort22(ctx, aliveIPs, timeoutMS)
+	probeDeadline := probeTimeout(timeoutMS)
+	reachable := s.reachablePort22(ctx, aliveIPs, probeDeadline)
 	summary.LiveCount = len(aliveIPs)
 	summary.Port22Closed = len(aliveIPs) - len(reachable)
 	// An address is only counted once one of the configured OS credentials logs
@@ -257,7 +274,7 @@ func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Ti
 			openPorts = append(openPorts, target.ip)
 		}
 	}
-	loggedIn := s.reachableSSH(ctx, openPorts, credentials, timeoutMS)
+	loggedIn := s.reachableSSH(ctx, openPorts, credentials, probeDeadline)
 	summary.SSHLoginFailed = len(openPorts) - len(loggedIn)
 	findings := make([]ScanFinding, 0, len(loggedIn))
 	for _, target := range targets {
@@ -458,15 +475,11 @@ func (s *Service) sweep(ctx context.Context, targets []scanTarget, timeoutMS int
 }
 
 // reachablePort22 returns the hosts that accept a TCP connection on port 22.
-func (s *Service) reachablePort22(ctx context.Context, hosts []string, timeoutMS int) map[string]bool {
+func (s *Service) reachablePort22(ctx context.Context, hosts []string, timeout time.Duration) map[string]bool {
 	reachable := make(map[string]bool, len(hosts))
 	if len(hosts) == 0 {
 		return reachable
 	}
-	if timeoutMS <= 0 {
-		timeoutMS = 1000
-	}
-	timeout := time.Duration(timeoutMS) * time.Millisecond
 	probe := s.probePort
 	if probe == nil {
 		probe = dialTCP
@@ -507,15 +520,11 @@ func (s *Service) reachablePort22(ctx context.Context, hosts []string, timeoutMS
 
 // reachableSSH returns the hosts that accept an SSH login with one of the
 // configured credentials.
-func (s *Service) reachableSSH(ctx context.Context, hosts []string, credentials []sshCredential, timeoutMS int) map[string]bool {
+func (s *Service) reachableSSH(ctx context.Context, hosts []string, credentials []sshCredential, timeout time.Duration) map[string]bool {
 	loggedIn := make(map[string]bool, len(hosts))
 	if len(hosts) == 0 || len(credentials) == 0 {
 		return loggedIn
 	}
-	if timeoutMS <= 0 {
-		timeoutMS = 1000
-	}
-	timeout := time.Duration(timeoutMS) * time.Millisecond
 	probe := s.loginSSH
 	if probe == nil {
 		probe = sshLoginHost
