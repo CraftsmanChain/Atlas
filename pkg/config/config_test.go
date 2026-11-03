@@ -113,7 +113,7 @@ func TestXiaozhenDeploymentConfigUsesReadOnlyVMMonitoring(t *testing.T) {
 	if cfg.Storage.Driver != "postgres" || cfg.Storage.DSN != "" {
 		t.Fatal("new cluster must inject its own PostgreSQL credentials")
 	}
-	if cfg.Prometheus.BaseURL != "http://10.80.192.236:28481/select/0/prometheus" {
+	if cfg.Prometheus.BaseURL != "http://10.80.192.240:28481/select/0/prometheus" {
 		t.Fatal("VM base URL must not include /api/v1/query")
 	}
 	if !cfg.Inventory.Enabled || cfg.Inventory.AssetFile != "" || !cfg.Health.Enabled || !cfg.History.Enabled {
@@ -125,7 +125,7 @@ func TestXiaozhenDeploymentConfigUsesReadOnlyVMMonitoring(t *testing.T) {
 	if cfg.NodeAccess.Enabled || len(cfg.Feishu.Bots) != 0 || len(cfg.NodeAccess.CredentialProfiles) != 0 {
 		t.Fatal("new cluster must not inherit active SSH credentials or notification loops")
 	}
-	if len(cfg.History.Sources) != 1 || !cfg.History.Sources[0].Enabled || cfg.History.Sources[0].Type != "victoriametrics-cluster" || cfg.History.Sources[0].TenantID != "0" || cfg.History.Sources[0].BaseURL != "http://10.80.192.236:28481" {
+	if len(cfg.History.Sources) != 1 || !cfg.History.Sources[0].Enabled || cfg.History.Sources[0].Type != "victoriametrics-cluster" || cfg.History.Sources[0].TenantID != "0" || cfg.History.Sources[0].BaseURL != "http://10.80.192.240:28481" {
 		t.Fatal("VM history source must retain its tenant without duplicating the select prefix")
 	}
 	if cfg.History.Sources[0].Retention != "180d" {

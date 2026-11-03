@@ -1,11 +1,15 @@
 package notifier
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"atlas/pkg/api"
+	"atlas/pkg/config"
 )
 
 func TestFormatAlertContentIncludesNormalizedOperationalEvidence(t *testing.T) {
@@ -51,3 +55,75 @@ func TestFormatThermalAlertContentIsFocusedAndComplete(t *testing.T) {
 		}
 	}
 }
+
+func TestSendBotCardPostsInteractiveCard(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"success"}`))
+	}))
+	defer server.Close()
+
+	bot := config.FeishuBotConfig{Enabled: true, WebhookURL: server.URL}
+	if err := SendBotCard(bot, "Atlas 资产核查", "orange", "**发现 1 条差异**"); err != nil {
+		t.Fatalf("card send failed: %v", err)
+	}
+	if received["msg_type"] != "interactive" {
+		t.Fatalf("expected an interactive card, got %v", received["msg_type"])
+	}
+	card, ok := received["card"].(map[string]any)
+	if !ok {
+		t.Fatalf("card payload missing: %v", received)
+	}
+	header, _ := card["header"].(map[string]any)
+	if header["template"] != "orange" {
+		t.Fatalf("template not forwarded: %v", header)
+	}
+	if _, signed := received["sign"]; signed {
+		t.Fatal("a bot without signature enabled must not attach a sign")
+	}
+
+	disabled := config.FeishuBotConfig{Enabled: false, WebhookURL: server.URL}
+	if err := SendBotCard(disabled, "t", "blue", "c"); err == nil {
+		t.Fatal("a disabled bot must be rejected")
+	}
+}
+
+func TestSendBotCardRejectsWebhookError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":19021,"msg":"sign match fail"}`))
+	}))
+	defer server.Close()
+
+	if err := SendBotCard(config.FeishuBotConfig{Enabled: true, WebhookURL: server.URL}, "t", "blue", "c"); err == nil {
+		t.Fatal("a non-zero webhook code must surface as an error")
+	}
+}
+
+func TestSendCardFansOutToEnabledBots(t *testing.T) {
+	count := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count++
+		_, _ = w.Write([]byte(`{"code":0}`))
+	}))
+	defer server.Close()
+
+	notifier := &FeishuNotifier{cfg: &config.FeishuConfig{Bots: []config.FeishuBotConfig{
+		{Enabled: true, WebhookURL: server.URL},
+		{Enabled: false, WebhookURL: server.URL},
+	}}}
+	if err := notifier.SendCard("t", "green", "c"); err != nil {
+		t.Fatalf("fan-out failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one delivery, got %d", count)
+	}
+
+	if err := (&FeishuNotifier{cfg: &config.FeishuConfig{}}).SendCard("t", "green", "c"); err == nil {
+		t.Fatal("no configured bot must be reported as an error")
+	}
+}
+

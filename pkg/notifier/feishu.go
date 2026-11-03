@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sort"
@@ -184,4 +186,98 @@ func getTemplateColor(level string) string {
 	default:
 		return "grey"
 	}
+}
+
+// SendCard delivers one interactive card to every enabled global bot. Features
+// that build their own card content use this instead of SendAlert.
+func (n *FeishuNotifier) SendCard(title, template, content string) error {
+	if n.cfg == nil || len(n.cfg.Bots) == 0 {
+		return errors.New("no Feishu bot is configured")
+	}
+	sent := false
+	var lastErr error
+	for index, bot := range n.cfg.Bots {
+		if !bot.Enabled || strings.TrimSpace(bot.WebhookURL) == "" {
+			continue
+		}
+		if err := SendBotCard(bot, title, template, content); err != nil {
+			log.Printf("[FeishuNotifier] Bot[%d] Error sending card: %v", index, err)
+			lastErr = err
+			continue
+		}
+		sent = true
+	}
+	if sent {
+		return nil
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return errors.New("no enabled Feishu bot is configured")
+}
+
+// SendBotCard posts a single interactive card to one bot webhook and reports
+// delivery failures to the caller instead of only logging them.
+func SendBotCard(bot config.FeishuBotConfig, title, template, content string) error {
+	if !bot.Enabled || strings.TrimSpace(bot.WebhookURL) == "" {
+		return errors.New("Feishu bot is not enabled or has no webhook")
+	}
+	if strings.TrimSpace(template) == "" {
+		template = "blue"
+	}
+	payload := map[string]interface{}{
+		"msg_type": "interactive",
+		"card": map[string]interface{}{
+			"config": map[string]bool{
+				"wide_screen_mode": true,
+			},
+			"header": map[string]interface{}{
+				"title": map[string]string{
+					"tag":     "plain_text",
+					"content": title,
+				},
+				"template": template,
+			},
+			"elements": []interface{}{
+				map[string]interface{}{
+					"tag": "div",
+					"text": map[string]string{
+						"tag":     "lark_md",
+						"content": content,
+					},
+				},
+			},
+		},
+	}
+	if bot.EnableSignature && bot.Secret != "" {
+		timestamp := time.Now().Unix()
+		sign, err := GenSign(bot.Secret, timestamp)
+		if err != nil {
+			return fmt.Errorf("generate feishu signature: %w", err)
+		}
+		payload["timestamp"] = fmt.Sprintf("%d", timestamp)
+		payload["sign"] = sign
+	}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	response, err := client.Post(bot.WebhookURL, "application/json", bytes.NewReader(jsonData))
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return fmt.Errorf("feishu webhook returned HTTP %d", response.StatusCode)
+	}
+	var result struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&result); err == nil && result.Code != 0 {
+		return fmt.Errorf("feishu webhook rejected the card: code=%d msg=%s", result.Code, result.Msg)
+	}
+	return nil
 }
