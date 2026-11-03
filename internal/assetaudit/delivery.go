@@ -17,16 +17,46 @@ var deliveryDatePattern = regexp.MustCompile(`^\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}`)
 
 // deliveryRow is one parsed row of the delivery sheet.
 type deliveryRow struct {
-	Index       int
-	DeliveredAt string
-	Hostname    string
-	IP          string
-	Mask        int // prefix length; 0 means the sheet did not declare one
-	HostSN      string
-	NodeSN      string
-	DeviceType  string
-	Model       string
-	Delivered   bool
+	Index         int
+	DeliveredAt   string
+	Hostname      string
+	SystemName    string
+	IP            string
+	Mask          int // prefix length; 0 means the sheet did not declare one
+	HostSN        string
+	NodeSN        string
+	DeviceType    string
+	Model         string
+	Delivered     bool
+	Excluded      bool
+	ExcludeReason string
+}
+
+// storageNodeKeywords identify storage nodes by their system hostname. Storage
+// nodes are inventoried outside the GPU asset registry, so they are out of
+// scope for both the delivered-node check and the live-IP sweep.
+var storageNodeKeywords = []string{"gpfs", "obs"}
+
+// excludedDeviceTypes are the "类型" values Atlas does not track. The match is
+// case-insensitive so "ODF"/"odf" are equivalent.
+var excludedDeviceTypes = []string{"网络设备", "odf"}
+
+// exclusionReason reports why a delivered row is out of scope, or "" when the
+// row must be checked.
+func exclusionReason(systemName, deviceType string) string {
+	lowerSystem := strings.ToLower(strings.TrimSpace(systemName))
+	for _, keyword := range storageNodeKeywords {
+		if strings.Contains(lowerSystem, keyword) {
+			return "存储节点（系统主机名含 " + strings.ToUpper(keyword) + "）"
+		}
+	}
+	lowerType := strings.ToLower(strings.TrimSpace(deviceType))
+	for _, keyword := range excludedDeviceTypes {
+		if strings.Contains(lowerType, keyword) {
+			return "类型为 " + strings.ToUpper(keyword)
+		}
+	}
+	return ""
 }
 
 type deliveryColumns struct {
@@ -105,11 +135,15 @@ func parseDeliveryRows(rows [][]string) ([]deliveryRow, error) {
 		if hostname == "" {
 			hostname = cellAt(row, columns.systemName)
 		}
+		systemName := cellAt(row, columns.systemName)
+		deviceType := cellAt(row, columns.deviceType)
+		reason := exclusionReason(systemName, deviceType)
 		parsed = append(parsed, deliveryRow{
-			Index: index + 2, DeliveredAt: deliveredAt, Hostname: hostname, IP: ip,
+			Index: index + 2, DeliveredAt: deliveredAt, Hostname: hostname, SystemName: systemName, IP: ip,
 			Mask: parseMask(cellAt(row, columns.mask)), HostSN: hostSN, NodeSN: nodeSN,
-			DeviceType: cellAt(row, columns.deviceType), Model: cellAt(row, columns.model),
+			DeviceType: deviceType, Model: cellAt(row, columns.model),
 			Delivered: deliveryDatePattern.MatchString(deliveredAt),
+			Excluded:  reason != "", ExcludeReason: reason,
 		})
 	}
 	return parsed, nil
@@ -159,6 +193,7 @@ type DeliveryFinding struct {
 type DeliverySummary struct {
 	SheetRows     int       `json:"sheet_rows"`
 	DeliveredRows int       `json:"delivered_rows"`
+	ExcludedRows  int       `json:"excluded_rows"`
 	Matched       int       `json:"matched"`
 	MissingAsset  int       `json:"missing_asset"`
 	IPMismatch    int       `json:"ip_mismatch"`
@@ -199,6 +234,10 @@ func (s *Service) runDeliveryCheck(ctx context.Context, fetch configForFetch, no
 			continue
 		}
 		summary.DeliveredRows++
+		if row.Excluded {
+			summary.ExcludedRows++
+			continue
+		}
 		if row.IP == "" && row.HostSN == "" && row.NodeSN == "" {
 			continue
 		}

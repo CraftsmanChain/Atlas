@@ -35,6 +35,7 @@ type AssetAuditOptions struct {
 	ScanEnabled      bool   `yaml:"scan_enabled"`
 	DeliverySheetURL string `yaml:"delivery_sheet_url"`
 	NotifyEnabled    bool   `yaml:"notify_enabled"`
+	NotifyAlways     bool   `yaml:"notify_always"`
 	ScheduleHour     int    `yaml:"schedule_hour"`
 	Timezone         string `yaml:"timezone"`
 	ScanConcurrency  int    `yaml:"scan_concurrency"`

@@ -20,8 +20,8 @@ func deliveryNotification(summary DeliverySummary, findings []DeliveryFinding) (
 	}
 	var builder strings.Builder
 	builder.WriteString(fmt.Sprintf(
-		"**交付表行数**: %d\n**已交付节点**: %d\n**一致**: %d\n**未录入资产**: %d\n**IP 不一致**: %d\n**SN 不一致**: %d\n",
-		summary.SheetRows, summary.DeliveredRows, summary.Matched, summary.MissingAsset, summary.IPMismatch, summary.SNMismatch,
+		"**交付表行数**: %d\n**已交付节点**: %d\n**已排除（存储/网络/ODF）**: %d\n**一致**: %d\n**未录入资产**: %d\n**IP 不一致**: %d\n**SN 不一致**: %d\n",
+		summary.SheetRows, summary.DeliveredRows, summary.ExcludedRows, summary.Matched, summary.MissingAsset, summary.IPMismatch, summary.SNMismatch,
 	))
 	builder.WriteString(fmt.Sprintf("**核查时间**: %s\n", summary.GeneratedAt.Format("2006-01-02 15:04:05")))
 	if len(findings) == 0 {

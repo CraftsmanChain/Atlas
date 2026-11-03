@@ -2,6 +2,7 @@ package assetaudit
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net"
@@ -188,6 +189,115 @@ func TestCollectSubnetsHonoursPerRowMask(t *testing.T) {
 	}
 }
 
+func TestExclusionReasonRules(t *testing.T) {
+	cases := []struct {
+		systemName string
+		deviceType string
+		excluded   bool
+	}{
+		{"gpu-node-01", "GPU", false},
+		{"gpfs-storage-1", "服务器", true},
+		{"OBS-STORE-2", "服务器", true},
+		{"node-obs-03", "GPU", true},
+		{"switch-01", "网络设备", true},
+		{"odf-node-1", "ODF", true},
+		{"odf-node-1", "odf", true},
+		{"core-sw", "核心交换机", false},
+	}
+	for _, testCase := range cases {
+		reason := exclusionReason(testCase.systemName, testCase.deviceType)
+		if got := reason != ""; got != testCase.excluded {
+			t.Fatalf("exclusionReason(%q,%q)=%q, excluded=%v want %v", testCase.systemName, testCase.deviceType, reason, got, testCase.excluded)
+		}
+	}
+}
+
+func TestParseDeliveryRowsMarksOutOfScopeRows(t *testing.T) {
+	rows := [][]string{
+		{"", "", "交付时间", "设备主机名", "系统主机名", "", "类型", "型号", "主机SN", "nodeSN", "", "", "", "OSIP", "掩码"},
+		{"", "", "2026/10/9", "host-a", "gpu-a", "", "GPU", "H100", "SN-A", "", "", "", "", "10.80.1.10", "24"},
+		{"", "", "2026/10/9", "store-a", "gpfs-store-1", "", "服务器", "X", "SN-B", "", "", "", "", "10.80.2.10", "24"},
+		{"", "", "2026/10/9", "sw-a", "sw-a", "", "网络设备", "SW", "SN-C", "", "", "", "", "10.80.3.10", "24"},
+		{"", "", "2026/10/9", "odf-a", "odf-a", "", "ODF", "ST", "SN-D", "", "", "", "", "10.80.4.10", "24"},
+	}
+	parsed, err := parseDeliveryRows(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed[0].Excluded {
+		t.Fatalf("a GPU row must stay in scope: %+v", parsed[0])
+	}
+	if !parsed[1].Excluded || !strings.Contains(parsed[1].ExcludeReason, "存储") {
+		t.Fatalf("a storage node must be excluded: %+v", parsed[1])
+	}
+	if !parsed[2].Excluded || !strings.Contains(parsed[2].ExcludeReason, "网络设备") {
+		t.Fatalf("a network device must be excluded: %+v", parsed[2])
+	}
+	if !parsed[3].Excluded || !strings.Contains(parsed[3].ExcludeReason, "ODF") {
+		t.Fatalf("an ODF node must be excluded: %+v", parsed[3])
+	}
+
+	got := map[string]bool{}
+	for _, item := range collectSubnets(parsed) {
+		got[item.cidr.String()] = true
+	}
+	if !got["10.80.1.0/24"] || got["10.80.2.0/24"] || got["10.80.3.0/24"] || got["10.80.4.0/24"] {
+		t.Fatalf("only in-scope rows may contribute a subnet, got %v", got)
+	}
+}
+
+// testServiceWithSheet serves a canned delivery sheet so the full check runs
+// without touching Feishu.
+func testServiceWithSheet(t *testing.T, rows [][]string) *Service {
+	t.Helper()
+	service := testService(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "tenant_access_token"):
+			_, _ = w.Write([]byte(`{"code":0,"msg":"ok","tenant_access_token":"tok"}`))
+		case strings.Contains(r.URL.Path, "/values/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0, "msg": "ok",
+				"data": map[string]any{"valueRange": map[string]any{"values": rows}},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	service.sheet = &sheetClient{client: server.Client(), baseURL: server.URL}
+	return service
+}
+
+func TestRunDeliveryCheckSkipsOutOfScopeRows(t *testing.T) {
+	rows := [][]string{
+		{"", "", "交付时间", "设备主机名", "系统主机名", "", "类型", "型号", "主机SN", "nodeSN", "", "", "", "OSIP", "掩码"},
+		{"", "", "2026/10/9", "host-a", "gpu-a", "", "GPU", "H100", "SN-A", "", "", "", "", "10.80.1.10", "24"},
+		{"", "", "2026/10/9", "store-a", "obs-store-1", "", "服务器", "X", "SN-B", "", "", "", "", "10.80.2.10", "24"},
+		{"", "", "2026/10/9", "sw-a", "sw-a", "", "网络设备", "SW", "SN-C", "", "", "", "", "10.80.3.10", "24"},
+	}
+	service := testServiceWithSheet(t, rows)
+	if err := service.db.Create(&api.InfrastructureAsset{IPAddress: "10.80.1.10", SerialNumber: "SN-A", Present: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	summary, findings, err := service.runDeliveryCheck(context.Background(),
+		configForFetch{SheetURL: sheetURL, AppID: "cli_x", AppSecret: "secret"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.SheetRows != 3 || summary.DeliveredRows != 3 || summary.ExcludedRows != 2 {
+		t.Fatalf("unexpected summary counts: %+v", summary)
+	}
+	if summary.Matched != 1 || summary.MissingAsset != 0 || summary.IPMismatch != 0 || summary.SNMismatch != 0 {
+		t.Fatalf("only the in-scope, consistent row must be counted: %+v", summary)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("excluded rows must not produce findings: %+v", findings)
+	}
+}
+
 func TestAddSubnetKeepsSetOverlapFree(t *testing.T) {
 	_, narrower, _ := net.ParseCIDR("10.0.1.0/24")
 	subnets := addSubnet(nil, narrower)
@@ -259,6 +369,26 @@ func TestScanNotificationTruncatesAndFlagsLimit(t *testing.T) {
 	}
 }
 
+func TestShouldNotifyGatesOnFindingsAndOptIn(t *testing.T) {
+	cases := []struct {
+		name     string
+		row      api.AssetAuditConfig
+		findings int
+		want     bool
+	}{
+		{"disabled never notifies", api.AssetAuditConfig{NotifyEnabled: false, NotifyAlways: true}, 5, false},
+		{"anomalies notify by default", api.AssetAuditConfig{NotifyEnabled: true}, 1, true},
+		{"clean run stays silent by default", api.AssetAuditConfig{NotifyEnabled: true}, 0, false},
+		{"opt-in notifies on a clean run", api.AssetAuditConfig{NotifyEnabled: true, NotifyAlways: true}, 0, true},
+		{"opt-in still notifies on anomalies", api.AssetAuditConfig{NotifyEnabled: true, NotifyAlways: true}, 3, true},
+	}
+	for _, testCase := range cases {
+		if got := shouldNotify(testCase.row, testCase.findings); got != testCase.want {
+			t.Fatalf("%s: shouldNotify = %v, want %v", testCase.name, got, testCase.want)
+		}
+	}
+}
+
 func TestNextDailyAtRollsToTomorrow(t *testing.T) {
 	location, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
@@ -306,7 +436,7 @@ func TestEnsureAndSaveConfigPersistsEncryptedSecrets(t *testing.T) {
 	}
 
 	saved, err := service.SaveConfig(ConfigInput{
-		Enabled: true, DeliveryEnabled: true, ScanEnabled: true, NotifyEnabled: true,
+		Enabled: true, DeliveryEnabled: true, ScanEnabled: true, NotifyEnabled: true, NotifyAlways: true,
 		DeliverySheetURL: sheetURL, FeishuAppID: "cli_x", FeishuAppSecret: "app-secret",
 		NotifyWebhookURL: "https://open.feishu.cn/open-apis/bot/v2/hook/abc", NotifySecret: "hook-secret",
 		ScheduleHour: 5, Timezone: "Asia/Shanghai",
@@ -315,7 +445,7 @@ func TestEnsureAndSaveConfigPersistsEncryptedSecrets(t *testing.T) {
 		t.Fatalf("valid configuration rejected: %v", err)
 	}
 	view := configView(saved)
-	if !view.FeishuAppSecretConfigured || !view.NotifySecretConfigured || view.FeishuAppID != "cli_x" {
+	if !view.FeishuAppSecretConfigured || !view.NotifySecretConfigured || !view.NotifyAlways || view.FeishuAppID != "cli_x" {
 		t.Fatalf("secret presence must be reported without leaking values: %+v", view)
 	}
 	encoded, _ := json.Marshal(view)
