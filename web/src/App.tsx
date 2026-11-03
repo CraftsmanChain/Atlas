@@ -234,7 +234,7 @@ const pageCopy = (tx: Tx): Record<PageId, { label: string; group: string; title:
 const subPages = (page: PageId, tx: Tx): SubPage[] => ({
   overview: [],
   hardware: [],
-  gpus: [{ id: 'health', label: tx('GPU 健康', 'GPU Health') }, { id: 'inventory', label: tx('资产清单', 'Inventory') }],
+  gpus: [{ id: 'health', label: tx('GPU 健康', 'GPU Health') }, { id: 'inventory', label: tx('资产清单', 'Inventory') }, { id: 'audit', label: tx('资产核查', 'Asset Audit') }],
   issues: [{ id: 'ledger', label: tx('问题台账', 'Issue Ledger') }, { id: 'assets', label: tx('资产统计', 'Asset Statistics') }],
   incidents: [{ id: 'hardware', label: tx('硬件事件', 'Hardware Events') }, { id: 'ingestion', label: tx('接收记录', 'Ingestion Records') }, { id: 'workflow', label: tx('处理流程', 'Workflow') }],
   validations: [{ id: 'degradation', label: tx('衰减检测', 'Degradation') }, { id: 'records', label: tx('验证记录', 'Records') }],
@@ -547,7 +547,8 @@ export default function App() {
         {currentSubPages.length > 0 && <nav className="subnav" aria-label={tx('页面分区', 'Page sections')}>{currentSubPages.map(item => <button key={item.id} className={subPage[page] === item.id ? 'active' : ''} onClick={() => setSubPage(current => ({ ...current, [page]: item.id }))}>{item.label}</button>)}</nav>}
         <AnimatePresence mode="wait"><motion.div key={page} className={page === 'overview' ? 'overview-page' : 'secondary-page'} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: .12 }}>
           {page === 'overview' && <Overview tx={tx} faults={openFaults} faultSummary={faultSummary} hosts={hosts} loading={loading} summary={summary} models={fleetModels} inventoryError={inventoryError} navigate={navigate} />}
-          {page === 'gpus' && <Gpus tx={tx} view={subPage.gpus} assets={gpuAssets} models={fleetModels} loading={loading} inventoryError={inventoryError} healthScores={healthScores} healthSummary={healthSummary} lang={lang} />}
+          {page === 'gpus' && subPage.gpus !== 'audit' && <Gpus tx={tx} view={subPage.gpus} assets={gpuAssets} models={fleetModels} loading={loading} inventoryError={inventoryError} healthScores={healthScores} healthSummary={healthSummary} lang={lang} />}
+          {page === 'gpus' && subPage.gpus === 'audit' && <PageErrorBoundary title={tx('资产核查页面异常', 'Asset audit page error')}><AssetAuditCheck tx={tx} lang={lang} /></PageErrorBoundary>}
           {page === 'issues' && <Issues tx={tx} view={subPage.issues} summary={issueSummary} rows={issues} meta={issueMeta} page={issueCursorHistory.length + 1} loading={issueLoading} category={issueCategory} setCategory={setIssueCategory} status={issueStatus} setStatus={setIssueStatus} query={issueQuery} setQuery={setIssueQuery} previousPage={previousIssuePage} nextPage={nextIssuePage} select={setSelectedIssueID} lang={lang} />}
           {page === 'incidents' && <Incidents tx={tx} view={subPage.incidents} rows={filtered} ingestionMeta={ingestionMeta} ingestionPage={ingestionCursorHistory.length + 1} ingestionLoading={ingestionLoading} previousIngestionPage={previousIngestionPage} nextIngestionPage={nextIngestionPage} faultRows={faultEvents} faultMeta={faultMeta} faultPage={faultCursorHistory.length + 1} faultLoading={faultLoading} previousFaultPage={previousFaultPage} nextFaultPage={nextFaultPage} query={subPage.incidents === 'ingestion' ? ingestionQuery : query} setQuery={subPage.incidents === 'ingestion' ? setIngestionQuery : setQuery} level={subPage.incidents === 'ingestion' ? ingestionLevel : level} setLevel={subPage.incidents === 'ingestion' ? setIngestionLevel : setLevel} failures={failures} select={setSelected} selectIssue={setSelectedIssueID} selectReport={setSelectedFaultReportID} lang={lang} />}
           {page === 'validations' && <Validations tx={tx} view={subPage.validations} summary={degradationSummary} candidates={degradationCandidates} lang={lang} />}
@@ -713,6 +714,182 @@ function AssetStatistics({ tx, lang }: { tx: Tx; lang: string }) {
       <div className="toolbar asset-reconcile-toolbar"><label><Search size={15} /><input value={query} onChange={event => { setQuery(event.target.value); setAssetPage(0); }} placeholder={tx('IP / 名称 / SN / 类型 / GPU 型号', 'IP / name / SN / type / GPU model')} /></label><div className="table-actions"><span>{visible.length} / {rows.length}</span><button aria-label={tx('上一页资产', 'Previous asset page')} disabled={currentPage === 0} onClick={() => setAssetPage(currentPage - 1)}><ChevronLeft size={15} /></button><span>{currentPage + 1} / {pageCount}</span><button aria-label={tx('下一页资产', 'Next asset page')} disabled={currentPage + 1 >= pageCount} onClick={() => setAssetPage(currentPage + 1)}><ChevronRight size={15} /></button></div></div>
       {error && <p className="form-error">{error}</p>}
       <div className="table-wrap"><table className="asset-reconcile-table"><thead><tr><th>{tx('对账结果', 'Result')}</th><th>{tx('分类 / 类型', 'Category / Type')}</th><th>{tx('设备', 'Device')}</th><th>{tx('运维主机接口', 'Ops Host API')}</th><th>{tx('资产设备接口', 'Asset Machine API')}</th><th>{tx('数据时间', 'Data Time')}</th></tr></thead><tbody>{pageRows.map(row => <tr key={row.key}><td><Badge value={sourceLabel(row.scope)} kind={row.scope === 'both' ? 'healthy' : 'warning'} />{row.source_conflict && <details><summary>{tx('同 IP 存在重复源记录，查看 SN', 'Duplicate source records; view serials')}</summary>{(row.ops_host_records || []).map(record => <small key={record.asset_key}>{tx('运维', 'Ops')}: {record.sn || 'NO SN'} · {record.state || tx('状态未知', 'Unknown state')}</small>)}{(row.asset_machine_records || []).map(record => <small key={record.asset_key}>{tx('资产', 'Machine')}: {record.sn || 'NO SN'} · {record.state || tx('状态未知', 'Unknown state')}</small>)}</details>}</td><td><b>{categoryLabels[row.category] || row.category}</b><small>{row.gpu_model || row.type || 'UNKNOWN'}</small></td><td><b>{row.ip_address || row.name || '—'}</b><small>{row.name || '—'} · <code>{row.sn || 'NO SN'}</code></small></td><td>{row.ops_host ? <><Badge value="PRESENT" kind="healthy" /><small>{row.ops_host.ip_address || 'NO IP'} · {row.ops_host.state || tx('状态未知', 'Unknown state')}</small></> : <Badge value="MISSING" kind="warning" />}</td><td>{row.asset_machine ? <><Badge value="PRESENT" kind="healthy" /><small>{row.asset_machine.type || 'UNKNOWN'} · {row.asset_machine.state}</small></> : <Badge value="MISSING" kind="warning" />}</td><td>{time(summary?.generated_at, lang)}</td></tr>)}</tbody></table>{!loading && visible.length === 0 && <Empty tx={tx} title={tx('没有匹配的资产记录', 'No matching asset records')} />}</div>
+    </Card>
+  </div>;
+}
+
+type AssetAuditConfigView = {
+  enabled: boolean; delivery_check_enabled: boolean; scan_enabled: boolean;
+  delivery_sheet_url: string; feishu_app_id: string; feishu_app_secret_configured: boolean;
+  notify_enabled: boolean; notify_webhook_url: string; notify_secret_configured: boolean;
+  schedule_hour: number; timezone: string; scan_concurrency: number; scan_timeout_ms: number; updated_at?: string;
+};
+type AssetAuditDeliverySummary = { sheet_rows: number; delivered_rows: number; matched: number; missing_asset: number; ip_mismatch: number; sn_mismatch: number; asset_ip_count: number; generated_at: string };
+type AssetAuditDeliveryFinding = { row: number; hostname: string; ip_address: string; sn: string; delivered_at: string; issue: string; detail: string; asset_ip?: string; asset_sn?: string; telemetry_sn?: string };
+type AssetAuditScanSubnet = { cidr: string; hosts: number; live: number };
+type AssetAuditScanSummary = { subnets: AssetAuditScanSubnet[]; subnet_count: number; known_asset_ips: number; scanned_targets: number; live_count: number; unregistered: number; truncated: boolean; generated_at: string };
+type AssetAuditScanFinding = { ip_address: string; subnet: string };
+type AssetAuditRun = {
+  id: number; kind: string; status: string; trigger: string; started_at: string; finished_at?: string;
+  summary?: AssetAuditDeliverySummary | AssetAuditScanSummary | null;
+  findings?: AssetAuditDeliveryFinding[] | AssetAuditScanFinding[] | null;
+  notified: boolean; notify_error?: string; error_message?: string;
+};
+const emptyAssetAuditConfig: AssetAuditConfigView = {
+  enabled: false, delivery_check_enabled: false, scan_enabled: false,
+  delivery_sheet_url: '', feishu_app_id: '', feishu_app_secret_configured: false,
+  notify_enabled: false, notify_webhook_url: '', notify_secret_configured: false,
+  schedule_hour: 5, timezone: 'Asia/Shanghai', scan_concurrency: 1, scan_timeout_ms: 1000,
+};
+function AssetAuditCheck({ tx, lang }: { tx: Tx; lang: string }) {
+  const [config, setConfig] = useState<AssetAuditConfigView>(emptyAssetAuditConfig);
+  const [appSecret, setAppSecret] = useState('');
+  const [notifySecret, setNotifySecret] = useState('');
+  const [adminToken, setAdminToken] = useState('');
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [runs, setRuns] = useState<AssetAuditRun[]>([]);
+  const poll = useRef<number | null>(null);
+  const loadRuns = useCallback(async () => {
+    try {
+      const response = await fetch('/api/v1/asset-audit/runs?limit=40');
+      if (!response.ok) return;
+      const payload = await response.json();
+      const rows: AssetAuditRun[] = Array.isArray(payload.data) ? payload.data : [];
+      setRuns(rows);
+      if (!rows.some(row => row.status === 'running')) {
+        setBusy('');
+        if (poll.current != null) { window.clearInterval(poll.current); poll.current = null; }
+      }
+    } catch { /* transient network error; keep the last result */ }
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    void fetch('/api/v1/asset-audit/config').then(async response => {
+      const payload = await response.json();
+      if (!response.ok || !payload.data) throw new Error(`HTTP ${response.status}`);
+      if (!cancelled) { setConfig({ ...emptyAssetAuditConfig, ...payload.data }); setLoaded(true); }
+    }).catch(() => { if (!cancelled) setError(tx('资产核查配置读取失败', 'Failed to load asset audit configuration')); });
+    void loadRuns();
+    return () => { cancelled = true; if (poll.current != null) window.clearInterval(poll.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const update = <K extends keyof AssetAuditConfigView>(field: K, next: AssetAuditConfigView[K]) => setConfig(current => ({ ...current, [field]: next }));
+  const save = async () => {
+    setSaving(true); setMessage(''); setError('');
+    try {
+      const response = await fetch('/api/v1/asset-audit/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-Atlas-Admin-Token': adminToken },
+        body: JSON.stringify({
+          enabled: config.enabled, delivery_check_enabled: config.delivery_check_enabled, scan_enabled: config.scan_enabled,
+          delivery_sheet_url: config.delivery_sheet_url, feishu_app_id: config.feishu_app_id, feishu_app_secret: appSecret,
+          notify_enabled: config.notify_enabled, notify_webhook_url: config.notify_webhook_url, notify_secret: notifySecret,
+          schedule_hour: Number(config.schedule_hour), timezone: config.timezone,
+          scan_concurrency: Number(config.scan_concurrency), scan_timeout_ms: Number(config.scan_timeout_ms),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error?.message || `HTTP ${response.status}`);
+      setConfig({ ...emptyAssetAuditConfig, ...payload.data });
+      setAppSecret(''); setNotifySecret('');
+      setMessage(tx('资产核查配置已加密保存', 'Asset audit configuration saved encrypted'));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : tx('保存失败', 'Save failed'));
+    } finally { setSaving(false); }
+  };
+  const trigger = async (kind: string) => {
+    setMessage(''); setError('');
+    if (!adminToken.trim()) { setError(tx('请先填写管理口令', 'Enter the management token first')); return; }
+    setBusy(kind);
+    try {
+      const response = await fetch('/api/v1/asset-audit/trigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Atlas-Admin-Token': adminToken },
+        body: JSON.stringify({ kind }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error?.message || `HTTP ${response.status}`);
+      setMessage(tx('已触发，正在后台执行…', 'Triggered; running in the background…'));
+      await loadRuns();
+      if (poll.current == null) poll.current = window.setInterval(() => void loadRuns(), 4000);
+    } catch (reason) {
+      setBusy(''); setError(reason instanceof Error ? reason.message : tx('触发失败', 'Trigger failed'));
+    }
+  };
+  const issueLabel = (issue: string) => issue === 'missing_asset' ? tx('未录入资产', 'Missing asset') : issue === 'ip_mismatch' ? tx('IP 不一致', 'IP mismatch') : issue === 'sn_mismatch' ? tx('SN 不一致', 'SN mismatch') : issue;
+  const latestDelivery = runs.find(run => run.kind === 'delivery_check');
+  const latestScan = runs.find(run => run.kind === 'ip_scan');
+  const deliverySummary = (latestDelivery?.summary || null) as AssetAuditDeliverySummary | null;
+  const deliveryFindings = (latestDelivery?.findings || []) as AssetAuditDeliveryFinding[];
+  const scanSummary = (latestScan?.summary || null) as AssetAuditScanSummary | null;
+  const scanFindings = (latestScan?.findings || []) as AssetAuditScanFinding[];
+  const valid = loaded && adminToken.trim() && config.timezone.trim() && config.schedule_hour >= 0 && config.schedule_hour <= 23
+    && (!config.delivery_check_enabled || (config.delivery_sheet_url.trim() !== '' && config.feishu_app_id.trim() !== '' && (appSecret.trim() !== '' || config.feishu_app_secret_configured)));
+  const runTone = (status: string) => status === 'success' ? 'healthy' : status === 'running' ? 'info' : status === 'failed' ? 'warning' : 'neutral';
+  const runBadge = (run?: AssetAuditRun) => run ? <Badge value={`${run.status.toUpperCase()} · ${run.trigger.toUpperCase()}`} kind={runTone(run.status)} /> : <Badge value="NO RUN" kind="neutral" />;
+  return <div className="grid asset-audit">
+    <Card className="span-8 lxop-settings">
+      <CardHead code="ASSET AUDIT" title={tx('资产核查与存活扫描', 'Asset Audit & Live-IP Scan')} action={<Badge value={config.enabled ? 'ENABLED' : 'DISABLED'} kind={config.enabled ? 'healthy' : 'neutral'} />} />
+      <form className="settings-form" onSubmit={event => { event.preventDefault(); void save(); }}>
+        <label><span>{tx('飞书表格 URL', 'Feishu sheet URL')}<small>{tx('交付资料表，需含 ?sheet= 参数', 'Delivery sheet; must include ?sheet=')}</small></span><input value={config.delivery_sheet_url} onChange={event => update('delivery_sheet_url', event.target.value)} placeholder="https://.../sheets/<token>?sheet=<id>" /></label>
+        <label><span>{tx('飞书应用 App ID', 'Feishu app ID')}</span><input value={config.feishu_app_id} onChange={event => update('feishu_app_id', event.target.value)} /></label>
+        <label><span>{tx('飞书应用 App Secret', 'Feishu app secret')}<small>{config.feishu_app_secret_configured ? tx('已加密保存 · 留空保持', 'ENCRYPTED · BLANK KEEPS CURRENT') : tx('用于读取表格', 'Used to read the sheet')}</small></span><input type="password" autoComplete="new-password" value={appSecret} onChange={event => setAppSecret(event.target.value)} placeholder={config.feishu_app_secret_configured ? '••••••••' : ''} /></label>
+        <label><span>{tx('通知 Webhook', 'Notification webhook')}<small>{tx('飞书群机器人；留空回退全局机器人', 'Feishu group bot; blank falls back to the global bot')}</small></span><input value={config.notify_webhook_url} onChange={event => update('notify_webhook_url', event.target.value)} placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." /></label>
+        <label><span>{tx('通知签名密钥', 'Webhook signing secret')}<small>{config.notify_secret_configured ? tx('已加密保存 · 留空保持', 'ENCRYPTED · BLANK KEEPS CURRENT') : tx('开启签名时填写', 'Fill when signing is enabled')}</small></span><input type="password" autoComplete="new-password" value={notifySecret} onChange={event => setNotifySecret(event.target.value)} /></label>
+        <label><span>{tx('管理口令', 'Management token')}<small>X-Atlas-Admin-Token</small></span><input type="password" autoComplete="off" value={adminToken} onChange={event => setAdminToken(event.target.value)} /></label>
+        <label><span>{tx('每日执行时刻', 'Daily schedule hour')}<small>{tx('0-23 · 时区', '0-23 · timezone')}</small></span><span className="check-options"><input type="number" min={0} max={23} value={config.schedule_hour} onChange={event => update('schedule_hour', Number(event.target.value))} /><input value={config.timezone} onChange={event => update('timezone', event.target.value)} placeholder="Asia/Shanghai" /></span></label>
+        <label className="settings-check"><span>{tx('运行选项', 'Run options')}</span><span className="check-options"><input type="checkbox" checked={config.enabled} onChange={event => update('enabled', event.target.checked)} />{tx('启用资产核查', 'Enable asset audit')}<input type="checkbox" checked={config.delivery_check_enabled} onChange={event => update('delivery_check_enabled', event.target.checked)} />{tx('已交付节点核查', 'Delivered-node check')}<input type="checkbox" checked={config.scan_enabled} onChange={event => update('scan_enabled', event.target.checked)} />{tx('存活 IP 扫描', 'Live-IP scan')}<input type="checkbox" checked={config.notify_enabled} onChange={event => update('notify_enabled', event.target.checked)} />{tx('发送飞书通知', 'Send Feishu notice')}</span></label>
+        {error && <p className="form-error">{error}</p>}
+        {message && <p className="form-success">{message}</p>}
+        <button className="primary-action" type="submit" disabled={saving || !valid}><Save size={15} />{saving ? tx('保存中', 'Saving') : tx('加密保存', 'Save Encrypted')}</button>
+      </form>
+    </Card>
+    <Card className="span-4 settings-preview lxop-status">
+      <CardHead code="SCHEDULE" title={tx('执行状态', 'Run Status')} />
+      <dl>
+        <div><dt>{tx('自动执行', 'Automatic')}</dt><dd>{config.enabled ? tx(`每日 ${config.schedule_hour}:00`, `Daily ${config.schedule_hour}:00`) : tx('已停用', 'Disabled')}</dd></div>
+        <div><dt>{tx('时区', 'Timezone')}</dt><dd>{config.timezone}</dd></div>
+        <div><dt>{tx('已交付核查', 'Delivery check')}</dt><dd>{config.delivery_check_enabled ? tx('启用', 'On') : tx('停用', 'Off')}</dd></div>
+        <div><dt>{tx('存活扫描', 'Live-IP scan')}</dt><dd>{config.scan_enabled ? tx('启用', 'On') : tx('停用', 'Off')}</dd></div>
+        <div><dt>{tx('通知', 'Notification')}</dt><dd>{config.notify_enabled ? (config.notify_webhook_url.trim() ? tx('自定义 Webhook', 'Custom webhook') : tx('全局机器人', 'Global bot')) : tx('停用', 'Off')}</dd></div>
+      </dl>
+      <div className="table-actions">
+        <button className="primary-action" type="button" disabled={!!busy || !adminToken.trim() || !config.enabled || !config.delivery_check_enabled} onClick={() => void trigger('delivery_check')}><ClipboardList size={15} />{busy === 'delivery_check' ? tx('执行中', 'Running') : tx('立即核查', 'Run Check')}</button>
+        <button className="primary-action" type="button" disabled={!!busy || !adminToken.trim() || !config.enabled || !config.scan_enabled} onClick={() => void trigger('ip_scan')}><Network size={15} />{busy === 'ip_scan' ? tx('扫描中', 'Scanning') : tx('立即扫描', 'Run Scan')}</button>
+      </div>
+    </Card>
+    <Card className="span-12">
+      <CardHead code="DELIVERY CHECK" title={tx('最近一次已交付节点核查', 'Latest Delivered-Node Check')} action={runBadge(latestDelivery)} />
+      {!latestDelivery && <Empty tx={tx} title={tx('尚无核查记录', 'No check run yet')} />}
+      {latestDelivery && <>
+        {latestDelivery.error_message && <p className="form-error">{latestDelivery.error_message}</p>}
+        {latestDelivery.notify_error && <p className="form-error">{tx('通知失败：', 'Notification failed: ')}{latestDelivery.notify_error}</p>}
+        {deliverySummary && <>
+          <div className="health-kpi-grid">
+            {[[tx('交付表行数', 'Sheet rows'), deliverySummary.sheet_rows], [tx('已交付节点', 'Delivered'), deliverySummary.delivered_rows], [tx('一致', 'Matched'), deliverySummary.matched], [tx('未录入资产', 'Missing asset'), deliverySummary.missing_asset], [tx('IP 不一致', 'IP mismatch'), deliverySummary.ip_mismatch], [tx('SN 不一致', 'SN mismatch'), deliverySummary.sn_mismatch]].map(([label, value], index) => <Card className="metric" key={String(label)}>{index === 0 ? <ClipboardList size={18} /> : index < 3 ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}<span>{String(label)}</span><strong>{String(value)}</strong><small>{tx('核查时间', 'Checked')} {time(deliverySummary.generated_at, lang)}</small></Card>)}
+          </div>
+          <div className="table-wrap"><table className="asset-reconcile-table"><thead><tr><th>{tx('问题', 'Issue')}</th><th>{tx('节点', 'Node')}</th><th>{tx('交付表 IP / SN', 'Sheet IP / SN')}</th><th>{tx('资产 IP / SN', 'Asset IP / SN')}</th><th>{tx('实测 SN', 'Telemetry SN')}</th><th>{tx('交付时间', 'Delivered')}</th></tr></thead><tbody>{deliveryFindings.map(finding => <tr key={`${finding.row}-${finding.issue}`}><td><Badge value={issueLabel(finding.issue)} kind={finding.issue === 'missing_asset' ? 'danger' : 'warning'} /><small>{finding.detail}</small></td><td><b>{finding.hostname || finding.ip_address || '—'}</b><small>{tx('第', 'row')} {finding.row} {tx('行', '')}</small></td><td><code>{finding.ip_address || '—'}</code><small><code>{finding.sn || 'NO SN'}</code></small></td><td><code>{finding.asset_ip || '—'}</code><small><code>{finding.asset_sn || 'NO SN'}</code></small></td><td><code>{finding.telemetry_sn || '—'}</code></td><td>{finding.delivered_at || '—'}</td></tr>)}</tbody></table>{deliveryFindings.length === 0 && <Empty tx={tx} title={tx('全部已交付节点与资产一致', 'All delivered nodes match the asset registry')} />}</div>
+        </>}
+      </>}
+    </Card>
+    <Card className="span-12">
+      <CardHead code="LIVE-IP SCAN" title={tx('最近一次存活 IP 扫描', 'Latest Live-IP Scan')} action={runBadge(latestScan)} />
+      {!latestScan && <Empty tx={tx} title={tx('尚无扫描记录', 'No scan run yet')} />}
+      {latestScan && <>
+        {latestScan.error_message && <p className="form-error">{latestScan.error_message}</p>}
+        {latestScan.notify_error && <p className="form-error">{tx('通知失败：', 'Notification failed: ')}{latestScan.notify_error}</p>}
+        {scanSummary && <>
+          <div className="health-kpi-grid">
+            {[[tx('扫描网段', 'Subnets'), scanSummary.subnet_count], [tx('已登记资产 IP', 'Known asset IPs'), scanSummary.known_asset_ips], [tx('扫描地址数', 'Scanned addresses'), scanSummary.scanned_targets], [tx('存活未登记 IP', 'Unregistered live IPs'), scanSummary.unregistered]].map(([label, value], index) => <Card className="metric" key={String(label)}>{index === 3 ? <AlertTriangle size={18} /> : <Network size={18} />}<span>{String(label)}</span><strong>{String(value)}</strong><small>{tx('扫描时间', 'Scanned')} {time(scanSummary.generated_at, lang)}</small></Card>)}
+          </div>
+          {scanSummary.truncated && <p className="form-error">{tx('本次扫描达到地址上限，结果可能不完整。', 'This scan hit the address cap; results may be incomplete.')}</p>}
+          <div className="table-wrap"><table className="asset-reconcile-table"><thead><tr><th>{tx('未登记存活 IP', 'Unregistered live IP')}</th><th>{tx('网段', 'Subnet')}</th></tr></thead><tbody>{scanFindings.map(finding => <tr key={finding.ip_address}><td><code>{finding.ip_address}</code></td><td>{finding.subnet}</td></tr>)}</tbody></table>{scanFindings.length === 0 && <Empty tx={tx} title={tx('未发现未录入资产的存活 IP', 'No unregistered live IPs found')} />}</div>
+        </>}
+      </>}
     </Card>
   </div>;
 }
@@ -2596,10 +2773,10 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const componentHealthModule = { id: 'component-health', name: tx('硬盘与内存健康', 'Disk and Memory Health'), version: 'v0.3.0', status: tx('离线证据回放', 'OFFLINE EVIDENCE'), desc: tx('本地回放 NVMe、有限型号 SATA HDD/SSD 与已有 EDAC 证据，展示健康维度、精确增量和适用性；受控 SMART 审计快照可离线转换。硬 RAID 成员映射、持续采集和概率模型尚未交付，不发送告警。', 'Locally replays NVMe, limited SATA HDD/SSD profiles and existing EDAC evidence with health dimensions, exact deltas and applicability. Controlled SMART audit snapshots convert offline. Hardware RAID member mapping, continuous collection and probability models are not delivered; no alerts.'), history: [tx('v0.3.0 · SATA 物理盘有限规则、健康维度与磨损语义分离、受控快照只读转换；未知型号不作健康', 'v0.3.0 · limited SATA physical-disk rules, health dimensions, distinct wear semantics and read-only snapshot conversion; unmatched models are not healthy'), tx('v0.2.0 · 增加 EDAC 原始快照与 CE/UE 精确增量，内存页复用筛选、分页和证据追溯；公共样例缺口不隐瞒', 'v0.2.0 · adds raw EDAC snapshots and exact CE/UE deltas; memory view reuses filters, pagination and traceable evidence without hiding public fixture gaps'), tx('v0.1.0 · 有界盘 CLI、SHA256 证据包与本地阅读页', 'v0.1.0 · bounded disk CLI, SHA256 bundles and local report reader')] };
   const modules = [...baseModules, componentHealthModule, releaseModule].map(module => module.id === 'asset' || module.id === 'platform' ? {
     ...module,
-    version: module.id === 'asset' ? 'v1.3.1' : 'v0.3.0',
+    version: module.id === 'asset' ? 'v1.4.0' : 'v0.3.0',
     status: tx('聚合平台资产源', 'AGGREGATED ASSET SOURCE'),
     desc: tx('通过统一运维聚合平台的 OAuth 客户端凭证和数据中心范围读取完整双源资产快照；仅手动元数据同步，不触发设备采集、GPU 评分或通知。', 'Reads complete dual-source asset snapshots from the shared operations aggregation platform using OAuth client credentials and explicit data-center scope. Manual metadata sync does not trigger device collection, GPU scoring or notifications.'),
-    history: [tx('v0.120.80 · R4-B候选注册、冻结新query评分与独立只读榜单，原基线不改写', 'v0.120.80 · R4-B candidate admission, frozen new-query scores and separate read-only rankings'), tx('v0.120.79 · R4 CPU MLP离线训练、冻结预处理与文件评分校验；真实数据仍按门禁', 'v0.120.79 · R4 offline CPU MLP, frozen preprocessing and file score verification; real training remains gated'), tx('v0.120.78 · R3-B版本化历史上下文和故障状态来源；cutoff修订、撤销与冲突审计', 'v0.120.78 · R3-B versioned historical context and episode states; cutoff revisions, withdrawals and conflict audits'), tx('v0.120.77 · R3-A只读历史数据集导出、固定输入SHA与时间/实体隔离；核心来源缺口显式阻断', 'v0.120.77 · R3-A read-only history datasets, pinned fingerprints and time/entity isolation; explicit core source gaps'), tx('v0.120.76 · 节点故障身份、维修与来源证据修订；独立排名结果及只读回放', 'v0.120.76 · versioned node identity, repair and source evidence; independent ranking outcomes and read-only replay'), tx('v0.120.75 · GPU 全节点排名冻结、受控 CLI 与只读榜单；无概率、日批或通知', 'v0.120.75 · frozen full-node GPU rankings, controlled CLI and read-only view; no probabilities, daily jobs or notifications'), tx('v0.120.74 · 品牌独立加载与缓存、页面数据渐进加载、资产统计默认 GPU', 'v0.120.74 · independent cached branding, progressive page data and GPU-first asset statistics'), tx('v0.120.73 · 同数据中心同 IP 的重复源记录合并统计，保留源记录与冲突标记，避免误报仅资产设备', 'v0.120.73 · groups duplicate source endpoints within a data center, preserves records and flags conflicts instead of false asset-only nodes'), tx('v0.120.72 · 主分支纳入资产统计修复；发布支持 EXPECTED_COMMIT 校验，错误源码提交在访问远端前阻断', 'v0.120.72 · integrates asset statistics fixes into main; EXPECTED_COMMIT blocks the wrong source commit before remote access'), tx('v0.120.71 · GPU 型号排除机柜/U 位；先对账再按设备生命周期筛选，保留未知运维状态与源存在性', 'v0.120.71 · excludes rack/U positions from GPU models; matches sources before machine lifecycle filtering and preserves unknown ops state and source presence'), tx('v0.120.66 · 稳定翻译函数引用，避免总览刷新取消硬盘请求或清空详情选择', 'v0.120.66 · stabilizes translation callbacks so overview refreshes do not cancel disk requests or clear detail selection'), tx('v0.120.65 · 接通开发实例资产与 VM 监控；目标接口不支持时查询 up，多网段按 host_ip 对齐 BMC，总览显示资产、监控和硬盘快照时间', 'v0.120.65 · connects development assets and VM monitoring; unsupported targets use up, multi-subnet BMC mapping uses host_ip, and overview shows assets, monitoring and disk observation times'), tx('v0.120.63 · OAuth 服务端鉴权、Token 刷新、有界分页、CA/TLS 配置与独立手动同步；错误或部分响应保留上次快照', 'v0.120.63 · server-side OAuth, token refresh, bounded pagination, CA/TLS configuration and independent manual sync; failed or partial responses preserve the previous snapshot'), ...module.history],
+    history: [tx('v0.120.86 · GPU 资产新增「资产核查」子页：交付表已交付节点与资产 OSIP/SN 核对、集群网段存活未登记 IP 扫描、每日 05:00 自动执行、飞书表格与通知可配置', 'v0.120.86 · new Asset Audit subpage under GPU Assets: delivered-node versus asset OSIP/SN verification, cluster-subnet live-IP discovery, daily 05:00 schedule, and configurable Feishu sheet and notification'), tx('v0.120.80 · R4-B候选注册、冻结新query评分与独立只读榜单，原基线不改写', 'v0.120.80 · R4-B candidate admission, frozen new-query scores and separate read-only rankings'), tx('v0.120.79 · R4 CPU MLP离线训练、冻结预处理与文件评分校验；真实数据仍按门禁', 'v0.120.79 · R4 offline CPU MLP, frozen preprocessing and file score verification; real training remains gated'), tx('v0.120.78 · R3-B版本化历史上下文和故障状态来源；cutoff修订、撤销与冲突审计', 'v0.120.78 · R3-B versioned historical context and episode states; cutoff revisions, withdrawals and conflict audits'), tx('v0.120.77 · R3-A只读历史数据集导出、固定输入SHA与时间/实体隔离；核心来源缺口显式阻断', 'v0.120.77 · R3-A read-only history datasets, pinned fingerprints and time/entity isolation; explicit core source gaps'), tx('v0.120.76 · 节点故障身份、维修与来源证据修订；独立排名结果及只读回放', 'v0.120.76 · versioned node identity, repair and source evidence; independent ranking outcomes and read-only replay'), tx('v0.120.75 · GPU 全节点排名冻结、受控 CLI 与只读榜单；无概率、日批或通知', 'v0.120.75 · frozen full-node GPU rankings, controlled CLI and read-only view; no probabilities, daily jobs or notifications'), tx('v0.120.74 · 品牌独立加载与缓存、页面数据渐进加载、资产统计默认 GPU', 'v0.120.74 · independent cached branding, progressive page data and GPU-first asset statistics'), tx('v0.120.73 · 同数据中心同 IP 的重复源记录合并统计，保留源记录与冲突标记，避免误报仅资产设备', 'v0.120.73 · groups duplicate source endpoints within a data center, preserves records and flags conflicts instead of false asset-only nodes'), tx('v0.120.72 · 主分支纳入资产统计修复；发布支持 EXPECTED_COMMIT 校验，错误源码提交在访问远端前阻断', 'v0.120.72 · integrates asset statistics fixes into main; EXPECTED_COMMIT blocks the wrong source commit before remote access'), tx('v0.120.71 · GPU 型号排除机柜/U 位；先对账再按设备生命周期筛选，保留未知运维状态与源存在性', 'v0.120.71 · excludes rack/U positions from GPU models; matches sources before machine lifecycle filtering and preserves unknown ops state and source presence'), tx('v0.120.66 · 稳定翻译函数引用，避免总览刷新取消硬盘请求或清空详情选择', 'v0.120.66 · stabilizes translation callbacks so overview refreshes do not cancel disk requests or clear detail selection'), tx('v0.120.65 · 接通开发实例资产与 VM 监控；目标接口不支持时查询 up，多网段按 host_ip 对齐 BMC，总览显示资产、监控和硬盘快照时间', 'v0.120.65 · connects development assets and VM monitoring; unsupported targets use up, multi-subnet BMC mapping uses host_ip, and overview shows assets, monitoring and disk observation times'), tx('v0.120.63 · OAuth 服务端鉴权、Token 刷新、有界分页、CA/TLS 配置与独立手动同步；错误或部分响应保留上次快照', 'v0.120.63 · server-side OAuth, token refresh, bounded pagination, CA/TLS configuration and independent manual sync; failed or partial responses preserve the previous snapshot'), ...module.history],
   } : module).map(module => module.id === 'component-health' ? {
     ...module,
     version: 'v0.9.0',
@@ -2845,7 +3022,7 @@ function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: s
   const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
   return <>
   <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.80" kind="info" /></Card>
+    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.86" kind="info" /></Card>
     <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
     <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
   </div>

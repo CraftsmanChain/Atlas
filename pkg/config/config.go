@@ -11,17 +11,34 @@ import (
 )
 
 type Config struct {
-	Gateway    GatewayConfig    `yaml:"gateway"`
-	Storage    StorageConfig    `yaml:"storage"`
-	Feishu     FeishuConfig     `yaml:"feishu"`
-	Logging    LoggingConfig    `yaml:"logging"`
-	Web        WebConfig        `yaml:"web"`
-	Branding   BrandingConfig   `yaml:"branding"`
-	Prometheus PrometheusConfig `yaml:"prometheus"`
-	Inventory  InventoryConfig  `yaml:"inventory"`
-	Health     HealthConfig     `yaml:"health"`
-	History    HistoryConfig    `yaml:"history"`
-	NodeAccess NodeAccessConfig `yaml:"node_access"`
+	Gateway    GatewayConfig     `yaml:"gateway"`
+	Storage    StorageConfig     `yaml:"storage"`
+	Feishu     FeishuConfig      `yaml:"feishu"`
+	Logging    LoggingConfig     `yaml:"logging"`
+	Web        WebConfig         `yaml:"web"`
+	Branding   BrandingConfig    `yaml:"branding"`
+	Prometheus PrometheusConfig  `yaml:"prometheus"`
+	Inventory  InventoryConfig   `yaml:"inventory"`
+	Health     HealthConfig      `yaml:"health"`
+	History    HistoryConfig     `yaml:"history"`
+	NodeAccess NodeAccessConfig  `yaml:"node_access"`
+	AssetAudit AssetAuditOptions `yaml:"asset_audit"`
+}
+
+// AssetAuditOptions seeds the initial delivery verification and live-IP
+// discovery settings. Once Atlas has persisted a row, operators manage them
+// from the GPU Assets sub-page; this section is only the first-run default and
+// never carries credentials.
+type AssetAuditOptions struct {
+	Enabled          bool   `yaml:"enabled"`
+	DeliveryEnabled  bool   `yaml:"delivery_check_enabled"`
+	ScanEnabled      bool   `yaml:"scan_enabled"`
+	DeliverySheetURL string `yaml:"delivery_sheet_url"`
+	NotifyEnabled    bool   `yaml:"notify_enabled"`
+	ScheduleHour     int    `yaml:"schedule_hour"`
+	Timezone         string `yaml:"timezone"`
+	ScanConcurrency  int    `yaml:"scan_concurrency"`
+	ScanTimeoutMS    int    `yaml:"scan_timeout_ms"`
 }
 
 type GatewayConfig struct {
@@ -289,6 +306,18 @@ func LoadConfig(path string) (*Config, error) {
 		if err := validateRetentionLookback(source.Retention); err != nil {
 			return nil, fmt.Errorf("history source %q retention: %w", source.ID, err)
 		}
+	}
+	if cfg.AssetAudit.ScheduleHour <= 0 || cfg.AssetAudit.ScheduleHour > 23 {
+		cfg.AssetAudit.ScheduleHour = 5
+	}
+	if cfg.AssetAudit.Timezone == "" {
+		cfg.AssetAudit.Timezone = "Asia/Shanghai"
+	}
+	if cfg.AssetAudit.ScanConcurrency <= 0 {
+		cfg.AssetAudit.ScanConcurrency = 1
+	}
+	if cfg.AssetAudit.ScanTimeoutMS <= 0 {
+		cfg.AssetAudit.ScanTimeoutMS = 1000
 	}
 	if cfg.NodeAccess.SkillID == "" {
 		cfg.NodeAccess.SkillID = "atlas-node-evidence"

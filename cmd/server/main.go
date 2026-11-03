@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"atlas/internal/analyzer"
+	"atlas/internal/assetaudit"
 	"atlas/internal/degradation"
 	diskhealthapi "atlas/internal/diskhealth"
 	"atlas/internal/evidence"
@@ -146,6 +147,15 @@ func main() {
 		log.Printf("WARNING: asset configuration writes are allowed over plaintext HTTP")
 	}
 	assetConfigHandler := platformconfig.NewAssetConfigHandler(assetSource, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialInsecureHTTP)
+	assetAuditService, assetAuditErr := assetaudit.NewService(db, secretMasterKey, feishuNotifier)
+	if assetAuditErr != nil {
+		log.Printf("Asset audit is unavailable: %v", assetAuditErr)
+		assetAuditService = nil
+	}
+	assetAuditHandler := assetaudit.NewHandler(assetAuditService, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialInsecureHTTP)
+	if assetAuditService != nil {
+		go assetAuditService.Run(context.Background(), cfg.AssetAudit)
+	}
 	nodeAccessHandler := nodeaccess.NewHandlerWithVault(nodeAccessService, credentialVault)
 	connectTimeout := parseDurationOrDefault("node SSH connect", cfg.NodeAccess.ConnectTimeout, 5*time.Second)
 	sshAuthenticator, sshErr := nodeaccess.NewSSHAuthenticator(cfg.NodeAccess.SSHPort, connectTimeout, cfg.NodeAccess.KnownHostsFile)
@@ -246,6 +256,9 @@ func main() {
 	mux.HandleFunc("/api/v1/platform-config", platformConfigHandler.Handle)
 	mux.HandleFunc("/api/v1/platform-config/assets", assetConfigHandler.Handle)
 	mux.HandleFunc("/api/v1/platform-config/assets/sync", assetConfigHandler.HandleSync)
+	mux.HandleFunc("/api/v1/asset-audit/config", assetAuditHandler.HandleConfig)
+	mux.HandleFunc("/api/v1/asset-audit/runs", assetAuditHandler.HandleRuns)
+	mux.HandleFunc("/api/v1/asset-audit/trigger", assetAuditHandler.HandleTrigger)
 	mux.HandleFunc("/api/v1/node-access/overview", nodeAccessHandler.HandleOverview)
 	mux.HandleFunc("/api/v1/node-access/credentials", nodeAccessHandler.HandleCredentials)
 	mux.HandleFunc("/api/v1/node-access/credentials/", nodeAccessHandler.HandleCredential)
