@@ -98,6 +98,28 @@ func TestParseDeliveryRowsResolvesColumnsAndDeliveryFlag(t *testing.T) {
 	}
 }
 
+// Feishu pads a read range with empty rows; they must not count as sheet data.
+func TestParseDeliveryRowsDropsBlankPadding(t *testing.T) {
+	blank := []string{"", "", "", "", "", "", "", "", "", "", "", "", "", "", ""}
+	rows := [][]string{
+		{"", "", "交付时间", "设备主机名", "系统主机名", "", "类型", "型号", "主机SN", "nodeSN", "", "", "", "OSIP", "掩码"},
+		{"", "", "2026/10/9", "host-a", "sys-a", "", "GPU", "H100", "SN-A", "", "", "", "", "10.80.1.10", "24"},
+		blank,
+		{"", "", "2026/10/10", "host-b", "sys-b", "", "GPU", "H100", "SN-B", "", "", "", "", "10.80.1.11", "24"},
+		blank,
+	}
+	parsed, err := parseDeliveryRows(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed) != 2 {
+		t.Fatalf("blank padding rows must be dropped, got %d: %+v", len(parsed), parsed)
+	}
+	if parsed[0].Index != 2 || parsed[1].Index != 4 {
+		t.Fatalf("Index must keep the sheet's own row number: %+v", parsed)
+	}
+}
+
 func TestParseMask(t *testing.T) {
 	cases := map[string]int{
 		"24": 24, "/24": 24, "255.255.255.0": 24, "255.255.255.128": 25,
@@ -276,6 +298,8 @@ func TestRunDeliveryCheckSkipsOutOfScopeRows(t *testing.T) {
 		{"", "", "2026/10/9", "host-a", "gpu-a", "", "GPU", "H100", "SN-A", "", "", "", "", "10.80.1.10", "24"},
 		{"", "", "2026/10/9", "store-a", "obs-store-1", "", "服务器", "X", "SN-B", "", "", "", "", "10.80.2.10", "24"},
 		{"", "", "2026/10/9", "sw-a", "sw-a", "", "网络设备", "SW", "SN-C", "", "", "", "", "10.80.3.10", "24"},
+		{"", "", "", "", "", "", "", "", "", "", "", "", "", "", ""},
+		{"", "", "", "", "", "", "", "", "", "", "", "", "", "", ""},
 	}
 	service := testServiceWithSheet(t, rows)
 	if err := service.db.Create(&api.InfrastructureAsset{IPAddress: "10.80.1.10", SerialNumber: "SN-A", Present: true}).Error; err != nil {
@@ -287,6 +311,7 @@ func TestRunDeliveryCheckSkipsOutOfScopeRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The three real rows count; the two blank padding rows must not.
 	if summary.SheetRows != 3 || summary.DeliveredRows != 3 || summary.ExcludedRows != 2 {
 		t.Fatalf("unexpected summary counts: %+v", summary)
 	}
@@ -295,6 +320,105 @@ func TestRunDeliveryCheckSkipsOutOfScopeRows(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Fatalf("excluded rows must not produce findings: %+v", findings)
+	}
+}
+
+// Addresses the delivery sheet already lists are inventoried, so the sweep must
+// drop them even when they are missing from the asset registry.
+func TestDeliverySheetIPsCollectsEveryListedAddress(t *testing.T) {
+	rows := []deliveryRow{
+		{Index: 2, IP: "10.80.1.10"},
+		{Index: 3, IP: "10.80.1.10"},
+		{Index: 4, IP: ""},
+		{Index: 5, IP: "10.80.2.20", Excluded: true},
+	}
+	ips := deliverySheetIPs(rows)
+	if len(ips) != 2 {
+		t.Fatalf("expected two distinct addresses, got %v", ips)
+	}
+	for _, want := range []string{"10.80.1.10", "10.80.2.20"} {
+		if _, ok := ips[want]; !ok {
+			t.Fatalf("address %s must be collected: %v", want, ips)
+		}
+	}
+}
+
+// An ICMP-alive host with no SSH listener is not a manageable node and must not
+// be reported as an unregistered live IP.
+func TestReachablePort22DropsClosedHosts(t *testing.T) {
+	service := testService(t)
+	service.probePort = func(_ context.Context, address string, _ time.Duration) bool {
+		return address == "10.0.0.5:22" || address == "10.0.0.9:22"
+	}
+	reachable := service.reachablePort22(context.Background(), []string{"10.0.0.5", "10.0.0.6", "10.0.0.9"}, 200)
+	if len(reachable) != 2 || !reachable["10.0.0.5"] || !reachable["10.0.0.9"] || reachable["10.0.0.6"] {
+		t.Fatalf("unexpected reachable set: %v", reachable)
+	}
+	if empty := service.reachablePort22(context.Background(), nil, 200); len(empty) != 0 {
+		t.Fatalf("no hosts must yield an empty set, got %v", empty)
+	}
+}
+
+func TestDialTCPDetectsAListener(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if !dialTCP(context.Background(), address, 500*time.Millisecond) {
+		t.Fatal("an open listener must be reported reachable")
+	}
+	listener.Close()
+	if dialTCP(context.Background(), address, 200*time.Millisecond) {
+		t.Fatal("a closed listener must not be reported reachable")
+	}
+}
+
+// The sweep must drop addresses already inventoried (asset registry or delivery
+// sheet) and hosts that expose no SSH listener.
+func TestRunScanExcludesInventoriedAndClosedPortHosts(t *testing.T) {
+	rows := [][]string{
+		{"", "", "交付时间", "设备主机名", "系统主机名", "", "类型", "型号", "主机SN", "nodeSN", "", "", "", "OSIP", "掩码"},
+		{"", "", "2026/10/9", "host-a", "gpu-a", "", "GPU", "H100", "SN-A", "", "", "", "", "10.0.0.1", "28"},
+		{"", "", "2026/10/9", "host-b", "gpu-b", "", "GPU", "H100", "SN-B", "", "", "", "", "10.0.0.2", "28"},
+		{"", "", "2026/10/9", "host-c", "gpu-c", "", "GPU", "H100", "SN-C", "", "", "", "", "10.0.0.3", "28"},
+	}
+	service := testServiceWithSheet(t, rows)
+	if err := service.db.Create(&api.InfrastructureAsset{IPAddress: "10.0.0.5", SerialNumber: "SN-X", Present: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var swept []string
+	service.sweepHosts = func(_ context.Context, targets []scanTarget, _ int) (map[string]bool, error) {
+		for _, target := range targets {
+			swept = append(swept, target.ip)
+		}
+		return map[string]bool{"10.0.0.4": true, "10.0.0.6": true, "10.0.0.7": true}, nil
+	}
+	service.probePort = func(_ context.Context, address string, _ time.Duration) bool {
+		return address == "10.0.0.4:22" || address == "10.0.0.7:22"
+	}
+
+	summary, findings, err := service.runScan(context.Background(),
+		configForFetch{SheetURL: sheetURL, AppID: "cli_x", AppSecret: "secret"}, time.Now(), 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 14 usable hosts in 10.0.0.0/28 minus three sheet addresses and one asset.
+	if summary.DeliverySheetIPs != 3 || summary.KnownAssetIPs != 1 || summary.ScannedTargets != 10 {
+		t.Fatalf("unexpected exclusion counts: %+v", summary)
+	}
+	for _, excluded := range []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.5"} {
+		for _, target := range swept {
+			if target == excluded {
+				t.Fatalf("address %s must not be swept: %v", excluded, swept)
+			}
+		}
+	}
+	if summary.LiveCount != 3 || summary.Port22Closed != 1 || summary.Unregistered != 2 {
+		t.Fatalf("unexpected scan funnel: %+v", summary)
+	}
+	if len(findings) != 2 || findings[0].IPAddress != "10.0.0.4" || findings[1].IPAddress != "10.0.0.7" {
+		t.Fatalf("only port-22-open survivors must be reported: %+v", findings)
 	}
 }
 

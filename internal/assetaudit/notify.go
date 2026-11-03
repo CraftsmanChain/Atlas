@@ -51,8 +51,8 @@ func scanNotification(summary ScanSummary, findings []ScanFinding) (title, templ
 	}
 	var builder strings.Builder
 	builder.WriteString(fmt.Sprintf(
-		"**扫描网段**: %d\n**已登记资产 IP**: %d\n**扫描地址数**: %d\n**发现存活未登记 IP**: %d\n",
-		summary.SubnetCount, summary.KnownAssetIPs, summary.ScannedTargets, summary.Unregistered,
+		"**扫描网段**: %d\n**已登记资产 IP**: %d\n**交付表节点 IP**: %d\n**扫描地址数**: %d\n**ICMP 存活**: %d\n**22 端口不通**: %d\n**发现存活未登记 IP**: %d\n",
+		summary.SubnetCount, summary.KnownAssetIPs, summary.DeliverySheetIPs, summary.ScannedTargets, summary.LiveCount, summary.Port22Closed, summary.Unregistered,
 	))
 	builder.WriteString(fmt.Sprintf("**扫描时间**: %s\n", summary.GeneratedAt.Format("2006-01-02 15:04:05")))
 	if summary.Truncated {
