@@ -722,12 +722,13 @@ type AssetAuditConfigView = {
   enabled: boolean; delivery_check_enabled: boolean; scan_enabled: boolean;
   delivery_sheet_url: string; feishu_app_id: string; feishu_app_secret_configured: boolean;
   notify_enabled: boolean; notify_always: boolean; notify_webhook_url: string; notify_secret_configured: boolean;
+  ssh_passwords_configured: boolean;
   schedule_hour: number; timezone: string; scan_concurrency: number; scan_timeout_ms: number; updated_at?: string;
 };
-type AssetAuditDeliverySummary = { sheet_rows: number; delivered_rows: number; excluded_rows: number; matched: number; missing_asset: number; ip_mismatch: number; sn_mismatch: number; asset_ip_count: number; generated_at: string };
+type AssetAuditDeliverySummary = { sheet_rows: number; delivered_rows: number; excluded_rows: number; matched: number; missing_asset: number; ip_mismatch: number; sn_notice: number; asset_ip_count: number; generated_at: string };
 type AssetAuditDeliveryFinding = { row: number; hostname: string; ip_address: string; sn: string; delivered_at: string; issue: string; detail: string; asset_ip?: string; asset_sn?: string; telemetry_sn?: string };
 type AssetAuditScanSubnet = { cidr: string; hosts: number; live: number };
-type AssetAuditScanSummary = { subnets: AssetAuditScanSubnet[]; subnet_count: number; known_asset_ips: number; delivery_sheet_ips: number; scanned_targets: number; live_count: number; port22_closed: number; unregistered: number; truncated: boolean; generated_at: string };
+type AssetAuditScanSummary = { subnets: AssetAuditScanSubnet[]; subnet_count: number; known_asset_ips: number; delivery_sheet_ips: number; scanned_targets: number; live_count: number; port22_closed: number; ssh_login_failed?: number; unregistered: number; truncated: boolean; generated_at: string };
 type AssetAuditScanFinding = { ip_address: string; subnet: string };
 type AssetAuditRun = {
   id: number; kind: string; status: string; trigger: string; started_at: string; finished_at?: string;
@@ -739,12 +740,14 @@ const emptyAssetAuditConfig: AssetAuditConfigView = {
   enabled: false, delivery_check_enabled: false, scan_enabled: false,
   delivery_sheet_url: '', feishu_app_id: '', feishu_app_secret_configured: false,
   notify_enabled: false, notify_always: false, notify_webhook_url: '', notify_secret_configured: false,
+  ssh_passwords_configured: false,
   schedule_hour: 5, timezone: 'Asia/Shanghai', scan_concurrency: 1, scan_timeout_ms: 1000,
 };
 function AssetAuditCheck({ tx, lang }: { tx: Tx; lang: string }) {
   const [config, setConfig] = useState<AssetAuditConfigView>(emptyAssetAuditConfig);
   const [appSecret, setAppSecret] = useState('');
   const [notifySecret, setNotifySecret] = useState('');
+  const [sshPasswords, setSshPasswords] = useState('');
   const [adminToken, setAdminToken] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -788,6 +791,7 @@ function AssetAuditCheck({ tx, lang }: { tx: Tx; lang: string }) {
           enabled: config.enabled, delivery_check_enabled: config.delivery_check_enabled, scan_enabled: config.scan_enabled,
           delivery_sheet_url: config.delivery_sheet_url, feishu_app_id: config.feishu_app_id, feishu_app_secret: appSecret,
           notify_enabled: config.notify_enabled, notify_always: config.notify_always, notify_webhook_url: config.notify_webhook_url, notify_secret: notifySecret,
+          ssh_passwords: sshPasswords,
           schedule_hour: Number(config.schedule_hour), timezone: config.timezone,
           scan_concurrency: Number(config.scan_concurrency), scan_timeout_ms: Number(config.scan_timeout_ms),
         }),
@@ -795,7 +799,7 @@ function AssetAuditCheck({ tx, lang }: { tx: Tx; lang: string }) {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error?.message || `HTTP ${response.status}`);
       setConfig({ ...emptyAssetAuditConfig, ...payload.data });
-      setAppSecret(''); setNotifySecret('');
+      setAppSecret(''); setNotifySecret(''); setSshPasswords('');
       setMessage(tx('资产核查配置已加密保存', 'Asset audit configuration saved encrypted'));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : tx('保存失败', 'Save failed'));
@@ -820,11 +824,16 @@ function AssetAuditCheck({ tx, lang }: { tx: Tx; lang: string }) {
       setBusy(''); setError(reason instanceof Error ? reason.message : tx('触发失败', 'Trigger failed'));
     }
   };
-  const issueLabel = (issue: string) => issue === 'missing_asset' ? tx('未录入资产', 'Missing asset') : issue === 'ip_mismatch' ? tx('IP 不一致', 'IP mismatch') : issue === 'sn_mismatch' ? tx('SN 不一致', 'SN mismatch') : issue;
+  const issueLabel = (issue: string) => issue === 'missing_asset' ? tx('未录入资产', 'Missing asset') : issue === 'ip_mismatch' ? tx('IP 不一致', 'IP mismatch') : issue === 'sn_notice' ? tx('SN 提示', 'SN notice') : issue;
   const latestDelivery = runs.find(run => run.kind === 'delivery_check');
   const latestScan = runs.find(run => run.kind === 'ip_scan');
   const deliverySummary = (latestDelivery?.summary || null) as AssetAuditDeliverySummary | null;
   const deliveryFindings = (latestDelivery?.findings || []) as AssetAuditDeliveryFinding[];
+  // A recorded node whose serial text merely differs is informational, so it is
+  // listed separately and never counted as a discrepancy.
+  const deliveryDifferences = deliveryFindings.filter(finding => finding.issue !== 'sn_notice');
+  const deliveryNotices = deliveryFindings.filter(finding => finding.issue === 'sn_notice');
+  const deliveryRows = (rows: AssetAuditDeliveryFinding[]) => <div className="table-wrap"><table className="asset-reconcile-table"><thead><tr><th>{tx('问题', 'Issue')}</th><th>{tx('节点', 'Node')}</th><th>{tx('交付表 IP / SN', 'Sheet IP / SN')}</th><th>{tx('资产 IP / SN', 'Asset IP / SN')}</th><th>{tx('实测 SN', 'Telemetry SN')}</th><th>{tx('交付时间', 'Delivered')}</th></tr></thead><tbody>{rows.map(finding => <tr key={`${finding.row}-${finding.issue}`}><td><Badge value={issueLabel(finding.issue)} kind={finding.issue === 'missing_asset' ? 'danger' : 'warning'} /><small>{finding.detail}</small></td><td><b>{finding.hostname || finding.ip_address || '—'}</b><small>{tx('第', 'row')} {finding.row} {tx('行', '')}</small></td><td><code>{finding.ip_address || '—'}</code><small><code>{finding.sn || 'NO SN'}</code></small></td><td><code>{finding.asset_ip || '—'}</code><small><code>{finding.asset_sn || 'NO SN'}</code></small></td><td><code>{finding.telemetry_sn || '—'}</code></td><td>{finding.delivered_at || '—'}</td></tr>)}</tbody></table></div>;
   const scanSummary = (latestScan?.summary || null) as AssetAuditScanSummary | null;
   const scanFindings = (latestScan?.findings || []) as AssetAuditScanFinding[];
   const valid = loaded && adminToken.trim() && config.timezone.trim() && config.schedule_hour >= 0 && config.schedule_hour <= 23
@@ -840,6 +849,7 @@ function AssetAuditCheck({ tx, lang }: { tx: Tx; lang: string }) {
         <label><span>{tx('飞书应用 App Secret', 'Feishu app secret')}<small>{config.feishu_app_secret_configured ? tx('已加密保存 · 留空保持', 'ENCRYPTED · BLANK KEEPS CURRENT') : tx('用于读取表格', 'Used to read the sheet')}</small></span><input type="password" autoComplete="new-password" value={appSecret} onChange={event => setAppSecret(event.target.value)} placeholder={config.feishu_app_secret_configured ? '••••••••' : ''} /></label>
         <label><span>{tx('通知 Webhook', 'Notification webhook')}<small>{tx('飞书群机器人；留空回退全局机器人', 'Feishu group bot; blank falls back to the global bot')}</small></span><input value={config.notify_webhook_url} onChange={event => update('notify_webhook_url', event.target.value)} placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." /></label>
         <label><span>{tx('通知签名密钥', 'Webhook signing secret')}<small>{config.notify_secret_configured ? tx('已加密保存 · 留空保持', 'ENCRYPTED · BLANK KEEPS CURRENT') : tx('开启签名时填写', 'Fill when signing is enabled')}</small></span><input type="password" autoComplete="new-password" value={notifySecret} onChange={event => setNotifySecret(event.target.value)} /></label>
+        <label><span>{tx('存活扫描 OS 密码', 'Live-scan OS passwords')}<small>{config.ssh_passwords_configured ? tx('已加密保存 · 留空保持', 'ENCRYPTED · BLANK KEEPS CURRENT') : tx('每行一条：用户名 密码；留空用内置 ubuntu/root', 'One "username password" per line; blank uses the built-in ubuntu/root pair')}</small></span><textarea rows={3} autoComplete="new-password" value={sshPasswords} onChange={event => setSshPasswords(event.target.value)} placeholder={'ubuntu Lexun@12#$\nroot Lexun@12#$'} /></label>
         <label><span>{tx('管理口令', 'Management token')}<small>X-Atlas-Admin-Token</small></span><input type="password" autoComplete="off" value={adminToken} onChange={event => setAdminToken(event.target.value)} /></label>
         <label><span>{tx('每日执行时刻', 'Daily schedule hour')}<small>{tx('0-23 · 时区', '0-23 · timezone')}</small></span><span className="check-options"><input type="number" min={0} max={23} value={config.schedule_hour} onChange={event => update('schedule_hour', Number(event.target.value))} /><input value={config.timezone} onChange={event => update('timezone', event.target.value)} placeholder="Asia/Shanghai" /></span></label>
         <label className="settings-check"><span>{tx('运行选项', 'Run options')}</span><span className="check-options"><input type="checkbox" checked={config.enabled} onChange={event => update('enabled', event.target.checked)} />{tx('启用资产核查', 'Enable asset audit')}<input type="checkbox" checked={config.delivery_check_enabled} onChange={event => update('delivery_check_enabled', event.target.checked)} />{tx('已交付节点核查', 'Delivered-node check')}<input type="checkbox" checked={config.scan_enabled} onChange={event => update('scan_enabled', event.target.checked)} />{tx('存活 IP 扫描', 'Live-IP scan')}<input type="checkbox" checked={config.notify_enabled} onChange={event => update('notify_enabled', event.target.checked)} />{tx('发送飞书通知', 'Send Feishu notice')}<input type="checkbox" checked={config.notify_always} onChange={event => update('notify_always', event.target.checked)} />{tx('无异常也通知', 'Notify even when clean')}</span></label>
@@ -870,9 +880,11 @@ function AssetAuditCheck({ tx, lang }: { tx: Tx; lang: string }) {
         {latestDelivery.notify_error && <p className="form-error">{tx('通知失败：', 'Notification failed: ')}{latestDelivery.notify_error}</p>}
         {deliverySummary && <>
           <div className="health-kpi-grid">
-            {[[tx('交付表行数', 'Delivery sheet rows'), deliverySummary.sheet_rows], [tx('已交付节点', 'Delivered'), deliverySummary.delivered_rows], [tx('已排除', 'Excluded'), deliverySummary.excluded_rows], [tx('一致', 'Matched'), deliverySummary.matched], [tx('未录入资产', 'Missing asset'), deliverySummary.missing_asset], [tx('IP 不一致', 'IP mismatch'), deliverySummary.ip_mismatch], [tx('SN 不一致', 'SN mismatch'), deliverySummary.sn_mismatch]].map(([label, value], index) => <Card className="metric" key={String(label)}>{index === 0 ? <ClipboardList size={18} /> : index < 3 ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}<span>{String(label)}</span><strong>{String(value)}</strong><small>{tx('核查时间', 'Checked')} {time(deliverySummary.generated_at, lang)}</small></Card>)}
+            {[[tx('交付表行数', 'Delivery sheet rows'), deliverySummary.sheet_rows], [tx('已交付节点', 'Delivered'), deliverySummary.delivered_rows], [tx('已排除', 'Excluded'), deliverySummary.excluded_rows], [tx('一致', 'Matched'), deliverySummary.matched], [tx('未录入资产', 'Missing asset'), deliverySummary.missing_asset], [tx('IP 不一致', 'IP mismatch'), deliverySummary.ip_mismatch], [tx('SN 提示', 'SN notice'), deliverySummary.sn_notice]].map(([label, value], index) => <Card className="metric" key={String(label)}>{index === 0 ? <ClipboardList size={18} /> : index < 3 ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}<span>{String(label)}</span><strong>{String(value)}</strong><small>{tx('核查时间', 'Checked')} {time(deliverySummary.generated_at, lang)}</small></Card>)}
           </div>
-          <div className="table-wrap"><table className="asset-reconcile-table"><thead><tr><th>{tx('问题', 'Issue')}</th><th>{tx('节点', 'Node')}</th><th>{tx('交付表 IP / SN', 'Sheet IP / SN')}</th><th>{tx('资产 IP / SN', 'Asset IP / SN')}</th><th>{tx('实测 SN', 'Telemetry SN')}</th><th>{tx('交付时间', 'Delivered')}</th></tr></thead><tbody>{deliveryFindings.map(finding => <tr key={`${finding.row}-${finding.issue}`}><td><Badge value={issueLabel(finding.issue)} kind={finding.issue === 'missing_asset' ? 'danger' : 'warning'} /><small>{finding.detail}</small></td><td><b>{finding.hostname || finding.ip_address || '—'}</b><small>{tx('第', 'row')} {finding.row} {tx('行', '')}</small></td><td><code>{finding.ip_address || '—'}</code><small><code>{finding.sn || 'NO SN'}</code></small></td><td><code>{finding.asset_ip || '—'}</code><small><code>{finding.asset_sn || 'NO SN'}</code></small></td><td><code>{finding.telemetry_sn || '—'}</code></td><td>{finding.delivered_at || '—'}</td></tr>)}</tbody></table>{deliveryFindings.length === 0 && <Empty tx={tx} title={tx('全部已交付节点与资产一致', 'All delivered nodes match the asset registry')} />}</div>
+          {deliveryRows(deliveryDifferences)}
+          {deliveryDifferences.length === 0 && <Empty tx={tx} title={tx('全部已交付节点与资产一致', 'All delivered nodes match the asset registry')} />}
+          {deliveryNotices.length > 0 && <details className="asset-audit-notices"><summary>{tx(`SN 提示 ${deliveryNotices.length} 条：资产已录入，仅 SN 文本不一致，不计入差异 · 点击查看详情`, `${deliveryNotices.length} serial notices: the asset is recorded, only the serial text differs — click for details`)}</summary>{deliveryRows(deliveryNotices)}</details>}
         </>}
       </>}
     </Card>
@@ -884,7 +896,7 @@ function AssetAuditCheck({ tx, lang }: { tx: Tx; lang: string }) {
         {latestScan.notify_error && <p className="form-error">{tx('通知失败：', 'Notification failed: ')}{latestScan.notify_error}</p>}
         {scanSummary && <>
           <div className="health-kpi-grid">
-            {[[tx('扫描网段', 'Subnets'), scanSummary.subnet_count], [tx('已登记资产 IP', 'Known asset IPs'), scanSummary.known_asset_ips], [tx('交付表节点 IP', 'Delivery sheet IPs'), scanSummary.delivery_sheet_ips ?? 0], [tx('扫描地址数', 'Scanned addresses'), scanSummary.scanned_targets], [tx('ICMP 存活', 'ICMP alive'), scanSummary.live_count ?? 0], [tx('22 端口不通', 'Port 22 closed'), scanSummary.port22_closed ?? 0], [tx('存活未登记 IP', 'Unregistered live IPs'), scanSummary.unregistered]].map(([label, value], index) => <Card className="metric" key={String(label)}>{index === 6 ? <AlertTriangle size={18} /> : <Network size={18} />}<span>{String(label)}</span><strong>{String(value)}</strong><small>{tx('扫描时间', 'Scanned')} {time(scanSummary.generated_at, lang)}</small></Card>)}
+            {[[tx('扫描网段', 'Subnets'), scanSummary.subnet_count], [tx('已登记资产 IP', 'Known asset IPs'), scanSummary.known_asset_ips], [tx('交付表节点 IP', 'Delivery sheet IPs'), scanSummary.delivery_sheet_ips ?? 0], [tx('扫描地址数', 'Scanned addresses'), scanSummary.scanned_targets], [tx('ICMP 存活', 'ICMP alive'), scanSummary.live_count ?? 0], [tx('22 端口不通', 'Port 22 closed'), scanSummary.port22_closed ?? 0], [tx('SSH 登录失败', 'SSH login failed'), scanSummary.ssh_login_failed ?? 0], [tx('存活未登记 IP', 'Unregistered live IPs'), scanSummary.unregistered]].map(([label, value], index) => <Card className="metric" key={String(label)}>{index === 7 ? <AlertTriangle size={18} /> : <Network size={18} />}<span>{String(label)}</span><strong>{String(value)}</strong><small>{tx('扫描时间', 'Scanned')} {time(scanSummary.generated_at, lang)}</small></Card>)}
           </div>
           {scanSummary.truncated && <p className="form-error">{tx('本次扫描达到地址上限，结果可能不完整。', 'This scan hit the address cap; results may be incomplete.')}</p>}
           <div className="table-wrap"><table className="asset-reconcile-table"><thead><tr><th>{tx('未登记存活 IP', 'Unregistered live IP')}</th><th>{tx('网段', 'Subnet')}</th></tr></thead><tbody>{scanFindings.map(finding => <tr key={finding.ip_address}><td><code>{finding.ip_address}</code></td><td>{finding.subnet}</td></tr>)}</tbody></table>{scanFindings.length === 0 && <Empty tx={tx} title={tx('未发现未录入资产的存活 IP', 'No unregistered live IPs found')} />}</div>

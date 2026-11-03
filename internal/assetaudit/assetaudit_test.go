@@ -164,18 +164,23 @@ func TestEvaluateDeliveredRowIssues(t *testing.T) {
 	}
 
 	missing := evaluateDeliveredRow(matched, indexOf(), nil)
-	if len(missing) != 1 || missing[0].Issue != "missing_asset" {
+	if len(missing) != 1 || missing[0].Issue != IssueMissingAsset {
 		t.Fatalf("expected missing_asset, got %+v", missing)
 	}
 
-	snMismatch := evaluateDeliveredRow(matched, indexOf(api.InfrastructureAsset{IPAddress: "10.80.1.10", SerialNumber: "SN-OTHER"}), nil)
-	if len(snMismatch) != 1 || snMismatch[0].Issue != "sn_mismatch" {
-		t.Fatalf("expected sn_mismatch, got %+v", snMismatch)
+	// The node is already recorded, so a serial-text difference is a notice and
+	// must not count as a discrepancy.
+	snNotice := evaluateDeliveredRow(matched, indexOf(api.InfrastructureAsset{IPAddress: "10.80.1.10", SerialNumber: "SN-OTHER"}), nil)
+	if len(snNotice) != 1 || snNotice[0].Issue != IssueSNNotice || !isNotice(snNotice[0].Issue) {
+		t.Fatalf("expected an informational sn_notice, got %+v", snNotice)
+	}
+	if deliveryDifferenceCount(snNotice) != 0 {
+		t.Fatalf("a serial notice must not count as a difference: %+v", snNotice)
 	}
 
 	// The sheet SN resolves the asset, but the recorded address differs.
 	ipMismatch := evaluateDeliveredRow(matched, indexOf(api.InfrastructureAsset{IPAddress: "10.80.1.99", SerialNumber: "SN-A"}), nil)
-	if len(ipMismatch) != 1 || ipMismatch[0].Issue != "ip_mismatch" {
+	if len(ipMismatch) != 1 || ipMismatch[0].Issue != IssueIPMismatch {
 		t.Fatalf("expected ip_mismatch, got %+v", ipMismatch)
 	}
 
@@ -183,8 +188,8 @@ func TestEvaluateDeliveredRowIssues(t *testing.T) {
 	telemetry := evaluateDeliveredRow(matched, assets, map[string]api.GPUNode{
 		"10.80.1.10": {NodeIP: "10.80.1.10", AssetSerial: "SN-LIVE"},
 	})
-	if len(telemetry) != 1 || telemetry[0].Issue != "sn_mismatch" || telemetry[0].TelemetrySN != "SN-LIVE" {
-		t.Fatalf("expected telemetry sn_mismatch, got %+v", telemetry)
+	if len(telemetry) != 1 || telemetry[0].Issue != IssueSNNotice || telemetry[0].TelemetrySN != "SN-LIVE" {
+		t.Fatalf("expected telemetry sn_notice, got %+v", telemetry)
 	}
 }
 
@@ -315,7 +320,7 @@ func TestRunDeliveryCheckSkipsOutOfScopeRows(t *testing.T) {
 	if summary.SheetRows != 3 || summary.DeliveredRows != 3 || summary.ExcludedRows != 2 {
 		t.Fatalf("unexpected summary counts: %+v", summary)
 	}
-	if summary.Matched != 1 || summary.MissingAsset != 0 || summary.IPMismatch != 0 || summary.SNMismatch != 0 {
+	if summary.Matched != 1 || summary.MissingAsset != 0 || summary.IPMismatch != 0 || summary.SNNotice != 0 {
 		t.Fatalf("only the in-scope, consistent row must be counted: %+v", summary)
 	}
 	if len(findings) != 0 {
@@ -397,9 +402,15 @@ func TestRunScanExcludesInventoriedAndClosedPortHosts(t *testing.T) {
 	service.probePort = func(_ context.Context, address string, _ time.Duration) bool {
 		return address == "10.0.0.4:22" || address == "10.0.0.7:22"
 	}
+	// Every host that opens port 22 logs in with the built-in fallback pair.
+	var tried int
+	service.loginSSH = func(_ context.Context, _ string, credentials []sshCredential, _ time.Duration) bool {
+		tried++
+		return len(credentials) == len(defaultSSHCredentials)
+	}
 
 	summary, findings, err := service.runScan(context.Background(),
-		configForFetch{SheetURL: sheetURL, AppID: "cli_x", AppSecret: "secret"}, time.Now(), 200)
+		configForFetch{SheetURL: sheetURL, AppID: "cli_x", AppSecret: "secret"}, time.Now(), 200, defaultSSHCredentials)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,11 +425,97 @@ func TestRunScanExcludesInventoriedAndClosedPortHosts(t *testing.T) {
 			}
 		}
 	}
-	if summary.LiveCount != 3 || summary.Port22Closed != 1 || summary.Unregistered != 2 {
+	if summary.LiveCount != 3 || summary.Port22Closed != 1 || summary.SSHLoginFailed != 0 || summary.Unregistered != 2 {
 		t.Fatalf("unexpected scan funnel: %+v", summary)
+	}
+	if tried != 2 {
+		t.Fatalf("only port-22-open hosts may be probed over SSH, got %d", tried)
 	}
 	if len(findings) != 2 || findings[0].IPAddress != "10.0.0.4" || findings[1].IPAddress != "10.0.0.7" {
 		t.Fatalf("only port-22-open survivors must be reported: %+v", findings)
+	}
+}
+
+// A host that opens port 22 but rejects every credential is not manageable, so
+// it must not be reported as an unregistered live IP.
+func TestRunScanDropsHostsRejectingEveryCredential(t *testing.T) {
+	rows := [][]string{
+		{"", "", "交付时间", "设备主机名", "系统主机名", "", "类型", "型号", "主机SN", "nodeSN", "", "", "", "OSIP", "掩码"},
+		{"", "", "2026/10/9", "host-a", "gpu-a", "", "GPU", "H100", "SN-A", "", "", "", "", "10.0.1.1", "29"},
+	}
+	service := testServiceWithSheet(t, rows)
+	service.sweepHosts = func(_ context.Context, targets []scanTarget, _ int) (map[string]bool, error) {
+		return map[string]bool{"10.0.1.2": true, "10.0.1.3": true, "10.0.1.4": true}, nil
+	}
+	service.probePort = func(_ context.Context, _ string, _ time.Duration) bool { return true }
+	service.loginSSH = func(_ context.Context, host string, _ []sshCredential, _ time.Duration) bool {
+		return host == "10.0.1.2" || host == "10.0.1.4"
+	}
+
+	summary, findings, err := service.runScan(context.Background(),
+		configForFetch{SheetURL: sheetURL, AppID: "cli_x", AppSecret: "secret"}, time.Now(), 200, defaultSSHCredentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.LiveCount != 3 || summary.Port22Closed != 0 || summary.SSHLoginFailed != 1 || summary.Unregistered != 2 {
+		t.Fatalf("unexpected scan funnel: %+v", summary)
+	}
+	if len(findings) != 2 || findings[0].IPAddress != "10.0.1.2" || findings[1].IPAddress != "10.0.1.4" {
+		t.Fatalf("only hosts that accept a credential must be reported: %+v", findings)
+	}
+}
+
+func TestParseSSHCredentials(t *testing.T) {
+	credentials := parseSSHCredentials("ubuntu Lexun@12#$\n\nroot\tLexun@12#$\nbroken\nubuntu Lexun@12#$\nops  p@ss word ")
+	want := []sshCredential{
+		{Username: "ubuntu", Password: "Lexun@12#$"},
+		{Username: "root", Password: "Lexun@12#$"},
+		{Username: "ops", Password: "p@ss word"},
+	}
+	if len(credentials) != len(want) {
+		t.Fatalf("unexpected credential count: %+v", credentials)
+	}
+	for index := range want {
+		if credentials[index] != want[index] {
+			t.Fatalf("credential %d = %+v, want %+v", index, credentials[index], want[index])
+		}
+	}
+	if len(parseSSHCredentials("   \n  \n")) != 0 {
+		t.Fatal("blank input must yield no credentials")
+	}
+}
+
+func TestResolveSSHCredentialsFallsBackToDefaults(t *testing.T) {
+	service := testService(t)
+	fallback, err := service.resolveSSHCredentials(api.AssetAuditConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fallback) != len(defaultSSHCredentials) || fallback[0] != defaultSSHCredentials[0] {
+		t.Fatalf("an unconfigured row must fall back to the built-in pair: %+v", fallback)
+	}
+
+	saved, err := service.SaveConfig(ConfigInput{ScheduleHour: 5, Timezone: "Asia/Shanghai", SSHPasswords: "ops secret"})
+	if err != nil {
+		t.Fatalf("valid credential list rejected: %v", err)
+	}
+	configured, err := service.resolveSSHCredentials(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configured) != 1 || configured[0] != (sshCredential{Username: "ops", Password: "secret"}) {
+		t.Fatalf("stored credentials did not round-trip: %+v", configured)
+	}
+	view := configView(saved)
+	if !view.SSHPasswordsConfigured {
+		t.Fatal("the view must report that OS credentials are configured")
+	}
+	encoded, _ := json.Marshal(view)
+	if strings.Contains(string(encoded), "ops secret") {
+		t.Fatal("the configuration view must never serialize OS credentials")
+	}
+	if _, err := service.SaveConfig(ConfigInput{ScheduleHour: 5, Timezone: "Asia/Shanghai", SSHPasswords: "no-password-here"}); err == nil {
+		t.Fatal("an unparseable credential list must be rejected")
 	}
 }
 
@@ -465,10 +562,18 @@ func TestDeliveryNotificationHighlightsFindings(t *testing.T) {
 		t.Fatalf("unexpected clean notification: %q %q %q", title, template, content)
 	}
 
-	findings := []DeliveryFinding{{Row: 2, Hostname: "host-a", Issue: "missing_asset", DeliveredAt: "2026/10/9", Detail: "未找到匹配记录"}}
+	findings := []DeliveryFinding{{Row: 2, Hostname: "host-a", Issue: IssueMissingAsset, DeliveredAt: "2026/10/9", Detail: "未找到匹配记录"}}
 	sameTitle, dirtyTemplate, dirtyContent := deliveryNotification(DeliverySummary{GeneratedAt: time.Now()}, findings)
 	if sameTitle != title || dirtyTemplate != "orange" || !strings.Contains(dirtyContent, "未录入资产") {
 		t.Fatalf("unexpected mismatch notification: %q %q %q", sameTitle, dirtyTemplate, dirtyContent)
+	}
+
+	// A serial notice alone is informational: the card stays green and still
+	// lists the notice for review.
+	notice := []DeliveryFinding{{Row: 3, Hostname: "host-b", Issue: IssueSNNotice, DeliveredAt: "2026/10/9", Detail: "资产 SN 为 SN-OTHER，交付表 SN 为 SN-B"}}
+	_, noticeTemplate, noticeContent := deliveryNotification(DeliverySummary{SNNotice: 1, GeneratedAt: time.Now()}, notice)
+	if noticeTemplate != "green" || !strings.Contains(noticeContent, "SN 提示") || strings.Contains(noticeContent, "**发现 1 条差异**") {
+		t.Fatalf("a serial notice must not be reported as a discrepancy: %q %q", noticeTemplate, noticeContent)
 	}
 }
 

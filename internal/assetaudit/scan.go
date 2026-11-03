@@ -8,10 +8,13 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // defaultMask is only used when the sheet does not declare a mask for a row.
@@ -47,9 +50,96 @@ type ScanSummary struct {
 	ScannedTargets   int                 `json:"scanned_targets"`
 	LiveCount        int                 `json:"live_count"`
 	Port22Closed     int                 `json:"port22_closed"`
+	SSHLoginFailed   int                 `json:"ssh_login_failed"`
 	Unregistered     int                 `json:"unregistered"`
 	Truncated        bool                `json:"truncated"`
 	GeneratedAt      time.Time           `json:"generated_at"`
+}
+
+// sshCredential is one OS login Atlas may try against a discovered address.
+type sshCredential struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// defaultSSHCredentials is the fallback the sweep uses when the operator has
+// not stored a password list, so a fresh deployment still confirms that a live
+// address really is a manageable node.
+var defaultSSHCredentials = []sshCredential{
+	{Username: "ubuntu", Password: "Lexun@12#$"},
+	{Username: "root", Password: "Lexun@12#$"},
+}
+
+// sshCredentialPattern splits one "username password" line; the password is
+// everything after the first whitespace run so it can contain spaces.
+var sshCredentialPattern = regexp.MustCompile(`^(\S+)\s+(.+)$`)
+
+// parseSSHCredentials reads one "username password" credential per line and
+// drops blank or malformed lines. Duplicates are collapsed.
+func parseSSHCredentials(text string) []sshCredential {
+	credentials := make([]sshCredential, 0)
+	seen := make(map[string]struct{})
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		matches := sshCredentialPattern.FindStringSubmatch(strings.TrimSpace(line))
+		if len(matches) != 3 {
+			continue
+		}
+		credential := sshCredential{Username: matches[1], Password: strings.TrimSpace(matches[2])}
+		if credential.Username == "" || credential.Password == "" {
+			continue
+		}
+		key := credential.Username + "\x00" + credential.Password
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		credentials = append(credentials, credential)
+	}
+	return credentials
+}
+
+// sshLoginHost reports whether host accepts one of the credentials over SSH. A
+// credential that fails is followed by the next one, so an address is only
+// rejected once every credential has been tried.
+func sshLoginHost(ctx context.Context, host string, credentials []sshCredential, timeout time.Duration) bool {
+	if len(credentials) == 0 {
+		return false
+	}
+	address := net.JoinHostPort(host, "22")
+	for _, credential := range credentials {
+		if trySSHCredential(ctx, address, credential, timeout) {
+			return true
+		}
+	}
+	return false
+}
+
+func trySSHCredential(ctx context.Context, address string, credential sshCredential, timeout time.Duration) bool {
+	dialer := net.Dialer{Timeout: timeout}
+	connection, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return false
+	}
+	defer connection.Close()
+	deadline := time.Now().Add(timeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := connection.SetDeadline(deadline); err != nil {
+		return false
+	}
+	clientConnection, channels, requests, err := ssh.NewClientConn(connection, address, &ssh.ClientConfig{
+		User:            credential.Username,
+		Auth:            []ssh.AuthMethod{ssh.Password(credential.Password)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         timeout,
+	})
+	if err != nil {
+		return false
+	}
+	client := ssh.NewClient(clientConnection, channels, requests)
+	defer client.Close()
+	return true
 }
 
 type scanTarget struct {
@@ -62,8 +152,8 @@ type subnet struct {
 }
 
 // runScan derives the cluster subnets, sweeps the addresses Atlas has no asset
-// record for, and returns the live ones.
-func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Time, timeoutMS int) (ScanSummary, []ScanFinding, error) {
+// record for, and returns the live ones that also accept an OS login.
+func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Time, timeoutMS int, credentials []sshCredential) (ScanSummary, []ScanFinding, error) {
 	rows, err := s.fetchDeliveryRows(ctx, fetch)
 	if err != nil {
 		return ScanSummary{}, nil, err
@@ -81,13 +171,17 @@ func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Ti
 	deliveryIPs := deliverySheetIPs(parsed)
 	summary := ScanSummary{KnownAssetIPs: len(known), DeliverySheetIPs: len(deliveryIPs), GeneratedAt: now}
 
+	// Only the delivery sheet's OSIP column and the recorded assets' OS addresses
+	// define the sweep scope; out-of-band (BMC) and 10G management networks are
+	// deliberately never scanned.
 	subnets := collectSubnets(parsed)
-	// Addresses Atlas already tracks may belong to a subnet the sheet does not
-	// describe; cover them at /24 unless an existing subnet already contains
-	// them.
-	for ip := range known {
+	assetIPs, err := s.assetOSIPs()
+	if err != nil {
+		return ScanSummary{}, nil, err
+	}
+	for _, ip := range assetIPs {
 		parsedIP := net.ParseIP(ip)
-		if parsedIP == nil || containsIP(subnets, parsedIP) {
+		if parsedIP == nil || parsedIP.To4() == nil || containsIP(subnets, parsedIP) {
 			continue
 		}
 		if _, network, maskErr := net.ParseCIDR(fmt.Sprintf("%s/%d", ip, defaultMask)); maskErr == nil {
@@ -155,9 +249,19 @@ func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Ti
 	reachable := s.reachablePort22(ctx, aliveIPs, timeoutMS)
 	summary.LiveCount = len(aliveIPs)
 	summary.Port22Closed = len(aliveIPs) - len(reachable)
-	findings := make([]ScanFinding, 0, len(reachable))
+	// An address is only counted once one of the configured OS credentials logs
+	// in; a host that opens 22 but rejects every credential is not manageable.
+	openPorts := make([]string, 0, len(reachable))
 	for _, target := range targets {
-		if !reachable[target.ip] {
+		if reachable[target.ip] {
+			openPorts = append(openPorts, target.ip)
+		}
+	}
+	loggedIn := s.reachableSSH(ctx, openPorts, credentials, timeoutMS)
+	summary.SSHLoginFailed = len(openPorts) - len(loggedIn)
+	findings := make([]ScanFinding, 0, len(loggedIn))
+	for _, target := range targets {
+		if !loggedIn[target.ip] {
 			continue
 		}
 		findings = append(findings, ScanFinding{IPAddress: target.ip, Subnet: target.subnet})
@@ -399,4 +503,53 @@ func (s *Service) reachablePort22(ctx context.Context, hosts []string, timeoutMS
 		reachable[ip] = true
 	}
 	return reachable
+}
+
+// reachableSSH returns the hosts that accept an SSH login with one of the
+// configured credentials.
+func (s *Service) reachableSSH(ctx context.Context, hosts []string, credentials []sshCredential, timeoutMS int) map[string]bool {
+	loggedIn := make(map[string]bool, len(hosts))
+	if len(hosts) == 0 || len(credentials) == 0 {
+		return loggedIn
+	}
+	if timeoutMS <= 0 {
+		timeoutMS = 1000
+	}
+	timeout := time.Duration(timeoutMS) * time.Millisecond
+	probe := s.loginSSH
+	if probe == nil {
+		probe = sshLoginHost
+	}
+	workers := portCheckConcurrency
+	if workers > len(hosts) {
+		workers = len(hosts)
+	}
+	jobs := make(chan string)
+	results := make(chan string)
+	var wait sync.WaitGroup
+	for index := 0; index < workers; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for ip := range jobs {
+				if probe(ctx, ip, credentials, timeout) {
+					results <- ip
+				}
+			}
+		}()
+	}
+	go func() {
+		for _, ip := range hosts {
+			jobs <- ip
+		}
+		close(jobs)
+	}()
+	go func() {
+		wait.Wait()
+		close(results)
+	}()
+	for ip := range results {
+		loggedIn[ip] = true
+	}
+	return loggedIn
 }

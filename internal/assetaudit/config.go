@@ -26,6 +26,7 @@ type ConfigView struct {
 	NotifyAlways            bool       `json:"notify_always"`
 	NotifyWebhookURL        string     `json:"notify_webhook_url"`
 	NotifySecretConfigured  bool       `json:"notify_secret_configured"`
+	SSHPasswordsConfigured  bool       `json:"ssh_passwords_configured"`
 	ScheduleHour            int        `json:"schedule_hour"`
 	Timezone                string     `json:"timezone"`
 	ScanConcurrency         int        `json:"scan_concurrency"`
@@ -45,6 +46,7 @@ type ConfigInput struct {
 	NotifyAlways      bool   `json:"notify_always"`
 	NotifyWebhookURL  string `json:"notify_webhook_url"`
 	NotifySecret      string `json:"notify_secret"`
+	SSHPasswords      string `json:"ssh_passwords"`
 	ScheduleHour      int    `json:"schedule_hour"`
 	Timezone          string `json:"timezone"`
 	ScanConcurrency   int    `json:"scan_concurrency"`
@@ -58,6 +60,7 @@ func configView(row api.AssetAuditConfig) ConfigView {
 		FeishuAppSecretConfigured: isConfigured(row.FeishuAppSecretCT),
 		NotifyEnabled:             row.NotifyEnabled, NotifyAlways: row.NotifyAlways, NotifyWebhookURL: row.NotifyWebhookURL,
 		NotifySecretConfigured: isConfigured(row.NotifySecretCT),
+		SSHPasswordsConfigured: isConfigured(row.SSHPasswordsCT),
 		ScheduleHour:           row.ScheduleHour, Timezone: row.Timezone,
 		ScanConcurrency: row.ScanConcurrency, ScanTimeoutMS: row.ScanTimeoutMS,
 		UpdatedAt: row.UpdatedAt,
@@ -120,6 +123,7 @@ func (s *Service) SaveConfig(input ConfigInput) (api.AssetAuditConfig, error) {
 	input.Timezone = strings.TrimSpace(input.Timezone)
 	input.FeishuAppSecret = strings.TrimSpace(input.FeishuAppSecret)
 	input.NotifySecret = strings.TrimSpace(input.NotifySecret)
+	input.SSHPasswords = strings.TrimSpace(input.SSHPasswords)
 
 	if input.DeliverySheetURL != "" {
 		if err := validateSheetURL(input.DeliverySheetURL); err != nil {
@@ -149,6 +153,18 @@ func (s *Service) SaveConfig(input ConfigInput) (api.AssetAuditConfig, error) {
 	}
 	if input.DeliveryEnabled && (input.DeliverySheetURL == "" || input.FeishuAppID == "") {
 		return api.AssetAuditConfig{}, errors.New("delivery check requires a sheet URL and Feishu app id")
+	}
+	sshPasswords := ""
+	if input.SSHPasswords != "" {
+		credentials := parseSSHCredentials(input.SSHPasswords)
+		if len(credentials) == 0 {
+			return api.AssetAuditConfig{}, errors.New("ssh_passwords must contain one \"username password\" login per line")
+		}
+		lines := make([]string, 0, len(credentials))
+		for _, credential := range credentials {
+			lines = append(lines, credential.Username+" "+credential.Password)
+		}
+		sshPasswords = strings.Join(lines, "\n")
 	}
 
 	var row api.AssetAuditConfig
@@ -185,6 +201,13 @@ func (s *Service) SaveConfig(input ConfigInput) (api.AssetAuditConfig, error) {
 		}
 		row.NotifySecretCT, row.KeyVersion = sealed, keyVersion
 	}
+	if sshPasswords != "" {
+		sealed, sealErr := s.cipher.seal("ssh_passwords", sshPasswords)
+		if sealErr != nil {
+			return row, sealErr
+		}
+		row.SSHPasswordsCT, row.KeyVersion = sealed, keyVersion
+	}
 	if input.DeliveryEnabled && row.KeyVersion == "" {
 		return row, errors.New("Feishu app secret is required before delivery check can run")
 	}
@@ -212,6 +235,24 @@ func (s *Service) resolvedSecrets(row api.AssetAuditConfig) (appSecret, notifySe
 		}
 	}
 	return appSecret, notifySecret, nil
+}
+
+// resolveSSHCredentials decrypts the operator-configured OS logins the sweep
+// may use. When none are stored Atlas falls back to the built-in pair so a
+// fresh deployment still confirms that a live address is manageable.
+func (s *Service) resolveSSHCredentials(row api.AssetAuditConfig) ([]sshCredential, error) {
+	if !isConfigured(row.SSHPasswordsCT) {
+		return defaultSSHCredentials, nil
+	}
+	plaintext, err := s.cipher.open("ssh_passwords", row.KeyVersion, row.SSHPasswordsCT)
+	if err != nil {
+		return nil, err
+	}
+	credentials := parseSSHCredentials(plaintext)
+	if len(credentials) == 0 {
+		return defaultSSHCredentials, nil
+	}
+	return credentials, nil
 }
 
 func validateSheetURL(value string) error {
