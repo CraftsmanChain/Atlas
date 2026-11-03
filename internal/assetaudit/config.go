@@ -23,6 +23,7 @@ type ConfigView struct {
 	FeishuAppID             string     `json:"feishu_app_id"`
 	FeishuAppSecretConfigured bool     `json:"feishu_app_secret_configured"`
 	NotifyEnabled           bool       `json:"notify_enabled"`
+	NotifyAlways            bool       `json:"notify_always"`
 	NotifyWebhookURL        string     `json:"notify_webhook_url"`
 	NotifySecretConfigured  bool       `json:"notify_secret_configured"`
 	ScheduleHour            int        `json:"schedule_hour"`
@@ -41,6 +42,7 @@ type ConfigInput struct {
 	FeishuAppID       string `json:"feishu_app_id"`
 	FeishuAppSecret   string `json:"feishu_app_secret"`
 	NotifyEnabled     bool   `json:"notify_enabled"`
+	NotifyAlways      bool   `json:"notify_always"`
 	NotifyWebhookURL  string `json:"notify_webhook_url"`
 	NotifySecret      string `json:"notify_secret"`
 	ScheduleHour      int    `json:"schedule_hour"`
@@ -54,7 +56,7 @@ func configView(row api.AssetAuditConfig) ConfigView {
 		Enabled: row.Enabled, DeliveryEnabled: row.DeliveryEnabled, ScanEnabled: row.ScanEnabled,
 		DeliverySheetURL: row.DeliverySheetURL, FeishuAppID: row.FeishuAppID,
 		FeishuAppSecretConfigured: isConfigured(row.FeishuAppSecretCT),
-		NotifyEnabled:             row.NotifyEnabled, NotifyWebhookURL: row.NotifyWebhookURL,
+		NotifyEnabled:             row.NotifyEnabled, NotifyAlways: row.NotifyAlways, NotifyWebhookURL: row.NotifyWebhookURL,
 		NotifySecretConfigured: isConfigured(row.NotifySecretCT),
 		ScheduleHour:           row.ScheduleHour, Timezone: row.Timezone,
 		ScanConcurrency: row.ScanConcurrency, ScanTimeoutMS: row.ScanTimeoutMS,
@@ -84,7 +86,7 @@ func (s *Service) EnsureConfig(opts config.AssetAuditOptions) error {
 	row := api.AssetAuditConfig{
 		ID: singletonID, Enabled: opts.Enabled, DeliveryEnabled: opts.DeliveryEnabled,
 		ScanEnabled: opts.ScanEnabled, DeliverySheetURL: strings.TrimSpace(opts.DeliverySheetURL),
-		NotifyEnabled: opts.NotifyEnabled, ScheduleHour: opts.ScheduleHour, Timezone: opts.Timezone,
+		NotifyEnabled: opts.NotifyEnabled, NotifyAlways: opts.NotifyAlways, ScheduleHour: opts.ScheduleHour, Timezone: opts.Timezone,
 		ScanConcurrency: opts.ScanConcurrency, ScanTimeoutMS: opts.ScanTimeoutMS,
 	}
 	if row.ScheduleHour <= 0 || row.ScheduleHour > 23 {
@@ -163,6 +165,7 @@ func (s *Service) SaveConfig(input ConfigInput) (api.AssetAuditConfig, error) {
 	row.DeliverySheetURL = input.DeliverySheetURL
 	row.FeishuAppID = input.FeishuAppID
 	row.NotifyEnabled = input.NotifyEnabled
+	row.NotifyAlways = input.NotifyAlways
 	row.NotifyWebhookURL = input.NotifyWebhookURL
 	row.ScheduleHour = input.ScheduleHour
 	row.Timezone = input.Timezone

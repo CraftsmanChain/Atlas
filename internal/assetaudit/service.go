@@ -173,6 +173,7 @@ func (s *Service) execute(ctx context.Context, run api.AssetAuditRun) {
 
 	var summaryJSON, findingsJSON []byte
 	var title, template, content string
+	findingCount := 0
 	switch run.Kind {
 	case KindDelivery:
 		summary, findings, checkErr := s.runDeliveryCheck(ctx, fetch, now)
@@ -180,6 +181,7 @@ func (s *Service) execute(ctx context.Context, run api.AssetAuditRun) {
 			s.fail(run, checkErr)
 			return
 		}
+		findingCount = len(findings)
 		summaryJSON, findingsJSON = mustJSON(summary), mustJSON(findings)
 		title, template, content = deliveryNotification(summary, findings)
 	default:
@@ -188,12 +190,13 @@ func (s *Service) execute(ctx context.Context, run api.AssetAuditRun) {
 			s.fail(run, scanErr)
 			return
 		}
+		findingCount = len(findings)
 		summaryJSON, findingsJSON = mustJSON(summary), mustJSON(findings)
 		title, template, content = scanNotification(summary, findings)
 	}
 
 	notified, notifyError := false, ""
-	if row.NotifyEnabled {
+	if shouldNotify(row, findingCount) {
 		if err := s.sendCard(row, notifySecret, title, template, content); err != nil {
 			notifyError = err.Error()
 			log.Printf("[AssetAudit] %s notification failed: %v", run.Kind, err)
@@ -232,6 +235,17 @@ func (s *Service) sendCard(row api.AssetAuditConfig, notifySecret, title, templa
 		return errors.New("no notification target is configured")
 	}
 	return s.notifier.SendCard(title, template, content)
+}
+
+// shouldNotify reports whether a finished run must reach the Feishu group. By
+// default Atlas only notifies when the run found anomalies, so a nightly clean
+// result stays silent; operators can opt into a notice on every run to confirm
+// the check itself ran.
+func shouldNotify(row api.AssetAuditConfig, findingCount int) bool {
+	if !row.NotifyEnabled {
+		return false
+	}
+	return findingCount > 0 || row.NotifyAlways
 }
 
 func mustJSON(value any) []byte {

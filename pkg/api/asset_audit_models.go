@@ -15,6 +15,7 @@ type AssetAuditConfig struct {
 	FeishuAppID       string  `json:"feishu_app_id"`
 	FeishuAppSecretCT []byte  `json:"-" gorm:"column:feishu_app_secret_ciphertext"`
 	NotifyEnabled     bool    `json:"notify_enabled"`
+	NotifyAlways      bool    `json:"notify_always"`
 	NotifyWebhookURL  string  `json:"notify_webhook_url"`
 	NotifySecretCT    []byte  `json:"-" gorm:"column:notify_secret_ciphertext"`
 	KeyVersion        string  `json:"key_version"`

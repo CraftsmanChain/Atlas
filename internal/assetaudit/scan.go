@@ -150,11 +150,12 @@ func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Ti
 }
 
 // collectSubnets derives the cluster's IPv4 subnets from the delivered rows
-// using each row's declared mask.
+// using each row's declared mask. Out-of-scope rows (storage nodes, network
+// devices, ODF) are skipped so the sweep only covers the tracked OS networks.
 func collectSubnets(rows []deliveryRow) []subnet {
 	subnets := make([]subnet, 0)
 	for _, row := range rows {
-		if !row.Delivered || row.IP == "" {
+		if !row.Delivered || row.Excluded || row.IP == "" {
 			continue
 		}
 		prefix := row.Mask
