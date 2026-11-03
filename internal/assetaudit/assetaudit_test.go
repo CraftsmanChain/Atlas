@@ -389,7 +389,7 @@ func TestRunScanExcludesInventoriedAndClosedPortHosts(t *testing.T) {
 		{"", "", "2026/10/9", "host-c", "gpu-c", "", "GPU", "H100", "SN-C", "", "", "", "", "10.0.0.3", "28"},
 	}
 	service := testServiceWithSheet(t, rows)
-	if err := service.db.Create(&api.InfrastructureAsset{IPAddress: "10.0.0.5", SerialNumber: "SN-X", Present: true}).Error; err != nil {
+	if err := service.db.Create(&api.InfrastructureAsset{Source: assetSourceMachine, IPAddress: "10.0.0.5", SerialNumber: "SN-X", Present: true}).Error; err != nil {
 		t.Fatal(err)
 	}
 	var swept []string
@@ -462,6 +462,54 @@ func TestRunScanDropsHostsRejectingEveryCredential(t *testing.T) {
 	}
 	if len(findings) != 2 || findings[0].IPAddress != "10.0.1.2" || findings[1].IPAddress != "10.0.1.4" {
 		t.Fatalf("only hosts that accept a credential must be reported: %+v", findings)
+	}
+}
+
+// The operations host inventory lists the platform's own 10G management hosts.
+// Their addresses must never widen the sweep scope; only the delivery sheet and
+// the recorded asset registry may do that.
+func TestRunScanIgnoresOperationsHostManagementNetworks(t *testing.T) {
+	rows := [][]string{
+		{"", "", "交付时间", "设备主机名", "系统主机名", "", "类型", "型号", "主机SN", "nodeSN", "", "", "", "OSIP", "掩码"},
+		{"", "", "2026/10/9", "host-a", "gpu-a", "", "GPU", "H100", "SN-A", "", "", "", "", "10.0.1.1", "29"},
+	}
+	service := testServiceWithSheet(t, rows)
+	for _, asset := range []api.InfrastructureAsset{
+		{AssetKey: "ops-mgmt", Source: "ops_host", IPAddress: "10.99.0.5", Name: "Lexun-NTP", Present: true},
+		{AssetKey: "recorded-1", Source: assetSourceMachine, IPAddress: "10.0.2.5", Name: "204-B07-8U-H100-node001", SerialNumber: "SN-R", Present: true},
+	} {
+		if err := service.db.Create(&asset).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	var swept []string
+	service.sweepHosts = func(_ context.Context, targets []scanTarget, _ int) (map[string]bool, error) {
+		for _, target := range targets {
+			swept = append(swept, target.ip)
+		}
+		return map[string]bool{}, nil
+	}
+	service.probePort = func(_ context.Context, _ string, _ time.Duration) bool { return false }
+
+	summary, _, err := service.runScan(context.Background(),
+		configForFetch{SheetURL: sheetURL, AppID: "cli_x", AppSecret: "secret"}, time.Now(), 200, defaultSSHCredentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded := false
+	for _, target := range swept {
+		if strings.HasPrefix(target, "10.99.0.") {
+			t.Fatalf("management network entered the sweep scope: %v", swept)
+		}
+		if strings.HasPrefix(target, "10.0.2.") {
+			recorded = true
+		}
+	}
+	if !recorded {
+		t.Fatalf("the recorded asset network must be swept: %v", swept)
+	}
+	if summary.SubnetCount != 2 || summary.KnownAssetIPs != 2 {
+		t.Fatalf("unexpected scan scope: %+v", summary)
 	}
 }
 
