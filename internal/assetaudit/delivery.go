@@ -41,6 +41,12 @@ var storageNodeKeywords = []string{"gpfs", "obs"}
 // case-insensitive so "ODF"/"odf" are equivalent.
 var excludedDeviceTypes = []string{"网络设备", "odf"}
 
+// assetSourceMachine is the recorded-asset registry. The sibling "ops_host"
+// source is the operations platform's own host inventory, whose addresses sit
+// on the 10G management network (PXE/NTP/Kubernetes masters) rather than on the
+// delivered in-band (25G) fabric, so it must never widen the sweep scope.
+const assetSourceMachine = "asset_machine"
+
 // exclusionReason reports why a delivered row is out of scope, or "" when the
 // row must be checked.
 func exclusionReason(systemName, deviceType string) string {
@@ -428,10 +434,12 @@ func (s *Service) loadIdentityIndex() (assetIndex, map[string]api.GPUNode, error
 
 // assetOSIPs returns the in-band (OS) address of every recorded asset. Only
 // these networks join the delivery sheet's OSIP column as sweep scope, so the
-// out-of-band (BMC) and 10G management networks are never scanned.
+// out-of-band (BMC) and 10G management networks are never scanned. Records are
+// limited to the recorded-asset registry: the operations host inventory would
+// otherwise drag the platform's own 10G management hosts into scope.
 func (s *Service) assetOSIPs() ([]string, error) {
 	var assets []api.InfrastructureAsset
-	if err := s.db.Where("present = ?", true).Find(&assets).Error; err != nil {
+	if err := s.db.Where("present = ? AND source = ?", true, assetSourceMachine).Find(&assets).Error; err != nil {
 		return nil, err
 	}
 	addresses := make([]string, 0, len(assets))
