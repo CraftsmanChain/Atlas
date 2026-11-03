@@ -15,26 +15,48 @@ const maxNotificationFindings = 40
 func deliveryNotification(summary DeliverySummary, findings []DeliveryFinding) (title, template, content string) {
 	title = "Atlas 资产核查 · 已交付节点核对"
 	template = "green"
-	if len(findings) > 0 {
+	differences := make([]DeliveryFinding, 0, len(findings))
+	notices := make([]DeliveryFinding, 0, len(findings))
+	for _, finding := range findings {
+		if isNotice(finding.Issue) {
+			notices = append(notices, finding)
+			continue
+		}
+		differences = append(differences, finding)
+	}
+	if len(differences) > 0 {
 		template = "orange"
 	}
 	var builder strings.Builder
 	builder.WriteString(fmt.Sprintf(
-		"**交付表行数**: %d\n**已交付节点**: %d\n**已排除（存储/网络/ODF）**: %d\n**一致**: %d\n**未录入资产**: %d\n**IP 不一致**: %d\n**SN 不一致**: %d\n",
-		summary.SheetRows, summary.DeliveredRows, summary.ExcludedRows, summary.Matched, summary.MissingAsset, summary.IPMismatch, summary.SNMismatch,
+		"**交付表行数**: %d\n**已交付节点**: %d\n**已排除（存储/网络/ODF）**: %d\n**一致**: %d\n**未录入资产**: %d\n**IP 不一致**: %d\n**SN 提示（已录入，仅提示）**: %d\n",
+		summary.SheetRows, summary.DeliveredRows, summary.ExcludedRows, summary.Matched, summary.MissingAsset, summary.IPMismatch, summary.SNNotice,
 	))
 	builder.WriteString(fmt.Sprintf("**核查时间**: %s\n", summary.GeneratedAt.Format("2006-01-02 15:04:05")))
-	if len(findings) == 0 {
+	if len(differences) == 0 && len(notices) == 0 {
 		builder.WriteString("\n全部已交付节点与资产记录一致。")
 		return title, template, builder.String()
 	}
-	builder.WriteString(fmt.Sprintf("\n**发现 %d 条差异**：\n", len(findings)))
-	for index, finding := range findings {
-		if index >= maxNotificationFindings {
-			builder.WriteString(fmt.Sprintf("\n… 其余 %d 条请在 Atlas「GPU 资产 · 资产核查」页查看。\n", len(findings)-maxNotificationFindings))
-			break
+	if len(differences) == 0 {
+		builder.WriteString("\n全部已交付节点均已录入资产，无差异。")
+	} else {
+		builder.WriteString(fmt.Sprintf("\n**发现 %d 条差异**：\n", len(differences)))
+		for index, finding := range differences {
+			if index >= maxNotificationFindings {
+				builder.WriteString(fmt.Sprintf("\n… 其余 %d 条请在 Atlas「GPU 资产 · 资产核查」页查看。\n", len(differences)-maxNotificationFindings))
+				break
+			}
+			builder.WriteString(fmt.Sprintf("- [%s] %s\n", issueLabel(finding.Issue), describeFinding(finding)))
 		}
-		builder.WriteString(fmt.Sprintf("- [%s] %s\n", issueLabel(finding.Issue), describeFinding(finding)))
+	}
+	if len(notices) > 0 {
+		builder.WriteString(fmt.Sprintf("\n**另有 %d 条 SN 提示**（资产已录入，仅 SN 文本不一致，不计入差异）：\n", len(notices)))
+		for index, finding := range notices {
+			if index >= maxNotificationFindings {
+				break
+			}
+			builder.WriteString(fmt.Sprintf("- %s\n", describeFinding(finding)))
+		}
 	}
 	return title, template, builder.String()
 }
@@ -51,8 +73,8 @@ func scanNotification(summary ScanSummary, findings []ScanFinding) (title, templ
 	}
 	var builder strings.Builder
 	builder.WriteString(fmt.Sprintf(
-		"**扫描网段**: %d\n**已登记资产 IP**: %d\n**交付表节点 IP**: %d\n**扫描地址数**: %d\n**ICMP 存活**: %d\n**22 端口不通**: %d\n**发现存活未登记 IP**: %d\n",
-		summary.SubnetCount, summary.KnownAssetIPs, summary.DeliverySheetIPs, summary.ScannedTargets, summary.LiveCount, summary.Port22Closed, summary.Unregistered,
+		"**扫描网段**: %d\n**已登记资产 IP**: %d\n**交付表节点 IP**: %d\n**扫描地址数**: %d\n**ICMP 存活**: %d\n**22 端口不通**: %d\n**SSH 登录失败**: %d\n**发现存活未登记 IP**: %d\n",
+		summary.SubnetCount, summary.KnownAssetIPs, summary.DeliverySheetIPs, summary.ScannedTargets, summary.LiveCount, summary.Port22Closed, summary.SSHLoginFailed, summary.Unregistered,
 	))
 	builder.WriteString(fmt.Sprintf("**扫描时间**: %s\n", summary.GeneratedAt.Format("2006-01-02 15:04:05")))
 	if summary.Truncated {
@@ -75,12 +97,12 @@ func scanNotification(summary ScanSummary, findings []ScanFinding) (title, templ
 
 func issueLabel(issue string) string {
 	switch issue {
-	case "missing_asset":
+	case IssueMissingAsset:
 		return "未录入资产"
-	case "ip_mismatch":
+	case IssueIPMismatch:
 		return "IP 不一致"
-	case "sn_mismatch":
-		return "SN 不一致"
+	case IssueSNNotice:
+		return "SN 提示"
 	default:
 		return issue
 	}

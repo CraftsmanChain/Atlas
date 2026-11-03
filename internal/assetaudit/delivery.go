@@ -190,6 +190,20 @@ func parseMask(value string) int {
 	return 0
 }
 
+// Delivery issue codes. IssueMissingAsset and IssueIPMismatch are real
+// discrepancies and drive the alert; IssueSNNotice is informational only: the
+// node is already recorded in the asset registry, so a serial-text difference
+// (stale sheet, reformatted serial, telemetry identity drift) is reported for
+// review but must not raise a difference or a notification.
+const (
+	IssueMissingAsset = "missing_asset"
+	IssueIPMismatch   = "ip_mismatch"
+	IssueSNNotice     = "sn_notice"
+)
+
+// isNotice reports whether an issue is informational rather than a difference.
+func isNotice(issue string) bool { return issue == IssueSNNotice }
+
 // DeliveryFinding is one delivered node that is missing from the asset registry
 // or whose recorded address or serial disagrees with the sheet or telemetry.
 type DeliveryFinding struct {
@@ -205,7 +219,9 @@ type DeliveryFinding struct {
 	TelemetrySN string `json:"telemetry_sn,omitempty"`
 }
 
-// DeliverySummary is the headline result of one delivery check.
+// DeliverySummary is the headline result of one delivery check. MissingAsset,
+// IPMismatch and Matched describe the real reconciliation; SNNotice is the
+// informational tail that the operator can expand on the page.
 type DeliverySummary struct {
 	SheetRows     int       `json:"sheet_rows"`
 	DeliveredRows int       `json:"delivered_rows"`
@@ -213,9 +229,21 @@ type DeliverySummary struct {
 	Matched       int       `json:"matched"`
 	MissingAsset  int       `json:"missing_asset"`
 	IPMismatch    int       `json:"ip_mismatch"`
-	SNMismatch    int       `json:"sn_mismatch"`
+	SNNotice      int       `json:"sn_notice"`
 	AssetIPCount  int       `json:"asset_ip_count"`
 	GeneratedAt   time.Time `json:"generated_at"`
+}
+
+// deliveryDifferenceCount counts the findings that are real discrepancies, so
+// an informational serial notice never triggers a notification on its own.
+func deliveryDifferenceCount(findings []DeliveryFinding) int {
+	count := 0
+	for _, finding := range findings {
+		if !isNotice(finding.Issue) {
+			count++
+		}
+	}
+	return count
 }
 
 func normalizeSerial(value string) string {
@@ -258,20 +286,25 @@ func (s *Service) runDeliveryCheck(ctx context.Context, fetch configForFetch, no
 			continue
 		}
 		issues := evaluateDeliveredRow(row, assets, nodes)
-		if len(issues) == 0 {
-			summary.Matched++
-			continue
-		}
+		differences := 0
 		for _, issue := range issues {
+			if !isNotice(issue.Issue) {
+				differences++
+			}
 			switch issue.Issue {
-			case "missing_asset":
+			case IssueMissingAsset:
 				summary.MissingAsset++
-			case "ip_mismatch":
+			case IssueIPMismatch:
 				summary.IPMismatch++
-			case "sn_mismatch":
-				summary.SNMismatch++
+			case IssueSNNotice:
+				summary.SNNotice++
 			}
 			findings = append(findings, issue)
+		}
+		// A row whose only finding is an informational serial notice still
+		// reconciles, so Matched counts every in-scope row without a difference.
+		if differences == 0 {
+			summary.Matched++
 		}
 	}
 	return summary, findings, nil
@@ -290,23 +323,25 @@ func evaluateDeliveredRow(row deliveryRow, assets assetIndex, nodes map[string]a
 	asset, byIP := assets.match(row.IP, sheetSN)
 	if asset == nil {
 		missing := base
-		missing.Issue = "missing_asset"
+		missing.Issue = IssueMissingAsset
 		missing.Detail = fmt.Sprintf("交付表第 %d 行（%s）在资产中未找到匹配记录", row.Index, describeRow(row))
 		return []DeliveryFinding{missing}
 	}
 	base.AssetIP, base.AssetSN = asset.IPAddress, asset.SerialNumber
 
+	// The node is already recorded, so a serial-text difference is reported as
+	// an informational notice rather than a discrepancy.
 	findings := make([]DeliveryFinding, 0, 2)
 	if byIP {
 		if sheetSN != "" && normalizeSerial(asset.SerialNumber) != "" && normalizeSerial(asset.SerialNumber) != sheetSN {
 			issue := base
-			issue.Issue = "sn_mismatch"
+			issue.Issue = IssueSNNotice
 			issue.Detail = fmt.Sprintf("资产 SN 为 %s，交付表 SN 为 %s", asset.SerialNumber, base.Serial)
 			findings = append(findings, issue)
 		}
 	} else if asset.IPAddress != "" && row.IP != "" && asset.IPAddress != row.IP {
 		issue := base
-		issue.Issue = "ip_mismatch"
+		issue.Issue = IssueIPMismatch
 		issue.Detail = fmt.Sprintf("资产 IP 为 %s，交付表 OSIP 为 %s", asset.IPAddress, row.IP)
 		findings = append(findings, issue)
 	}
@@ -314,7 +349,7 @@ func evaluateDeliveredRow(row deliveryRow, assets assetIndex, nodes map[string]a
 		telemetry := normalizeSerial(node.AssetSerial)
 		if telemetry != "" && sheetSN != "" && telemetry != sheetSN {
 			issue := base
-			issue.Issue = "sn_mismatch"
+			issue.Issue = IssueSNNotice
 			issue.TelemetrySN = node.AssetSerial
 			issue.Detail = fmt.Sprintf("监控实测 SN 为 %s，交付表 SN 为 %s", node.AssetSerial, base.Serial)
 			findings = append(findings, issue)
@@ -391,8 +426,25 @@ func (s *Service) loadIdentityIndex() (assetIndex, map[string]api.GPUNode, error
 	return index, byNode, nil
 }
 
-// assetIPs collects every address Atlas already knows about so the live-IP scan
-// only reports genuinely unregistered hosts.
+// assetOSIPs returns the in-band (OS) address of every recorded asset. Only
+// these networks join the delivery sheet's OSIP column as sweep scope, so the
+// out-of-band (BMC) and 10G management networks are never scanned.
+func (s *Service) assetOSIPs() ([]string, error) {
+	var assets []api.InfrastructureAsset
+	if err := s.db.Where("present = ?", true).Find(&assets).Error; err != nil {
+		return nil, err
+	}
+	addresses := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		if ip := strings.TrimSpace(asset.IPAddress); ip != "" {
+			addresses = append(addresses, ip)
+		}
+	}
+	return addresses, nil
+}
+
+// knownAssetIPs collects every address Atlas already knows about so the live-IP
+// scan only reports genuinely unregistered hosts.
 func (s *Service) knownAssetIPs() (map[string]struct{}, error) {
 	known := make(map[string]struct{})
 	var assets []api.InfrastructureAsset

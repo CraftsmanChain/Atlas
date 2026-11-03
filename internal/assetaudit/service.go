@@ -35,6 +35,7 @@ type Service struct {
 	sheet      *sheetClient
 	notifier   *notifier.FeishuNotifier
 	probePort  func(ctx context.Context, address string, timeout time.Duration) bool
+	loginSSH   func(ctx context.Context, host string, credentials []sshCredential, timeout time.Duration) bool
 	sweepHosts func(ctx context.Context, targets []scanTarget, timeoutMS int) (map[string]bool, error)
 	now        func() time.Time
 	executing  sync.Map
@@ -196,11 +197,18 @@ func (s *Service) execute(ctx context.Context, run api.AssetAuditRun) {
 			s.fail(run, checkErr)
 			return
 		}
-		findingCount = len(findings)
+		// An informational serial notice must never raise a notification on its
+		// own; only real discrepancies count.
+		findingCount = deliveryDifferenceCount(findings)
 		summaryJSON, findingsJSON = mustJSON(summary), mustJSON(findings)
 		title, template, content = deliveryNotification(summary, findings)
 	default:
-		summary, findings, scanErr := s.runScan(ctx, fetch, now, row.ScanTimeoutMS)
+		credentials, credentialErr := s.resolveSSHCredentials(row)
+		if credentialErr != nil {
+			s.fail(run, credentialErr)
+			return
+		}
+		summary, findings, scanErr := s.runScan(ctx, fetch, now, row.ScanTimeoutMS, credentials)
 		if scanErr != nil {
 			s.fail(run, scanErr)
 			return

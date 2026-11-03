@@ -89,7 +89,7 @@ func (h *Handler) HandleConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		row, err := h.service.SaveConfig(input)
-		input.FeishuAppSecret, input.NotifySecret = "", ""
+		input.FeishuAppSecret, input.NotifySecret, input.SSHPasswords = "", "", ""
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return

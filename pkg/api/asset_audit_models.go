@@ -18,6 +18,7 @@ type AssetAuditConfig struct {
 	NotifyAlways      bool    `json:"notify_always"`
 	NotifyWebhookURL  string  `json:"notify_webhook_url"`
 	NotifySecretCT    []byte  `json:"-" gorm:"column:notify_secret_ciphertext"`
+	SSHPasswordsCT    []byte  `json:"-" gorm:"column:ssh_passwords_ciphertext"`
 	KeyVersion        string  `json:"key_version"`
 	ScheduleHour      int     `json:"schedule_hour"`
 	Timezone          string  `json:"timezone"`
