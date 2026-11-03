@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -29,12 +30,26 @@ const (
 
 // Service owns the delivery verification and live-IP discovery jobs.
 type Service struct {
-	db        *storage.DB
-	cipher    *secretCipher
-	sheet     *sheetClient
-	notifier  *notifier.FeishuNotifier
-	now       func() time.Time
-	executing sync.Map
+	db         *storage.DB
+	cipher     *secretCipher
+	sheet      *sheetClient
+	notifier   *notifier.FeishuNotifier
+	probePort  func(ctx context.Context, address string, timeout time.Duration) bool
+	sweepHosts func(ctx context.Context, targets []scanTarget, timeoutMS int) (map[string]bool, error)
+	now        func() time.Time
+	executing  sync.Map
+}
+
+// dialTCP reports whether a TCP connection to address is established within the
+// timeout.
+func dialTCP(ctx context.Context, address string, timeout time.Duration) bool {
+	dialer := net.Dialer{Timeout: timeout}
+	connection, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return false
+	}
+	_ = connection.Close()
+	return true
 }
 
 // NewService builds the service. It returns an error when the platform secret
@@ -48,7 +63,7 @@ func NewService(db *storage.DB, encodedMasterKey string, feishu *notifier.Feishu
 	if err != nil {
 		return nil, err
 	}
-	return &Service{db: db, cipher: cipher, sheet: newSheetClient(), notifier: feishu, now: time.Now}, nil
+	return &Service{db: db, cipher: cipher, sheet: newSheetClient(), notifier: feishu, probePort: dialTCP, now: time.Now}, nil
 }
 
 // Run executes the daily schedule. It re-reads the stored configuration every

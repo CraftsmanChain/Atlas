@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,6 +20,10 @@ const defaultMask = 24
 // maxScanTargets bounds one scan so a mistyped mask cannot turn into an
 // unbounded sweep of the private address space.
 const maxScanTargets = 131072
+
+// portCheckConcurrency bounds how many TCP:22 probes run at once so a sweep
+// with many ICMP-alive hosts still finishes quickly.
+const portCheckConcurrency = 64
 
 // ScanFinding is one live address that has no record in the asset registry.
 type ScanFinding struct {
@@ -35,14 +40,16 @@ type ScanSubnetSummary struct {
 
 // ScanSummary is the headline result of one live-IP scan.
 type ScanSummary struct {
-	Subnets        []ScanSubnetSummary `json:"subnets"`
-	SubnetCount    int                 `json:"subnet_count"`
-	KnownAssetIPs  int                 `json:"known_asset_ips"`
-	ScannedTargets int                 `json:"scanned_targets"`
-	LiveCount      int                 `json:"live_count"`
-	Unregistered   int                 `json:"unregistered"`
-	Truncated      bool                `json:"truncated"`
-	GeneratedAt    time.Time           `json:"generated_at"`
+	Subnets          []ScanSubnetSummary `json:"subnets"`
+	SubnetCount      int                 `json:"subnet_count"`
+	KnownAssetIPs    int                 `json:"known_asset_ips"`
+	DeliverySheetIPs int                 `json:"delivery_sheet_ips"`
+	ScannedTargets   int                 `json:"scanned_targets"`
+	LiveCount        int                 `json:"live_count"`
+	Port22Closed     int                 `json:"port22_closed"`
+	Unregistered     int                 `json:"unregistered"`
+	Truncated        bool                `json:"truncated"`
+	GeneratedAt      time.Time           `json:"generated_at"`
 }
 
 type scanTarget struct {
@@ -69,7 +76,10 @@ func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Ti
 	if err != nil {
 		return ScanSummary{}, nil, err
 	}
-	summary := ScanSummary{KnownAssetIPs: len(known), GeneratedAt: now}
+	// Addresses the delivery sheet already lists are inventoried devices, so
+	// they are as out of scope as the asset registry entries.
+	deliveryIPs := deliverySheetIPs(parsed)
+	summary := ScanSummary{KnownAssetIPs: len(known), DeliverySheetIPs: len(deliveryIPs), GeneratedAt: now}
 
 	subnets := collectSubnets(parsed)
 	// Addresses Atlas already tracks may belong to a subnet the sheet does not
@@ -102,6 +112,9 @@ func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Ti
 			if _, exists := known[address]; exists {
 				return true
 			}
+			if _, exists := deliveryIPs[address]; exists {
+				return true
+			}
 			if len(targets) >= maxScanTargets {
 				summary.Truncated = true
 				return false
@@ -123,13 +136,28 @@ func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Ti
 	if timeoutMS <= 0 {
 		timeoutMS = 1000
 	}
-	alive, err := s.sweep(ctx, targets, timeoutMS)
+	sweep := s.sweepHosts
+	if sweep == nil {
+		sweep = s.sweep
+	}
+	alive, err := sweep(ctx, targets, timeoutMS)
 	if err != nil {
 		return summary, nil, err
 	}
-	findings := make([]ScanFinding, 0, len(alive))
+	aliveIPs := make([]string, 0, len(alive))
 	for _, target := range targets {
-		if !alive[target.ip] {
+		if alive[target.ip] {
+			aliveIPs = append(aliveIPs, target.ip)
+		}
+	}
+	// An address that answers ICMP but exposes no SSH listener is not a
+	// manageable node, so it is reported neither as live nor as unregistered.
+	reachable := s.reachablePort22(ctx, aliveIPs, timeoutMS)
+	summary.LiveCount = len(aliveIPs)
+	summary.Port22Closed = len(aliveIPs) - len(reachable)
+	findings := make([]ScanFinding, 0, len(reachable))
+	for _, target := range targets {
+		if !reachable[target.ip] {
 			continue
 		}
 		findings = append(findings, ScanFinding{IPAddress: target.ip, Subnet: target.subnet})
@@ -144,9 +172,21 @@ func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Ti
 			summary.Subnets = append(summary.Subnets, *stat)
 		}
 	}
-	summary.LiveCount = len(findings)
 	summary.Unregistered = len(findings)
 	return summary, findings, nil
+}
+
+// deliverySheetIPs collects every address the delivery sheet lists. Those
+// devices are already inventoried in the sheet, so the live-IP scan must not
+// report them as unregistered.
+func deliverySheetIPs(rows []deliveryRow) map[string]struct{} {
+	ips := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		if row.IP != "" {
+			ips[row.IP] = struct{}{}
+		}
+	}
+	return ips
 }
 
 // collectSubnets derives the cluster's IPv4 subnets from the delivered rows
@@ -311,4 +351,52 @@ func (s *Service) sweep(ctx context.Context, targets []scanTarget, timeoutMS int
 		}
 	}
 	return alive, nil
+}
+
+// reachablePort22 returns the hosts that accept a TCP connection on port 22.
+func (s *Service) reachablePort22(ctx context.Context, hosts []string, timeoutMS int) map[string]bool {
+	reachable := make(map[string]bool, len(hosts))
+	if len(hosts) == 0 {
+		return reachable
+	}
+	if timeoutMS <= 0 {
+		timeoutMS = 1000
+	}
+	timeout := time.Duration(timeoutMS) * time.Millisecond
+	probe := s.probePort
+	if probe == nil {
+		probe = dialTCP
+	}
+	workers := portCheckConcurrency
+	if workers > len(hosts) {
+		workers = len(hosts)
+	}
+	jobs := make(chan string)
+	results := make(chan string)
+	var wait sync.WaitGroup
+	for index := 0; index < workers; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for ip := range jobs {
+				if probe(ctx, net.JoinHostPort(ip, "22"), timeout) {
+					results <- ip
+				}
+			}
+		}()
+	}
+	go func() {
+		for _, ip := range hosts {
+			jobs <- ip
+		}
+		close(jobs)
+	}()
+	go func() {
+		wait.Wait()
+		close(results)
+	}()
+	for ip := range results {
+		reachable[ip] = true
+	}
+	return reachable
 }

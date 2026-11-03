@@ -112,7 +112,20 @@ func cellAt(row []string, index int) string {
 	return strings.TrimSpace(row[index])
 }
 
-// parseDeliveryRows turns raw sheet values into typed rows.
+// isBlankRow reports whether a row carries no value at all. Feishu pads every
+// read range up to the requested size with empty rows, so those trailing rows
+// are not sheet data and must never inflate the reported row count.
+func isBlankRow(row []string) bool {
+	for _, cell := range row {
+		if strings.TrimSpace(cell) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// parseDeliveryRows turns raw sheet values into typed rows. Blank padding rows
+// are dropped while Index keeps pointing at the sheet's own row number.
 func parseDeliveryRows(rows [][]string) ([]deliveryRow, error) {
 	if len(rows) == 0 {
 		return nil, fmt.Errorf("delivery sheet returned no rows")
@@ -120,6 +133,9 @@ func parseDeliveryRows(rows [][]string) ([]deliveryRow, error) {
 	columns := resolveDeliveryColumns(rows[0])
 	parsed := make([]deliveryRow, 0, len(rows)-1)
 	for index, row := range rows[1:] {
+		if isBlankRow(row) {
+			continue
+		}
 		deliveredAt := cellAt(row, columns.deliveredAt)
 		ip := cellAt(row, columns.osIP)
 		if net.ParseIP(ip) == nil {
