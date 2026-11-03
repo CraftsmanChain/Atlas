@@ -513,6 +513,20 @@ func TestRunScanIgnoresOperationsHostManagementNetworks(t *testing.T) {
 	}
 }
 
+// The ICMP timeout is far too short for an SSH handshake, so the reachability
+// probes keep a patient floor instead of dropping reachable nodes.
+func TestProbeTimeoutKeepsAPatientFloor(t *testing.T) {
+	if got := probeTimeout(1000); got != minProbeTimeout {
+		t.Fatalf("probeTimeout(1000) = %v, want %v", got, minProbeTimeout)
+	}
+	if got := probeTimeout(0); got != minProbeTimeout {
+		t.Fatalf("probeTimeout(0) = %v, want %v", got, minProbeTimeout)
+	}
+	if got := probeTimeout(15000); got != 15*time.Second {
+		t.Fatalf("probeTimeout(15000) = %v, want 15s", got)
+	}
+}
+
 func TestParseSSHCredentials(t *testing.T) {
 	credentials := parseSSHCredentials("ubuntu Lexun@12#$\n\nroot\tLexun@12#$\nbroken\nubuntu Lexun@12#$\nops  p@ss word ")
 	want := []sshCredential{
