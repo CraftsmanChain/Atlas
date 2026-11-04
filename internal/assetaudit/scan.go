@@ -50,6 +50,23 @@ type ScanFinding struct {
 	Subnet    string `json:"subnet"`
 }
 
+// Scan statuses. Every sweep target is an address Atlas has no record for, so
+// the status records how far the follow-up probes got and lets the page list
+// each stage of the funnel rather than only the final unregistered set.
+const (
+	ScanStatusUnregistered   = "unregistered"
+	ScanStatusPort22Closed   = "port22_closed"
+	ScanStatusSSHLoginFailed = "ssh_login_failed"
+)
+
+// ScanHost is one ICMP-alive sweep target with the outcome of the port-22 and
+// SSH-login probes.
+type ScanHost struct {
+	IPAddress string `json:"ip_address"`
+	Subnet    string `json:"subnet"`
+	Status    string `json:"status"`
+}
+
 // ScanSubnetSummary reports per-subnet sweep coverage.
 type ScanSubnetSummary struct {
 	CIDR  string `json:"cidr"`
@@ -60,6 +77,7 @@ type ScanSubnetSummary struct {
 // ScanSummary is the headline result of one live-IP scan.
 type ScanSummary struct {
 	Subnets          []ScanSubnetSummary `json:"subnets"`
+	Hosts            []ScanHost          `json:"hosts,omitempty"`
 	SubnetCount      int                 `json:"subnet_count"`
 	KnownAssetIPs    int                 `json:"known_asset_ips"`
 	DeliverySheetIPs int                 `json:"delivery_sheet_ips"`
@@ -277,8 +295,22 @@ func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Ti
 	loggedIn := s.reachableSSH(ctx, openPorts, credentials, probeDeadline)
 	summary.SSHLoginFailed = len(openPorts) - len(loggedIn)
 	findings := make([]ScanFinding, 0, len(loggedIn))
+	// Every ICMP-alive target is recorded with the outcome of the follow-up
+	// probes so the page can list the whole funnel, not just the survivors.
+	hosts := make([]ScanHost, 0, len(aliveIPs))
 	for _, target := range targets {
-		if !loggedIn[target.ip] {
+		if !alive[target.ip] {
+			continue
+		}
+		status := ScanStatusPort22Closed
+		if reachable[target.ip] {
+			status = ScanStatusSSHLoginFailed
+			if loggedIn[target.ip] {
+				status = ScanStatusUnregistered
+			}
+		}
+		hosts = append(hosts, ScanHost{IPAddress: target.ip, Subnet: target.subnet, Status: status})
+		if status != ScanStatusUnregistered {
 			continue
 		}
 		findings = append(findings, ScanFinding{IPAddress: target.ip, Subnet: target.subnet})
@@ -287,6 +319,8 @@ func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Ti
 		}
 	}
 	sort.Slice(findings, func(left, right int) bool { return compareIP(findings[left].IPAddress, findings[right].IPAddress) < 0 })
+	sort.Slice(hosts, func(left, right int) bool { return compareIP(hosts[left].IPAddress, hosts[right].IPAddress) < 0 })
+	summary.Hosts = hosts
 	summary.Subnets = make([]ScanSubnetSummary, 0, len(subnets))
 	for _, item := range subnets {
 		if stat, ok := counters[item.cidr.String()]; ok {
