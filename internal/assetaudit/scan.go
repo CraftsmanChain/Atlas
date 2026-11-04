@@ -57,6 +57,7 @@ const (
 	ScanStatusUnregistered   = "unregistered"
 	ScanStatusPort22Closed   = "port22_closed"
 	ScanStatusSSHLoginFailed = "ssh_login_failed"
+	ScanStatusMarked         = "marked"
 )
 
 // ScanHost is one ICMP-alive sweep target with the outcome of the port-22 and
@@ -85,6 +86,7 @@ type ScanSummary struct {
 	LiveCount        int                 `json:"live_count"`
 	Port22Closed     int                 `json:"port22_closed"`
 	SSHLoginFailed   int                 `json:"ssh_login_failed"`
+	Marked           int                 `json:"marked"`
 	Unregistered     int                 `json:"unregistered"`
 	Truncated        bool                `json:"truncated"`
 	GeneratedAt      time.Time           `json:"generated_at"`
@@ -272,24 +274,38 @@ func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Ti
 	if err != nil {
 		return summary, nil, err
 	}
+	marks, err := s.scanIPMarks()
+	if err != nil {
+		return summary, nil, err
+	}
+	// A marked address is reported as its own category, so it is split out
+	// before the port-22 and SSH probes and never counted as live, port-closed
+	// or login-failed.
 	aliveIPs := make([]string, 0, len(alive))
+	markedAlive := 0
 	for _, target := range targets {
-		if alive[target.ip] {
-			aliveIPs = append(aliveIPs, target.ip)
+		if !alive[target.ip] {
+			continue
 		}
+		if _, marked := marks[target.ip]; marked {
+			markedAlive++
+			continue
+		}
+		aliveIPs = append(aliveIPs, target.ip)
 	}
 	// An address that answers ICMP but exposes no SSH listener is not a
 	// manageable node, so it is reported neither as live nor as unregistered.
 	probeDeadline := probeTimeout(timeoutMS)
 	reachable := s.reachablePort22(ctx, aliveIPs, probeDeadline)
+	summary.Marked = markedAlive
 	summary.LiveCount = len(aliveIPs)
 	summary.Port22Closed = len(aliveIPs) - len(reachable)
 	// An address is only counted once one of the configured OS credentials logs
 	// in; a host that opens 22 but rejects every credential is not manageable.
 	openPorts := make([]string, 0, len(reachable))
-	for _, target := range targets {
-		if reachable[target.ip] {
-			openPorts = append(openPorts, target.ip)
+	for _, ip := range aliveIPs {
+		if reachable[ip] {
+			openPorts = append(openPorts, ip)
 		}
 	}
 	loggedIn := s.reachableSSH(ctx, openPorts, credentials, probeDeadline)
@@ -297,9 +313,13 @@ func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Ti
 	findings := make([]ScanFinding, 0, len(loggedIn))
 	// Every ICMP-alive target is recorded with the outcome of the follow-up
 	// probes so the page can list the whole funnel, not just the survivors.
-	hosts := make([]ScanHost, 0, len(aliveIPs))
+	hosts := make([]ScanHost, 0, len(aliveIPs)+markedAlive)
 	for _, target := range targets {
 		if !alive[target.ip] {
+			continue
+		}
+		if _, marked := marks[target.ip]; marked {
+			hosts = append(hosts, ScanHost{IPAddress: target.ip, Subnet: target.subnet, Status: ScanStatusMarked})
 			continue
 		}
 		status := ScanStatusPort22Closed

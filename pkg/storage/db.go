@@ -164,6 +164,7 @@ func migrateSchema(db *gorm.DB) error {
 		&api.LXOPAssetConfig{},
 		&api.AssetAuditConfig{},
 		&api.AssetAuditRun{},
+		&api.AssetScanMark{},
 		&api.InfrastructureAsset{},
 		&api.NodeCredentialProfile{},
 		&api.NodeAccessCheck{},

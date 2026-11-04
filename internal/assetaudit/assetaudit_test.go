@@ -33,7 +33,7 @@ func testService(t *testing.T) *Service {
 	}
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { sqlDB.Close() })
-	if err := raw.AutoMigrate(&api.AssetAuditConfig{}, &api.AssetAuditRun{}, &api.InfrastructureAsset{}, &api.GPUNode{}, &api.CollectorTarget{}, &api.PlatformDisplayConfig{}); err != nil {
+	if err := raw.AutoMigrate(&api.AssetAuditConfig{}, &api.AssetAuditRun{}, &api.AssetScanMark{}, &api.InfrastructureAsset{}, &api.GPUNode{}, &api.CollectorTarget{}, &api.PlatformDisplayConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
@@ -510,6 +510,98 @@ func TestRunScanRecordsEveryAliveHostWithStatus(t *testing.T) {
 	}
 }
 
+// A marked address is reported as its own category: it still has to be
+// ICMP-alive to appear, but it is excluded from the ICMP-alive, port-22 and
+// SSH-login-failed counts and its follow-up probes are skipped.
+func TestRunScanSplitsMarkedAddressesOutOfTheFunnel(t *testing.T) {
+	rows := [][]string{
+		{"", "", "交付时间", "设备主机名", "系统主机名", "", "类型", "型号", "主机SN", "nodeSN", "", "", "", "OSIP", "掩码"},
+		{"", "", "2026/10/9", "host-a", "gpu-a", "", "GPU", "H100", "SN-A", "", "", "", "", "10.0.2.1", "29"},
+	}
+	service := testServiceWithSheet(t, rows)
+	if _, err := service.MarkAddresses([]string{"10.0.2.4"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	service.sweepHosts = func(_ context.Context, _ []scanTarget, _ int) (map[string]bool, error) {
+		return map[string]bool{"10.0.2.2": true, "10.0.2.3": true, "10.0.2.4": true}, nil
+	}
+	probed := make(map[string]bool)
+	service.probePort = func(_ context.Context, address string, _ time.Duration) bool {
+		probed[address] = true
+		return address != "10.0.2.3:22"
+	}
+	service.loginSSH = func(_ context.Context, host string, _ []sshCredential, _ time.Duration) bool {
+		return host == "10.0.2.2"
+	}
+
+	summary, findings, err := service.runScan(context.Background(),
+		configForFetch{SheetURL: sheetURL, AppID: "cli_x", AppSecret: "secret"}, time.Now(), 200, defaultSSHCredentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.LiveCount != 2 || summary.Port22Closed != 1 || summary.SSHLoginFailed != 0 || summary.Marked != 1 || summary.Unregistered != 1 {
+		t.Fatalf("marked address must be split out of the funnel: %+v", summary)
+	}
+	if probed["10.0.2.4:22"] {
+		t.Fatalf("a marked address must not be probed on port 22: %+v", probed)
+	}
+	statuses := make(map[string]string, len(summary.Hosts))
+	for _, host := range summary.Hosts {
+		statuses[host.IPAddress] = host.Status
+	}
+	if statuses["10.0.2.4"] != ScanStatusMarked || statuses["10.0.2.2"] != ScanStatusUnregistered || statuses["10.0.2.3"] != ScanStatusPort22Closed {
+		t.Fatalf("unexpected host statuses: %+v", statuses)
+	}
+	if len(findings) != 1 || findings[0].IPAddress != "10.0.2.2" {
+		t.Fatalf("marked address must not become a finding: %+v", findings)
+	}
+}
+
+func TestMarkAddressesPersistsUniqueValidIPsAndUnmarksThem(t *testing.T) {
+	service := testService(t)
+	count, err := service.MarkAddresses([]string{"10.0.3.5", "10.0.3.5", "not-an-ip", "10.0.3.6"}, "known unmanaged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("only unique valid IPv4 addresses must be marked: %d", count)
+	}
+	marks, err := service.ListMarks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(marks) != 2 {
+		t.Fatalf("expected 2 persisted marks, got %d", len(marks))
+	}
+	if count, err = service.MarkAddresses([]string{"10.0.3.5"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("re-marking must not insert a duplicate: %d", count)
+	}
+	index, err := service.scanIPMarks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := index["10.0.3.5"]; !ok {
+		t.Fatalf("marked address missing from the scan index: %+v", index)
+	}
+	removed, err := service.UnmarkAddresses([]string{"10.0.3.5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("expected 1 removed mark, got %d", removed)
+	}
+	index, err = service.scanIPMarks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := index["10.0.3.5"]; ok {
+		t.Fatalf("unmarked address must leave the index: %+v", index)
+	}
+}
+
 // Excluded rows are out of scope for reconciliation but are still listed so the
 // page can show which delivered nodes were skipped and why.
 func TestRunDeliveryCheckListsExcludedRows(t *testing.T) {
@@ -719,6 +811,13 @@ func TestScanNotificationTruncatesAndFlagsLimit(t *testing.T) {
 	title, template, content := scanNotification("算力小镇-智元", ScanSummary{SubnetCount: 2, Unregistered: 1, GeneratedAt: time.Now()}, []ScanFinding{{IPAddress: "10.0.0.5", Subnet: "10.0.0.0/24"}})
 	if title != "算力小镇-智元 · 资产核查 · 存活 IP 扫描" || template != "orange" || !strings.Contains(content, "10.0.0.5") {
 		t.Fatalf("unexpected scan notification: %q %q %q", title, template, content)
+	}
+
+	// Marked addresses are reported as their own non-actionable bucket so the
+	// card never implies they belong to the ICMP/port/SSH funnel.
+	_, _, markedContent := scanNotification("算力小镇-智元", ScanSummary{Marked: 3, GeneratedAt: time.Now()}, nil)
+	if !strings.Contains(markedContent, "已标记（不计数）**: 3") {
+		t.Fatalf("the card must report the marked bucket: %q", markedContent)
 	}
 
 	_, truncatedTemplate, truncatedContent := scanNotification("算力小镇-智元", ScanSummary{Truncated: true, Unregistered: 2, GeneratedAt: time.Now()}, nil)

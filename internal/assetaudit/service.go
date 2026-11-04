@@ -16,6 +16,7 @@ import (
 	"atlas/pkg/notifier"
 	"atlas/pkg/storage"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -301,4 +302,80 @@ func mustJSON(value any) []byte {
 		return []byte("null")
 	}
 	return encoded
+}
+
+// scanIPMarks returns the operator-marked addresses as a set so the sweep can
+// classify them into their own category.
+func (s *Service) scanIPMarks() (map[string]struct{}, error) {
+	var marks []api.AssetScanMark
+	if err := s.db.Find(&marks).Error; err != nil {
+		return nil, err
+	}
+	index := make(map[string]struct{}, len(marks))
+	for _, mark := range marks {
+		if ip := strings.TrimSpace(mark.IPAddress); ip != "" {
+			index[ip] = struct{}{}
+		}
+	}
+	return index, nil
+}
+
+// ListMarks returns every marked address, newest first, for the page.
+func (s *Service) ListMarks() ([]api.AssetScanMark, error) {
+	marks := make([]api.AssetScanMark, 0)
+	if err := s.db.Order("created_at DESC").Find(&marks).Error; err != nil {
+		return nil, err
+	}
+	return marks, nil
+}
+
+// MarkAddresses records the given addresses as deliberately outside the live-IP
+// funnel. Non-IPv4 and duplicate entries are dropped; an address that is
+// already marked is left untouched.
+func (s *Service) MarkAddresses(addresses []string, reason string) (int, error) {
+	seen := make(map[string]struct{}, len(addresses))
+	rows := make([]api.AssetScanMark, 0, len(addresses))
+	for _, raw := range addresses {
+		ip := strings.TrimSpace(raw)
+		parsed := net.ParseIP(ip)
+		if parsed == nil || parsed.To4() == nil {
+			continue
+		}
+		if _, exists := seen[ip]; exists {
+			continue
+		}
+		seen[ip] = struct{}{}
+		rows = append(rows, api.AssetScanMark{IPAddress: ip, Reason: strings.TrimSpace(reason)})
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	result := s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows)
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return int(result.RowsAffected), nil
+}
+
+// UnmarkAddresses removes the given addresses from the marked set.
+func (s *Service) UnmarkAddresses(addresses []string) (int, error) {
+	cleaned := make([]string, 0, len(addresses))
+	seen := make(map[string]struct{}, len(addresses))
+	for _, raw := range addresses {
+		if ip := strings.TrimSpace(raw); ip != "" {
+			if _, exists := seen[ip]; exists {
+				continue
+			}
+			seen[ip] = struct{}{}
+			cleaned = append(cleaned, ip)
+		}
+	}
+	if len(cleaned) == 0 {
+		return 0, nil
+	}
+	result := s.db.Where("ip_address IN ?", cleaned).Delete(&api.AssetScanMark{})
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return int(result.RowsAffected), nil
 }
