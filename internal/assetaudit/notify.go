@@ -10,10 +10,21 @@ import (
 // the run record.
 const maxNotificationFindings = 40
 
+// notificationTitle prefixes a card title with the deployment instance name so
+// every Feishu card is identified by the live instance (Platform Config →
+// Instance name) instead of a hard-coded product label.
+func notificationTitle(instanceName, topic string) string {
+	name := strings.TrimSpace(instanceName)
+	if name == "" {
+		name = "Atlas"
+	}
+	return name + " · " + topic
+}
+
 // deliveryNotification renders the delivered-node verification result for the
 // Feishu group.
-func deliveryNotification(summary DeliverySummary, findings []DeliveryFinding) (title, template, content string) {
-	title = "Atlas 资产核查 · 已交付节点核对"
+func deliveryNotification(instanceName string, summary DeliverySummary, findings []DeliveryFinding) (title, template, content string) {
+	title = notificationTitle(instanceName, "资产核查 · 已交付节点核对")
 	template = "green"
 	differences := make([]DeliveryFinding, 0, len(findings))
 	notices := make([]DeliveryFinding, 0, len(findings))
@@ -55,8 +66,8 @@ func deliveryNotification(summary DeliverySummary, findings []DeliveryFinding) (
 }
 
 // scanNotification renders the live-IP discovery result for the Feishu group.
-func scanNotification(summary ScanSummary, findings []ScanFinding) (title, template, content string) {
-	title = "Atlas 资产核查 · 存活 IP 扫描"
+func scanNotification(instanceName string, summary ScanSummary, findings []ScanFinding) (title, template, content string) {
+	title = notificationTitle(instanceName, "资产核查 · 存活 IP 扫描")
 	template = "green"
 	if len(findings) > 0 {
 		template = "orange"

@@ -33,11 +33,11 @@ func testService(t *testing.T) *Service {
 	}
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { sqlDB.Close() })
-	if err := raw.AutoMigrate(&api.AssetAuditConfig{}, &api.AssetAuditRun{}, &api.InfrastructureAsset{}, &api.GPUNode{}, &api.CollectorTarget{}); err != nil {
+	if err := raw.AutoMigrate(&api.AssetAuditConfig{}, &api.AssetAuditRun{}, &api.InfrastructureAsset{}, &api.GPUNode{}, &api.CollectorTarget{}, &api.PlatformDisplayConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
-	service, err := NewService(&storage.DB{DB: raw}, key, nil)
+	service, err := NewService(&storage.DB{DB: raw}, key, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -687,13 +687,13 @@ func TestCompareIPSortsNumerically(t *testing.T) {
 
 func TestDeliveryNotificationHighlightsFindings(t *testing.T) {
 	clean := DeliverySummary{SheetRows: 10, DeliveredRows: 8, Matched: 8, GeneratedAt: time.Now()}
-	title, template, content := deliveryNotification(clean, nil)
-	if title != "Atlas 资产核查 · 已交付节点核对" || template != "green" || !strings.Contains(content, "全部已交付节点与资产记录一致") {
+	title, template, content := deliveryNotification("算力小镇-智元", clean, nil)
+	if title != "算力小镇-智元 · 资产核查 · 已交付节点核对" || template != "green" || !strings.Contains(content, "全部已交付节点与资产记录一致") {
 		t.Fatalf("unexpected clean notification: %q %q %q", title, template, content)
 	}
 
 	findings := []DeliveryFinding{{Row: 2, Hostname: "host-a", Issue: IssueMissingAsset, DeliveredAt: "2026/10/9", Detail: "未找到匹配记录"}}
-	sameTitle, dirtyTemplate, dirtyContent := deliveryNotification(DeliverySummary{GeneratedAt: time.Now()}, findings)
+	sameTitle, dirtyTemplate, dirtyContent := deliveryNotification("算力小镇-智元", DeliverySummary{GeneratedAt: time.Now()}, findings)
 	if sameTitle != title || dirtyTemplate != "orange" || !strings.Contains(dirtyContent, "未录入资产") {
 		t.Fatalf("unexpected mismatch notification: %q %q %q", sameTitle, dirtyTemplate, dirtyContent)
 	}
@@ -701,22 +701,27 @@ func TestDeliveryNotificationHighlightsFindings(t *testing.T) {
 	// A serial notice alone is informational: the card stays green and reports
 	// the count, but the notice rows stay on the Atlas page.
 	notice := []DeliveryFinding{{Row: 3, Hostname: "host-b", Issue: IssueSNNotice, DeliveredAt: "2026/10/9", Detail: "资产 SN 为 SN-OTHER，交付表 SN 为 SN-B"}}
-	_, noticeTemplate, noticeContent := deliveryNotification(DeliverySummary{SNNotice: 1, GeneratedAt: time.Now()}, notice)
+	_, noticeTemplate, noticeContent := deliveryNotification("算力小镇-智元", DeliverySummary{SNNotice: 1, GeneratedAt: time.Now()}, notice)
 	if noticeTemplate != "green" || !strings.Contains(noticeContent, "SN 提示") || strings.Contains(noticeContent, "**发现 1 条差异**") {
 		t.Fatalf("a serial notice must not be reported as a discrepancy: %q %q", noticeTemplate, noticeContent)
 	}
 	if strings.Contains(noticeContent, "host-b") {
 		t.Fatalf("serial notice rows must stay off the chat card: %q", noticeContent)
 	}
+
+	// A blank instance name must fall back to the neutral product label.
+	if fallback, _, _ := deliveryNotification("  ", clean, nil); fallback != "Atlas · 资产核查 · 已交付节点核对" {
+		t.Fatalf("blank instance name must fall back to Atlas: %q", fallback)
+	}
 }
 
 func TestScanNotificationTruncatesAndFlagsLimit(t *testing.T) {
-	title, template, content := scanNotification(ScanSummary{SubnetCount: 2, Unregistered: 1, GeneratedAt: time.Now()}, []ScanFinding{{IPAddress: "10.0.0.5", Subnet: "10.0.0.0/24"}})
-	if title != "Atlas 资产核查 · 存活 IP 扫描" || template != "orange" || !strings.Contains(content, "10.0.0.5") {
+	title, template, content := scanNotification("算力小镇-智元", ScanSummary{SubnetCount: 2, Unregistered: 1, GeneratedAt: time.Now()}, []ScanFinding{{IPAddress: "10.0.0.5", Subnet: "10.0.0.0/24"}})
+	if title != "算力小镇-智元 · 资产核查 · 存活 IP 扫描" || template != "orange" || !strings.Contains(content, "10.0.0.5") {
 		t.Fatalf("unexpected scan notification: %q %q %q", title, template, content)
 	}
 
-	_, truncatedTemplate, truncatedContent := scanNotification(ScanSummary{Truncated: true, Unregistered: 2, GeneratedAt: time.Now()}, nil)
+	_, truncatedTemplate, truncatedContent := scanNotification("算力小镇-智元", ScanSummary{Truncated: true, Unregistered: 2, GeneratedAt: time.Now()}, nil)
 	if truncatedTemplate != "yellow" || !strings.Contains(truncatedContent, "达到地址上限") {
 		t.Fatalf("a truncated scan must be flagged: %q %q", truncatedTemplate, truncatedContent)
 	}
@@ -725,9 +730,26 @@ func TestScanNotificationTruncatesAndFlagsLimit(t *testing.T) {
 	for index := 0; index < maxNotificationFindings+5; index++ {
 		many = append(many, ScanFinding{IPAddress: "10.0.0.1"})
 	}
-	_, _, longContent := scanNotification(ScanSummary{Unregistered: len(many), GeneratedAt: time.Now()}, many)
+	_, _, longContent := scanNotification("算力小镇-智元", ScanSummary{Unregistered: len(many), GeneratedAt: time.Now()}, many)
 	if !strings.Contains(longContent, "其余") {
 		t.Fatalf("a large finding set must be truncated with a pointer to Atlas: %s", longContent)
+	}
+}
+
+func TestResolveInstanceNamePrefersPlatformConfig(t *testing.T) {
+	service := testService(t)
+	if name := service.resolveInstanceName(); name != "Atlas" {
+		t.Fatalf("missing configuration must fall back to Atlas, got %q", name)
+	}
+	service.instanceName = "智元集群"
+	if name := service.resolveInstanceName(); name != "智元集群" {
+		t.Fatalf("configured branding default was ignored, got %q", name)
+	}
+	if err := service.db.Create(&api.PlatformDisplayConfig{ID: platformConfigSingletonID, InstanceName: "算力小镇-智元"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if name := service.resolveInstanceName(); name != "算力小镇-智元" {
+		t.Fatalf("Platform Config instance name was ignored, got %q", name)
 	}
 }
 

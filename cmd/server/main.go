@@ -147,7 +147,7 @@ func main() {
 		log.Printf("WARNING: asset configuration writes are allowed over plaintext HTTP")
 	}
 	assetConfigHandler := platformconfig.NewAssetConfigHandler(assetSource, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialInsecureHTTP)
-	assetAuditService, assetAuditErr := assetaudit.NewService(db, secretMasterKey, feishuNotifier)
+	assetAuditService, assetAuditErr := assetaudit.NewService(db, secretMasterKey, feishuNotifier, cfg.Branding.InstanceName)
 	if assetAuditErr != nil {
 		log.Printf("Asset audit is unavailable: %v", assetAuditErr)
 		assetAuditService = nil
