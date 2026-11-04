@@ -26,19 +26,24 @@ const (
 
 	triggerScheduled = "scheduled"
 	triggerManual    = "manual"
+
+	// platformConfigSingletonID is the fixed primary key of the single
+	// PlatformDisplayConfig row owned by the platform config module.
+	platformConfigSingletonID uint = 1
 )
 
 // Service owns the delivery verification and live-IP discovery jobs.
 type Service struct {
-	db         *storage.DB
-	cipher     *secretCipher
-	sheet      *sheetClient
-	notifier   *notifier.FeishuNotifier
-	probePort  func(ctx context.Context, address string, timeout time.Duration) bool
-	loginSSH   func(ctx context.Context, host string, credentials []sshCredential, timeout time.Duration) bool
-	sweepHosts func(ctx context.Context, targets []scanTarget, timeoutMS int) (map[string]bool, error)
-	now        func() time.Time
-	executing  sync.Map
+	db           *storage.DB
+	cipher       *secretCipher
+	sheet        *sheetClient
+	notifier     *notifier.FeishuNotifier
+	instanceName string
+	probePort    func(ctx context.Context, address string, timeout time.Duration) bool
+	loginSSH     func(ctx context.Context, host string, credentials []sshCredential, timeout time.Duration) bool
+	sweepHosts   func(ctx context.Context, targets []scanTarget, timeoutMS int) (map[string]bool, error)
+	now          func() time.Time
+	executing    sync.Map
 }
 
 // dialTCP reports whether a TCP connection to address is established within the
@@ -55,8 +60,9 @@ func dialTCP(ctx context.Context, address string, timeout time.Duration) bool {
 
 // NewService builds the service. It returns an error when the platform secret
 // master key is unavailable, because credentials must never be stored in the
-// clear.
-func NewService(db *storage.DB, encodedMasterKey string, feishu *notifier.FeishuNotifier) (*Service, error) {
+// clear. defaultInstanceName is used for Feishu card titles until the Platform
+// Config instance name has been stored.
+func NewService(db *storage.DB, encodedMasterKey string, feishu *notifier.FeishuNotifier, defaultInstanceName string) (*Service, error) {
 	if db == nil {
 		return nil, errors.New("asset audit database is required")
 	}
@@ -64,7 +70,24 @@ func NewService(db *storage.DB, encodedMasterKey string, feishu *notifier.Feishu
 	if err != nil {
 		return nil, err
 	}
-	return &Service{db: db, cipher: cipher, sheet: newSheetClient(), notifier: feishu, probePort: dialTCP, now: time.Now}, nil
+	return &Service{db: db, cipher: cipher, sheet: newSheetClient(), notifier: feishu, instanceName: strings.TrimSpace(defaultInstanceName), probePort: dialTCP, now: time.Now}, nil
+}
+
+// resolveInstanceName reads the live instance name from Platform Config so every
+// Feishu card is labelled with the deployment identity rather than a hard-coded
+// product name. It falls back to the configured branding default and finally to
+// "Atlas".
+func (s *Service) resolveInstanceName() string {
+	var settings api.PlatformDisplayConfig
+	if err := s.db.First(&settings, platformConfigSingletonID).Error; err == nil {
+		if name := strings.TrimSpace(settings.InstanceName); name != "" {
+			return name
+		}
+	}
+	if s.instanceName != "" {
+		return s.instanceName
+	}
+	return "Atlas"
 }
 
 // Run executes the daily schedule. It re-reads the stored configuration every
@@ -186,6 +209,7 @@ func (s *Service) execute(ctx context.Context, run api.AssetAuditRun) {
 	}
 	fetch := configForFetch{SheetURL: row.DeliverySheetURL, AppID: row.FeishuAppID, AppSecret: appSecret}
 	now := s.now()
+	instanceName := s.resolveInstanceName()
 
 	var summaryJSON, findingsJSON []byte
 	var title, template, content string
@@ -201,7 +225,7 @@ func (s *Service) execute(ctx context.Context, run api.AssetAuditRun) {
 		// own; only real discrepancies count.
 		findingCount = deliveryDifferenceCount(findings)
 		summaryJSON, findingsJSON = mustJSON(summary), mustJSON(findings)
-		title, template, content = deliveryNotification(summary, findings)
+		title, template, content = deliveryNotification(instanceName, summary, findings)
 	default:
 		credentials, credentialErr := s.resolveSSHCredentials(row)
 		if credentialErr != nil {
@@ -215,7 +239,7 @@ func (s *Service) execute(ctx context.Context, run api.AssetAuditRun) {
 		}
 		findingCount = len(findings)
 		summaryJSON, findingsJSON = mustJSON(summary), mustJSON(findings)
-		title, template, content = scanNotification(summary, findings)
+		title, template, content = scanNotification(instanceName, summary, findings)
 	}
 
 	notified, notifyError := false, ""
