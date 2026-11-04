@@ -10,10 +10,16 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
+// Client is a Prometheus/VictoriaMetrics HTTP client whose target address can
+// be re-resolved at runtime. The address lives behind a read-write mutex so a
+// configuration change (for example after the monitoring host moves IP) takes
+// effect on the next request without restarting Atlas.
 type Client struct {
+	mu      sync.RWMutex
 	baseURL string
 	http    *http.Client
 }
@@ -51,18 +57,45 @@ type RangeSeries struct {
 }
 
 func NewClient(baseURL string, timeout time.Duration) (*Client, error) {
+	normalized, httpClient, err := buildClient(baseURL, timeout)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{baseURL: normalized, http: httpClient}, nil
+}
+
+func buildClient(baseURL string, timeout time.Duration) (string, *http.Client, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	parsed, err := url.Parse(baseURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return nil, fmt.Errorf("invalid Prometheus base URL %q", baseURL)
+		return "", nil, fmt.Errorf("invalid Prometheus base URL %q", baseURL)
 	}
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
-	return &Client{baseURL: baseURL, http: &http.Client{Timeout: timeout}}, nil
+	return baseURL, &http.Client{Timeout: timeout}, nil
 }
 
-func (c *Client) BaseURL() string { return c.baseURL }
+// SetBaseURL repoints the client at a new monitoring address. It validates the
+// address and timeout before swapping them in, so a bad value is rejected
+// without disturbing the address currently in use.
+func (c *Client) SetBaseURL(baseURL string, timeout time.Duration) error {
+	normalized, httpClient, err := buildClient(baseURL, timeout)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.baseURL = normalized
+	c.http = httpClient
+	return nil
+}
+
+func (c *Client) BaseURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.baseURL
+}
 
 func (c *Client) BuildInfo(ctx context.Context) (BuildInfo, error) {
 	var result BuildInfo
@@ -219,7 +252,10 @@ func (e *httpStatusError) Error() string {
 }
 
 func (c *Client) get(ctx context.Context, path string, query url.Values, result any) error {
-	endpoint := c.baseURL + path
+	c.mu.RLock()
+	baseURL, httpClient := c.baseURL, c.http
+	c.mu.RUnlock()
+	endpoint := baseURL + path
 	if len(query) > 0 {
 		endpoint += "?" + query.Encode()
 	}
@@ -227,7 +263,7 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, result 
 	if err != nil {
 		return err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("Prometheus request failed: %w", err)
 	}

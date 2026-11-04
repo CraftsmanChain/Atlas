@@ -51,6 +51,7 @@ var migrationModels = []migrationModel{
 	{name: "platform_issues", value: &api.PlatformIssue{}, order: "id", autoIncrement: true},
 	{name: "issue_resolutions", value: &api.IssueResolution{}, order: "id", autoIncrement: true},
 	{name: "platform_display_configs", value: &api.PlatformDisplayConfig{}, order: "id", autoIncrement: true},
+	{name: "monitoring_configs", value: &api.MonitoringConfig{}, order: "id", autoIncrement: true},
 	{name: "node_credential_profiles", value: &api.NodeCredentialProfile{}, order: "id", autoIncrement: true},
 	{name: "node_access_checks", value: &api.NodeAccessCheck{}, order: "id", autoIncrement: true},
 	{name: "node_evidence_collections", value: &api.NodeEvidenceCollection{}, order: "id", autoIncrement: true},

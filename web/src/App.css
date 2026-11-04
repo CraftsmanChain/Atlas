@@ -204,6 +204,11 @@ main { min-height:100vh; margin-left:var(--sidebar-width); }.topbar { position:s
 .asset-audit-detail { margin-top:14px; }
 .asset-audit-pager { justify-content:flex-end; margin-top:10px; }
 .audit-trigger-actions { margin-top:16px; flex-wrap:wrap; }
+.audit-mark-toolbar { margin-top:14px; flex-wrap:wrap; align-items:center; gap:10px; }
+.audit-mark-count { color:var(--faint); font:11px ui-monospace,monospace; }
+.audit-mark-token { width:220px; min-height:34px; padding:0 10px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); font-size:11px; }
+.mark-select { width:44px; text-align:center; }
+.mark-select input { width:15px; height:15px; accent-color:var(--accent); cursor:pointer; }
 .audit-error-row td { padding:8px 12px; color:var(--red); background:color-mix(in srgb,var(--red-soft) 46%,var(--surface)); font:11px ui-monospace,monospace; }
 .audit-error-row td svg { margin-right:6px; vertical-align:-2px; }
 .link-action { padding:0; border:0; background:none; color:var(--accent); font:inherit; font-size:11px; font-weight:600; cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
