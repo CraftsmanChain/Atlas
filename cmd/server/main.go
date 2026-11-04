@@ -147,6 +147,8 @@ func main() {
 		log.Printf("WARNING: asset configuration writes are allowed over plaintext HTTP")
 	}
 	assetConfigHandler := platformconfig.NewAssetConfigHandler(assetSource, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialInsecureHTTP)
+	monitoringSource := platformconfig.NewMonitoringSource(db, cfg.Prometheus.BaseURL, cfg.Prometheus.RequestTimeout)
+	monitoringConfigHandler := platformconfig.NewMonitoringConfigHandler(monitoringSource, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialInsecureHTTP)
 	assetAuditService, assetAuditErr := assetaudit.NewService(db, secretMasterKey, feishuNotifier, cfg.Branding.InstanceName)
 	if assetAuditErr != nil {
 		log.Printf("Asset audit is unavailable: %v", assetAuditErr)
@@ -179,18 +181,22 @@ func main() {
 		go historyService.Run(context.Background(), historyAuditInterval)
 	}
 
+	// The monitoring data-source address is database-first with the configuration
+	// file as the first-run fallback, so an operator can repoint Atlas at a moved
+	// Prometheus/VictoriaMetrics endpoint from the UI without a redeploy.
+	monitoringBaseURL, monitoringTimeout, monitoringErr := monitoringSource.Resolve()
+	if monitoringErr != nil {
+		log.Printf("Monitoring configuration is unavailable: %v", monitoringErr)
+	}
+
 	// Inventory discovery is read-only and best-effort. Prometheus outages are
 	// recorded as failed sync runs and never prevent Atlas from serving APIs.
-	if cfg.Inventory.Enabled && strings.TrimSpace(cfg.Prometheus.BaseURL) != "" {
-		requestTimeout, parseErr := time.ParseDuration(cfg.Prometheus.RequestTimeout)
-		if parseErr != nil {
-			log.Printf("Invalid Prometheus request timeout %q; using 15s", cfg.Prometheus.RequestTimeout)
-			requestTimeout = 15 * time.Second
-		}
-		prometheusClient, clientErr := promclient.NewClient(cfg.Prometheus.BaseURL, requestTimeout)
+	if cfg.Inventory.Enabled && strings.TrimSpace(monitoringBaseURL) != "" {
+		prometheusClient, clientErr := promclient.NewClient(monitoringBaseURL, monitoringTimeout)
 		if clientErr != nil {
 			log.Printf("Inventory sync disabled: %v", clientErr)
 		} else {
+			monitoringSource.SetApplier(prometheusClient.SetBaseURL)
 			monitoringInterval := parseDurationOrDefault("monitoring reconciliation", cfg.Inventory.TargetSyncInterval, 10*time.Minute)
 			fullInterval := parseDurationOrDefault("full reconciliation", cfg.Inventory.FullSyncInterval, 24*time.Hour)
 			inventoryService := inventory.NewService(db, prometheusClient, cfg.Inventory)
@@ -257,6 +263,8 @@ func main() {
 	mux.HandleFunc("/api/v1/platform-config", platformConfigHandler.Handle)
 	mux.HandleFunc("/api/v1/platform-config/assets", assetConfigHandler.Handle)
 	mux.HandleFunc("/api/v1/platform-config/assets/sync", assetConfigHandler.HandleSync)
+	mux.HandleFunc("/api/v1/platform-config/monitoring", monitoringConfigHandler.Handle)
+	mux.HandleFunc("/api/v1/platform-config/monitoring/test", monitoringConfigHandler.HandleTest)
 	mux.HandleFunc("/api/v1/asset-audit/config", assetAuditHandler.HandleConfig)
 	mux.HandleFunc("/api/v1/asset-audit/runs", assetAuditHandler.HandleRuns)
 	mux.HandleFunc("/api/v1/asset-audit/trigger", assetAuditHandler.HandleTrigger)
