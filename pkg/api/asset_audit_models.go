@@ -46,3 +46,16 @@ type AssetAuditRun struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 }
+
+// AssetScanMark is one live-IP address the operator has deliberately marked.
+// A marked address is reported as its own category and stays outside the
+// ICMP-alive / port-22-closed / SSH-login-failed funnel, so a known but
+// unmanaged host does not keep inflating the actionable counts. Marks persist
+// across scans.
+type AssetScanMark struct {
+	ID        uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	IPAddress string    `json:"ip_address" gorm:"uniqueIndex;not null"`
+	Reason    string    `json:"reason,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}

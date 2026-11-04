@@ -197,6 +197,7 @@ func main() {
 			if assetSource != nil {
 				inventoryService = inventory.NewServiceWithAssets(db, prometheusClient, cfg.Inventory, assetSource)
 			}
+			inventoryService = inventoryService.WithNotifier(feishuNotifier, cfg.Branding.InstanceName)
 			go inventoryService.Run(context.Background(), monitoringInterval, fullInterval)
 			if cfg.Health.Enabled {
 				healthInterval := parseDurationOrDefault("GPU health score", cfg.Health.ScoreInterval, 10*time.Minute)
@@ -259,6 +260,7 @@ func main() {
 	mux.HandleFunc("/api/v1/asset-audit/config", assetAuditHandler.HandleConfig)
 	mux.HandleFunc("/api/v1/asset-audit/runs", assetAuditHandler.HandleRuns)
 	mux.HandleFunc("/api/v1/asset-audit/trigger", assetAuditHandler.HandleTrigger)
+	mux.HandleFunc("/api/v1/asset-audit/marks", assetAuditHandler.HandleMarks)
 	mux.HandleFunc("/api/v1/node-access/overview", nodeAccessHandler.HandleOverview)
 	mux.HandleFunc("/api/v1/node-access/credentials", nodeAccessHandler.HandleCredentials)
 	mux.HandleFunc("/api/v1/node-access/credentials/", nodeAccessHandler.HandleCredential)

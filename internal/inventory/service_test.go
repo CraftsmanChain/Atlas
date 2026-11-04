@@ -2,6 +2,10 @@ package inventory
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +16,7 @@ import (
 	"atlas/internal/prometheus"
 	"atlas/pkg/api"
 	"atlas/pkg/config"
+	"atlas/pkg/notifier"
 	"atlas/pkg/storage"
 )
 
@@ -326,5 +331,61 @@ func TestIdentitySyncCreatesNewGenerationWhenSerialChangesAtSameIP(t *testing.T)
 	}
 	if !strings.Contains(replacement.OldValue, "SN-OLD") || !strings.Contains(replacement.NewValue, "SN-NEW") {
 		t.Fatalf("replacement audit lost identity evidence: %+v", replacement)
+	}
+}
+
+// A failed reconciliation must both persist its cause and push a card labelled
+// with the live Platform Config instance name, so a broken sync cannot stay
+// silent until someone opens the audit page.
+func TestFailRunPersistsCauseAndNotifiesWithInstanceName(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cards := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var card map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&card)
+		select {
+		case cards <- card:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"ok"}`))
+	}))
+	defer server.Close()
+
+	service := NewService(db, &fakePrometheus{}, config.InventoryConfig{ExpectedGPUCount: 1})
+	service.WithNotifier(notifier.NewFeishuNotifier(&config.FeishuConfig{
+		Bots: []config.FeishuBotConfig{{Enabled: true, WebhookURL: server.URL}},
+	}), "branding-default")
+	if err := db.Create(&api.PlatformDisplayConfig{ID: platformConfigSingletonID, InstanceName: "算力小镇-智元"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	run := &api.InventorySyncRun{TaskType: TaskIdentityIncremental}
+	if _, err := service.failRun(run, errors.New("asset feed returned HTTP 503")); err == nil {
+		t.Fatal("failRun must return the cause")
+	}
+	if run.Status != "failed" || run.ErrorMessage != "asset feed returned HTTP 503" {
+		t.Fatalf("failure must stay persisted for the audit page: %+v", run)
+	}
+
+	select {
+	case card := <-cards:
+		header, _ := card["card"].(map[string]any)["header"].(map[string]any)
+		title, _ := header["title"].(map[string]any)["content"].(string)
+		if title != "算力小镇-智元 · 资产同步失败" {
+			t.Fatalf("card title must carry the live instance name: %q", title)
+		}
+		if header["template"] != "red" {
+			t.Fatalf("a failed sync must use the red template: %v", header["template"])
+		}
+		body, _ := card["card"].(map[string]any)["elements"].([]any)[0].(map[string]any)["text"].(map[string]any)["content"].(string)
+		if !strings.Contains(body, "identity_incremental") || !strings.Contains(body, "asset feed returned HTTP 503") {
+			t.Fatalf("card must name the task and the cause: %q", body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no Feishu failure card was delivered")
 	}
 }

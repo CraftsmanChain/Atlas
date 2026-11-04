@@ -172,6 +172,61 @@ func (h *Handler) HandleTrigger(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"data": toRunView(run)})
 }
 
+// marksRequest is the body of a mark or unmark call.
+type marksRequest struct {
+	IPAddresses []string `json:"ip_addresses"`
+	Reason      string   `json:"reason"`
+}
+
+// HandleMarks serves the marked live-IP list: GET lists every marked address,
+// POST adds addresses, DELETE removes them. Writes require the management
+// token. A marked address is reported as its own scan category and stays
+// outside the ICMP-alive / port-22 / SSH-login-failed counts.
+func (h *Handler) HandleMarks(w http.ResponseWriter, r *http.Request) {
+	if h.service == nil {
+		writeError(w, http.StatusServiceUnavailable, "asset audit is unavailable")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		marks, err := h.service.ListMarks()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read marked IPs")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": marks})
+	case http.MethodPost, http.MethodDelete:
+		if !h.authorize(w, r) {
+			return
+		}
+		var input marksRequest
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid mark request")
+			return
+		}
+		if r.Method == http.MethodPost {
+			count, err := h.service.MarkAddresses(input.IPAddresses, input.Reason)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to mark IPs")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"marked": count}})
+			return
+		}
+		count, err := h.service.UnmarkAddresses(input.IPAddresses)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to unmark IPs")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"unmarked": count}})
+	default:
+		w.Header().Set("Allow", "GET, POST, DELETE")
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
 func (h *Handler) authorize(w http.ResponseWriter, r *http.Request) bool {
 	if r.TLS == nil && !h.allowInsecureHTTP {
 		writeError(w, http.StatusUpgradeRequired, "asset audit writes require HTTPS or approved HTTP compatibility mode")
