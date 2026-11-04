@@ -37,6 +37,8 @@ func deliveryNotification(summary DeliverySummary, findings []DeliveryFinding) (
 		builder.WriteString("\n全部已交付节点与资产记录一致。")
 		return title, template, builder.String()
 	}
+	// Informational serial notices are counted in the headline statistics only;
+	// their rows stay on the Atlas page so the chat card never lists them.
 	if len(differences) == 0 {
 		builder.WriteString("\n全部已交付节点均已录入资产，无差异。")
 	} else {
@@ -47,15 +49,6 @@ func deliveryNotification(summary DeliverySummary, findings []DeliveryFinding) (
 				break
 			}
 			builder.WriteString(fmt.Sprintf("- [%s] %s\n", issueLabel(finding.Issue), describeFinding(finding)))
-		}
-	}
-	if len(notices) > 0 {
-		builder.WriteString(fmt.Sprintf("\n**另有 %d 条 SN 提示**（资产已录入，仅 SN 文本不一致，不计入差异）：\n", len(notices)))
-		for index, finding := range notices {
-			if index >= maxNotificationFindings {
-				break
-			}
-			builder.WriteString(fmt.Sprintf("- %s\n", describeFinding(finding)))
 		}
 	}
 	return title, template, builder.String()

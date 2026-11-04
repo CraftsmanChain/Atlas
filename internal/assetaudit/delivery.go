@@ -225,19 +225,29 @@ type DeliveryFinding struct {
 	TelemetrySN string `json:"telemetry_sn,omitempty"`
 }
 
+// DeliveryExclusion is one delivered row Atlas skipped because it is out of
+// scope, so the page can list the rows behind the exclusion count.
+type DeliveryExclusion struct {
+	Row       int    `json:"row"`
+	Hostname  string `json:"hostname"`
+	IPAddress string `json:"ip_address"`
+	Reason    string `json:"reason"`
+}
+
 // DeliverySummary is the headline result of one delivery check. MissingAsset,
 // IPMismatch and Matched describe the real reconciliation; SNNotice is the
 // informational tail that the operator can expand on the page.
 type DeliverySummary struct {
-	SheetRows     int       `json:"sheet_rows"`
-	DeliveredRows int       `json:"delivered_rows"`
-	ExcludedRows  int       `json:"excluded_rows"`
-	Matched       int       `json:"matched"`
-	MissingAsset  int       `json:"missing_asset"`
-	IPMismatch    int       `json:"ip_mismatch"`
-	SNNotice      int       `json:"sn_notice"`
-	AssetIPCount  int       `json:"asset_ip_count"`
-	GeneratedAt   time.Time `json:"generated_at"`
+	SheetRows     int                 `json:"sheet_rows"`
+	DeliveredRows int                 `json:"delivered_rows"`
+	ExcludedRows  int                 `json:"excluded_rows"`
+	Excluded      []DeliveryExclusion `json:"excluded,omitempty"`
+	Matched       int                 `json:"matched"`
+	MissingAsset  int                 `json:"missing_asset"`
+	IPMismatch    int                 `json:"ip_mismatch"`
+	SNNotice      int                 `json:"sn_notice"`
+	AssetIPCount  int                 `json:"asset_ip_count"`
+	GeneratedAt   time.Time           `json:"generated_at"`
 }
 
 // deliveryDifferenceCount counts the findings that are real discrepancies, so
@@ -286,6 +296,9 @@ func (s *Service) runDeliveryCheck(ctx context.Context, fetch configForFetch, no
 		summary.DeliveredRows++
 		if row.Excluded {
 			summary.ExcludedRows++
+			summary.Excluded = append(summary.Excluded, DeliveryExclusion{
+				Row: row.Index, Hostname: firstValue(row.Hostname, row.SystemName), IPAddress: row.IP, Reason: row.ExcludeReason,
+			})
 			continue
 		}
 		if row.IP == "" && row.HostSN == "" && row.NodeSN == "" {

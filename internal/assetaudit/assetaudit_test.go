@@ -465,6 +465,74 @@ func TestRunScanDropsHostsRejectingEveryCredential(t *testing.T) {
 	}
 }
 
+// The scan records every ICMP-alive target with the outcome of the follow-up
+// probes so the page can list each funnel stage, not only the survivors.
+func TestRunScanRecordsEveryAliveHostWithStatus(t *testing.T) {
+	rows := [][]string{
+		{"", "", "交付时间", "设备主机名", "系统主机名", "", "类型", "型号", "主机SN", "nodeSN", "", "", "", "OSIP", "掩码"},
+		{"", "", "2026/10/9", "host-a", "gpu-a", "", "GPU", "H100", "SN-A", "", "", "", "", "10.0.1.1", "29"},
+	}
+	service := testServiceWithSheet(t, rows)
+	service.sweepHosts = func(_ context.Context, _ []scanTarget, _ int) (map[string]bool, error) {
+		return map[string]bool{"10.0.1.2": true, "10.0.1.3": true, "10.0.1.4": true}, nil
+	}
+	service.probePort = func(_ context.Context, address string, _ time.Duration) bool {
+		return address != "10.0.1.3:22"
+	}
+	service.loginSSH = func(_ context.Context, host string, _ []sshCredential, _ time.Duration) bool {
+		return host == "10.0.1.2"
+	}
+
+	summary, findings, err := service.runScan(context.Background(),
+		configForFetch{SheetURL: sheetURL, AppID: "cli_x", AppSecret: "secret"}, time.Now(), 200, defaultSSHCredentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statuses := make(map[string]string, len(summary.Hosts))
+	for _, host := range summary.Hosts {
+		statuses[host.IPAddress] = host.Status
+	}
+	if len(statuses) != 3 {
+		t.Fatalf("every ICMP-alive target must be recorded: %+v", summary.Hosts)
+	}
+	want := map[string]string{
+		"10.0.1.2": ScanStatusUnregistered,
+		"10.0.1.3": ScanStatusPort22Closed,
+		"10.0.1.4": ScanStatusSSHLoginFailed,
+	}
+	for address, status := range want {
+		if statuses[address] != status {
+			t.Fatalf("host %s status = %q, want %q", address, statuses[address], status)
+		}
+	}
+	if len(findings) != 1 || findings[0].IPAddress != "10.0.1.2" {
+		t.Fatalf("only the manageable unregistered host must be a finding: %+v", findings)
+	}
+}
+
+// Excluded rows are out of scope for reconciliation but are still listed so the
+// page can show which delivered nodes were skipped and why.
+func TestRunDeliveryCheckListsExcludedRows(t *testing.T) {
+	rows := [][]string{
+		{"", "", "交付时间", "设备主机名", "系统主机名", "", "类型", "型号", "主机SN", "nodeSN", "", "", "", "OSIP", "掩码"},
+		{"", "", "2026/10/9", "store-a", "obs-store-1", "", "服务器", "X", "SN-B", "", "", "", "", "10.80.2.10", "24"},
+		{"", "", "2026/10/9", "sw-a", "sw-a", "", "网络设备", "SW", "SN-C", "", "", "", "", "10.80.3.10", "24"},
+	}
+	service := testServiceWithSheet(t, rows)
+	summary, _, err := service.runDeliveryCheck(context.Background(),
+		configForFetch{SheetURL: sheetURL, AppID: "cli_x", AppSecret: "secret"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ExcludedRows != 2 || len(summary.Excluded) != 2 {
+		t.Fatalf("excluded rows must be listed: %+v", summary)
+	}
+	first := summary.Excluded[0]
+	if first.Hostname != "store-a" || first.IPAddress != "10.80.2.10" || first.Reason == "" {
+		t.Fatalf("unexpected first exclusion: %+v", first)
+	}
+}
+
 // The operations host inventory lists the platform's own 10G management hosts.
 // Their addresses must never widen the sweep scope; only the delivery sheet and
 // the recorded asset registry may do that.
@@ -630,12 +698,15 @@ func TestDeliveryNotificationHighlightsFindings(t *testing.T) {
 		t.Fatalf("unexpected mismatch notification: %q %q %q", sameTitle, dirtyTemplate, dirtyContent)
 	}
 
-	// A serial notice alone is informational: the card stays green and still
-	// lists the notice for review.
+	// A serial notice alone is informational: the card stays green and reports
+	// the count, but the notice rows stay on the Atlas page.
 	notice := []DeliveryFinding{{Row: 3, Hostname: "host-b", Issue: IssueSNNotice, DeliveredAt: "2026/10/9", Detail: "资产 SN 为 SN-OTHER，交付表 SN 为 SN-B"}}
 	_, noticeTemplate, noticeContent := deliveryNotification(DeliverySummary{SNNotice: 1, GeneratedAt: time.Now()}, notice)
 	if noticeTemplate != "green" || !strings.Contains(noticeContent, "SN 提示") || strings.Contains(noticeContent, "**发现 1 条差异**") {
 		t.Fatalf("a serial notice must not be reported as a discrepancy: %q %q", noticeTemplate, noticeContent)
+	}
+	if strings.Contains(noticeContent, "host-b") {
+		t.Fatalf("serial notice rows must stay off the chat card: %q", noticeContent)
 	}
 }
 
