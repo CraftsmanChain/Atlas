@@ -206,6 +206,34 @@ func TestIngestExplicitFlagsAndStrictInput(t *testing.T) {
 	}
 }
 
+func TestCoverageMembersCLIStrictInput(t *testing.T) {
+	for _, args := range [][]string{
+		{"coverage-members"},
+		{"coverage-members", "-driver", "sqlite", "-query", "1"},
+		{"coverage-members", "-driver", "sqlite", "-source", "monitoring"},
+	} {
+		if e := run(args); e == nil {
+			t.Fatal("missing required flags accepted", args)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "coverage-members-cli.db")
+	t.Setenv("ATLAS_GPU_RISK_DSN", path)
+	store, e := storage.InitDB(path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	raw, _ := store.DB.DB()
+	defer raw.Close()
+	if e := run([]string{"coverage-members", "-driver", "sqlite", "-query", "1", "-source", "monitoring", "-owner", "ops"}); e == nil || !strings.Contains(e.Error(), "invalid ranking snapshot") {
+		t.Fatal("absent query accepted", e)
+	}
+	var count int64
+	store.DB.Model(&api.GPURiskEvidenceRevision{}).Count(&count)
+	if count != 0 {
+		t.Fatal("failed batch wrote evidence", count)
+	}
+}
+
 func TestCoverageCheckCLIStrictInput(t *testing.T) {
 	for _, args := range [][]string{
 		{"coverage-check"},
@@ -224,8 +252,8 @@ func TestCoverageCheckCLIStrictInput(t *testing.T) {
 	}
 	raw, _ := store.DB.DB()
 	defer raw.Close()
-	if e := run([]string{"coverage-check", "-driver", "sqlite", "-source", "monitoring", "-owner", "ops"}); e == nil || !strings.Contains(e.Error(), "no canonical durable table") {
-		t.Fatal("unsupported source accepted", e)
+	if e := run([]string{"coverage-check", "-driver", "sqlite", "-source", "monitoring", "-owner", "ops"}); e == nil || !strings.Contains(e.Error(), "no complete canonical durable record") {
+		t.Fatal("incomplete monitoring source accepted", e)
 	}
 	var count int64
 	store.DB.Model(&api.GPURiskSourceCoverageCheck{}).Count(&count)
