@@ -271,3 +271,60 @@ func TestCoverageCheckCLIStrictInput(t *testing.T) {
 		t.Fatalf("unexpected coverage row: %+v", row)
 	}
 }
+
+func TestCoveragePlanRejectsUnapprovedArgumentsAndAbsentDatabase(t *testing.T) {
+	t.Setenv("ATLAS_GPU_RISK_DSN", filepath.Join(t.TempDir(), "missing.sqlite"))
+	for _, args := range [][]string{
+		{"coverage-plan"},
+		{"coverage-plan", "-query", "1", "-owner", "admin"},
+		{"coverage-plan", "-query", "1", "-as-of", "invalid"},
+		{"coverage-plan", "-query", "1", "-as-of", "2999-01-01T00:00:00Z"},
+		{"coverage-plan", "-query", "1", "-driver", "sqlite"},
+	} {
+		if e := run(args); e == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+	if _, e := os.Stat(os.Getenv("ATLAS_GPU_RISK_DSN")); !os.IsNotExist(e) {
+		t.Fatal("created absent DB", e)
+	}
+}
+
+func TestCoveragePlanSQLiteReadOnlySuccess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "coverage-plan.sqlite")
+	db, e := gorm.Open(sqlite.Open(path), &gorm.Config{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e := db.AutoMigrate(&api.GPURiskQuery{}, &api.GPURiskMember{}, &api.GPURiskEvidenceRevision{}, &api.GPURiskSourceCoverageCheck{}); e != nil {
+		t.Fatal(e)
+	}
+	cutoff := time.Now().UTC().Add(-time.Hour)
+	completed := cutoff.Add(time.Second)
+	q := api.GPURiskQuery{Key: strings.Repeat("a", 64), ScopeSHA: strings.Repeat("b", 64), ResultSHA: strings.Repeat("c", 64), Contract: gpurisk.Contract, Target: gpurisk.Target, Cutoff: cutoff, HorizonMinutes: 10080, Status: "completed", MemberCount: 1, CompletedAt: &completed}
+	if e := db.Create(&q).Error; e != nil {
+		t.Fatal(e)
+	}
+	if e := db.Create(&api.GPURiskMember{QueryID: q.ID, NodeID: 1, EntityRef: "node", Status: "included"}).Error; e != nil {
+		t.Fatal(e)
+	}
+	raw, _ := db.DB()
+	if e := raw.Close(); e != nil {
+		t.Fatal(e)
+	}
+	before, e := os.ReadFile(path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("ATLAS_GPU_RISK_DSN", path)
+	args := []string{"coverage-plan", "-driver", "sqlite", "-query", fmt.Sprint(q.ID), "-as-of", cutoff.Add(time.Minute).Format(time.RFC3339Nano)}
+	for i := 0; i < 2; i++ {
+		if e := run(args); e != nil {
+			t.Fatal(e)
+		}
+	}
+	after, e := os.ReadFile(path)
+	if e != nil || string(before) != string(after) {
+		t.Fatal("read-only report changed database", e)
+	}
+}
