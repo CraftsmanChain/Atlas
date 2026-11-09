@@ -328,3 +328,53 @@ func TestCoveragePlanSQLiteReadOnlySuccess(t *testing.T) {
 		t.Fatal("read-only report changed database", e)
 	}
 }
+
+func TestCoreSourcePlanSQLiteReadOnlySuccessAndArguments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "core-plan.sqlite")
+	store, e := storage.InitDB(path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	old := time.Now().UTC().Add(-time.Hour)
+	if e := store.Create(&api.GPUNode{NodeIP: "core-node", AssetSerial: "core-sn", Lifecycle: "active", CreatedAt: old, UpdatedAt: old}).Error; e != nil {
+		t.Fatal(e)
+	}
+	snapshot, e := gpurisk.Capture(t.Context(), store.DB)
+	if e != nil {
+		t.Fatal(e)
+	}
+	q, e := gpurisk.Record(t.Context(), store.DB, snapshot)
+	if e != nil {
+		t.Fatal(e)
+	}
+	raw, _ := store.DB.DB()
+	raw.Close()
+	before, e := os.ReadFile(path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("ATLAS_GPU_RISK_DSN", path)
+	args := []string{"core-source-plan", "-driver", "sqlite", "-query", fmt.Sprint(q.ID), "-as-of", time.Now().UTC().Format(time.RFC3339Nano)}
+	for i := 0; i < 2; i++ {
+		if e := run(args); e != nil {
+			t.Fatal(e)
+		}
+	}
+	after, e := os.ReadFile(path)
+	if e != nil || string(after) != string(before) {
+		t.Fatal("modified readonly DB", e)
+	}
+	for _, args := range [][]string{{"core-source-plan"}, {"core-source-plan", "-query", "1", "-owner", "admin"}, {"core-source-plan", "-query", "1", "-as-of", "bad"}, {"core-source-plan", "-query", "1", "-as-of", "2999-01-01T00:00:00Z"}} {
+		if e := run(args); e == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+	missing := filepath.Join(t.TempDir(), "absent.sqlite")
+	t.Setenv("ATLAS_GPU_RISK_DSN", missing)
+	if e := run([]string{"core-source-plan", "-driver", "sqlite", "-query", "1"}); e == nil {
+		t.Fatal("created missing db")
+	}
+	if _, e := os.Stat(missing); !os.IsNotExist(e) {
+		t.Fatal("created DB", e)
+	}
+}

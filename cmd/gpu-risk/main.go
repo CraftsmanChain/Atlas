@@ -42,8 +42,8 @@ func run(args []string) error {
 	datasetSHA := flags.String("dataset-sha", "", "exact dataset file SHA256")
 	artifactSHA := flags.String("artifact-sha", "", "exact model file SHA256")
 	scoresSHA := flags.String("scores-sha", "", "exact score file SHA256")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "coverage-plan" && command != "coverage-check" && command != "coverage-members" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record") {
-		return fmt.Errorf("usage: gpu-risk [plan|record|coverage-plan|evidence-ingest-prepare|evidence-ingest-apply|coverage-check|coverage-members|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record] [-driver postgres|sqlite] [-input plan.json]")
+	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "core-source-plan" && command != "coverage-plan" && command != "coverage-check" && command != "coverage-members" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record") {
+		return fmt.Errorf("usage: gpu-risk [plan|record|core-source-plan|coverage-plan|evidence-ingest-prepare|evidence-ingest-apply|coverage-check|coverage-members|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record] [-driver postgres|sqlite] [-input plan.json]")
 	}
 	modeSet := false
 	flags.Visit(func(f *flag.Flag) {
@@ -73,7 +73,7 @@ func run(args []string) error {
 	if command == "coverage-members" && (*queryID == 0 || *source == "" || *owner == "") {
 		return fmt.Errorf("coverage-members requires -query and -source hardware_fault_ledger|monitoring|identity and -owner")
 	}
-	if command == "coverage-plan" {
+	if command == "coverage-plan" || command == "core-source-plan" {
 		allowed := map[string]bool{"query": true, "as-of": true, "driver": true}
 		invalid := false
 		flags.Visit(func(f *flag.Flag) {
@@ -82,7 +82,7 @@ func run(args []string) error {
 			}
 		})
 		if invalid || *queryID == 0 {
-			return fmt.Errorf("coverage-plan requires -query and only accepts -query, -as-of and -driver")
+			return fmt.Errorf("%s requires -query and only accepts -query, -as-of and -driver", command)
 		}
 		if *asOfText != "" {
 			at, e := time.Parse(time.RFC3339Nano, *asOfText)
@@ -100,7 +100,7 @@ func run(args []string) error {
 	case "postgres":
 		dialector = postgres.Open(dsn)
 	case "sqlite":
-		if command == "coverage-plan" || command == "plan" || command == "outcome-plan" || command == "dataset" || command == "model-request" || command == "evidence-ingest-prepare" {
+		if command == "core-source-plan" || command == "coverage-plan" || command == "plan" || command == "outcome-plan" || command == "dataset" || command == "model-request" || command == "evidence-ingest-prepare" {
 			if strings.Contains(dsn, "?") || strings.HasPrefix(dsn, "file:") || dsn == ":memory:" {
 				return fmt.Errorf("plan requires a plain existing SQLite path")
 			}
@@ -129,7 +129,7 @@ func run(args []string) error {
 	sqlDB.SetMaxOpenConns(1)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	if command == "coverage-plan" || command == "plan" || command == "outcome-plan" || command == "dataset" || command == "model-request" || command == "evidence-ingest-prepare" {
+	if command == "core-source-plan" || command == "coverage-plan" || command == "plan" || command == "outcome-plan" || command == "dataset" || command == "model-request" || command == "evidence-ingest-prepare" {
 		// Enforce read-only at the database connection, not only by convention.
 		if *driver == "sqlite" {
 			if db.Exec("PRAGMA query_only = ON").Error != nil {
@@ -139,6 +139,17 @@ func run(args []string) error {
 			if db.Exec("SET default_transaction_read_only = on").Error != nil {
 				return fmt.Errorf("read-only guard failed")
 			}
+		}
+		if command == "core-source-plan" {
+			asOf := time.Now().UTC()
+			if *asOfText != "" {
+				asOf, _ = time.Parse(time.RFC3339Nano, *asOfText)
+			}
+			report, e := gpurisk.BuildCoreSourcePlan(ctx, db, *queryID, asOf)
+			if e != nil {
+				return fmt.Errorf("core source plan failed: %w", e)
+			}
+			return json.NewEncoder(os.Stdout).Encode(report)
 		}
 		if command == "coverage-plan" {
 			asOf := time.Now().UTC()
