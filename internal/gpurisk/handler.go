@@ -17,9 +17,11 @@ type Handler struct {
 	DB                   *gorm.DB
 	AutomaticJobsEnabled bool
 	OutcomeJobsEnabled   bool
+	OperationsEnabled    bool
 }
 
 func (h Handler) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/api/v1/gpu-risk/operations", h.ServeHTTP)
 	mux.HandleFunc("/api/v1/gpu-risk/models", h.ServeHTTP)
 	mux.HandleFunc("/api/v1/gpu-risk/evidence", h.ServeHTTP)
 	mux.HandleFunc("/api/v1/gpu-risk/overview", h.ServeHTTP)
@@ -69,6 +71,39 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	db := h.DB.WithContext(r.Context())
 	base := "/api/v1/gpu-risk/"
 	path := strings.TrimPrefix(r.URL.Path, base)
+	if path == "operations" {
+		if !params(v) {
+			http.Error(w, "invalid parameters", 400)
+			return
+		}
+		rows := []api.GPURiskOperation{}
+		if e := db.Order("day DESC,stage").Limit(62).Find(&rows).Error; e != nil {
+			http.Error(w, "operations unavailable", 503)
+			return
+		}
+		var latest api.GPURiskQuery
+		e := db.Where("status = ?", "completed").Order("cutoff DESC,id DESC").First(&latest).Error
+		if e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {
+			http.Error(w, "operations unavailable", 503)
+			return
+		}
+		sourceProbe := map[string]string{"status": "readable_not_full_inspection"}
+		var probe []api.GPURiskJob
+		if e := db.Select("id,status,attempt").Limit(1).Find(&probe).Error; e != nil {
+			sourceProbe = map[string]string{"status": "inspection_failed"}
+		}
+		var coverage any = map[string]string{"status": "no_completed_query"}
+		if latest.ID != 0 {
+			p, err := BuildCoveragePlan(r.Context(), db, latest.ID, time.Now())
+			if err != nil {
+				coverage = map[string]string{"status": "inspection_failed"}
+			} else {
+				coverage = p
+			}
+		}
+		respond(w, 200, map[string]any{"operations_enabled": h.OperationsEnabled, "current_day": time.Now().In(time.FixedZone("Asia/Shanghai", 8*3600)).Format("2006-01-02"), "record_time_semantics": "last_content_change_not_loop_heartbeat_or_current_health", "job_source_probe": sourceProbe, "completion_semantics": "job_execution_not_label_maturity", "ranking_enabled": h.AutomaticJobsEnabled, "outcomes_enabled": h.OutcomeJobsEnabled, "records": rows, "coverage": coverage, "no_action": true, "signing_executed": false})
+		return
+	}
 	if path == "models" {
 		h.modelsHTTP(w, r, v)
 		return

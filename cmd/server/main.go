@@ -277,12 +277,17 @@ func main() {
 
 	gpuRiskDailyEnabled := strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_DAILY_ENABLED"), "true")
 	gpuOutcomeEnabled := strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_OUTCOMES_ENABLED"), "true")
-	gpurisk.Handler{DB: db.DB, AutomaticJobsEnabled: gpuRiskDailyEnabled, OutcomeJobsEnabled: gpuOutcomeEnabled}.Register(mux)
-	if gpuOutcomeEnabled {
-		go gpurisk.RunOutcomes(context.Background(), db.DB)
-	}
-	if gpuRiskDailyEnabled {
-		go gpurisk.RunDaily(context.Background(), db.DB)
+	gpuOperationsEnabled := strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_OPERATIONS_ENABLED"), "true")
+	gpurisk.Handler{DB: db.DB, AutomaticJobsEnabled: gpuRiskDailyEnabled, OutcomeJobsEnabled: gpuOutcomeEnabled, OperationsEnabled: gpuOperationsEnabled}.Register(mux)
+	if gpuOperationsEnabled {
+		go gpurisk.RunOperations(context.Background(), db.DB, gpuRiskDailyEnabled, gpuOutcomeEnabled)
+	} else {
+		if gpuOutcomeEnabled {
+			go gpurisk.RunOutcomes(context.Background(), db.DB)
+		}
+		if gpuRiskDailyEnabled {
+			go gpurisk.RunDaily(context.Background(), db.DB)
+		}
 	}
 
 	// 6.4 GPU hardware inventory and collection coverage (read-only).
