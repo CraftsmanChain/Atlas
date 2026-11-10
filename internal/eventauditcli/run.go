@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,12 +51,17 @@ func Run(args []string, out, errout io.Writer) int {
 	ns := f.String("source-namespace", "", "Stable non-secret source identifier")
 	input := f.String("snapshot", "", "Offline v2 snapshot; alternative to database")
 	previous := f.String("previous", "", "Previous checkpoint; legacy establishes a new baseline")
+	reviewIDs := f.String("review-events", "", "Prepare unsigned review plan for 1..100 comma-separated event IDs (database only)")
 	dir := f.String("out-dir", "", "New private directory; never overwritten")
 	if f.Parse(args) != nil {
 		return 2
 	}
 	if f.NArg() != 0 || *dir == "" {
 		fmt.Fprintln(errout, "new out-dir required; no positional arguments")
+		return 2
+	}
+	if *reviewIDs != "" && (*input != "" || *previous != "") {
+		fmt.Fprintln(errout, "review-events requires database mode without previous")
 		return 2
 	}
 	var old *eventaudit.Snapshot
@@ -116,6 +122,41 @@ func Run(args []string, out, errout io.Writer) int {
 		defer sqlDB.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
+		if *reviewIDs != "" {
+			ids := []uint{}
+			for _, part := range strings.Split(*reviewIDs, ",") {
+				id, err := strconv.ParseUint(strings.TrimSpace(part), 10, 32)
+				if err != nil || id == 0 {
+					fmt.Fprintln(errout, "invalid review event selection")
+					return 2
+				}
+				ids = append(ids, uint(id))
+			}
+			plan, err := eventaudit.PrepareReviews(ctx, db, *ns, ids)
+			if err != nil {
+				fmt.Fprintln(errout, "review preparation failed; no plan emitted")
+				return 1
+			}
+			if err = os.Mkdir(*dir, 0700); err != nil {
+				return 1
+			}
+			b, _ := json.MarshalIndent(plan, "", "  ")
+			b = append(b, '\n')
+			file, err := os.OpenFile(filepath.Join(*dir, "review-plan.json"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+			if err != nil {
+				return 1
+			}
+			_, err = file.Write(b)
+			if err == nil {
+				err = file.Sync()
+			}
+			closeErr := file.Close()
+			if err != nil || closeErr != nil {
+				return 1
+			}
+			fmt.Fprintf(out, "Unsigned review plan: %d events; sha=%s; no feedback, decisions or labels written\n", len(plan.Items), plan.SHA)
+			return 0
+		}
 		s, e = eventaudit.Capture(ctx, db, *ns, time.Now().UTC())
 		if e != nil {
 			fmt.Fprintln(errout, "read-only inventory failed; no checkpoint emitted (check schema, bounds, timestamps and source availability)")
