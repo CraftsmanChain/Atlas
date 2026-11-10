@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"atlas/internal/eventauditcli"
 	"atlas/internal/gpurisk"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -21,6 +22,12 @@ import (
 )
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "event-audit" {
+		if eventauditcli.Run(args[1:], os.Stdout, os.Stderr) != 0 {
+			return fmt.Errorf("event audit failed")
+		}
+		return nil
+	}
 	command := "plan"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		command = args[0]
