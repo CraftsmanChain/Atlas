@@ -12,6 +12,7 @@ import torch
 from torch import nn
 
 from model import PROFILE, Ranker
+import feature_profile as fp
 from preprocess import NUMERIC, CATEGORIES, MAPS, fit, transform
 
 VERSION = "gpu-host-mlp-artifact-v1"
@@ -26,16 +27,18 @@ def read_pinned(path, expected):
 
 
 def validate(dataset, synthetic=False):
-    if dataset["version"] != "gpu-host-history-dataset-v2" or dataset["feature_contract"] != "gpu-host-history-v2" or dataset["target"] != "confirmed_hardware_failure" or dataset["spec"]["profile"] != "paper_core":
+    if not fp.valid_dataset(dataset) or dataset["target"] != "confirmed_hardware_failure":
         raise ValueError("unsupported dataset contract")
     marked = SYNTHETIC in dataset["implementation_choices"]
     if marked != synthetic:
         raise ValueError("synthetic artifacts require the separate self-test command")
-    if not dataset["ready"] or not dataset["paper_core_complete"] or not dataset["exploration_ready"] or dataset["blockers"]:
+    if not dataset["ready"] or not fp.feature_ready(dataset) or not dataset["exploration_ready"] or dataset["blockers"]:
         raise ValueError("waiting_for_data: dataset readiness blocked")
+    if fp.production(dataset) and any(fp.blocked(r["features"]["blockers"]) for r in dataset["rows"]):
+        raise ValueError("required source blocker")
     expected = set(NUMERIC + CATEGORIES + MAPS)
     schema = dataset["schema"]
-    if len(schema) != len(expected) or {f["name"] for f in schema} != expected or any(f["target"] != dataset["target"] or f["producer"] != dataset["feature_contract"] for f in schema):
+    if len(schema) != len(expected) or {f["name"] for f in schema} != expected or any(f["target"] != dataset["target"] or f["producer"] != "gpu-host-history-v2" for f in schema):
         raise ValueError("feature manifest mismatch")
     for field in schema:
         expected_dtype = "float64" if field["name"] in ("weekday", "weekend") else "nullable_float64" if field["name"] in NUMERIC else "nullable_category" if field["name"] in CATEGORIES else "nullable_count_map"
@@ -65,7 +68,7 @@ def validate(dataset, synthetic=False):
             continue
         split = row["split"]
         cutoff = datetime.fromisoformat(row["cutoff"].replace("Z", "+00:00"))
-        if split not in groups or type(row["label"]) is not bool or row["blockers"] or row["features"]["blockers"] or not row["component"] or cutoff + timedelta(days=8) > boundaries[split]:
+        if split not in groups or type(row["label"]) is not bool or row["blockers"] or (fp.blocked(row["features"]["blockers"]) if fp.production(dataset) else bool(row["features"]["blockers"])) or not row["component"] or cutoff + timedelta(days=8) > boundaries[split]:
             raise ValueError("eligible row violates temporal/feature contract")
         if (split == "validation" and cutoff < boundaries["train"]) or (split == "test" and cutoff < boundaries["validation"]):
             raise ValueError("split time order violated")
@@ -130,14 +133,16 @@ def train(dataset, dataset_sha, config, synthetic=False):
         logits = model(all_x).tolist()
     if not all(math.isfinite(z) for z in logits):
         raise ValueError("non-finite score")
-    artifact = {"version": VERSION, "profile": PROFILE, "target": dataset["target"], "feature_contract": dataset["feature_contract"], "dataset_sha": dataset_sha, "dataset_manifest_sha": dataset["sha"], "feature_sha": dataset["feature_sha"], "split_sha": dataset["split_sha"], "purpose": SYNTHETIC if synthetic else "offline_exploration_not_promoted", "preprocessor": prep, "layers": model.export(), "config": {**config, "device": "cpu", "dtype": "float32", "optimizer": "Adam", "lr": 1e-4, "batch": "full_train_rows", "loss": "row_mean_BCEWithLogits", "patience": 10, "bn_eps": 1e-5, "bn_momentum": 0.1, "init": "torch_Linear_default_BN_gamma1_beta0", "dropout": 0}, "environment": {"python": platform.python_version(), "torch": torch.__version__, "platform": platform.platform(), "threads": 1, "requirements_sha": hashlib.sha256(Path(__file__).with_name("requirements.lock").read_bytes()).hexdigest(), "source_sha": {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in ("model.py", "preprocess.py", "train.py")}}, "selection": {"best_epoch": best_epoch, "validation_bce": best, "test_used_for_selection": False}, "probability_emitted": False, "no_action": True}
+    artifact = {"version": VERSION, "profile": PROFILE, "target": dataset["target"], "feature_contract": dataset["feature_contract"], "dataset_sha": dataset_sha, "dataset_manifest_sha": dataset["sha"], "feature_sha": dataset["feature_sha"], "split_sha": dataset["split_sha"], "purpose": SYNTHETIC if synthetic else "offline_exploration_not_promoted", "preprocessor": prep, "layers": model.export(), "config": {**config, "device": "cpu", "dtype": "float32", "optimizer": "Adam", "lr": 1e-4, "batch": "full_train_rows", "loss": "row_mean_BCEWithLogits", "patience": 10, "bn_eps": 1e-5, "bn_momentum": 0.1, "init": "torch_Linear_default_BN_gamma1_beta0", "dropout": 0}, "environment": {"python": platform.python_version(), "torch": torch.__version__, "platform": platform.platform(), "threads": 1, "requirements_sha": hashlib.sha256(Path(__file__).with_name("requirements.lock").read_bytes()).hexdigest(), "source_sha": {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in ("model.py", "preprocess.py", "train.py", "feature_profile.py")}}, "selection": {"best_epoch": best_epoch, "validation_bce": best, "test_used_for_selection": False}, "probability_emitted": False, "no_action": True}
+    if fp.production(dataset):
+        artifact.update(version=fp.ARTIFACT,profile=fp.RANKER,availability_manifest=fp.manifest(dataset["schema"]))
     return artifact, logits, model, all_x
 
 
 def score_artifact(artifact, dataset, dataset_sha):
     if len(artifact["layers"]) != 4 or artifact["purpose"] not in (SYNTHETIC, "offline_exploration_not_promoted") or artifact["config"]["device"] != "cpu" or artifact["config"]["dtype"] != "float32" or artifact["config"]["loss"] != "row_mean_BCEWithLogits" or artifact["probability_emitted"] or not artifact["no_action"]:
         raise ValueError("unsupported checkpoint shape or purpose")
-    if artifact["version"] != VERSION or artifact["profile"] != PROFILE or artifact["dataset_sha"] != dataset_sha or artifact["dataset_manifest_sha"] != dataset["sha"] or artifact["feature_sha"] != dataset["feature_sha"] or artifact["split_sha"] != dataset["split_sha"] or artifact["target"] != dataset["target"] or artifact["feature_contract"] != dataset["feature_contract"]:
+    if (artifact["version"],artifact["profile"]) != ((fp.ARTIFACT,fp.RANKER) if fp.production(dataset) else (VERSION,PROFILE)) or artifact.get("availability_manifest") != (fp.manifest(dataset["schema"]) if fp.production(dataset) else None) or artifact["dataset_sha"] != dataset_sha or artifact["dataset_manifest_sha"] != dataset["sha"] or artifact["feature_sha"] != dataset["feature_sha"] or artifact["split_sha"] != dataset["split_sha"] or artifact["target"] != dataset["target"] or artifact["feature_contract"] != dataset["feature_contract"]:
         raise ValueError("model/dataset provenance mismatch")
     validate(dataset, artifact["purpose"] == SYNTHETIC)
     matrix = torch.tensor(transform(artifact["preprocessor"], dataset["rows"]), dtype=torch.float32)
@@ -179,7 +184,7 @@ def write_artifacts(output, dataset, dataset_sha, config, synthetic=False):
     artifact_sha = write("model.json", artifact)
     scores = score_packet(dataset, dataset_sha, artifact_sha, reloaded)
     scores_sha = write("scores.json", scores)
-    write("manifest.json", {"version": VERSION, "purpose": artifact["purpose"], "files": {"model.json": artifact_sha, "scores.json": scores_sha}, "dataset_sha": dataset_sha, "probability_emitted": False, "no_action": True})
+    write("manifest.json", {"version": artifact["version"], "purpose": artifact["purpose"], "files": {"model.json": artifact_sha, "scores.json": scores_sha}, "dataset_sha": dataset_sha, "probability_emitted": False, "no_action": True})
     return artifact_sha
 
 

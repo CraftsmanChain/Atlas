@@ -44,22 +44,23 @@ type RankerLayer struct {
 	BN      *RankerBN   `json:"bn,omitempty"`
 }
 type RankerArtifact struct {
-	Version            string             `json:"version"`
-	Profile            string             `json:"profile"`
-	Target             string             `json:"target"`
-	FeatureContract    string             `json:"feature_contract"`
-	DatasetSHA         string             `json:"dataset_sha"`
-	DatasetManifestSHA string             `json:"dataset_manifest_sha"`
-	FeatureSHA         string             `json:"feature_sha"`
-	SplitSHA           string             `json:"split_sha"`
-	Purpose            string             `json:"purpose"`
-	Preprocessor       RankerPreprocessor `json:"preprocessor"`
-	Layers             []RankerLayer      `json:"layers"`
-	Config             map[string]any     `json:"config"`
-	Environment        map[string]any     `json:"environment"`
-	Selection          map[string]any     `json:"selection"`
-	ProbabilityEmitted bool               `json:"probability_emitted"`
-	NoAction           bool               `json:"no_action"`
+	Availability       *AvailabilityManifest `json:"availability_manifest,omitempty"`
+	Version            string                `json:"version"`
+	Profile            string                `json:"profile"`
+	Target             string                `json:"target"`
+	FeatureContract    string                `json:"feature_contract"`
+	DatasetSHA         string                `json:"dataset_sha"`
+	DatasetManifestSHA string                `json:"dataset_manifest_sha"`
+	FeatureSHA         string                `json:"feature_sha"`
+	SplitSHA           string                `json:"split_sha"`
+	Purpose            string                `json:"purpose"`
+	Preprocessor       RankerPreprocessor    `json:"preprocessor"`
+	Layers             []RankerLayer         `json:"layers"`
+	Config             map[string]any        `json:"config"`
+	Environment        map[string]any        `json:"environment"`
+	Selection          map[string]any        `json:"selection"`
+	ProbabilityEmitted bool                  `json:"probability_emitted"`
+	NoAction           bool                  `json:"no_action"`
 }
 type RankerScore struct {
 	QueryID           uint    `json:"query_id"`
@@ -252,7 +253,7 @@ func rankerVector(p RankerPreprocessor, f HistoryFeatures) ([]float64, error) {
 	return x, nil
 }
 func validateRanker(a RankerArtifact) error {
-	if a.Version != RankerVersion || a.Profile != RankerProfile || a.Target != Target || a.FeatureContract != HistoryFeatureVersion || a.ProbabilityEmitted || !a.NoAction || (a.Purpose != "offline_exploration_not_promoted" && a.Purpose != "synthetic_fixture_not_production_efficacy") || a.Config["device"] != "cpu" || a.Config["dtype"] != "float32" || a.Config["loss"] != "row_mean_BCEWithLogits" || a.Selection["test_used_for_selection"] != false {
+	if !artifactTuple(a) || a.Target != Target || a.ProbabilityEmitted || !a.NoAction || (a.Purpose != "offline_exploration_not_promoted" && a.Purpose != "synthetic_fixture_not_production_efficacy") || a.Config["device"] != "cpu" || a.Config["dtype"] != "float32" || a.Config["loss"] != "row_mean_BCEWithLogits" || a.Selection["test_used_for_selection"] != false {
 		return ErrInput
 	}
 	numeric, categories := map[string]bool{}, map[string]bool{}
@@ -386,7 +387,7 @@ func VerifyRankerFiles(datasetPath, datasetSHA, artifactPath, artifactSHA, score
 	d.SHA = ""
 	actual, e := digest(d)
 	d.SHA = original
-	if e != nil || actual != original || d.Version != DatasetVersion || d.FeatureContract != HistoryFeatureVersion || d.Target != Target || d.Spec.Profile != "paper_core" || len(d.Rows) == 0 || len(d.Rows) > 10000 || a.DatasetSHA != datasetSHA || a.DatasetManifestSHA != d.SHA || a.FeatureSHA != d.FeatureSHA || a.SplitSHA != d.SplitSHA || scores.Version != "gpu-host-mlp-scores-v1" || scores.DatasetSHA != datasetSHA || scores.ArtifactSHA != artifactSHA || validateRanker(a) != nil {
+	if e != nil || actual != original || !modelDatasetTuple(a, d) || d.Target != Target || len(d.Rows) == 0 || len(d.Rows) > 10000 || a.DatasetSHA != datasetSHA || a.DatasetManifestSHA != d.SHA || a.FeatureSHA != d.FeatureSHA || a.SplitSHA != d.SplitSHA || scores.Version != "gpu-host-mlp-scores-v1" || scores.DatasetSHA != datasetSHA || scores.ArtifactSHA != artifactSHA || validateRanker(a) != nil {
 		return report, ErrInput
 	}
 	if len(d.Rows)*len(a.Layers[0].Weights[0]) > 2000000 {

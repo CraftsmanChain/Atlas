@@ -27,20 +27,21 @@ type ModelRequestRow struct {
 	Blockers   []string        `json:"blockers"`
 }
 type ModelScoreRequest struct {
-	Scorer          string            `json:"scorer"`
-	Version         string            `json:"version"`
-	Target          string            `json:"target"`
-	FeatureContract string            `json:"feature_contract"`
-	SchemaSHA       string            `json:"schema_sha"`
-	QueryID         uint              `json:"query_id"`
-	ModelID         uint              `json:"model_id"`
-	Cutoff          time.Time         `json:"cutoff"`
-	ScopeSHA        string            `json:"scope_sha"`
-	RankingSHA      string            `json:"ranking_sha"`
-	ArtifactSHA     string            `json:"artifact_sha"`
-	PreprocessorSHA string            `json:"preprocessor_sha"`
-	Rows            []ModelRequestRow `json:"rows"`
-	SHA             string            `json:"sha"`
+	Availability    *AvailabilityManifest `json:"availability_manifest,omitempty"`
+	Scorer          string                `json:"scorer"`
+	Version         string                `json:"version"`
+	Target          string                `json:"target"`
+	FeatureContract string                `json:"feature_contract"`
+	SchemaSHA       string                `json:"schema_sha"`
+	QueryID         uint                  `json:"query_id"`
+	ModelID         uint                  `json:"model_id"`
+	Cutoff          time.Time             `json:"cutoff"`
+	ScopeSHA        string                `json:"scope_sha"`
+	RankingSHA      string                `json:"ranking_sha"`
+	ArtifactSHA     string                `json:"artifact_sha"`
+	PreprocessorSHA string                `json:"preprocessor_sha"`
+	Rows            []ModelRequestRow     `json:"rows"`
+	SHA             string                `json:"sha"`
 }
 
 func frozenQuery(db *gorm.DB, id uint) (api.GPURiskQuery, Snapshot, []api.GPURiskMember, error) {
@@ -78,7 +79,7 @@ func frozenQuery(db *gorm.DB, id uint) (api.GPURiskQuery, Snapshot, []api.GPURis
 func modelArtifact(m api.GPURiskModel) (RankerArtifact, error) {
 	var a RankerArtifact
 	h := sha256.Sum256([]byte(m.Artifact))
-	if hex.EncodeToString(h[:]) != m.ArtifactSHA || json.Unmarshal([]byte(m.Artifact), &a) != nil || validateRanker(a) != nil || a.Purpose != "offline_exploration_not_promoted" || m.Version != RankerVersion || m.Target != Target || m.FeatureContract != HistoryFeatureVersion || m.Status != "offline_candidate" || a.DatasetSHA != m.DatasetSHA || a.DatasetManifestSHA != m.DatasetManifestSHA {
+	if hex.EncodeToString(h[:]) != m.ArtifactSHA || json.Unmarshal([]byte(m.Artifact), &a) != nil || validateRanker(a) != nil || a.Purpose != "offline_exploration_not_promoted" || m.Version != a.Version || m.Target != Target || m.FeatureContract != a.FeatureContract || m.Status != "offline_candidate" || a.DatasetSHA != m.DatasetSHA || a.DatasetManifestSHA != m.DatasetManifestSHA {
 		return a, ErrInput
 	}
 	hash, _ := digest(a.Preprocessor)
@@ -98,7 +99,7 @@ func RegisterRanker(ctx context.Context, db *gorm.DB, dp, ds, ap, as, sp, ss str
 	}
 	var d Dataset
 	var a RankerArtifact
-	if pinnedJSON(dp, ds, &d) != nil || pinnedJSON(ap, as, &a) != nil || !d.Ready || !d.PaperCoreComplete || !d.ExplorationReady {
+	if pinnedJSON(dp, ds, &d) != nil || pinnedJSON(ap, as, &a) != nil || !d.Ready || !datasetFeatureReady(d) || !d.ExplorationReady {
 		return out, ErrInput
 	}
 	rebuilt, e := BuildDataset(ctx, db, d.Spec)
@@ -154,7 +155,7 @@ func RegisterRanker(ctx context.Context, db *gorm.DB, dp, ds, ap, as, sp, ss str
 			refs = append(refs, id)
 		}
 		sort.Strings(refs)
-		out = api.GPURiskModel{ArtifactSHA: as, PreprocessorSHA: prep, DatasetSHA: ds, DatasetManifestSHA: d.SHA, ParitySHA: parity, Version: RankerVersion, Target: Target, FeatureContract: HistoryFeatureVersion, Status: "offline_candidate", TrainingThrough: d.Spec.TestEnd.UTC(), AvailableAt: time.Now().UTC().Truncate(time.Microsecond), Artifact: string(raw), TrainingIdentities: refs}
+		out = api.GPURiskModel{ArtifactSHA: as, PreprocessorSHA: prep, DatasetSHA: ds, DatasetManifestSHA: d.SHA, ParitySHA: parity, Version: a.Version, Target: Target, FeatureContract: a.FeatureContract, Status: "offline_candidate", TrainingThrough: d.Spec.TestEnd.UTC(), AvailableAt: time.Now().UTC().Truncate(time.Microsecond), Artifact: string(raw), TrainingIdentities: refs}
 		if out.TrainingThrough.After(out.AvailableAt) {
 			return ErrInput
 		}
@@ -191,11 +192,17 @@ func BuildModelRequest(ctx context.Context, db *gorm.DB, queryID, modelID uint) 
 		if tx.First(&model, modelID).Error != nil {
 			return ErrInput
 		}
-		if _, e := modelArtifact(model); e != nil {
+		a, e := modelArtifact(model)
+		if e != nil {
 			return e
 		}
 		if !model.AvailableAt.Before(q.Cutoff) || !model.TrainingThrough.Before(q.Cutoff) {
 			return ErrInput
+		}
+		if a.Version == AvailableArtifactVersion {
+			out.Version = "gpu-host-model-score-request-v2"
+			out.FeatureContract = a.FeatureContract
+			out.Availability = availabilityManifest()
 		}
 		out.QueryID = q.ID
 		out.ModelID = model.ID
@@ -244,7 +251,7 @@ func BuildModelRequest(ctx context.Context, db *gorm.DB, queryID, modelID uint) 
 				row.Blockers = append(row.Blockers, "training_entity_overlap")
 			}
 			for _, b := range f.Blockers {
-				if strings.Contains(b, "conflict") {
+				if strings.Contains(b, "conflict") || (a.Version == AvailableArtifactVersion && !optionalContextBlocker(b)) {
 					row.Blockers = append(row.Blockers, b)
 				}
 			}
@@ -260,6 +267,16 @@ func BuildModelRequest(ctx context.Context, db *gorm.DB, queryID, modelID uint) 
 }
 
 func candidateScores(ctx context.Context, a RankerArtifact, r ModelScoreRequest) ([]api.GPURiskModelScore, bool, error) {
+	if !artifactTuple(a) {
+		return nil, false, ErrInput
+	}
+	if a.Version == AvailableArtifactVersion {
+		if r.Version != "gpu-host-model-score-request-v2" || r.FeatureContract != a.FeatureContract || !validAvailability(r.Availability) {
+			return nil, false, ErrInput
+		}
+	} else if r.Availability != nil || r.Version != ScoreRequestVersion || r.FeatureContract != HistoryFeatureVersion {
+		return nil, false, ErrInput
+	}
 	rows := []api.GPURiskModelScore{}
 	eligible := []int{}
 	failed := false
@@ -271,6 +288,13 @@ func candidateScores(ctx context.Context, a RankerArtifact, r ModelScoreRequest)
 			return nil, false, e
 		}
 		row := api.GPURiskModelScore{NodeID: m.NodeID, Generation: m.Generation, Warnings: append(api.StringList{}, m.Features.Blockers...), Blockers: append(api.StringList{}, m.Blockers...), SignalStatus: "blocked"}
+		if a.Version == AvailableArtifactVersion {
+			for _, b := range m.Features.Blockers {
+				if !optionalContextBlocker(b) && !contains(row.Blockers, b) {
+					row.Blockers = append(row.Blockers, b)
+				}
+			}
+		}
 		if len(row.Blockers) == 0 {
 			z, e := rankerLogit(a, m.Features)
 			if e != nil {

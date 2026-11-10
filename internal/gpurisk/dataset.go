@@ -142,22 +142,24 @@ type DatasetRow struct {
 	Blockers    []string        `json:"blockers"`
 }
 type Dataset struct {
-	FeatureContract   string         `json:"feature_contract"`
-	ExplorationReady  bool           `json:"exploration_ready"`
-	PaperCoreComplete bool           `json:"paper_core_complete"`
-	Version           string         `json:"version"`
-	Target            string         `json:"target"`
-	Spec              DatasetSpec    `json:"spec"`
-	Schema            []FeatureField `json:"schema"`
-	FeatureSHA        string         `json:"feature_sha"`
-	SplitSHA          string         `json:"split_sha"`
-	InputSHA          string         `json:"input_sha"`
-	SHA               string         `json:"sha"`
-	Rows              []DatasetRow   `json:"rows"`
-	Counts            map[string]int `json:"counts"`
-	Ready             bool           `json:"ready"`
-	Blockers          []string       `json:"blockers"`
-	Choices           []string       `json:"implementation_choices"`
+	Availability           *AvailabilityManifest `json:"availability_manifest,omitempty"`
+	ProfileFeatureComplete *bool                 `json:"profile_feature_complete,omitempty"`
+	FeatureContract        string                `json:"feature_contract"`
+	ExplorationReady       bool                  `json:"exploration_ready"`
+	PaperCoreComplete      bool                  `json:"paper_core_complete"`
+	Version                string                `json:"version"`
+	Target                 string                `json:"target"`
+	Spec                   DatasetSpec           `json:"spec"`
+	Schema                 []FeatureField        `json:"schema"`
+	FeatureSHA             string                `json:"feature_sha"`
+	SplitSHA               string                `json:"split_sha"`
+	InputSHA               string                `json:"input_sha"`
+	SHA                    string                `json:"sha"`
+	Rows                   []DatasetRow          `json:"rows"`
+	Counts                 map[string]int        `json:"counts"`
+	Ready                  bool                  `json:"ready"`
+	Blockers               []string              `json:"blockers"`
+	Choices                []string              `json:"implementation_choices"`
 }
 type historyEvent struct {
 	key, kind   string
@@ -401,8 +403,14 @@ func componentSplit(component string) string {
 // rejected rows are retained; readiness never substitutes row count for episodes.
 func BuildDataset(ctx context.Context, db *gorm.DB, spec DatasetSpec) (Dataset, error) {
 	out := Dataset{FeatureContract: HistoryFeatureVersion, Version: DatasetVersion, Target: Target, Spec: spec, Schema: CoreSchema(), Rows: []DatasetRow{}, Counts: map[string]int{"eligible": 0, "unknown": 0, "history_unknown": 0, "no_signal": 0}, Blockers: []string{}, Choices: []string{CoverageWatermarkContract, "paper_core only; unavailable source fields remain null", "3-day sampling from explicit UTC anchor; earliest pinned query per UTC date", "deterministic connected-component 60/20/20 assignment; time purge >=8d", "no preprocessing fit, no balancing, no training"}}
-	if spec.Profile != "paper_core" || len(spec.BatchIDs) == 0 || len(spec.BatchIDs) > 200 || spec.Anchor.IsZero() || !spec.Anchor.Before(spec.TrainEnd) || !spec.TrainEnd.Before(spec.ValidationEnd) || !spec.ValidationEnd.Before(spec.TestEnd) || spec.TestEnd.After(time.Now()) {
+	if (spec.Profile != "paper_core" && spec.Profile != AvailableContextProfile) || len(spec.BatchIDs) == 0 || len(spec.BatchIDs) > 200 || spec.Anchor.IsZero() || !spec.Anchor.Before(spec.TrainEnd) || !spec.TrainEnd.Before(spec.ValidationEnd) || !spec.ValidationEnd.Before(spec.TestEnd) || spec.TestEnd.After(time.Now()) {
 		return out, ErrInput
+	}
+	if spec.Profile == AvailableContextProfile {
+		out.Version = AvailableDatasetVersion
+		out.FeatureContract = AvailableFeatureContract
+		out.Availability = availabilityManifest()
+		out.Choices[1] = "available-context profile; only seven static context unknowns optional; all other blockers required"
 	}
 	ids := append([]uint{}, spec.BatchIDs...)
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
@@ -733,8 +741,27 @@ func BuildDataset(ctx context.Context, db *gorm.DB, spec DatasetSpec) (Dataset, 
 	}
 	out.ExplorationReady = out.Ready
 	out.Ready = out.ExplorationReady && out.PaperCoreComplete
-	if !out.PaperCoreComplete {
-		out.Blockers = append(out.Blockers, "paper_core_source_fields_incomplete")
+	if spec.Profile == AvailableContextProfile {
+		complete := true
+		for _, r := range out.Rows {
+			for _, name := range []string{"host_type", "gpu_model", "manufacturer", "main_board", "quota_group", "data_center", "rack"} {
+				if r.Features.Categorical[name] == nil {
+					out.Counts["context_missing:"+name]++
+				}
+			}
+			if profileBlocks(r.Features.Blockers) {
+				complete = false
+			}
+		}
+		out.ProfileFeatureComplete = &complete
+		out.Ready = out.ExplorationReady && complete
+	}
+	if !datasetFeatureReady(out) {
+		if spec.Profile == AvailableContextProfile {
+			out.Blockers = append(out.Blockers, "profile_required_source_fields_incomplete")
+		} else {
+			out.Blockers = append(out.Blockers, "paper_core_source_fields_incomplete")
+		}
 	}
 
 	sha, e := digest(out)

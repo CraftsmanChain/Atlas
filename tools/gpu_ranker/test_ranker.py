@@ -22,6 +22,31 @@ class RankerTests(unittest.TestCase):
         cls.dataset = json.loads(Path(os.environ["ATLAS_GPU_RISK_MLP_FIXTURE"]).read_bytes())
         torch.set_num_threads(1)
 
+    def test_available_context_profile_roundtrip_and_required_blockers(self):
+        import feature_profile as fp
+        path = os.environ.get("ATLAS_AVAILABLE_CONTEXT_FIXTURE")
+        if not path:
+            self.skipTest("explicit production-profile synthetic fixture required")
+        dataset = json.loads(Path(path).read_bytes())
+        validate(dataset, True)
+        for blocker in ("history_coverage_unknown", "episode_state_unknown", "host_context_conflict:rack", "unrecognized_blocker"):
+            changed = copy.deepcopy(dataset)
+            changed["rows"][0]["features"]["blockers"].append(blocker)
+            with self.assertRaises(ValueError):
+                validate(changed, True)
+        with tempfile.TemporaryDirectory() as root:
+            output = str(Path(root) / "model")
+            dataset_sha = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+            write_artifacts(output, dataset, dataset_sha, {"seed": 17, "epochs": 2}, True)
+            manifest = json.loads(Path(output, "manifest.json").read_bytes())
+            artifact = json.loads(Path(output, "model.json").read_bytes())
+            self.assertEqual(artifact["version"], fp.ARTIFACT)
+            self.assertEqual(manifest["version"], artifact["version"])
+            binary = os.environ.get("ATLAS_GPU_RISK_VERIFY_BIN")
+            if binary:
+                result = subprocess.run([binary, "verify-model", "-dataset-file", path, "-dataset-sha", dataset_sha, "-artifact-file", str(Path(output, "model.json")), "-artifact-sha", manifest["files"]["model.json"], "-scores-file", str(Path(output, "scores.json")), "-scores-sha", manifest["files"]["scores.json"]], capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+
     def test_backbone_bn_singleton_eval_and_extreme_bce(self):
         model = Ranker(3)
         self.assertEqual([m.out_features for m in model.modules() if isinstance(m, nn.Linear)], [512, 512, 256, 1])
@@ -106,6 +131,9 @@ class RankerTests(unittest.TestCase):
             output = str(Path(directory) / "model")
             write_artifacts(output, self.dataset, dataset_sha, {"seed": 17, "epochs": 3}, True)
             manifest = json.loads(Path(output, "manifest.json").read_bytes())
+            artifact = json.loads(Path(output, "model.json").read_bytes())
+            self.assertEqual(artifact["version"], "gpu-host-mlp-artifact-v1")
+            self.assertEqual(manifest["version"], artifact["version"])
             args = [binary, "verify-model", "-dataset-file", dataset_path, "-dataset-sha", dataset_sha, "-artifact-file", str(Path(output, "model.json")), "-artifact-sha", manifest["files"]["model.json"], "-scores-file", str(Path(output, "scores.json")), "-scores-sha", manifest["files"]["scores.json"]]
             result = subprocess.run(args, capture_output=True, check=True)
             self.assertEqual(json.loads(result.stdout)["rows"], 120)

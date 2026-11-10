@@ -164,7 +164,7 @@ test('frontend and framework release contracts stay aligned', () => {
   assert(version);
   assert(app.includes(`version: '${version}'`));
   assert(app.includes(`${version} ·`));
-  assert(app.includes('PLATFORM / v0.120.98'));
+  assert(app.includes('PLATFORM / v0.120.99'));
   assert(app.includes("id: 'component-health'"));
 });
 
