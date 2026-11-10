@@ -163,7 +163,7 @@ func (s *Service) SyncTargets(ctx context.Context) (*api.InventorySyncRun, error
 	if len(nodeIPs) == 0 {
 		return s.failRun(run, fmt.Errorf("target sync found zero tracked GPU nodes"))
 	}
-	changes, err := s.persistTargets(now, run.ID, nodeIPs, indexTargets(targets, s.config))
+	changes, err := s.persistTargets(now, run.ID, nodeIPs, indexTargets(targets, s.config), s.collectionHealth(ctx, now))
 	if err != nil {
 		return s.failRun(run, err)
 	}
@@ -241,7 +241,7 @@ func (s *Service) syncInventory(ctx context.Context, taskType string, recoverHis
 	if err != nil {
 		return s.failRun(run, err)
 	}
-	targetChanges, targetErr := s.persistTargets(now, run.ID, nodeIPs, targetIndex)
+	targetChanges, targetErr := s.persistTargets(now, run.ID, nodeIPs, targetIndex, s.collectionHealth(ctx, now))
 	if targetErr != nil {
 		return s.failRun(run, targetErr)
 	}
@@ -579,7 +579,7 @@ func identitySlotKey(ip string, generation, slot int) string {
 	return fmt.Sprintf("%s:g%d:%d", ip, generation, slot)
 }
 
-func (s *Service) persistTargets(now time.Time, runID uint, nodeIPs []string, targets map[string]prometheus.Target) (int, error) {
+func (s *Service) persistTargets(now time.Time, runID uint, nodeIPs []string, targets map[string]prometheus.Target, diagnostics map[string]string) (int, error) {
 	changeCount := 0
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		for _, nodeIP := range nodeIPs {
@@ -613,6 +613,16 @@ func (s *Service) persistTargets(now time.Time, runID uint, nodeIPs []string, ta
 				key := targetKey(job, nodeIP)
 				var existing api.CollectorTarget
 				hasExisting := tx.Where("target_key = ?", key).First(&existing).Error == nil
+				if job == "gpu_exporter" && health == "up" {
+					diagnosis := diagnostics[t.Labels["instance"]]
+					if diagnosis == "healthy" {
+						assessment.reasonCode = ""
+					} else if diagnosis != "" {
+						assessment.reasonCode = diagnosis
+					} else if hasExisting && collectionReason(existing.ReasonCode) {
+						assessment.reasonCode = "gpu_collection_unverified"
+					}
+				}
 				record := api.CollectorTarget{TargetKey: key, Job: job, Instance: t.Labels["instance"], TargetIP: targetIP, NodeIP: nodeIP, Health: health, ReasonCode: assessment.reasonCode, Suppressed: assessment.suppressed, SuppressionReason: assessment.suppressionReason, LastError: t.LastError, ScrapeURL: t.ScrapeURL, LastSyncedAt: now}
 				if !t.LastScrape.IsZero() {
 					record.LastScrapeAt = &t.LastScrape

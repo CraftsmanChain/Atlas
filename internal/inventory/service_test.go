@@ -86,6 +86,7 @@ type fakePrometheus struct {
 	history          []prometheus.Sample
 	lastHistoryQuery string
 	queryCalls       int
+	queries          []string
 }
 
 func (f *fakePrometheus) BaseURL() string { return "http://prometheus.test" }
@@ -94,6 +95,7 @@ func (f *fakePrometheus) ActiveTargets(context.Context) ([]prometheus.Target, er
 }
 func (f *fakePrometheus) Query(_ context.Context, query string) ([]prometheus.Sample, error) {
 	f.queryCalls++
+	f.queries = append(f.queries, query)
 	if strings.HasPrefix(query, "last_over_time") {
 		f.lastHistoryQuery = query
 		return f.history, nil
@@ -189,8 +191,8 @@ func TestSyncBuildsSlotsRecoversHistoryAndTracksReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if targetRun.TaskType != TaskTargetStatus || reader.queryCalls != queryCalls {
-		t.Fatalf("target task queried GPU metrics or used wrong type: run=%+v query_calls=%d->%d", targetRun, queryCalls, reader.queryCalls)
+	if targetRun.TaskType != TaskTargetStatus || reader.queryCalls != queryCalls+2 || reader.queries[len(reader.queries)-2] != collectionHealthQuery || reader.queries[len(reader.queries)-1] != collectionTimestampQuery {
+		t.Fatalf("target task must query only bounded exporter diagnostics, not GPU identity history: run=%+v query_calls=%d->%d", targetRun, queryCalls, reader.queryCalls)
 	}
 	var targetChanges []api.AssetChangeEvent
 	db.Where("sync_run_id = ? AND event_type = ?", targetRun.ID, "target_state_changed").Find(&targetChanges)

@@ -137,7 +137,7 @@ func (s *Service) SyncDetectedIssues() error {
 			}
 		}
 		var targets []api.CollectorTarget
-		if err := tx.Where("node_ip IN (?) AND health <> ?", activeNodeIPs, "up").Find(&targets).Error; err != nil {
+		if err := tx.Where("node_ip IN (?) AND (health <> ? OR reason_code IN ?)", activeNodeIPs, "up", []string{"gpu_collection_failed", "gpu_collection_unverified", "gpu_business_metrics_missing"}).Find(&targets).Error; err != nil {
 			return err
 		}
 		for _, target := range targets {
@@ -151,6 +151,9 @@ func (s *Service) SyncDetectedIssues() error {
 				severity = "attention"
 			}
 			item := detectedIssue{key: issueKeyForNodeGeneration("target_health:"+target.TargetKey, generationByIP[target.NodeIP]), category: "data_quality", issueType: "target_health", title: fmt.Sprintf("%s target on %s is %s", target.Job, target.NodeIP, target.Health), description: strings.TrimSpace(strings.Join([]string{target.ReasonCode, target.LastError}, ": ")), entityType: "target", entityKey: target.TargetKey, nodeIP: target.NodeIP, severity: severity, source: "collector_target", detectionState: "active", sourceRecordID: target.ID, lastDetectedAt: fallbackTime(target.LastSyncedAt, now)}
+			if target.Health == "up" {
+				item.title = fmt.Sprintf("%s collection on %s needs review", target.Job, target.NodeIP)
+			}
 			activeBySource[item.source][item.key] = true
 			if err := upsertDetected(tx, item, now); err != nil {
 				return err
