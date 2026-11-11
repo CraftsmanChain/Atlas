@@ -96,3 +96,10 @@ gpu-objective-training-test:
 	trap 'rm -rf "$$candidate_dir"' EXIT; \
 	ATLAS_GPU_RISK_MLP_FIXTURE="$$candidate_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
 	ATLAS_GPU_RISK_MLP_FIXTURE="$$candidate_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p test_train_objective.py -v
+
+.PHONY: gpu-objective-comparison-test
+gpu-objective-comparison-test:
+	@comparison_dir=$$(mktemp -d /tmp/atlas-objective-comparison.XXXXXX); \
+	trap 'rm -rf "$$comparison_dir"' EXIT; \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$comparison_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$comparison_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p test_compare_objectives.py -v
