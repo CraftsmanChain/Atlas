@@ -70,3 +70,10 @@ gpu-ranker-test:
 	ATLAS_GPU_RISK_MLP_FIXTURE="$$ranker_test_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
 	$(GO_ENV) $(GO) build -o "$$ranker_test_dir/gpu-risk" ./cmd/gpu-risk && \
 	ATLAS_GPU_RISK_VERIFY_BIN="$$ranker_test_dir/gpu-risk" ATLAS_GPU_RISK_MLP_FIXTURE="$$ranker_test_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -v
+
+.PHONY: gpu-ranking-eval-test
+gpu-ranking-eval-test:
+	@eval_test_dir=$$(mktemp -d /tmp/atlas-eval-test.XXXXXX); \
+	trap 'rm -rf "$$eval_test_dir"' EXIT; \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$eval_test_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$eval_test_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p test_evaluate.py -v
