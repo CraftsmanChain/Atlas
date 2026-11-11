@@ -9,6 +9,7 @@ import feature_profile as fp
 from preprocess import NUMERIC, CATEGORIES, MAPS
 from train import validate, score_artifact, SYNTHETIC
 from metrics import ranking_metrics
+from baselines import health_inputs, weight_inputs, comparison
 
 
 def digest(v):
@@ -75,7 +76,7 @@ def basic(d):
     return rows
 
 
-def evaluate(d, dataset_sha, split='validation', artifact=None, artifact_sha=None, synthetic=False):
+def evaluate(d, dataset_sha, split='validation', artifact=None, artifact_sha=None, synthetic=False, health=None, health_sha=None, weights=None, weights_sha=None):
     if split not in ('validation','test'): raise ValueError('unsupported evaluation split')
     rows=basic(d)
     if (SYNTHETIC in d['implementation_choices'])!=synthetic: raise ValueError('synthetic requires self-test')
@@ -89,8 +90,19 @@ def evaluate(d, dataset_sha, split='validation', artifact=None, artifact_sha=Non
             if not isinstance(selection,dict) or selection.get('test_used_for_selection') is not False:
                 raise ValueError('checkpoint test-selection declaration rejected')
             logits=score_artifact(artifact,d,dataset_sha)
-    sources={n:hashlib.sha256(Path(__file__).with_name(n).read_bytes()).hexdigest() for n in ('evaluate.py','metrics.py','train.py','feature_profile.py','preprocess.py','model.py')}
-    report={'version':'gpu-ranking-comparison-v1','status':'offline_artifact_comparison' if ready else 'waiting_for_data','purpose':SYNTHETIC if synthetic else 'offline_exploration_not_promoted','split':split,'input':{'dataset_sha':dataset_sha,'dataset_manifest_sha':d['sha'],'feature_sha':d['feature_sha'],'split_sha':d['split_sha'],'input_sha':d['input_sha'],'requested_artifact_sha':artifact_sha,'verified_loaded_artifact_sha':artifact_sha if logits is not None else None,'artifact_loaded_and_scored':logits is not None},'source_sha':sources,'input_provenance':'caller_pinned_files_not_live_database_E1_certification','probability_emitted':False,'no_action':True,'promoted':False,'dataset_counts':d['counts'],'dataset_rows':len(rows),'unique_node_generations':len({(r['node_id'],r['generation']) for r in rows}),'selected_split_rows':len(selected),'all_selected_positive_declared_episode_keys':len({e for r in selected if r['label'] is True for e in r['episode_keys']}),'common_cohort_positive_declared_episode_keys':0,'episode_key_semantics':'deduplicates_declared_canonical_keys_only_not_independent_incident_certification','count_definitions':{'eligible':'common_candidate_rows_not_E1_gate_pass','method_no_signal':'episode_count_missing_or_history_unknown','unknown':'label_unknown_or_required_feature_blocked_or_history_unknown','excluded':'dataset_ineligible_or_row_blockers','N':'all_rows_for_selected_split_query'},'flags_may_overlap':True,'health_no_signal':None,'health_no_signal_reason':'not_available_in_dataset_rows','blockers':d['blockers'],'queries':[],'pending_methods':{'health_inverse':'missing_pinned_historical_health_scores','weighted_count':'weights_not_frozen','other_B0_B6':'not_implemented_in_first_slice'},'episode_capture':{'status':'pending','reason':'node_query_metrics_not_independent_episode_capture'},'sha':''}
+    sources={n:hashlib.sha256(Path(__file__).with_name(n).read_bytes()).hexdigest() for n in ('evaluate.py','metrics.py','train.py','feature_profile.py','preprocess.py','model.py','baselines.py')}
+    report={'version':'gpu-ranking-comparison-v2','status':'offline_artifact_comparison' if ready else 'waiting_for_data','purpose':SYNTHETIC if synthetic else 'offline_exploration_not_promoted','split':split,'input':{'dataset_sha':dataset_sha,'dataset_manifest_sha':d['sha'],'feature_sha':d['feature_sha'],'split_sha':d['split_sha'],'input_sha':d['input_sha'],'requested_artifact_sha':artifact_sha,'verified_loaded_artifact_sha':artifact_sha if logits is not None else None,'artifact_loaded_and_scored':logits is not None},'source_sha':sources,'input_provenance':'caller_pinned_files_not_live_database_E1_certification','probability_emitted':False,'no_action':True,'promoted':False,'dataset_counts':d['counts'],'dataset_rows':len(rows),'unique_node_generations':len({(r['node_id'],r['generation']) for r in rows}),'selected_split_rows':len(selected),'all_selected_positive_declared_episode_keys':len({e for r in selected if r['label'] is True for e in r['episode_keys']}),'common_cohort_positive_declared_episode_keys':0,'episode_key_semantics':'deduplicates_declared_canonical_keys_only_not_independent_incident_certification','count_definitions':{'eligible':'common_candidate_rows_not_E1_gate_pass','method_no_signal':'episode_count_missing_or_history_unknown','unknown':'label_unknown_or_required_feature_blocked_or_history_unknown','excluded':'dataset_ineligible_or_row_blockers','N':'all_rows_for_selected_split_query'},'flags_may_overlap':True,'health_no_signal':None,'health_no_signal_reason':'not_available_in_dataset_rows','blockers':d['blockers'],'queries':[],'pending_methods':{'health_inverse':'missing_pinned_historical_health_scores','weighted_count':'weights_not_frozen','other_B0_B6':'not_implemented_in_first_slice'},'episode_capture':{'status':'pending','reason':'node_query_metrics_not_independent_episode_capture'},'sha':''}
+    baseline_inputs = {}
+    for name, value, requested_sha in [('health_inverse', health, health_sha), ('weighted_count', weights, weights_sha)]:
+        report['input']['requested_'+name+'_sha'] = requested_sha
+        report['input']['verified_loaded_'+name+'_sha'] = requested_sha if ready and value is not None else None
+        if requested_sha is not None:
+            baseline_inputs[name] = (health_inputs(value, d, dataset_sha) if name == 'health_inverse' else weight_inputs(value, d, dataset_sha, selected)) if ready and value is not None else {}
+            report['pending_methods'].pop(name, None)
+    report['baseline_input_provenance'] = 'caller_attested_not_scope_integrity_certified; UUID conflicts checked only across supplied dataset rows; freeze declarations not independently certified'
+    report['baseline_comparison_policy'] = 'separate_joint_intersection_preserves_original_cohort; all requested methods; diagnostics overlap original exclusions'
+    if artifact_sha is not None and logits is None:
+        baseline_inputs['mlp'] = {}
     indexed={id(r):i for i,r in enumerate(rows)}
     common_episode_keys=set()
     for query in sorted({r['query_id'] for r in selected}):
@@ -105,7 +117,8 @@ def evaluate(d, dataset_sha, split='validation', artifact=None, artifact_sha=Non
             reason='dataset_not_ready' if not ready else 'missing_pinned_artifact' if name=='mlp' and logits is None else None
             scores=[0.0 if name=='uniform' else r['features']['numeric']['episode_count'] if name=='episode_count' else logits[indexed[id(r)]] for r in common] if reason is None else []
             methods[name]={'status':'pending' if reason else 'computed','reason':reason,'metrics':None if reason else ranking_metrics(scores,[r['label'] for r in common])}
-        report['queries'].append({'query_id':query,'counts':counts,'cohort_sha':digest([(r['query_id'],r['node_id'],r['generation']) for r in common]),'row_rejections':[{'node_id':r['node_id'],'generation':r['generation'],'blockers':r['blockers'],'feature_blockers':r['features']['blockers']} for r in group if r not in common],'methods':methods})
+        joint = comparison(group, common, baseline_inputs, logits, indexed, digest, ready) if health_sha is not None or weights_sha is not None else None
+        report['queries'].append({'query_id':query,'baseline_comparison':joint,'counts':counts,'cohort_sha':digest([(r['query_id'],r['node_id'],r['generation']) for r in common]),'row_rejections':[{'node_id':r['node_id'],'generation':r['generation'],'blockers':r['blockers'],'feature_blockers':r['features']['blockers']} for r in group if r not in common],'methods':methods})
     report['common_cohort_positive_declared_episode_keys']=len(common_episode_keys)
     report['aggregation']={'policy':'macro_mean_of_non_null_per_query_AUC','methods':{}}
     for method in ('uniform','episode_count','mlp'):
@@ -116,12 +129,16 @@ def evaluate(d, dataset_sha, split='validation', artifact=None, artifact_sha=Non
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('command',choices=['evaluate','self-test']);p.add_argument('--dataset',required=True);p.add_argument('--dataset-sha',required=True);p.add_argument('--artifact-file');p.add_argument('--artifact-sha');p.add_argument('--split',choices=['validation','test'],default='validation');p.add_argument('--output',required=True);a=p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('command',choices=['evaluate','self-test']);p.add_argument('--dataset',required=True);p.add_argument('--dataset-sha',required=True);p.add_argument('--artifact-file');p.add_argument('--artifact-sha');p.add_argument('--split',choices=['validation','test'],default='validation');p.add_argument('--health-file');p.add_argument('--health-sha');p.add_argument('--weights-file');p.add_argument('--weights-sha');p.add_argument('--output',required=True);a=p.parse_args()
     try:
         if bool(a.artifact_file)!=bool(a.artifact_sha): raise ValueError('artifact path and SHA required together')
+        for path, sha in [(a.health_file,a.health_sha),(a.weights_file,a.weights_sha)]:
+            if bool(path)!=bool(sha): raise ValueError('baseline path and SHA required together')
         d=read_file(a.dataset,a.dataset_sha);basic(d)
         ready=d['ready'] and d['exploration_ready'] and fp.feature_ready(d) and not d['blockers']
         artifact=read_file(a.artifact_file,a.artifact_sha) if a.artifact_file and ready else None
-        report=evaluate(d,a.dataset_sha,a.split,artifact,a.artifact_sha,a.command=='self-test');out=Path(a.output);out.mkdir(mode=0o700,exist_ok=False,parents=True);f=out/'report.json';f.write_text(json.dumps(report,sort_keys=True,separators=(',',':'),allow_nan=False)+'\n');f.chmod(0o600);print(json.dumps({'status':report['status'],'report_sha':report['sha'],'no_action':True}))
-    except (ValueError,KeyError,TypeError,OSError):p.exit(2,'evaluation rejected: invalid input, readiness or pinned file\n')
+        health=read_file(a.health_file,a.health_sha) if a.health_file and ready else None
+        weights=read_file(a.weights_file,a.weights_sha) if a.weights_file and ready else None
+        report=evaluate(d,a.dataset_sha,a.split,artifact,a.artifact_sha,a.command=='self-test',health,a.health_sha,weights,a.weights_sha);out=Path(a.output);out.mkdir(mode=0o700,exist_ok=False,parents=True);f=out/'report.json';f.write_text(json.dumps(report,sort_keys=True,separators=(',',':'),allow_nan=False)+'\n');f.chmod(0o600);print(json.dumps({'status':report['status'],'report_sha':report['sha'],'no_action':True}))
+    except (ValueError,KeyError,TypeError,OSError,OverflowError,AttributeError):p.exit(2,'evaluation rejected: invalid input, readiness or pinned file\n')
 if __name__=='__main__':main()
