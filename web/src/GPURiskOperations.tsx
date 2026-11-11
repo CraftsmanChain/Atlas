@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import { count, loadOperations, operationsView, text, type OperationsLoad } from './operationsView';
+import { count, loadOperations, operationsView, operationsStatusLabel, text, type OperationsLoad } from './operationsView';
 type Tx = (zh: string, en: string) => string;
 export function OperationsContent({ data, tx, queryID }: { data: unknown; tx: Tx; queryID?: number }) {
   const view = operationsView(data);
   const unknown = tx('未评估', 'Not assessed');
   const number = (v: unknown) => count(v) ?? unknown;
   const flag = (v: boolean | null) => v === null ? unknown : v ? tx('已启用', 'Enabled') : tx('已关闭', 'Disabled');
-  const status = (v: unknown) => ({ completed: tx('执行完成', 'Execution completed'), failed: tx('执行失败', 'Execution failed'), blocked: tx('执行受阻', 'Execution blocked'), running: tx('执行中', 'Running'), pending: tx('等待执行', 'Pending'), within_query_tail: tx('核查在允许时限内', 'Check within allowed lag'), invalid: tx('核查无效', 'Invalid check'), stale_for_query: tx('核查已过期', 'Check stale for query'), inspection_failed: tx('读取失败', 'Inspection failed'), no_completed_query: tx('尚无完整批次', 'No completed query') }[text(v)] || tx('状态未知', 'Unknown status'));
+  const status = (v: unknown) => operationsStatusLabel(v, tx);
   const coverage = view.coverage;
   return <>
     <p>{tx('服务端日期', 'Server date')}: {view.day || unknown}</p>

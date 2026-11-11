@@ -32,3 +32,10 @@ export function loadOperations(emit: (state: OperationsLoad) => void, request: t
   });
   return () => { active = false; controller.abort(); };
 }
+
+// Known backend states are rendered here; new states remain explicitly unknown.
+export function operationsStatusLabel(value: unknown, tx: (zh: string, en: string) => string): string {
+  const state = text(value);
+  const labels: Record<string, string> = { waiting_schedule: tx('等待计划时间', 'Waiting for schedule'), waiting_work: tx('等待任务', 'Waiting for work'), manual_required: tx('需要人工处理', 'Manual attention required'), completed: tx('执行完成', 'Execution completed'), failed: tx('执行失败', 'Execution failed'), blocked: tx('执行受阻', 'Execution blocked'), running: tx('执行中', 'Running'), pending: tx('等待执行', 'Pending'), within_query_tail: tx('核查在允许时限内', 'Check within allowed lag'), invalid: tx('核查无效', 'Invalid check'), stale_for_query: tx('核查已过期', 'Check stale for query'), inspection_failed: tx('读取失败', 'Inspection failed'), no_completed_query: tx('尚无完整批次', 'No completed query') };
+  return Object.hasOwn(labels, state) ? labels[state] : tx('状态未知', 'Unknown status');
+}
