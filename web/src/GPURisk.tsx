@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import './GPURisk.css';
 import GPURiskModels from './GPURiskModels';
+import GPURiskOperations from './GPURiskOperations';
 
 type Tx = (zh: string, en: string) => string;
 type Query = { id: number; cutoff: string; member_count: number; scope_sha: string; result_sha: string; target: string; horizon_minutes: number };
@@ -63,6 +64,7 @@ export default function GPURisk({ tx, feedback }: { tx: Tx; feedback: () => void
       {overview.jobs.some(job => job.status === 'failed') && <p role="alert">{tx('存在失败任务，保留上次完整榜单。', 'A job failed; the last complete snapshot is retained.')}</p>}
       {!overview.latest && <p>{tx('尚无完整批次。完成一次受控记录后，这里将显示所有节点；零故障样本也可以积累。', 'No complete query yet. A controlled recording will show every node; collection works with zero failure samples.')}</p>}
     </>}
+    <GPURiskOperations tx={tx} refreshKey={refresh} queryID={result?.query.id} />
     <label>{tx('对照策略', 'Policy')} <select value={policy} onChange={event => { setPolicy(event.target.value); reset(); }}><option value="health-inverse-v1">{tx('当前健康反分', 'Inverse current health')}</option><option value="uniform-v1">{tx('固定等分对照', 'Uniform control')}</option></select></label>
     {result && <><p>{tx('可排名节点', 'Eligible nodes')}: {result.data[0]?.eligible_count ?? 0} · Top-5% K: {result.data[0]?.top_five_percent_k ?? 0} · {tx('并列名次不表示节点间存在风险差异。列表按节点编号分页。', 'Ties do not imply risk differences. Rows are paginated by node ID.')}</p>
       <div className="gpu-risk-table"><table><thead><tr>{[tx('节点', 'Node'), tx('代际', 'Generation'), tx('名次 / 并列数', 'Rank / tie size'), tx('分数', 'Score'), tx('覆盖', 'Coverage'), tx('状态 / 原因', 'Status / reason'), tx('未来结果', 'Future outcome')].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody>{result.data.map(score => {
