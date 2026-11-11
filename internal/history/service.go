@@ -213,9 +213,9 @@ func (s *Service) auditSource(ctx context.Context, source config.HistorySourceCo
 	if source.Type != "prometheus" {
 		row.Capabilities = append(row.Capabilities, "raw_export")
 	}
-	baseURL := strings.TrimRight(source.BaseURL, "/")
-	if source.Type == "victoriametrics-cluster" {
-		baseURL += "/select/" + source.TenantID + "/prometheus"
+	baseURL := historySourceEndpoint(source)
+	for key, value := range sourceBinding(source, baseURL) {
+		row.Details[key] = value
 	}
 	if source.AuthType != "" && source.AuthType != "none" {
 		row.Status = "failed"
