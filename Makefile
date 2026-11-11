@@ -78,3 +78,10 @@ gpu-ranking-eval-test:
 	ATLAS_GPU_RISK_MLP_FIXTURE="$$eval_test_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
 	ATLAS_GPU_RISK_MLP_FIXTURE="$$eval_test_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p 'test_*baseline*.py' -v && \
 	ATLAS_GPU_RISK_MLP_FIXTURE="$$eval_test_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p test_evaluate.py -v
+
+.PHONY: gpu-period-report-test
+gpu-period-report-test:
+	@period_test_dir=$$(mktemp -d /tmp/atlas-period-test.XXXXXX); \
+	trap 'rm -rf "$$period_test_dir"' EXIT; \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$period_test_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$period_test_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p test_period_report.py -v
