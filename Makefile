@@ -85,3 +85,7 @@ gpu-period-report-test:
 	trap 'rm -rf "$$period_test_dir"' EXIT; \
 	ATLAS_GPU_RISK_MLP_FIXTURE="$$period_test_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
 	ATLAS_GPU_RISK_MLP_FIXTURE="$$period_test_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p test_period_report.py -v
+
+.PHONY: gpu-objectives-test
+gpu-objectives-test:
+	$(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p test_objectives.py -v
