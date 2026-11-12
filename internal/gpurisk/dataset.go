@@ -168,28 +168,17 @@ type historyEvent struct {
 }
 
 func numberPtr(v float64) *float64 { return &v }
-func historyAt(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs []api.GPURiskEvidenceRevision, reviews []api.HardwareFaultFeedbackReview) (HistoryFeatures, error) {
-	f := HistoryFeatures{Numeric: map[string]*float64{}, Categorical: map[string]*string{}, EvidenceSHAs: []string{}, Blockers: []string{}}
-	for _, field := range CoreSchema() {
-		if field.Dtype == "nullable_float64" {
-			f.Numeric[field.Name] = nil
-		}
-		if field.Dtype == "nullable_category" {
-			f.Categorical[field.Name] = nil
-		}
-	}
-	host := m.EntityRef
-	if host != "" {
-		f.Categorical["host_id"] = &host
-	}
-	local := q.Cutoff.In(time.FixedZone("Asia/Shanghai", 8*3600))
-	weekday := (int(local.Weekday()) + 6) % 7
-	f.Numeric["weekday"] = numberPtr(float64(weekday))
-	weekend := 0.0
-	if weekday >= 5 {
-		weekend = 1
-	}
-	f.Numeric["weekend"] = numberPtr(weekend)
+
+type historyView struct {
+	assertions []api.GPURiskEvidenceRevision
+	decoded    []EvidenceInput
+	invalid    []bool
+	selected   map[uint]api.HardwareFaultFeedbackReview
+	excluded   map[string]bool
+	byEntity   map[string][]api.GPURiskEvidenceRevision
+}
+
+func prepareHistoryView(q api.GPURiskQuery, evs []api.GPURiskEvidenceRevision, reviews []api.HardwareFaultFeedbackReview) *historyView {
 	latest := map[string]api.GPURiskEvidenceRevision{}
 	for _, e := range evs {
 		if !e.AvailableAt.Before(q.Cutoff) {
@@ -221,6 +210,42 @@ func historyAt(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs
 			excluded[r.EpisodeKey] = true
 		}
 	}
+	// The view is private to one sequential query export. Decode lazily at the
+	// original loop positions so cancellation and malformed-input error order
+	// remain unchanged, including partial features returned on an error.
+	v := &historyView{assertions: assertions, selected: selected, excluded: excluded, byEntity: map[string][]api.GPURiskEvidenceRevision{}}
+	return v
+}
+
+func historyAt(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs []api.GPURiskEvidenceRevision, reviews []api.HardwareFaultFeedbackReview) (HistoryFeatures, error) {
+	return historyAtView(ctx, m, q, evs, reviews, nil)
+}
+func historyAtView(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs []api.GPURiskEvidenceRevision, reviews []api.HardwareFaultFeedbackReview, view *historyView) (HistoryFeatures, error) {
+	f := HistoryFeatures{Numeric: map[string]*float64{}, Categorical: map[string]*string{}, EvidenceSHAs: []string{}, Blockers: []string{}}
+	for _, field := range CoreSchema() {
+		if field.Dtype == "nullable_float64" {
+			f.Numeric[field.Name] = nil
+		}
+		if field.Dtype == "nullable_category" {
+			f.Categorical[field.Name] = nil
+		}
+	}
+	host := m.EntityRef
+	if host != "" {
+		f.Categorical["host_id"] = &host
+	}
+	local := q.Cutoff.In(time.FixedZone("Asia/Shanghai", 8*3600))
+	weekday := (int(local.Weekday()) + 6) % 7
+	f.Numeric["weekday"] = numberPtr(float64(weekday))
+	weekend := 0.0
+	if weekday >= 5 {
+		weekend = 1
+	}
+	f.Numeric["weekend"] = numberPtr(weekend)
+	if view == nil {
+		view = prepareHistoryView(q, evs, reviews)
+	}
+	assertions, selected, excluded := view.assertions, view.selected, view.excluded
 	events := map[string]historyEvent{}
 	conflict := false
 	var intervals [][2]time.Time
@@ -231,10 +256,19 @@ func historyAt(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs
 				return f, err
 			}
 		}
-		var v EvidenceInput
-		if json.Unmarshal([]byte(e.Data), &v) != nil {
+		if index == len(view.decoded) {
+			var input EvidenceInput
+			bad := json.Unmarshal([]byte(e.Data), &input) != nil
+			view.decoded = append(view.decoded, input)
+			view.invalid = append(view.invalid, bad)
+			if !bad {
+				view.byEntity[input.EntityRef] = append(view.byEntity[input.EntityRef], e)
+			}
+		}
+		if view.invalid[index] {
 			return f, ErrInput
 		}
+		v := view.decoded[index]
 		if v.EntityRef != m.EntityRef {
 			continue
 		}
@@ -364,7 +398,7 @@ func historyAt(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs
 	if conflict {
 		f.Blockers = append(f.Blockers, "historical_episode_conflict")
 	}
-	applyHistorySources(&f, m, q, assertions, sorted)
+	applyHistorySources(&f, m, q, view.byEntity[m.EntityRef], sorted)
 	sort.Strings(f.EvidenceSHAs)
 	return f, nil
 }
@@ -562,12 +596,13 @@ func BuildDataset(ctx context.Context, db *gorm.DB, spec DatasetSpec) (Dataset, 
 				}
 				gpuComplete[rowKey{q.ID, n.ID, n.Generation}] = complete
 			}
+			view := prepareHistoryView(q, evidence, reviews)
 			for i, m := range members {
 				label := labels[i]
 				if label.NodeID != m.NodeID || label.Generation != m.Generation {
 					return ErrInput
 				}
-				features, e := historyAt(ctx, m, q, evidence, reviews)
+				features, e := historyAtView(ctx, m, q, nil, nil, view)
 				if e != nil {
 					return e
 				}
