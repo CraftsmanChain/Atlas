@@ -110,3 +110,10 @@ gpu-feature-ablation-test:
 	trap 'rm -rf "$$ablation_dir"' EXIT; \
 	ATLAS_GPU_RISK_MLP_FIXTURE="$$ablation_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
 	ATLAS_GPU_RISK_MLP_FIXTURE="$$ablation_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p test_feature_ablation.py -v
+
+.PHONY: gpu-ablation-training-test gpu-ablation-comparison-test
+gpu-ablation-training-test gpu-ablation-comparison-test:
+	@ablation_test_dir=$$(mktemp -d /tmp/atlas-ablation-training.XXXXXX); \
+	trap 'rm -rf "$$ablation_test_dir"' EXIT; \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$ablation_test_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$ablation_test_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p 'test_*ablation*.py' -v
