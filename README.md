@@ -38,7 +38,7 @@ Atlas is under active development. Available capabilities are continuously refin
 
 The platform organizes evidence, data foundations, reliability capabilities, and operational workflows into a single product view.
 
-![Atlas platform module architecture](web/public/atlas-platform-architecture.svg)
+![Atlas platform module architecture](web/public/atlas-platform-architecture.en.svg)
 
 ## Product Principles
 
@@ -51,6 +51,16 @@ The platform organizes evidence, data foundations, reliability capabilities, and
 ## Project Status
 
 Atlas is being developed iteratively. The current focus is to strengthen the end-to-end reliability workflow while expanding the quality, prediction, validation, and knowledge capabilities behind it. Capability labels in this README describe product maturity rather than a fixed release promise.
+
+## Source Sync
+
+Push the current source commit to both repositories without building or deploying:
+
+```bash
+bash scripts/deploy_remote_source.sh --push-only
+```
+
+Requires Git and Python 3. GitHub (`git@github.com:CraftsmanChain/Atlas.git`) and GitLab (`http://10.255.151.17:9091/sre/atlas.git`) run concurrently and report results independently; either failure produces a nonzero overall exit code. Override each destination with `GITHUB_PUSH_TARGET` / `GITLAB_PUSH_TARGET`, and the default 60-second timeout with `GIT_PUSH_TIMEOUT_SECONDS`. `BRANCH` selects the destination branch (current branch by default); `EXPECTED_COMMIT` can pin the source commit. For normal deployment, `SKIP_GIT_PUSH=1` skips source pushes; it does not mean both repositories are synchronized.
 
 ## Contributing
 

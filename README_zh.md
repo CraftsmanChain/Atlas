@@ -38,7 +38,7 @@ Atlas 正在持续迭代升级中。已上线能力会不断完善，处于早�
 
 平台将证据来源、数据基础、可靠性能力和处置闭环组织为统一的产品视图。
 
-![Atlas 平台模块架构](web/public/atlas-platform-architecture.svg)
+![Atlas 平台模块架构](web/public/atlas-platform-architecture.zh.svg)
 
 ## 产品原则
 
@@ -51,6 +51,16 @@ Atlas 正在持续迭代升级中。已上线能力会不断完善，处于早�
 ## 项目状态
 
 Atlas 采用持续迭代的方式建设。当前重点是完善端到端的可靠性闭环，并持续增强数据质量、预测、验证和知识沉淀能力。本页的能力状态表示当前产品成熟度，不构成固定版本承诺。
+
+## 源码同步
+
+将当前源码提交同时推送到两个仓库，不构建、不部署：
+
+```bash
+bash scripts/deploy_remote_source.sh --push-only
+```
+
+需要 Git 和 Python 3。GitHub（`git@github.com:CraftsmanChain/Atlas.git`）与 GitLab（`http://10.255.151.17:9091/sre/atlas.git`）并行执行、分别报告结果；任一路失败，整体退出码非零。通过 `GITHUB_PUSH_TARGET` / `GITLAB_PUSH_TARGET` 分别覆盖目标，`GIT_PUSH_TIMEOUT_SECONDS` 覆盖默认60秒超时。`BRANCH` 指定目标分支（默认当前分支），`EXPECTED_COMMIT` 可绑定源码提交。正常部署时，`SKIP_GIT_PUSH=1` 仅跳过源码推送，不代表两个仓库已同步。
 
 ## 参与贡献
 

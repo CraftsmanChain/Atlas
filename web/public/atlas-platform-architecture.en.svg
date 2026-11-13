@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1060" role="img" aria-labelledby="title desc" lang="en">
+<title id="title">ATLAS Platform Architecture</title>
+<desc id="desc">Evidence sources, data foundation, assessment, workspace and gated offline research.</desc>
+<style>text {font-family:"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}</style>
+<defs><marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0 0 L10 3.5 L0 7Z" fill="#2563eb"/></marker><marker id="research-arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0 0 L10 3.5 L0 7Z" fill="#9333ea"/></marker></defs>
+<rect width="1200" height="1060" fill="#ffffff"/>
+<text x="40" y="46" font-size="28" font-weight="700" fill="#111827">ATLAS · Infrastructure Hardware Reliability</text>
+<text x="40" y="76" font-size="17" font-weight="400" fill="#475569">Traceable evidence informs assessment; people control consequential actions</text>
+<g id="sources"><rect x="40" y="108" width="1120" height="156" rx="12" fill="#eff6ff" stroke="#cbd5e1"/>
+<text x="58" y="138" font-size="16" font-weight="700" fill="#475569">01  SOURCES</text>
+<g id="assets"><rect x="56" y="154" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="72" y="182" font-size="19" font-weight="600" fill="#111827">In-use assets &amp; scope</text>
+<text x="72" y="207" font-size="15" font-weight="400" fill="#475569">Operations OAuth · reconciliation</text>
+<text x="72" y="229" font-size="15" font-weight="400" fill="#475569">Node identity &amp; lifecycle</text>
+</g>
+<g id="telemetry"><rect x="428" y="154" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="444" y="182" font-size="19" font-weight="600" fill="#111827">Telemetry &amp; history</text>
+<text x="444" y="207" font-size="15" font-weight="400" fill="#475569">Prometheus-compatible sources</text>
+<text x="444" y="229" font-size="15" font-weight="400" fill="#475569">DCGM · gpu_exporter</text>
+</g>
+<g id="evidence"><rect x="800" y="154" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="816" y="182" font-size="19" font-weight="600" fill="#111827">Controlled read-only evidence</text>
+<text x="816" y="207" font-size="15" font-weight="400" fill="#475569">Logs · BMC · SMART / EDAC</text>
+<text x="816" y="229" font-size="15" font-weight="400" fill="#475569">Registered commands · evidence files</text>
+</g>
+</g>
+<g id="foundation"><rect x="40" y="308" width="1120" height="156" rx="12" fill="#f0fdf4" stroke="#cbd5e1"/>
+<text x="58" y="338" font-size="16" font-weight="700" fill="#475569">02  FOUNDATION</text>
+<g id="identity"><rect x="56" y="354" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="72" y="382" font-size="19" font-weight="600" fill="#111827">Identity &amp; data quality</text>
+<text x="72" y="407" font-size="15" font-weight="400" fill="#475569">Asset mapping · generations · scope</text>
+<text x="72" y="429" font-size="15" font-weight="400" fill="#475569">Explicit missing or conflicting data</text>
+</g>
+<g id="history"><rect x="428" y="354" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="444" y="382" font-size="19" font-weight="600" fill="#111827">History &amp; features</text>
+<text x="444" y="407" font-size="15" font-weight="400" fill="#475569">Observation windows · time boundaries</text>
+<text x="444" y="429" font-size="15" font-weight="400" fill="#475569">Source audits · controlled replay</text>
+</g>
+<g id="storage"><rect x="800" y="354" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="816" y="382" font-size="19" font-weight="600" fill="#111827">PostgreSQL persistence</text>
+<text x="816" y="407" font-size="15" font-weight="400" fill="#475569">Assets · scores · events · feedback</text>
+<text x="816" y="429" font-size="15" font-weight="400" fill="#475569">Evidence references · versions · SHA256</text>
+</g>
+</g>
+<g id="assessment"><rect x="40" y="508" width="1120" height="156" rx="12" fill="#faf5ff" stroke="#cbd5e1"/>
+<text x="58" y="538" font-size="16" font-weight="700" fill="#475569">03  ASSESSMENT</text>
+<g id="quality"><rect x="56" y="554" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="72" y="582" font-size="19" font-weight="600" fill="#111827">Data quality detection</text>
+<text x="72" y="607" font-size="15" font-weight="400" fill="#475569">Collection availability · continuity</text>
+<text x="72" y="629" font-size="15" font-weight="400" fill="#475569">Identity drift · coverage gaps</text>
+</g>
+<g id="gpu"><rect x="428" y="554" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="444" y="582" font-size="19" font-weight="600" fill="#111827">GPU health &amp; relative risk</text>
+<text x="444" y="607" font-size="15" font-weight="400" fill="#475569">Deterministic rules · health scores</text>
+<text x="444" y="629" font-size="15" font-weight="400" fill="#475569">Shadow ranking · separate validation</text>
+</g>
+<g id="disk"><rect x="800" y="554" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="816" y="582" font-size="19" font-weight="600" fill="#111827">Physical disk health</text>
+<text x="816" y="607" font-size="15" font-weight="400" fill="#475569">NVMe · selected SATA profiles · history</text>
+<text x="816" y="629" font-size="15" font-weight="400" fill="#475569">Health dimensions · identity · evidence</text>
+</g>
+</g>
+<g id="workspace"><rect x="40" y="708" width="1120" height="156" rx="12" fill="#fff7ed" stroke="#cbd5e1"/>
+<text x="58" y="738" font-size="16" font-weight="700" fill="#475569">04  WORKSPACE</text>
+<g id="product"><rect x="56" y="754" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="72" y="782" font-size="19" font-weight="600" fill="#111827">React workbench + Go API</text>
+<text x="72" y="807" font-size="15" font-weight="400" fill="#475569">Overview · assets · health · quality</text>
+<text x="72" y="829" font-size="15" font-weight="400" fill="#475569">Chinese / English UI · configuration</text>
+</g>
+<g id="workflow"><rect x="428" y="754" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="444" y="782" font-size="19" font-weight="600" fill="#111827">Issues &amp; human resolution</text>
+<text x="444" y="807" font-size="15" font-weight="400" fill="#475569">Alert details · resolution · feedback</text>
+<text x="444" y="829" font-size="15" font-weight="400" fill="#475569">Repair validation: evolving workflow</text>
+</g>
+<g id="research"><rect x="800" y="754" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-dasharray="6 4"/>
+<text x="816" y="782" font-size="19" font-weight="600" fill="#111827">Offline training &amp; evaluation</text>
+<text x="816" y="807" font-size="15" font-weight="400" fill="#475569">Pinned datasets · candidates · baselines</text>
+<text x="816" y="829" font-size="15" font-weight="400" fill="#475569">Promotion requires data &amp; effect gates</text>
+</g>
+</g>
+<path id="ingest-228" d="M228 248 V354" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="ingest-600" d="M600 248 V354" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="ingest-972" d="M972 248 V354" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="assess-source-228" d="M228 448 V482" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="assess-source-600" d="M600 448 V482" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="assess-source-972" d="M972 448 V482" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="assess-bus" d="M228 482 H972" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="assess-target-228" d="M228 482 V554" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="assess-target-600" d="M600 482 V554" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="assess-target-972" d="M972 482 V554" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="present-source-228" d="M228 648 V682" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="present-source-600" d="M600 648 V682" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="present-source-972" d="M972 648 V682" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="present-bus" d="M228 682 H972" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="present-target-228" d="M228 682 V754" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="present-target-600" d="M600 682 V754" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="present-target-972" d="M972 682 V754" stroke="#9333ea" stroke-width="2" fill="none" marker-end="url(#research-arrow)" stroke-dasharray="5 4"/>
+<rect x="40" y="930" width="1120" height="82" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+<text x="58" y="960" font-size="18" font-weight="600" fill="#475569">Shared boundaries: provenance · explicit unknowns · human-controlled operations</text>
+<text x="58" y="989" font-size="15" font-weight="400" fill="#475569">Relative risk is not failure probability; research and shadow output do not trigger isolation or restart.</text>
+<path d="M48 1034 H90" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="104" y="1040" font-size="14" font-weight="400" fill="#475569">Evidence / data flow</text>
+<path d="M360 1034 H402" stroke="#9333ea" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#research-arrow)"/>
+<text x="416" y="1040" font-size="14" font-weight="400" fill="#475569">Gated research path</text>
+</svg>

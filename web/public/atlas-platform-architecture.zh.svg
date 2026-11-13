@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1060" role="img" aria-labelledby="title desc" lang="zh">
+<title id="title">ATLAS 平台架构</title>
+<desc id="desc">证据来源、数据基础、评估发现、工作台及受门禁控制的离线研究。</desc>
+<style>text {font-family:"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}</style>
+<defs><marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0 0 L10 3.5 L0 7Z" fill="#2563eb"/></marker><marker id="research-arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0 0 L10 3.5 L0 7Z" fill="#9333ea"/></marker></defs>
+<rect width="1200" height="1060" fill="#ffffff"/>
+<text x="40" y="46" font-size="28" font-weight="700" fill="#111827">ATLAS · 基础设施硬件可靠性工作台</text>
+<text x="40" y="76" font-size="17" font-weight="400" fill="#475569">真实证据驱动评估，人工掌握处置权</text>
+<g id="sources"><rect x="40" y="108" width="1120" height="156" rx="12" fill="#eff6ff" stroke="#cbd5e1"/>
+<text x="58" y="138" font-size="16" font-weight="700" fill="#475569">01  证据来源</text>
+<g id="assets"><rect x="56" y="154" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="72" y="182" font-size="19" font-weight="600" fill="#111827">在用资产与范围</text>
+<text x="72" y="207" font-size="15" font-weight="400" fill="#475569">运维平台 OAuth · 双源对账</text>
+<text x="72" y="229" font-size="15" font-weight="400" fill="#475569">节点身份与生命周期</text>
+</g>
+<g id="telemetry"><rect x="428" y="154" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="444" y="182" font-size="19" font-weight="600" fill="#111827">监控与历史时序</text>
+<text x="444" y="207" font-size="15" font-weight="400" fill="#475569">Prometheus 兼容源</text>
+<text x="444" y="229" font-size="15" font-weight="400" fill="#475569">DCGM · gpu_exporter</text>
+</g>
+<g id="evidence"><rect x="800" y="154" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="816" y="182" font-size="19" font-weight="600" fill="#111827">受控只读取证</text>
+<text x="816" y="207" font-size="15" font-weight="400" fill="#475569">日志 · BMC · SMART / EDAC</text>
+<text x="816" y="229" font-size="15" font-weight="400" fill="#475569">注册命令 · 离线证据包</text>
+</g>
+</g>
+<g id="foundation"><rect x="40" y="308" width="1120" height="156" rx="12" fill="#f0fdf4" stroke="#cbd5e1"/>
+<text x="58" y="338" font-size="16" font-weight="700" fill="#475569">02  数据基础</text>
+<g id="identity"><rect x="56" y="354" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="72" y="382" font-size="19" font-weight="600" fill="#111827">身份与数据治理</text>
+<text x="72" y="407" font-size="15" font-weight="400" fill="#475569">资产映射 · 代次 · 适用范围</text>
+<text x="72" y="429" font-size="15" font-weight="400" fill="#475569">缺失与来源冲突保持显式</text>
+</g>
+<g id="history"><rect x="428" y="354" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="444" y="382" font-size="19" font-weight="600" fill="#111827">历史与特征</text>
+<text x="444" y="407" font-size="15" font-weight="400" fill="#475569">观测窗口 · 连续性 · 时间边界</text>
+<text x="444" y="429" font-size="15" font-weight="400" fill="#475569">来源审计 · 受控历史回放</text>
+</g>
+<g id="storage"><rect x="800" y="354" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="816" y="382" font-size="19" font-weight="600" fill="#111827">PostgreSQL 持久化</text>
+<text x="816" y="407" font-size="15" font-weight="400" fill="#475569">资产 · 评分 · 事件 · 人工反馈</text>
+<text x="816" y="429" font-size="15" font-weight="400" fill="#475569">证据引用 · 版本 · SHA256</text>
+</g>
+</g>
+<g id="assessment"><rect x="40" y="508" width="1120" height="156" rx="12" fill="#faf5ff" stroke="#cbd5e1"/>
+<text x="58" y="538" font-size="16" font-weight="700" fill="#475569">03  评估与发现</text>
+<g id="quality"><rect x="56" y="554" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="72" y="582" font-size="19" font-weight="600" fill="#111827">数据质量发现</text>
+<text x="72" y="607" font-size="15" font-weight="400" fill="#475569">采集可用性 · 指标连续性</text>
+<text x="72" y="629" font-size="15" font-weight="400" fill="#475569">身份偏差 · 覆盖缺口</text>
+</g>
+<g id="gpu"><rect x="428" y="554" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="444" y="582" font-size="19" font-weight="600" fill="#111827">GPU 健康与相对风险</text>
+<text x="444" y="607" font-size="15" font-weight="400" fill="#475569">确定性规则 · 可解释健康分</text>
+<text x="444" y="629" font-size="15" font-weight="400" fill="#475569">影子排名 · 独立效果验证</text>
+</g>
+<g id="disk"><rect x="800" y="554" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="816" y="582" font-size="19" font-weight="600" fill="#111827">物理盘健康</text>
+<text x="816" y="607" font-size="15" font-weight="400" fill="#475569">NVMe · 有限型号 SATA · 历史</text>
+<text x="816" y="629" font-size="15" font-weight="400" fill="#475569">分维度评估 · 身份与证据</text>
+</g>
+</g>
+<g id="workspace"><rect x="40" y="708" width="1120" height="156" rx="12" fill="#fff7ed" stroke="#cbd5e1"/>
+<text x="58" y="738" font-size="16" font-weight="700" fill="#475569">04  产品工作台</text>
+<g id="product"><rect x="56" y="754" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="72" y="782" font-size="19" font-weight="600" fill="#111827">React 工作台 + Go API</text>
+<text x="72" y="807" font-size="15" font-weight="400" fill="#475569">总览 · 资产 · 健康 · 数据质量</text>
+<text x="72" y="829" font-size="15" font-weight="400" fill="#475569">中英文界面 · 实例配置</text>
+</g>
+<g id="workflow"><rect x="428" y="754" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+<text x="444" y="782" font-size="19" font-weight="600" fill="#111827">事件与人工处置</text>
+<text x="444" y="807" font-size="15" font-weight="400" fill="#475569">告警详情 · 处置记录 · 反馈</text>
+<text x="444" y="829" font-size="15" font-weight="400" fill="#475569">维修复测流程：持续建设</text>
+</g>
+<g id="research"><rect x="800" y="754" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-dasharray="6 4"/>
+<text x="816" y="782" font-size="19" font-weight="600" fill="#111827">离线训练与评估</text>
+<text x="816" y="807" font-size="15" font-weight="400" fill="#475569">固定数据集 · 候选模型 · 对照</text>
+<text x="816" y="829" font-size="15" font-weight="400" fill="#475569">数据与效果门通过后才晋级</text>
+</g>
+</g>
+<path id="ingest-228" d="M228 248 V354" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="ingest-600" d="M600 248 V354" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="ingest-972" d="M972 248 V354" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="assess-source-228" d="M228 448 V482" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="assess-source-600" d="M600 448 V482" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="assess-source-972" d="M972 448 V482" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="assess-bus" d="M228 482 H972" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="assess-target-228" d="M228 482 V554" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="assess-target-600" d="M600 482 V554" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="assess-target-972" d="M972 482 V554" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="present-source-228" d="M228 648 V682" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="present-source-600" d="M600 648 V682" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="present-source-972" d="M972 648 V682" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="present-bus" d="M228 682 H972" stroke="#2563eb" stroke-width="2" fill="none"/>
+<path id="present-target-228" d="M228 682 V754" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="present-target-600" d="M600 682 V754" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<path id="present-target-972" d="M972 682 V754" stroke="#9333ea" stroke-width="2" fill="none" marker-end="url(#research-arrow)" stroke-dasharray="5 4"/>
+<rect x="40" y="930" width="1120" height="82" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+<text x="58" y="960" font-size="18" font-weight="600" fill="#475569">共同边界：来源与证据可追溯 · 未知不补零 · 人工确认关键操作</text>
+<text x="58" y="989" font-size="15" font-weight="400" fill="#475569">相对风险不等于故障概率；研究与影子输出不自动触发隔离或重启。</text>
+<path d="M48 1034 H90" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="104" y="1040" font-size="14" font-weight="400" fill="#475569">证据 / 数据流</text>
+<path d="M360 1034 H402" stroke="#9333ea" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#research-arrow)"/>
+<text x="416" y="1040" font-size="14" font-weight="400" fill="#475569">受门禁控制的研究路径</text>
+</svg>
