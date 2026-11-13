@@ -40,6 +40,7 @@ func run(args []string) error {
 	mode := flags.String("mode", "full", "full or identity-only (evidence-ingest-prepare only)")
 	reviewID := flags.Uint("review", 0, "review row ID; selects latest feedback revision")
 	queryID := flags.Uint("query", 0, "frozen query ID for outcomes")
+	recordShadow := flags.Bool("record", false, "shadow-score: freeze the batch (once per query) instead of a read-only projection")
 	target := flags.String("target", "confirmed_hardware_failure", "outcome target for outcome-plan/outcomes: confirmed_hardware_failure (v1) or node_hardware_incident (T-A)")
 	source := flags.String("source", "", "history source for coverage-check/coverage-members: hardware_fault_ledger, monitoring or identity")
 	owner := flags.String("owner", "", "signing owner for coverage-check/coverage-members")
@@ -52,8 +53,8 @@ func run(args []string) error {
 	artifactSHA := flags.String("artifact-sha", "", "exact model file SHA256")
 	scoresSHA := flags.String("scores-sha", "", "exact score file SHA256")
 	throughText := flags.String("through", "", "RFC3339 ledger complete-through for ledger-declare")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "context-prepare" && command != "core-source-plan" && command != "coverage-plan" && command != "coverage-check" && command != "ledger-declare" && command != "coverage-members" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record") {
-		return fmt.Errorf("usage: gpu-risk [plan|record|context-prepare|core-source-plan|coverage-plan|evidence-ingest-prepare|evidence-ingest-apply|coverage-check|ledger-declare|coverage-members|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record] [-driver postgres|sqlite] [-input plan.json]")
+	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "context-prepare" && command != "core-source-plan" && command != "coverage-plan" && command != "coverage-check" && command != "ledger-declare" && command != "coverage-members" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record" && command != "shadow-score") {
+		return fmt.Errorf("usage: gpu-risk [plan|record|context-prepare|core-source-plan|coverage-plan|evidence-ingest-prepare|evidence-ingest-apply|coverage-check|ledger-declare|coverage-members|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record|shadow-score] [-driver postgres|sqlite] [-input plan.json]")
 	}
 	modeSet := false
 	flags.Visit(func(f *flag.Flag) {
@@ -315,6 +316,26 @@ func run(args []string) error {
 			return fmt.Errorf("outcome record failed")
 		}
 		return json.NewEncoder(os.Stdout).Encode(batch)
+	}
+	if command == "shadow-score" {
+		if *queryID == 0 {
+			return fmt.Errorf("shadow-score requires -query")
+		}
+		if *recordShadow {
+			if e := gpurisk.Migrate(db.WithContext(ctx)); e != nil {
+				return fmt.Errorf("shadow migration failed")
+			}
+			batch, e := gpurisk.RecordShadow(ctx, db, *queryID, time.Now())
+			if e != nil {
+				return fmt.Errorf("shadow record failed")
+			}
+			return json.NewEncoder(os.Stdout).Encode(batch)
+		}
+		batch, rows, e := gpurisk.ComputeShadow(ctx, db, *queryID, time.Now())
+		if e != nil {
+			return fmt.Errorf("shadow score failed")
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"batch": batch, "data": rows})
 	}
 	if command == "coverage-check" {
 		if e := gpurisk.Migrate(db.WithContext(ctx)); e != nil {

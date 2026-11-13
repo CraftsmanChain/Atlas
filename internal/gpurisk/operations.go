@@ -20,6 +20,9 @@ type OperationsConfig struct {
 	// IncidentOutcomes enables the additive T-A node incident outcome stage
 	// (gpu-node-incident-outcome-v1), after the v1 outcomes stage.
 	IncidentOutcomes bool
+	// Shadow freezes the shadow-strategy ranking (ShadowStrategy) of the newest
+	// query right after ranking; it never changes the frozen query or scores.
+	Shadow bool
 	CoverageOptions
 }
 
@@ -40,7 +43,7 @@ func OperationsOnceWith(ctx context.Context, db *gorm.DB, now time.Time, cfg Ope
 		name    string
 		enabled bool
 		run     func(context.Context, *gorm.DB, time.Time) error
-	}{{"ranking", cfg.Ranking, Daily}, {"coverage", cfg.Coverage, coverage}, {"outcomes", cfg.Outcomes, OutcomeDaily}, {"incident_outcomes", cfg.IncidentOutcomes, IncidentOutcomeDaily}} {
+	}{{"ranking", cfg.Ranking, Daily}, {"shadow", cfg.Shadow, ShadowDaily}, {"coverage", cfg.Coverage, coverage}, {"outcomes", cfg.Outcomes, OutcomeDaily}, {"incident_outcomes", cfg.IncidentOutcomes, IncidentOutcomeDaily}} {
 		if !stage.enabled {
 			continue
 		}
@@ -113,6 +116,18 @@ func observeOperationLocked(ctx context.Context, db *gorm.DB, now time.Time, sta
 		keys = append(keys, k)
 	} else if stage == "coverage" {
 		keys = append(keys, coverageJobKey(day))
+	} else if stage == "shadow" {
+		// The shadow stage has no job ledger; its frozen batch is the record.
+		var n int64
+		if e := db.WithContext(ctx).Model(&api.GPURiskShadowBatch{}).Where("query_id = ? AND strategy = ?", q.ID, ShadowStrategy).Count(&n).Error; e != nil {
+			return e
+		}
+		if runErr == nil && n == 1 {
+			op.Status = "completed"
+		} else if runErr != nil {
+			op.Status, op.ErrorCode = "failed", "operation_failed"
+		}
+		return saveOperation(ctx, db, op)
 	} else {
 		var queries []api.GPURiskQuery
 		if e := db.WithContext(ctx).Where("status = ? AND cutoff >= ? AND cutoff <= ?", "completed", now.UTC().Add(-31*24*time.Hour), now.UTC()).Order("id DESC").Limit(201).Find(&queries).Error; e != nil {
@@ -175,6 +190,10 @@ func observeOperationLocked(ctx context.Context, db *gorm.DB, now time.Time, sta
 	case running:
 		op.Status = "running"
 	}
+	return saveOperation(ctx, db, op)
+}
+
+func saveOperation(ctx context.Context, db *gorm.DB, op api.GPURiskOperation) error {
 	op.SHA, _ = digest([]any{op.Day, op.Stage, op.Status, op.ErrorCode, op.JobCount, op.Exhausted, op.QueryID, op.MemberCount, op.ResultSHA, op.OutcomeBatchID, op.OutcomeSHA})
 	return db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "day"}, {Name: "stage"}}, DoUpdates: clause.AssignmentColumns([]string{"status", "error_code", "job_count", "exhausted", "query_id", "member_count", "result_sha", "outcome_batch_id", "outcome_sha", "sha", "observed_at"}), Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "gpu_risk_operations.sha <> excluded.sha"}}}}).Create(&op).Error
 }

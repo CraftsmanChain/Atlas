@@ -138,7 +138,7 @@ func migrateSchema(db *gorm.DB) error {
 	}
 	return db.AutoMigrate(
 		&api.GPURiskModel{}, &api.GPURiskModelBatch{}, &api.GPURiskModelScore{}, &api.GPURiskEvidenceRevision{}, &api.GPURiskOutcomeBatch{}, &api.GPURiskNodeOutcome{}, &api.GPURiskScope{}, &api.GPURiskQuery{}, &api.GPURiskMember{}, &api.GPURiskScore{}, &api.GPURiskJob{},
-		&api.GPURiskSourceCoverageCheck{}, &api.GPURiskOperation{},
+		&api.GPURiskSourceCoverageCheck{}, &api.GPURiskOperation{}, &api.GPURiskShadowBatch{}, &api.GPURiskShadowScore{},
 		&api.AlertEvent{},
 		&api.AlertIngestionRecord{},
 		&api.AIAnalysisReport{},
