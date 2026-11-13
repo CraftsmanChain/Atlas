@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deployment_target.sh"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+push_only=0
+case "${1:-}" in
+  --push-only) push_only=1; shift ;;
+  --help|-h)
+    echo "Usage: bash scripts/deploy_remote_source.sh [--push-only]"
+    echo "--push-only: concurrently push HEAD to GitHub and GitLab; never build or deploy."
+    echo "Overrides: GITHUB_PUSH_TARGET, GITLAB_PUSH_TARGET, GIT_PUSH_TIMEOUT_SECONDS (default 60)."
+    exit 0 ;;
+esac
+if [[ $# != 0 ]]; then echo "Unknown argument: $1" >&2; exit 1; fi
 version_name="${VERSION_NAME:-dev}"
 branch="${BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
-git_remote="${GIT_REMOTE:-origin}"
-extra_git_remote="${EXTRA_GIT_REMOTE:-github}"
 deployment_stage="${ATLAS_DEPLOYMENT_STAGE:-development}"
 bootstrap="${ATLAS_BOOTSTRAP:-0}"
 prepare_native="${ATLAS_PREPARE_NATIVE:-0}"
+
+if [[ "$push_only" == 1 ]]; then
+  exec python3 "$script_dir/push_source_remotes.py"
+fi
+source "$script_dir/deployment_target.sh"
 
 if [[ "$bootstrap" != 0 && "$bootstrap" != 1 ]]; then
   echo "ATLAS_BOOTSTRAP must be 0 or 1" >&2
@@ -100,10 +113,7 @@ fi
 echo "Deployment target: $deployment_target ($remote_ssh), runtime=$deployment_runtime, bootstrap=$bootstrap, stage=$deployment_stage"
 
 if [[ "${SKIP_GIT_PUSH:-0}" != "1" ]]; then
-  git push "$git_remote" "$branch"
-  if [[ -n "$extra_git_remote" ]] && git remote get-url "$extra_git_remote" >/dev/null 2>&1; then
-    git push "$extra_git_remote" "$branch"
-  fi
+  python3 "$script_dir/push_source_remotes.py"
 fi
 
 echo "Building web assets locally without replacing current page data"
