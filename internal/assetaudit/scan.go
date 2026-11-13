@@ -1,0 +1,618 @@
+package assetaudit
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/crypto/ssh"
+)
+
+// defaultMask is only used when the sheet does not declare a mask for a row.
+const defaultMask = 24
+
+// maxScanTargets bounds one scan so a mistyped mask cannot turn into an
+// unbounded sweep of the private address space.
+const maxScanTargets = 131072
+
+// portCheckConcurrency bounds how many TCP:22 probes run at once so a sweep
+// with many ICMP-alive hosts still finishes quickly.
+const portCheckConcurrency = 64
+
+// minProbeTimeout is the floor for the TCP:22 and SSH-login deadlines. The
+// configured scan timeout is tuned for ICMP round trips, but an sshd that
+// resolves the client address or a loaded host can take several seconds to
+// finish the handshake, and a short deadline would silently drop reachable
+// nodes from the report.
+const minProbeTimeout = 5 * time.Second
+
+// probeTimeout applies minProbeTimeout to the configured scan timeout.
+func probeTimeout(configuredMS int) time.Duration {
+	timeout := time.Duration(configuredMS) * time.Millisecond
+	if timeout < minProbeTimeout {
+		timeout = minProbeTimeout
+	}
+	return timeout
+}
+
+// ScanFinding is one live address that has no record in the asset registry.
+type ScanFinding struct {
+	IPAddress string `json:"ip_address"`
+	Subnet    string `json:"subnet"`
+}
+
+// Scan statuses. Every sweep target is an address Atlas has no record for, so
+// the status records how far the follow-up probes got and lets the page list
+// each stage of the funnel rather than only the final unregistered set.
+const (
+	ScanStatusUnregistered   = "unregistered"
+	ScanStatusPort22Closed   = "port22_closed"
+	ScanStatusSSHLoginFailed = "ssh_login_failed"
+	ScanStatusMarked         = "marked"
+)
+
+// ScanHost is one ICMP-alive sweep target with the outcome of the port-22 and
+// SSH-login probes.
+type ScanHost struct {
+	IPAddress string `json:"ip_address"`
+	Subnet    string `json:"subnet"`
+	Status    string `json:"status"`
+}
+
+// ScanSubnetSummary reports per-subnet sweep coverage.
+type ScanSubnetSummary struct {
+	CIDR  string `json:"cidr"`
+	Hosts int    `json:"hosts"`
+	Live  int    `json:"live"`
+}
+
+// ScanSummary is the headline result of one live-IP scan.
+type ScanSummary struct {
+	Subnets          []ScanSubnetSummary `json:"subnets"`
+	Hosts            []ScanHost          `json:"hosts,omitempty"`
+	SubnetCount      int                 `json:"subnet_count"`
+	KnownAssetIPs    int                 `json:"known_asset_ips"`
+	DeliverySheetIPs int                 `json:"delivery_sheet_ips"`
+	ScannedTargets   int                 `json:"scanned_targets"`
+	LiveCount        int                 `json:"live_count"`
+	Port22Closed     int                 `json:"port22_closed"`
+	SSHLoginFailed   int                 `json:"ssh_login_failed"`
+	Marked           int                 `json:"marked"`
+	Unregistered     int                 `json:"unregistered"`
+	Truncated        bool                `json:"truncated"`
+	GeneratedAt      time.Time           `json:"generated_at"`
+}
+
+// sshCredential is one OS login Atlas may try against a discovered address.
+type sshCredential struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// defaultSSHCredentials is the fallback the sweep uses when the operator has
+// not stored a password list, so a fresh deployment still confirms that a live
+// address really is a manageable node.
+var defaultSSHCredentials = []sshCredential{
+	{Username: "ubuntu", Password: "Lexun@12#$"},
+	{Username: "root", Password: "Lexun@12#$"},
+}
+
+// sshCredentialPattern splits one "username password" line; the password is
+// everything after the first whitespace run so it can contain spaces.
+var sshCredentialPattern = regexp.MustCompile(`^(\S+)\s+(.+)$`)
+
+// parseSSHCredentials reads one "username password" credential per line and
+// drops blank or malformed lines. Duplicates are collapsed.
+func parseSSHCredentials(text string) []sshCredential {
+	credentials := make([]sshCredential, 0)
+	seen := make(map[string]struct{})
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		matches := sshCredentialPattern.FindStringSubmatch(strings.TrimSpace(line))
+		if len(matches) != 3 {
+			continue
+		}
+		credential := sshCredential{Username: matches[1], Password: strings.TrimSpace(matches[2])}
+		if credential.Username == "" || credential.Password == "" {
+			continue
+		}
+		key := credential.Username + "\x00" + credential.Password
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		credentials = append(credentials, credential)
+	}
+	return credentials
+}
+
+// sshLoginHost reports whether host accepts one of the credentials over SSH. A
+// credential that fails is followed by the next one, so an address is only
+// rejected once every credential has been tried.
+func sshLoginHost(ctx context.Context, host string, credentials []sshCredential, timeout time.Duration) bool {
+	if len(credentials) == 0 {
+		return false
+	}
+	address := net.JoinHostPort(host, "22")
+	for _, credential := range credentials {
+		if trySSHCredential(ctx, address, credential, timeout) {
+			return true
+		}
+	}
+	return false
+}
+
+func trySSHCredential(ctx context.Context, address string, credential sshCredential, timeout time.Duration) bool {
+	dialer := net.Dialer{Timeout: timeout}
+	connection, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return false
+	}
+	defer connection.Close()
+	deadline := time.Now().Add(timeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := connection.SetDeadline(deadline); err != nil {
+		return false
+	}
+	clientConnection, channels, requests, err := ssh.NewClientConn(connection, address, &ssh.ClientConfig{
+		User:            credential.Username,
+		Auth:            []ssh.AuthMethod{ssh.Password(credential.Password)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         timeout,
+	})
+	if err != nil {
+		return false
+	}
+	client := ssh.NewClient(clientConnection, channels, requests)
+	defer client.Close()
+	return true
+}
+
+type scanTarget struct {
+	ip     string
+	subnet string
+}
+
+type subnet struct {
+	cidr *net.IPNet
+}
+
+// runScan derives the cluster subnets, sweeps the addresses Atlas has no asset
+// record for, and returns the live ones that also accept an OS login.
+func (s *Service) runScan(ctx context.Context, fetch configForFetch, now time.Time, timeoutMS int, credentials []sshCredential) (ScanSummary, []ScanFinding, error) {
+	rows, err := s.fetchDeliveryRows(ctx, fetch)
+	if err != nil {
+		return ScanSummary{}, nil, err
+	}
+	parsed, err := parseDeliveryRows(rows)
+	if err != nil {
+		return ScanSummary{}, nil, err
+	}
+	known, err := s.knownAssetIPs()
+	if err != nil {
+		return ScanSummary{}, nil, err
+	}
+	// Addresses the delivery sheet already lists are inventoried devices, so
+	// they are as out of scope as the asset registry entries.
+	deliveryIPs := deliverySheetIPs(parsed)
+	summary := ScanSummary{KnownAssetIPs: len(known), DeliverySheetIPs: len(deliveryIPs), GeneratedAt: now}
+
+	// Only the delivery sheet's OSIP column and the recorded assets' OS addresses
+	// define the sweep scope; out-of-band (BMC) and 10G management networks are
+	// deliberately never scanned.
+	subnets := collectSubnets(parsed)
+	assetIPs, err := s.assetOSIPs()
+	if err != nil {
+		return ScanSummary{}, nil, err
+	}
+	for _, ip := range assetIPs {
+		parsedIP := net.ParseIP(ip)
+		if parsedIP == nil || parsedIP.To4() == nil || containsIP(subnets, parsedIP) {
+			continue
+		}
+		if _, network, maskErr := net.ParseCIDR(fmt.Sprintf("%s/%d", ip, defaultMask)); maskErr == nil {
+			subnets = addSubnet(subnets, network)
+		}
+	}
+	sort.Slice(subnets, func(left, right int) bool { return subnets[left].cidr.String() < subnets[right].cidr.String() })
+
+	targets := make([]scanTarget, 0, 4096)
+	counters := make(map[string]*ScanSubnetSummary, len(subnets))
+	seen := make(map[string]struct{})
+	for _, item := range subnets {
+		cidr := item.cidr.String()
+		stat := &ScanSubnetSummary{CIDR: cidr}
+		counters[cidr] = stat
+		forEachHost(item.cidr, func(ip net.IP) bool {
+			address := ip.String()
+			if _, exists := seen[address]; exists {
+				return true
+			}
+			seen[address] = struct{}{}
+			if _, exists := known[address]; exists {
+				return true
+			}
+			if _, exists := deliveryIPs[address]; exists {
+				return true
+			}
+			if len(targets) >= maxScanTargets {
+				summary.Truncated = true
+				return false
+			}
+			targets = append(targets, scanTarget{ip: address, subnet: cidr})
+			stat.Hosts++
+			return true
+		})
+		if summary.Truncated {
+			break
+		}
+	}
+	summary.SubnetCount = len(subnets)
+	summary.ScannedTargets = len(targets)
+	if len(targets) == 0 {
+		return summary, []ScanFinding{}, nil
+	}
+
+	if timeoutMS <= 0 {
+		timeoutMS = 1000
+	}
+	sweep := s.sweepHosts
+	if sweep == nil {
+		sweep = s.sweep
+	}
+	alive, err := sweep(ctx, targets, timeoutMS)
+	if err != nil {
+		return summary, nil, err
+	}
+	marks, err := s.scanIPMarks()
+	if err != nil {
+		return summary, nil, err
+	}
+	// A marked address is reported as its own category, so it is split out
+	// before the port-22 and SSH probes and never counted as live, port-closed
+	// or login-failed.
+	aliveIPs := make([]string, 0, len(alive))
+	markedAlive := 0
+	for _, target := range targets {
+		if !alive[target.ip] {
+			continue
+		}
+		if _, marked := marks[target.ip]; marked {
+			markedAlive++
+			continue
+		}
+		aliveIPs = append(aliveIPs, target.ip)
+	}
+	// An address that answers ICMP but exposes no SSH listener is not a
+	// manageable node, so it is reported neither as live nor as unregistered.
+	probeDeadline := probeTimeout(timeoutMS)
+	reachable := s.reachablePort22(ctx, aliveIPs, probeDeadline)
+	summary.Marked = markedAlive
+	summary.LiveCount = len(aliveIPs)
+	summary.Port22Closed = len(aliveIPs) - len(reachable)
+	// An address is only counted once one of the configured OS credentials logs
+	// in; a host that opens 22 but rejects every credential is not manageable.
+	openPorts := make([]string, 0, len(reachable))
+	for _, ip := range aliveIPs {
+		if reachable[ip] {
+			openPorts = append(openPorts, ip)
+		}
+	}
+	loggedIn := s.reachableSSH(ctx, openPorts, credentials, probeDeadline)
+	summary.SSHLoginFailed = len(openPorts) - len(loggedIn)
+	findings := make([]ScanFinding, 0, len(loggedIn))
+	// Every ICMP-alive target is recorded with the outcome of the follow-up
+	// probes so the page can list the whole funnel, not just the survivors.
+	hosts := make([]ScanHost, 0, len(aliveIPs)+markedAlive)
+	for _, target := range targets {
+		if !alive[target.ip] {
+			continue
+		}
+		if _, marked := marks[target.ip]; marked {
+			hosts = append(hosts, ScanHost{IPAddress: target.ip, Subnet: target.subnet, Status: ScanStatusMarked})
+			continue
+		}
+		status := ScanStatusPort22Closed
+		if reachable[target.ip] {
+			status = ScanStatusSSHLoginFailed
+			if loggedIn[target.ip] {
+				status = ScanStatusUnregistered
+			}
+		}
+		hosts = append(hosts, ScanHost{IPAddress: target.ip, Subnet: target.subnet, Status: status})
+		if status != ScanStatusUnregistered {
+			continue
+		}
+		findings = append(findings, ScanFinding{IPAddress: target.ip, Subnet: target.subnet})
+		if stat, ok := counters[target.subnet]; ok {
+			stat.Live++
+		}
+	}
+	sort.Slice(findings, func(left, right int) bool { return compareIP(findings[left].IPAddress, findings[right].IPAddress) < 0 })
+	sort.Slice(hosts, func(left, right int) bool { return compareIP(hosts[left].IPAddress, hosts[right].IPAddress) < 0 })
+	summary.Hosts = hosts
+	summary.Subnets = make([]ScanSubnetSummary, 0, len(subnets))
+	for _, item := range subnets {
+		if stat, ok := counters[item.cidr.String()]; ok {
+			summary.Subnets = append(summary.Subnets, *stat)
+		}
+	}
+	summary.Unregistered = len(findings)
+	return summary, findings, nil
+}
+
+// deliverySheetIPs collects every address the delivery sheet lists. Those
+// devices are already inventoried in the sheet, so the live-IP scan must not
+// report them as unregistered.
+func deliverySheetIPs(rows []deliveryRow) map[string]struct{} {
+	ips := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		if row.IP != "" {
+			ips[row.IP] = struct{}{}
+		}
+	}
+	return ips
+}
+
+// collectSubnets derives the cluster's IPv4 subnets from the delivered rows
+// using each row's declared mask. Out-of-scope rows (storage nodes, network
+// devices, ODF) are skipped so the sweep only covers the tracked OS networks.
+func collectSubnets(rows []deliveryRow) []subnet {
+	subnets := make([]subnet, 0)
+	for _, row := range rows {
+		if !row.Delivered || row.Excluded || row.IP == "" {
+			continue
+		}
+		prefix := row.Mask
+		if prefix == 0 {
+			prefix = defaultMask
+		}
+		_, network, err := net.ParseCIDR(fmt.Sprintf("%s/%d", row.IP, prefix))
+		if err != nil || network.IP.To4() == nil {
+			continue
+		}
+		subnets = addSubnet(subnets, network)
+	}
+	return subnets
+}
+
+// addSubnet keeps the set overlap-free: a subnet already covered by an existing
+// entry is dropped, and any existing entry covered by the new one is replaced.
+func addSubnet(subnets []subnet, candidate *net.IPNet) []subnet {
+	for _, item := range subnets {
+		if item.cidr.Contains(candidate.IP) {
+			return subnets
+		}
+	}
+	kept := subnets[:0]
+	for _, item := range subnets {
+		if !candidate.Contains(item.cidr.IP) {
+			kept = append(kept, item)
+		}
+	}
+	return append(kept, subnet{cidr: candidate})
+}
+
+func containsIP(subnets []subnet, ip net.IP) bool {
+	for _, item := range subnets {
+		if item.cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// forEachHost walks the usable addresses of a subnet without materializing the
+// whole range. Returning false stops the walk.
+func forEachHost(network *net.IPNet, visit func(net.IP) bool) {
+	base := network.IP.To4()
+	mask := network.Mask
+	if base == nil || len(mask) != 4 {
+		return
+	}
+	ones, bits := mask.Size()
+	if bits != 32 {
+		return
+	}
+	if ones >= 31 {
+		visit(append(net.IP(nil), base...))
+		return
+	}
+	current := make(net.IP, 4)
+	copy(current, base)
+	last := broadcastIPv4(base, mask)
+	for {
+		incrementIPv4(current)
+		if current.Equal(last) {
+			return
+		}
+		if !visit(append(net.IP(nil), current...)) {
+			return
+		}
+	}
+}
+
+func broadcastIPv4(base net.IP, mask net.IPMask) net.IP {
+	result := make(net.IP, 4)
+	for index := 0; index < 4; index++ {
+		result[index] = base[index] | ^mask[index]
+	}
+	return result
+}
+
+func incrementIPv4(ip net.IP) {
+	for index := len(ip) - 1; index >= 0; index-- {
+		ip[index]++
+		if ip[index] != 0 {
+			return
+		}
+	}
+}
+
+func compareIP(left, right string) int {
+	a, b := net.ParseIP(left).To4(), net.ParseIP(right).To4()
+	if a == nil || b == nil {
+		return strings.Compare(left, right)
+	}
+	for index := 0; index < 4; index++ {
+		if a[index] != b[index] {
+			return int(a[index]) - int(b[index])
+		}
+	}
+	return 0
+}
+
+// sweep runs fping over the target list and returns the alive addresses.
+func (s *Service) sweep(ctx context.Context, targets []scanTarget, timeoutMS int) (map[string]bool, error) {
+	binary, err := exec.LookPath("fping")
+	if err != nil {
+		return nil, errors.New("fping is not installed on the Atlas host; live-IP scan is unavailable")
+	}
+	file, err := os.CreateTemp("", "atlas-scan-*.txt")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(file.Name())
+	writer := bufio.NewWriter(file)
+	for _, target := range targets {
+		if _, err := writer.WriteString(target.ip + "\n"); err != nil {
+			file.Close()
+			return nil, err
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		file.Close()
+		return nil, err
+	}
+	file.Close()
+
+	// fping probes many hosts concurrently, so the wall clock is far below the
+	// serial worst case. Budget generously but keep a floor so a small sweep is
+	// never cut short by scheduling jitter.
+	overall := time.Duration(len(targets)) * time.Duration(timeoutMS) * time.Millisecond / 50
+	if overall < 5*time.Minute {
+		overall = 5 * time.Minute
+	}
+	runCtx, cancel := context.WithTimeout(ctx, overall)
+	defer cancel()
+	command := exec.CommandContext(runCtx, binary, "-a", "-r", "1", "-t", fmt.Sprintf("%d", timeoutMS), "-f", file.Name())
+	output, err := command.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		// fping exits 1 when at least one target did not answer, which is the
+		// normal case for a sweep; only treat other failures as errors.
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			return nil, fmt.Errorf("fping sweep failed: %w", err)
+		}
+	}
+	alive := make(map[string]bool)
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if net.ParseIP(fields[0]) != nil {
+			alive[fields[0]] = true
+		}
+	}
+	return alive, nil
+}
+
+// reachablePort22 returns the hosts that accept a TCP connection on port 22.
+func (s *Service) reachablePort22(ctx context.Context, hosts []string, timeout time.Duration) map[string]bool {
+	reachable := make(map[string]bool, len(hosts))
+	if len(hosts) == 0 {
+		return reachable
+	}
+	probe := s.probePort
+	if probe == nil {
+		probe = dialTCP
+	}
+	workers := portCheckConcurrency
+	if workers > len(hosts) {
+		workers = len(hosts)
+	}
+	jobs := make(chan string)
+	results := make(chan string)
+	var wait sync.WaitGroup
+	for index := 0; index < workers; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for ip := range jobs {
+				if probe(ctx, net.JoinHostPort(ip, "22"), timeout) {
+					results <- ip
+				}
+			}
+		}()
+	}
+	go func() {
+		for _, ip := range hosts {
+			jobs <- ip
+		}
+		close(jobs)
+	}()
+	go func() {
+		wait.Wait()
+		close(results)
+	}()
+	for ip := range results {
+		reachable[ip] = true
+	}
+	return reachable
+}
+
+// reachableSSH returns the hosts that accept an SSH login with one of the
+// configured credentials.
+func (s *Service) reachableSSH(ctx context.Context, hosts []string, credentials []sshCredential, timeout time.Duration) map[string]bool {
+	loggedIn := make(map[string]bool, len(hosts))
+	if len(hosts) == 0 || len(credentials) == 0 {
+		return loggedIn
+	}
+	probe := s.loginSSH
+	if probe == nil {
+		probe = sshLoginHost
+	}
+	workers := portCheckConcurrency
+	if workers > len(hosts) {
+		workers = len(hosts)
+	}
+	jobs := make(chan string)
+	results := make(chan string)
+	var wait sync.WaitGroup
+	for index := 0; index < workers; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for ip := range jobs {
+				if probe(ctx, ip, credentials, timeout) {
+					results <- ip
+				}
+			}
+		}()
+	}
+	go func() {
+		for _, ip := range hosts {
+			jobs <- ip
+		}
+		close(jobs)
+	}()
+	go func() {
+		wait.Wait()
+		close(results)
+	}()
+	for ip := range results {
+		loggedIn[ip] = true
+	}
+	return loggedIn
+}

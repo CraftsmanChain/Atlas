@@ -4,6 +4,7 @@
 SERVER_BIN=bin/atlas-server
 AGENT_BIN=bin/atlas-agent
 DBMIGRATE_BIN=bin/atlas-db-migrate
+GPU_RISK_BIN=bin/gpu-risk
 
 GO ?= go
 NPM ?= npm
@@ -22,6 +23,7 @@ build:
 	$(GO_ENV) $(GO) build -o $(SERVER_BIN) ./cmd/server
 	$(GO_ENV) $(GO) build -o $(AGENT_BIN) ./cmd/agent
 	$(GO_ENV) $(GO) build -o $(DBMIGRATE_BIN) ./cmd/dbmigrate
+	$(GO_ENV) $(GO) build -o $(GPU_RISK_BIN) ./cmd/gpu-risk
 	@echo "Build complete."
 
 test:
@@ -58,3 +60,60 @@ run-agent:
 
 run-dbmigrate:
 	$(GO) run ./cmd/dbmigrate
+
+# Isolated optional CPU runtime; never installs packages or accesses a database.
+RANKER_PYTHON ?= python3
+.PHONY: gpu-ranker-test
+gpu-ranker-test:
+	@ranker_test_dir=$$(mktemp -d /tmp/atlas-ranker-test.XXXXXX); \
+	trap 'rm -rf "$$ranker_test_dir"' EXIT; \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$ranker_test_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
+	$(GO_ENV) $(GO) build -o "$$ranker_test_dir/gpu-risk" ./cmd/gpu-risk && \
+	ATLAS_GPU_RISK_VERIFY_BIN="$$ranker_test_dir/gpu-risk" ATLAS_GPU_RISK_MLP_FIXTURE="$$ranker_test_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -v
+
+.PHONY: gpu-ranking-eval-test
+gpu-ranking-eval-test:
+	@eval_test_dir=$$(mktemp -d /tmp/atlas-eval-test.XXXXXX); \
+	trap 'rm -rf "$$eval_test_dir"' EXIT; \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$eval_test_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$eval_test_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p 'test_*baseline*.py' -v && \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$eval_test_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p test_evaluate.py -v
+
+.PHONY: gpu-period-report-test
+gpu-period-report-test:
+	@period_test_dir=$$(mktemp -d /tmp/atlas-period-test.XXXXXX); \
+	trap 'rm -rf "$$period_test_dir"' EXIT; \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$period_test_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$period_test_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p test_period_report.py -v
+
+.PHONY: gpu-objectives-test
+gpu-objectives-test:
+	$(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p test_objectives.py -v
+
+.PHONY: gpu-objective-training-test
+gpu-objective-training-test:
+	@candidate_dir=$$(mktemp -d /tmp/atlas-objective-test.XXXXXX); \
+	trap 'rm -rf "$$candidate_dir"' EXIT; \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$candidate_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$candidate_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p test_train_objective.py -v
+
+.PHONY: gpu-objective-comparison-test
+gpu-objective-comparison-test:
+	@comparison_dir=$$(mktemp -d /tmp/atlas-objective-comparison.XXXXXX); \
+	trap 'rm -rf "$$comparison_dir"' EXIT; \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$comparison_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$comparison_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p test_compare_objectives.py -v
+
+.PHONY: gpu-feature-ablation-test
+gpu-feature-ablation-test:
+	@ablation_dir=$$(mktemp -d /tmp/atlas-ablation-test.XXXXXX); \
+	trap 'rm -rf "$$ablation_dir"' EXIT; \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$ablation_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$ablation_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p test_feature_ablation.py -v
+
+.PHONY: gpu-ablation-training-test gpu-ablation-comparison-test
+gpu-ablation-training-test gpu-ablation-comparison-test:
+	@ablation_test_dir=$$(mktemp -d /tmp/atlas-ablation-training.XXXXXX); \
+	trap 'rm -rf "$$ablation_test_dir"' EXIT; \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$ablation_test_dir/dataset.json" $(GO_ENV) $(GO) test ./internal/gpurisk -run TestRankerSyntheticDatasetFixture -count=1 && \
+	ATLAS_GPU_RISK_MLP_FIXTURE="$$ablation_test_dir/dataset.json" $(RANKER_PYTHON) -m unittest discover -s tools/gpu_ranker -p 'test_*ablation*.py' -v

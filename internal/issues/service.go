@@ -68,7 +68,14 @@ func (s *Service) SyncDetectedIssues() error {
 		if err := tx.Where("lifecycle <> ? AND state <> ?", "retired", "up").Find(&nodes).Error; err != nil {
 			return err
 		}
+		// A node that is not up (offline, degraded or unknown) collapses to a
+		// single node_state issue: every node-scoped sub-issue is suppressed
+		// here and then auto-cleared by clearMissing, so operators see one
+		// actionable problem per unreachable node instead of a fan-out of
+		// secondary findings.
+		downNodeIPs := make(map[string]bool, len(nodes))
 		for _, node := range nodes {
+			downNodeIPs[node.NodeIP] = true
 			severity := map[string]string{"offline": "critical", "degraded": "warning", "unknown": "attention"}[node.State]
 			if severity == "" {
 				severity = "attention"
@@ -86,6 +93,9 @@ func (s *Service) SyncDetectedIssues() error {
 			return err
 		}
 		for _, asset := range assets {
+			if downNodeIPs[asset.NodeIP] {
+				continue
+			}
 			severity := "attention"
 			if asset.State == "conflict" {
 				severity = "critical"
@@ -118,16 +128,22 @@ func (s *Service) SyncDetectedIssues() error {
 			return err
 		}
 		for _, issue := range activeAccessIssues {
+			if downNodeIPs[issue.NodeIP] {
+				continue
+			}
 			expectedKey := issueKeyForNodeGeneration("node_access_auth:"+issue.NodeIP, generationByIP[issue.NodeIP])
 			if issue.IssueKey == expectedKey {
 				activeBySource["node_access_auth"][issue.IssueKey] = true
 			}
 		}
 		var targets []api.CollectorTarget
-		if err := tx.Where("node_ip IN (?) AND health <> ?", activeNodeIPs, "up").Find(&targets).Error; err != nil {
+		if err := tx.Where("node_ip IN (?) AND (health <> ? OR reason_code IN ?)", activeNodeIPs, "up", []string{"gpu_collection_failed", "gpu_collection_unverified", "gpu_business_metrics_missing"}).Find(&targets).Error; err != nil {
 			return err
 		}
 		for _, target := range targets {
+			if downNodeIPs[target.NodeIP] {
+				continue
+			}
 			severity := "warning"
 			if target.Suppressed {
 				severity = "info"
@@ -135,6 +151,9 @@ func (s *Service) SyncDetectedIssues() error {
 				severity = "attention"
 			}
 			item := detectedIssue{key: issueKeyForNodeGeneration("target_health:"+target.TargetKey, generationByIP[target.NodeIP]), category: "data_quality", issueType: "target_health", title: fmt.Sprintf("%s target on %s is %s", target.Job, target.NodeIP, target.Health), description: strings.TrimSpace(strings.Join([]string{target.ReasonCode, target.LastError}, ": ")), entityType: "target", entityKey: target.TargetKey, nodeIP: target.NodeIP, severity: severity, source: "collector_target", detectionState: "active", sourceRecordID: target.ID, lastDetectedAt: fallbackTime(target.LastSyncedAt, now)}
+			if target.Health == "up" {
+				item.title = fmt.Sprintf("%s collection on %s needs review", target.Job, target.NodeIP)
+			}
 			activeBySource[item.source][item.key] = true
 			if err := upsertDetected(tx, item, now); err != nil {
 				return err
@@ -146,6 +165,9 @@ func (s *Service) SyncDetectedIssues() error {
 			return err
 		}
 		for _, score := range unknownScores {
+			if downNodeIPs[score.NodeIP] {
+				continue
+			}
 			key := fmt.Sprintf("health_unknown:%d", score.GPUAssetID)
 			item := detectedIssue{key: key, category: "data_quality", issueType: "health_score_unknown", title: fmt.Sprintf("GPU health is unknown on %s GPU %d", score.NodeIP, score.GPUIndex), description: fmt.Sprintf("Health score cannot be calculated; data confidence=%s", score.DataConfidence), entityType: "gpu", entityKey: fmt.Sprintf("%d", score.GPUAssetID), nodeIP: score.NodeIP, gpuUUID: score.GPUUUID, severity: "attention", source: "health_score", detectionState: "active", sourceRecordID: score.ID, lastDetectedAt: fallbackTime(score.EvaluatedAt, now)}
 			activeBySource[item.source][item.key] = true
@@ -162,6 +184,9 @@ func (s *Service) SyncDetectedIssues() error {
 			return err
 		}
 		for _, snapshot := range currentSnapshots {
+			if downNodeIPs[snapshot.NodeIP] {
+				continue
+			}
 			severity, active := telemetryContinuitySeverity(snapshot.Metrics)
 			if !active {
 				continue

@@ -15,10 +15,16 @@ import (
 	"atlas/internal/prometheus"
 	"atlas/pkg/api"
 	"atlas/pkg/config"
+	"atlas/pkg/notifier"
 	"atlas/pkg/storage"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+// platformConfigSingletonID is the fixed primary key of the single
+// PlatformDisplayConfig row, used to label failure cards with the live
+// instance name.
+const platformConfigSingletonID uint = 1
 
 type prometheusReader interface {
 	BaseURL() string
@@ -32,11 +38,13 @@ type assetSource interface {
 }
 
 type Service struct {
-	db     *storage.DB
-	prom   prometheusReader
-	assets assetSource
-	config config.InventoryConfig
-	now    func() time.Time
+	db           *storage.DB
+	prom         prometheusReader
+	assets       assetSource
+	notifier     *notifier.FeishuNotifier
+	instanceName string
+	config       config.InventoryConfig
+	now          func() time.Time
 }
 
 type gpuSample struct {
@@ -58,6 +66,31 @@ func NewServiceWithAssets(db *storage.DB, prom prometheusReader, cfg config.Inve
 	service := NewService(db, prom, cfg)
 	service.assets = assets
 	return service
+}
+
+// WithNotifier attaches the platform notifier so a failed reconciliation also
+// reaches the Feishu group instead of only the server log. An inventory sync is
+// read-only and best-effort, so without the card a broken Prometheus or asset
+// feed would stay invisible until an operator reads the sync audit page.
+// defaultInstanceName labels the card until Platform Config has stored a name.
+func (s *Service) WithNotifier(n *notifier.FeishuNotifier, defaultInstanceName string) *Service {
+	s.notifier, s.instanceName = n, strings.TrimSpace(defaultInstanceName)
+	return s
+}
+
+// resolveInstanceName mirrors the asset-audit labelling: the live Platform
+// Config instance name wins, then the branding default, then "Atlas".
+func (s *Service) resolveInstanceName() string {
+	var settings api.PlatformDisplayConfig
+	if err := s.db.First(&settings, platformConfigSingletonID).Error; err == nil {
+		if name := strings.TrimSpace(settings.InstanceName); name != "" {
+			return name
+		}
+	}
+	if s.instanceName != "" {
+		return s.instanceName
+	}
+	return "Atlas"
 }
 
 // Run establishes a full baseline, then performs one combined monitoring
@@ -130,7 +163,7 @@ func (s *Service) SyncTargets(ctx context.Context) (*api.InventorySyncRun, error
 	if len(nodeIPs) == 0 {
 		return s.failRun(run, fmt.Errorf("target sync found zero tracked GPU nodes"))
 	}
-	changes, err := s.persistTargets(now, run.ID, nodeIPs, indexTargets(targets, s.config))
+	changes, err := s.persistTargets(now, run.ID, nodeIPs, indexTargets(targets, s.config), s.collectionHealth(ctx, now))
 	if err != nil {
 		return s.failRun(run, err)
 	}
@@ -208,7 +241,7 @@ func (s *Service) syncInventory(ctx context.Context, taskType string, recoverHis
 	if err != nil {
 		return s.failRun(run, err)
 	}
-	targetChanges, targetErr := s.persistTargets(now, run.ID, nodeIPs, targetIndex)
+	targetChanges, targetErr := s.persistTargets(now, run.ID, nodeIPs, targetIndex, s.collectionHealth(ctx, now))
 	if targetErr != nil {
 		return s.failRun(run, targetErr)
 	}
@@ -255,7 +288,25 @@ func (s *Service) failRun(run *api.InventorySyncRun, err error) (*api.InventoryS
 	finished := s.now()
 	run.Status, run.FinishedAt, run.ErrorMessage = "failed", &finished, err.Error()
 	_ = s.db.Save(run).Error
+	s.notifyFailure(run, err)
 	return run, err
+}
+
+// notifyFailure pushes a failed reconciliation to the Feishu group so a broken
+// sync surfaces immediately instead of only in the server log and the sync
+// audit page.
+func (s *Service) notifyFailure(run *api.InventorySyncRun, cause error) {
+	if s.notifier == nil {
+		return
+	}
+	title := s.resolveInstanceName() + " · 资产同步失败"
+	content := fmt.Sprintf(
+		"**任务**: %s\n**状态**: FAILED\n**错误**: %s\n**时间**: %s\n",
+		run.TaskType, cause.Error(), s.now().Format("2006-01-02 15:04:05"),
+	)
+	if err := s.notifier.SendCard(title, "red", content); err != nil {
+		log.Printf("inventory sync failure alert failed: task=%s error=%v", run.TaskType, err)
+	}
 }
 
 func (s *Service) finishRun(run *api.InventorySyncRun) (*api.InventorySyncRun, error) {
@@ -528,7 +579,7 @@ func identitySlotKey(ip string, generation, slot int) string {
 	return fmt.Sprintf("%s:g%d:%d", ip, generation, slot)
 }
 
-func (s *Service) persistTargets(now time.Time, runID uint, nodeIPs []string, targets map[string]prometheus.Target) (int, error) {
+func (s *Service) persistTargets(now time.Time, runID uint, nodeIPs []string, targets map[string]prometheus.Target, diagnostics map[string]string) (int, error) {
 	changeCount := 0
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		for _, nodeIP := range nodeIPs {
@@ -562,6 +613,16 @@ func (s *Service) persistTargets(now time.Time, runID uint, nodeIPs []string, ta
 				key := targetKey(job, nodeIP)
 				var existing api.CollectorTarget
 				hasExisting := tx.Where("target_key = ?", key).First(&existing).Error == nil
+				if job == "gpu_exporter" && health == "up" {
+					diagnosis := diagnostics[t.Labels["instance"]]
+					if diagnosis == "healthy" {
+						assessment.reasonCode = ""
+					} else if diagnosis != "" {
+						assessment.reasonCode = diagnosis
+					} else if hasExisting && collectionReason(existing.ReasonCode) {
+						assessment.reasonCode = "gpu_collection_unverified"
+					}
+				}
 				record := api.CollectorTarget{TargetKey: key, Job: job, Instance: t.Labels["instance"], TargetIP: targetIP, NodeIP: nodeIP, Health: health, ReasonCode: assessment.reasonCode, Suppressed: assessment.suppressed, SuppressionReason: assessment.suppressionReason, LastError: t.LastError, ScrapeURL: t.ScrapeURL, LastSyncedAt: now}
 				if !t.LastScrape.IsZero() {
 					record.LastScrapeAt = &t.LastScrape

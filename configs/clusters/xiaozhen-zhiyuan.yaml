@@ -16,7 +16,7 @@ web:
   static_dir: "/ops/atlas/web/dist"
 prometheus:
   # The client appends /api/v1/query; do not put the complete query URL here.
-  base_url: "http://10.80.192.236:28481/select/0/prometheus"
+  base_url: "http://10.80.192.240:28481/select/0/prometheus"
   request_timeout: "15s"
 inventory:
   # VM select does not implement /api/v1/targets; Atlas falls back to the
@@ -51,8 +51,13 @@ history:
     - id: "xiaozhen-zhiyuan-vm"
       name: "算力小镇-智元 VictoriaMetrics"
       type: "victoriametrics-cluster"
-      base_url: "http://10.80.192.236:28481"
+      base_url: "http://10.80.192.240:28481"
       tenant_id: "0"
+      # This cluster does not serve /api/v1/status/flags, so the audit lookback
+      # must be declared here. 180d is the window required to cover the oldest
+      # repair-ledger fault window (2026-07-08) with headroom; GPU telemetry in
+      # the VM store itself starts at 2026-06-30 and the probe stops there.
+      retention: "180d"
       enabled: true
 node_access:
   # 10.80.16.42 is a future physical-disk test node, not a synthetic GPU asset.
@@ -62,3 +67,15 @@ node_access:
   credential_profiles: []
 feishu:
   bots: []
+asset_audit:
+  # 交付节点核查 + 存活 IP 扫描。凭证（飞书应用 app_id/app_secret、通知 webhook）
+  # 不在配置文件中保存，需在 Atlas「GPU 资产 · 资产核查」页填写并加密落库。
+  enabled: true
+  delivery_check_enabled: true
+  scan_enabled: true
+  delivery_sheet_url: "https://lexungroup.feishu.cn/sheets/Wghxs1fS6hgZJ4tMkHZca8UDnNf?sheet=iZKGk9"
+  notify_enabled: true
+  schedule_hour: 5
+  timezone: "Asia/Shanghai"
+  scan_concurrency: 1
+  scan_timeout_ms: 1000

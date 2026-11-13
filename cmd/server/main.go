@@ -13,12 +13,14 @@ import (
 	"time"
 
 	"atlas/internal/analyzer"
+	"atlas/internal/assetaudit"
 	"atlas/internal/degradation"
 	diskhealthapi "atlas/internal/diskhealth"
 	"atlas/internal/evidence"
 	"atlas/internal/features"
 	"atlas/internal/freshness"
 	ig "atlas/internal/gateway"
+	"atlas/internal/gpurisk"
 	"atlas/internal/health"
 	"atlas/internal/history"
 	"atlas/internal/inventory"
@@ -145,6 +147,17 @@ func main() {
 		log.Printf("WARNING: asset configuration writes are allowed over plaintext HTTP")
 	}
 	assetConfigHandler := platformconfig.NewAssetConfigHandler(assetSource, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialInsecureHTTP)
+	monitoringSource := platformconfig.NewMonitoringSource(db, cfg.Prometheus.BaseURL, cfg.Prometheus.RequestTimeout)
+	monitoringConfigHandler := platformconfig.NewMonitoringConfigHandler(monitoringSource, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialInsecureHTTP)
+	assetAuditService, assetAuditErr := assetaudit.NewService(db, secretMasterKey, feishuNotifier, cfg.Branding.InstanceName)
+	if assetAuditErr != nil {
+		log.Printf("Asset audit is unavailable: %v", assetAuditErr)
+		assetAuditService = nil
+	}
+	assetAuditHandler := assetaudit.NewHandler(assetAuditService, os.Getenv("ATLAS_NODE_CREDENTIAL_ADMIN_TOKEN"), allowCredentialInsecureHTTP)
+	if assetAuditService != nil {
+		go assetAuditService.Run(context.Background(), cfg.AssetAudit)
+	}
 	nodeAccessHandler := nodeaccess.NewHandlerWithVault(nodeAccessService, credentialVault)
 	connectTimeout := parseDurationOrDefault("node SSH connect", cfg.NodeAccess.ConnectTimeout, 5*time.Second)
 	sshAuthenticator, sshErr := nodeaccess.NewSSHAuthenticator(cfg.NodeAccess.SSHPort, connectTimeout, cfg.NodeAccess.KnownHostsFile)
@@ -168,24 +181,29 @@ func main() {
 		go historyService.Run(context.Background(), historyAuditInterval)
 	}
 
+	// The monitoring data-source address is database-first with the configuration
+	// file as the first-run fallback, so an operator can repoint Atlas at a moved
+	// Prometheus/VictoriaMetrics endpoint from the UI without a redeploy.
+	monitoringBaseURL, monitoringTimeout, monitoringErr := monitoringSource.Resolve()
+	if monitoringErr != nil {
+		log.Printf("Monitoring configuration is unavailable: %v", monitoringErr)
+	}
+
 	// Inventory discovery is read-only and best-effort. Prometheus outages are
 	// recorded as failed sync runs and never prevent Atlas from serving APIs.
-	if cfg.Inventory.Enabled && strings.TrimSpace(cfg.Prometheus.BaseURL) != "" {
-		requestTimeout, parseErr := time.ParseDuration(cfg.Prometheus.RequestTimeout)
-		if parseErr != nil {
-			log.Printf("Invalid Prometheus request timeout %q; using 15s", cfg.Prometheus.RequestTimeout)
-			requestTimeout = 15 * time.Second
-		}
-		prometheusClient, clientErr := promclient.NewClient(cfg.Prometheus.BaseURL, requestTimeout)
+	if cfg.Inventory.Enabled && strings.TrimSpace(monitoringBaseURL) != "" {
+		prometheusClient, clientErr := promclient.NewClient(monitoringBaseURL, monitoringTimeout)
 		if clientErr != nil {
 			log.Printf("Inventory sync disabled: %v", clientErr)
 		} else {
+			monitoringSource.SetApplier(prometheusClient.SetBaseURL)
 			monitoringInterval := parseDurationOrDefault("monitoring reconciliation", cfg.Inventory.TargetSyncInterval, 10*time.Minute)
 			fullInterval := parseDurationOrDefault("full reconciliation", cfg.Inventory.FullSyncInterval, 24*time.Hour)
 			inventoryService := inventory.NewService(db, prometheusClient, cfg.Inventory)
 			if assetSource != nil {
 				inventoryService = inventory.NewServiceWithAssets(db, prometheusClient, cfg.Inventory, assetSource)
 			}
+			inventoryService = inventoryService.WithNotifier(feishuNotifier, cfg.Branding.InstanceName)
 			go inventoryService.Run(context.Background(), monitoringInterval, fullInterval)
 			if cfg.Health.Enabled {
 				healthInterval := parseDurationOrDefault("GPU health score", cfg.Health.ScoreInterval, 10*time.Minute)
@@ -245,11 +263,47 @@ func main() {
 	mux.HandleFunc("/api/v1/platform-config", platformConfigHandler.Handle)
 	mux.HandleFunc("/api/v1/platform-config/assets", assetConfigHandler.Handle)
 	mux.HandleFunc("/api/v1/platform-config/assets/sync", assetConfigHandler.HandleSync)
+	mux.HandleFunc("/api/v1/platform-config/monitoring", monitoringConfigHandler.Handle)
+	mux.HandleFunc("/api/v1/platform-config/monitoring/test", monitoringConfigHandler.HandleTest)
+	mux.HandleFunc("/api/v1/asset-audit/config", assetAuditHandler.HandleConfig)
+	mux.HandleFunc("/api/v1/asset-audit/runs", assetAuditHandler.HandleRuns)
+	mux.HandleFunc("/api/v1/asset-audit/trigger", assetAuditHandler.HandleTrigger)
+	mux.HandleFunc("/api/v1/asset-audit/marks", assetAuditHandler.HandleMarks)
 	mux.HandleFunc("/api/v1/node-access/overview", nodeAccessHandler.HandleOverview)
 	mux.HandleFunc("/api/v1/node-access/credentials", nodeAccessHandler.HandleCredentials)
 	mux.HandleFunc("/api/v1/node-access/credentials/", nodeAccessHandler.HandleCredential)
 	mux.HandleFunc("/api/v1/node-access/checks", nodeAccessHandler.HandleChecks)
 	mux.HandleFunc("/api/v1/node-access/collections", nodeAccessHandler.HandleCollections)
+
+	gpuRiskDailyEnabled := strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_DAILY_ENABLED"), "true")
+	gpuOutcomeEnabled := strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_OUTCOMES_ENABLED"), "true")
+	gpuOperationsEnabled := strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_OPERATIONS_ENABLED"), "true")
+	gpurisk.Handler{DB: db.DB, AutomaticJobsEnabled: gpuRiskDailyEnabled, OutcomeJobsEnabled: gpuOutcomeEnabled, OperationsEnabled: gpuOperationsEnabled}.Register(mux)
+	// Coverage is a separate permission (default off). The daily identity
+	// backfill runs under it unless explicitly disabled.
+	gpuCoverageEnabled := strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_COVERAGE_ENABLED"), "true")
+	gpuIdentityBackfillEnabled := gpuCoverageEnabled && !strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_IDENTITY_BACKFILL_ENABLED"), "false")
+	gpuCoverageOptions := gpurisk.CoverageOptions{
+		IdentityBackfill: gpuIdentityBackfillEnabled,
+		IdentitySource:   strings.TrimSpace(os.Getenv("ATLAS_GPU_RISK_IDENTITY_SOURCE")),
+		StartIdentityBackfill: func(_ context.Context, sourceKey string, start, end time.Time) (uint, error) {
+			run, err := historyService.StartIdentityBackfill(history.BackfillRequest{SourceKey: sourceKey, Start: &start, End: &end})
+			return run.ID, err
+		},
+	}
+	if gpuOperationsEnabled {
+		go gpurisk.RunOperationsWith(context.Background(), db.DB, gpurisk.OperationsConfig{Ranking: gpuRiskDailyEnabled, Coverage: gpuCoverageEnabled, Outcomes: gpuOutcomeEnabled, IncidentOutcomes: gpuOutcomeEnabled && strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_INCIDENT_OUTCOMES_ENABLED"), "true"), Shadow: gpuRiskDailyEnabled && strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_SHADOW_ENABLED"), "true"), CoverageOptions: gpuCoverageOptions})
+	} else {
+		if gpuCoverageEnabled {
+			go gpurisk.RunCoverage(context.Background(), db.DB, gpuCoverageOptions)
+		}
+		if gpuOutcomeEnabled {
+			go gpurisk.RunOutcomes(context.Background(), db.DB)
+		}
+		if gpuRiskDailyEnabled {
+			go gpurisk.RunDaily(context.Background(), db.DB)
+		}
+	}
 
 	// 6.4 GPU hardware inventory and collection coverage (read-only).
 	mux.HandleFunc("/api/v1/fleet/summary", inventoryHandler.HandleFleetSummary)

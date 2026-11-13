@@ -137,6 +137,8 @@ func migrateSchema(db *gorm.DB) error {
 		}
 	}
 	return db.AutoMigrate(
+		&api.GPURiskModel{}, &api.GPURiskModelBatch{}, &api.GPURiskModelScore{}, &api.GPURiskEvidenceRevision{}, &api.GPURiskOutcomeBatch{}, &api.GPURiskNodeOutcome{}, &api.GPURiskScope{}, &api.GPURiskQuery{}, &api.GPURiskMember{}, &api.GPURiskScore{}, &api.GPURiskJob{},
+		&api.GPURiskSourceCoverageCheck{}, &api.GPURiskOperation{}, &api.GPURiskShadowBatch{}, &api.GPURiskShadowScore{},
 		&api.AlertEvent{},
 		&api.AlertIngestionRecord{},
 		&api.AIAnalysisReport{},
@@ -160,6 +162,10 @@ func migrateSchema(db *gorm.DB) error {
 		&api.IssueResolution{},
 		&api.PlatformDisplayConfig{},
 		&api.LXOPAssetConfig{},
+		&api.MonitoringConfig{},
+		&api.AssetAuditConfig{},
+		&api.AssetAuditRun{},
+		&api.AssetScanMark{},
 		&api.InfrastructureAsset{},
 		&api.NodeCredentialProfile{},
 		&api.NodeAccessCheck{},

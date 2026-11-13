@@ -57,7 +57,9 @@ func TestSyncDetectedIssuesAndAutomaticRecovery(t *testing.T) {
 	db.Model(&api.PlatformIssue{}).Count(&total)
 	db.Model(&api.PlatformIssue{}).Where("status = ?", "open").Count(&open)
 	db.Model(&api.PlatformIssue{}).Where("status = ?", "resolved").Count(&resolved)
-	if total != 6 || open != 5 || resolved != 1 {
+	// The node is degraded, so every node-scoped finding collapses into the
+	// single node_state issue; only the hardware fault events stay separate.
+	if total != 3 || open != 2 || resolved != 1 {
 		t.Fatalf("unexpected counts total=%d open=%d resolved=%d", total, open, resolved)
 	}
 	if err := db.Model(&node).Update("state", "up").Error; err != nil {
@@ -90,6 +92,51 @@ func TestSyncDetectedIssuesAndAutomaticRecovery(t *testing.T) {
 	}
 	if assetIssue.Status != "resolved" || assetIssue.DetectionState != "cleared" || assetIssue.SourceRecoveredAt == nil {
 		t.Fatalf("restored GPU issue was not auto-cleared: %+v", assetIssue)
+	}
+}
+
+func TestSyncDetectedIssuesCollapsesNodeScopedFindingsWhenNodeNotUp(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
+	node := seedIssueSources(t, db, now)
+	// An access-auth failure is node-scoped as well and must fold into the
+	// single node_state issue while the node is not up.
+	access := api.PlatformIssue{IssueKey: "node_access_auth:" + node.NodeIP, Category: "access", IssueType: "node_authentication", Title: "access failure", NodeIP: node.NodeIP, Severity: "warning", Status: "open", DetectionState: "active", DetectionSource: "node_access_auth", FirstDetectedAt: now.Add(-time.Hour), LastDetectedAt: now.Add(-time.Hour)}
+	if err := db.Create(&access).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	service.now = func() time.Time { return now }
+	if err := service.SyncDetectedIssues(); err != nil {
+		t.Fatal(err)
+	}
+	var openNonNode int64
+	db.Model(&api.PlatformIssue{}).Where("status IN ?", []string{"open", "in_progress"}).Where("issue_type <> ? AND category <> ?", "node_state", "hardware_fault").Count(&openNonNode)
+	if openNonNode != 0 {
+		t.Fatalf("node-scoped findings were not collapsed: %d open remain", openNonNode)
+	}
+	if err := db.First(&access, access.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if access.DetectionState != "cleared" || access.Status != "resolved" {
+		t.Fatalf("access finding was not collapsed by auto-recovery: %+v", access)
+	}
+	// Recovery: once the node is up again the suppressed findings must
+	// re-materialize, proving the collapse only defers detection.
+	if err := db.Model(&node).Update("state", "up").Error; err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return now.Add(time.Minute) }
+	if err := service.SyncDetectedIssues(); err != nil {
+		t.Fatal(err)
+	}
+	var recovered int64
+	db.Model(&api.PlatformIssue{}).Where("status = ?", "open").Where("issue_type IN ?", []string{"gpu_state", "target_health", "health_score_unknown"}).Count(&recovered)
+	if recovered != 3 {
+		t.Fatalf("suppressed findings did not re-materialize after recovery: %d", recovered)
 	}
 }
 
@@ -223,12 +270,14 @@ func TestIssueSummaryResolutionAndTrainingDataAPI(t *testing.T) {
 
 	response := httptest.NewRecorder()
 	handler.HandleSummary(response, httptest.NewRequest("GET", "/api/v1/issues/summary", nil))
-	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"discovered":4`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"remaining":4`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"remaining_by_category"`)) || bytes.Contains(response.Body.Bytes(), []byte(`"hardware_fault"`)) {
+	// The degraded node collapses every node-scoped finding into a single
+	// node_state issue, leaving one remaining data-statistics item.
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"discovered":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"remaining":1`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"remaining_by_category"`)) || bytes.Contains(response.Body.Bytes(), []byte(`"hardware_fault"`)) {
 		t.Fatalf("unexpected summary: %d %s", response.Code, response.Body.String())
 	}
 	response = httptest.NewRecorder()
 	handler.HandleCollection(response, httptest.NewRequest("GET", "/api/v1/issues", nil))
-	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"total":4`)) || bytes.Contains(response.Body.Bytes(), []byte(`"hardware_fault"`)) {
+	if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"total":1`)) || bytes.Contains(response.Body.Bytes(), []byte(`"hardware_fault"`)) {
 		t.Fatalf("unexpected data statistics collection: %d %s", response.Code, response.Body.String())
 	}
 	response = httptest.NewRecorder()

@@ -175,6 +175,17 @@ type LXOPAssetConfig struct {
 	UpdatedAt              time.Time  `json:"updated_at"`
 }
 
+// MonitoringConfig stores the singleton address of the read-only monitoring
+// data source (Prometheus or a VictoriaMetrics cluster select endpoint). It
+// holds no credentials and is editable at runtime, so moving the monitoring
+// host does not require a redeploy or a config-file change.
+type MonitoringConfig struct {
+	ID             uint      `json:"-" gorm:"primaryKey"`
+	BaseURL        string    `json:"base_url"`
+	RequestTimeout string    `json:"request_timeout"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 // NodeCredentialProfile stores only encrypted node-access credential material.
 // Ciphertext contains an AEAD-protected username/password payload and must
 // never be serialized by an API.

@@ -17,9 +17,19 @@ import (
 )
 
 const (
-	alertBackfillQueryVersion = "gpu-fault-signal-onset-v2"
-	alertOnsetQuery           = `(ALERTS{alert_template=~"XID故障(|-低优先级|-高优先级)|GPU掉卡",alertstate="firing"} == 1) unless (ALERTS{alert_template=~"XID故障(|-低优先级|-高优先级)|GPU掉卡",alertstate="firing"} offset 5m)`
-	uncorrectableRowsQuery    = `(DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS > 0) and (DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS > DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS offset 5m)`
+	alertBackfillQueryVersion = "gpu-fault-signal-onset-v3"
+	// alertOnsetQuery only fires in deployments that ship the GPU alert rules.
+	// VictoriaMetrics targets without those rules expose no ALERTS series at all,
+	// so this scan is best effort and legitimately returns nothing.
+	alertOnsetQuery = `(ALERTS{alert_template=~"XID故障(|-低优先级|-高优先级)|GPU掉卡",alertstate="firing"} == 1) unless (ALERTS{alert_template=~"XID故障(|-低优先级|-高优先级)|GPU掉卡",alertstate="firing"} offset 5m)`
+	// uncorrectableRowsQuery tracks a monotonically increasing counter, so an
+	// onset is a genuine increase over the previous sample.
+	uncorrectableRowsQuery = `(DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS > 0) and (DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS > DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS offset 5m)`
+	// xidLatchQuery tracks DCGM_FI_DEV_XID_ERRORS, which latches the last XID code
+	// (the sample value equals the err_code label) and stays constant while the
+	// condition persists. An increase can therefore never be observed on this
+	// metric; the onset is the transition away from a known zero sample.
+	xidLatchQuery = `(DCGM_FI_DEV_XID_ERRORS > 0) and (DCGM_FI_DEV_XID_ERRORS offset 5m == 0)`
 )
 
 var historicalSignalScans = []struct {
@@ -27,6 +37,7 @@ var historicalSignalScans = []struct {
 	Query        string
 }{
 	{SourceMetric: "ALERTS", Query: alertOnsetQuery},
+	{SourceMetric: "DCGM_FI_DEV_XID_ERRORS", Query: xidLatchQuery},
 	{SourceMetric: "DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS", Query: uncorrectableRowsQuery},
 }
 

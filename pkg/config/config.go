@@ -3,23 +3,43 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Gateway    GatewayConfig    `yaml:"gateway"`
-	Storage    StorageConfig    `yaml:"storage"`
-	Feishu     FeishuConfig     `yaml:"feishu"`
-	Logging    LoggingConfig    `yaml:"logging"`
-	Web        WebConfig        `yaml:"web"`
-	Branding   BrandingConfig   `yaml:"branding"`
-	Prometheus PrometheusConfig `yaml:"prometheus"`
-	Inventory  InventoryConfig  `yaml:"inventory"`
-	Health     HealthConfig     `yaml:"health"`
-	History    HistoryConfig    `yaml:"history"`
-	NodeAccess NodeAccessConfig `yaml:"node_access"`
+	Gateway    GatewayConfig     `yaml:"gateway"`
+	Storage    StorageConfig     `yaml:"storage"`
+	Feishu     FeishuConfig      `yaml:"feishu"`
+	Logging    LoggingConfig     `yaml:"logging"`
+	Web        WebConfig         `yaml:"web"`
+	Branding   BrandingConfig    `yaml:"branding"`
+	Prometheus PrometheusConfig  `yaml:"prometheus"`
+	Inventory  InventoryConfig   `yaml:"inventory"`
+	Health     HealthConfig      `yaml:"health"`
+	History    HistoryConfig     `yaml:"history"`
+	NodeAccess NodeAccessConfig  `yaml:"node_access"`
+	AssetAudit AssetAuditOptions `yaml:"asset_audit"`
+}
+
+// AssetAuditOptions seeds the initial delivery verification and live-IP
+// discovery settings. Once Atlas has persisted a row, operators manage them
+// from the GPU Assets sub-page; this section is only the first-run default and
+// never carries credentials.
+type AssetAuditOptions struct {
+	Enabled          bool   `yaml:"enabled"`
+	DeliveryEnabled  bool   `yaml:"delivery_check_enabled"`
+	ScanEnabled      bool   `yaml:"scan_enabled"`
+	DeliverySheetURL string `yaml:"delivery_sheet_url"`
+	NotifyEnabled    bool   `yaml:"notify_enabled"`
+	NotifyAlways     bool   `yaml:"notify_always"`
+	ScheduleHour     int    `yaml:"schedule_hour"`
+	Timezone         string `yaml:"timezone"`
+	ScanConcurrency  int    `yaml:"scan_concurrency"`
+	ScanTimeoutMS    int    `yaml:"scan_timeout_ms"`
 }
 
 type GatewayConfig struct {
@@ -108,6 +128,11 @@ type HistorySourceConfig struct {
 	TenantID  string `yaml:"tenant_id"`
 	AuthType  string `yaml:"auth_type"`
 	SecretRef string `yaml:"secret_ref"`
+	// Retention is the operator-declared lookback window for this source (for
+	// example "180d"). It takes precedence over /status/flags so an audit of a
+	// source without that endpoint, or with an unreliable answer, stays honest
+	// about how far back it is allowed to probe. Empty means "ask the source".
+	Retention string `yaml:"retention"`
 	Enabled   bool   `yaml:"enabled"`
 }
 
@@ -279,6 +304,21 @@ func LoadConfig(path string) (*Config, error) {
 				return nil, fmt.Errorf("authenticated history source %q must use a non-empty env: secret_ref", source.ID)
 			}
 		}
+		if err := validateRetentionLookback(source.Retention); err != nil {
+			return nil, fmt.Errorf("history source %q retention: %w", source.ID, err)
+		}
+	}
+	if cfg.AssetAudit.ScheduleHour <= 0 || cfg.AssetAudit.ScheduleHour > 23 {
+		cfg.AssetAudit.ScheduleHour = 5
+	}
+	if cfg.AssetAudit.Timezone == "" {
+		cfg.AssetAudit.Timezone = "Asia/Shanghai"
+	}
+	if cfg.AssetAudit.ScanConcurrency <= 0 {
+		cfg.AssetAudit.ScanConcurrency = 1
+	}
+	if cfg.AssetAudit.ScanTimeoutMS <= 0 {
+		cfg.AssetAudit.ScanTimeoutMS = 1000
 	}
 	if cfg.NodeAccess.SkillID == "" {
 		cfg.NodeAccess.SkillID = "atlas-node-evidence"
@@ -327,4 +367,28 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// validateRetentionLookback rejects a declared retention window that the audit
+// could not honour. An unparsable value would otherwise be silently replaced by
+// the conservative default, widening every historical probe beyond what the
+// operator asked for. Empty is valid and means "ask the source".
+func validateRetentionLookback(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if len(value) >= 2 {
+		unit := strings.ToLower(value[len(value)-1:])
+		if unit == "y" || unit == "w" || unit == "d" {
+			if number, err := strconv.Atoi(value[:len(value)-1]); err == nil && number > 0 {
+				return nil
+			}
+			return fmt.Errorf("invalid duration %q", value)
+		}
+	}
+	if parsed, err := time.ParseDuration(value); err != nil || parsed <= 0 {
+		return fmt.Errorf("invalid duration %q", value)
+	}
+	return nil
 }
