@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -320,7 +321,21 @@ func run(args []string) error {
 		if e != nil {
 			return fmt.Errorf("ledger declaration rejected: %w", e)
 		}
-		return json.NewEncoder(os.Stdout).Encode(row)
+		if e := json.NewEncoder(os.Stdout).Encode(row); e != nil {
+			return e
+		}
+		// Mint the anchor query's ledger member coverage now, so a declaration
+		// made mid-day is usable before the next query cutoff / stage run.
+		anchor, rows, minted, e := gpurisk.MintLedgerAnchorCoverage(ctx, db)
+		if errors.Is(e, gpurisk.ErrNoLedgerAnchor) {
+			fmt.Fprintln(os.Stdout, "ledger anchor: none (no completed query with cutoff before the declared through); declaration recorded")
+			return nil
+		}
+		if e != nil {
+			return fmt.Errorf("ledger declaration %d recorded, but anchor member coverage rejected: %w", row.ID, e)
+		}
+		fmt.Fprintf(os.Stdout, "ledger anchor query %d cutoff %s: %d member assertions, %d new revisions\n", anchor.ID, anchor.Cutoff.UTC().Format(time.RFC3339Nano), len(rows), minted)
+		return nil
 	}
 	if command == "coverage-members" {
 		if e := gpurisk.Migrate(db.WithContext(ctx)); e != nil {

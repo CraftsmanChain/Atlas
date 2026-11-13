@@ -191,3 +191,52 @@ func ensureSourceCheckV3(ctx context.Context, db *gorm.DB, source, owner, identi
 	}
 	return candidate, nil
 }
+
+// ErrNoLedgerAnchor reports that no completed query has a cutoff strictly
+// before the newest ledger declaration, so no non-degenerate ledger member
+// interval can be minted yet.
+var ErrNoLedgerAnchor = errors.New("no ledger anchor query: no completed query with cutoff before the newest declared ledger through")
+
+// ledgerAnchorQuery returns the ANCHOR query of the newest ledger declaration
+// (the same check RecordMemberCoverage uses): the newest completed query of
+// the frozen contract/target/horizon whose cutoff is strictly before the
+// declared VerifiedThrough. Its ledger member interval [cutoff, through] is
+// therefore never zero-length, independent of when the declaration was made
+// relative to the daily stage or the newest query cutoff.
+func ledgerAnchorQuery(ctx context.Context, db *gorm.DB) (api.GPURiskQuery, error) {
+	var checks []api.GPURiskSourceCoverageCheck
+	if e := db.WithContext(ctx).Where("source = ? AND contract = ?", "hardware_fault_ledger", LedgerDeclaredContract).Order("observed_at DESC, id DESC").Limit(1).Find(&checks).Error; e != nil {
+		return api.GPURiskQuery{}, e
+	}
+	if len(checks) != 1 || checks[0].VerifiedThrough.IsZero() {
+		return api.GPURiskQuery{}, ErrNoLedgerAnchor
+	}
+	var qs []api.GPURiskQuery
+	if e := db.WithContext(ctx).Where("status = ? AND contract = ? AND target = ? AND horizon_minutes = ? AND cutoff < ?", "completed", Contract, Target, 10080, checks[0].VerifiedThrough.UTC()).Order("cutoff DESC, id DESC").Limit(1).Find(&qs).Error; e != nil {
+		return api.GPURiskQuery{}, e
+	}
+	if len(qs) != 1 {
+		return api.GPURiskQuery{}, ErrNoLedgerAnchor
+	}
+	return qs[0], nil
+}
+
+// MintLedgerAnchorCoverage mints (idempotently, via RecordMemberCoverage) the
+// hardware_fault_ledger member coverage of the anchor query of the newest
+// declaration, owned by CoverageOwner exactly like the daily stage so CLI and
+// stage reuse the same heads. minted is the number of new evidence revisions.
+func MintLedgerAnchorCoverage(ctx context.Context, db *gorm.DB) (anchor api.GPURiskQuery, rows []api.GPURiskEvidenceRevision, minted int64, err error) {
+	anchor, err = ledgerAnchorQuery(ctx, db)
+	if err != nil {
+		return anchor, nil, 0, err
+	}
+	var before, after int64
+	if err = db.WithContext(ctx).Model(&api.GPURiskEvidenceRevision{}).Count(&before).Error; err != nil {
+		return anchor, nil, 0, err
+	}
+	rows, err = RecordMemberCoverage(ctx, db, anchor.ID, "hardware_fault_ledger", CoverageOwner)
+	if e := db.WithContext(ctx).Model(&api.GPURiskEvidenceRevision{}).Count(&after).Error; e == nil {
+		minted = after - before
+	}
+	return anchor, rows, minted, err
+}

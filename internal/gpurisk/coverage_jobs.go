@@ -217,7 +217,28 @@ func runCoverageSources(ctx context.Context, db *gorm.DB, now time.Time, opts Co
 				continue
 			}
 		}
-		for _, q := range queries {
+		targets := queries
+		if source == "hardware_fault_ledger" {
+			// The anchor (newest query with cutoff < declared through) is the only
+			// query whose ledger interval [cutoff, through] is non-degenerate.
+			anchor, e := ledgerAnchorQuery(ctx, db)
+			if e != nil && !errors.Is(e, ErrNoLedgerAnchor) {
+				if ctx.Err() != nil {
+					return codes, ctx.Err()
+				}
+				ok = false
+			}
+			if e == nil {
+				present := false
+				for _, q := range queries {
+					present = present || q.ID == anchor.ID
+				}
+				if !present {
+					targets = append(append([]api.GPURiskQuery{}, queries...), anchor)
+				}
+			}
+		}
+		for _, q := range targets {
 			if _, e := RecordMemberCoverage(ctx, db, q.ID, source, CoverageOwner); e != nil {
 				if ctx.Err() != nil {
 					return codes, ctx.Err()
