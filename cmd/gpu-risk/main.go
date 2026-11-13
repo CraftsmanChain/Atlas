@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -53,8 +54,10 @@ func run(args []string) error {
 	artifactSHA := flags.String("artifact-sha", "", "exact model file SHA256")
 	scoresSHA := flags.String("scores-sha", "", "exact score file SHA256")
 	throughText := flags.String("through", "", "RFC3339 ledger complete-through for ledger-declare")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "context-prepare" && command != "core-source-plan" && command != "coverage-plan" && command != "coverage-check" && command != "ledger-declare" && command != "coverage-members" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record" && command != "shadow-score") {
-		return fmt.Errorf("usage: gpu-risk [plan|record|context-prepare|core-source-plan|coverage-plan|evidence-ingest-prepare|evidence-ingest-apply|coverage-check|ledger-declare|coverage-members|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record|shadow-score] [-driver postgres|sqlite] [-input plan.json]")
+	reportKind := flags.String("kind", "", "report: daily or weekly")
+	reportOut := flags.String("out", "", "report: output directory")
+	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "context-prepare" && command != "core-source-plan" && command != "coverage-plan" && command != "coverage-check" && command != "ledger-declare" && command != "coverage-members" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record" && command != "shadow-score" && command != "report") {
+		return fmt.Errorf("usage: gpu-risk [plan|record|context-prepare|core-source-plan|coverage-plan|evidence-ingest-prepare|evidence-ingest-apply|coverage-check|ledger-declare|coverage-members|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record|shadow-score|report] [-driver postgres|sqlite] [-input plan.json]")
 	}
 	modeSet := false
 	flags.Visit(func(f *flag.Flag) {
@@ -64,6 +67,27 @@ func run(args []string) error {
 	})
 	if (modeSet && command != "evidence-ingest-prepare") || (*mode != "full" && *mode != "identity-only") {
 		return fmt.Errorf("-mode full|identity-only is only valid for evidence-ingest-prepare")
+	}
+	reportFlagSet := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "kind" || f.Name == "out" {
+			reportFlagSet = true
+		}
+	})
+	if reportFlagSet && command != "report" {
+		return fmt.Errorf("-kind and -out are only valid for report")
+	}
+	if command == "report" {
+		allowed := map[string]bool{"kind": true, "out": true, "driver": true}
+		invalid := false
+		flags.Visit(func(f *flag.Flag) {
+			if !allowed[f.Name] {
+				invalid = true
+			}
+		})
+		if invalid || (*reportKind != "daily" && *reportKind != "weekly") || strings.TrimSpace(*reportOut) == "" {
+			return fmt.Errorf("report requires -kind daily|weekly and -out DIR, and only accepts -kind, -out and -driver")
+		}
 	}
 	if command == "verify-model" {
 		report, err := gpurisk.VerifyRankerFiles(*datasetFile, *datasetSHA, *artifactFile, *artifactSHA, *scoresFile, *scoresSHA)
@@ -147,7 +171,7 @@ func run(args []string) error {
 	case "postgres":
 		dialector = postgres.Open(dsn)
 	case "sqlite":
-		if command == "context-prepare" || command == "core-source-plan" || command == "coverage-plan" || command == "plan" || command == "outcome-plan" || command == "dataset" || command == "model-request" || command == "evidence-ingest-prepare" {
+		if command == "context-prepare" || command == "core-source-plan" || command == "coverage-plan" || command == "plan" || command == "outcome-plan" || command == "dataset" || command == "model-request" || command == "evidence-ingest-prepare" || command == "report" {
 			if strings.Contains(dsn, "?") || strings.HasPrefix(dsn, "file:") || dsn == ":memory:" {
 				return fmt.Errorf("plan requires a plain existing SQLite path")
 			}
@@ -176,7 +200,7 @@ func run(args []string) error {
 	sqlDB.SetMaxOpenConns(1)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	if command == "context-prepare" || command == "core-source-plan" || command == "coverage-plan" || command == "plan" || command == "outcome-plan" || command == "dataset" || command == "model-request" || command == "evidence-ingest-prepare" {
+	if command == "context-prepare" || command == "core-source-plan" || command == "coverage-plan" || command == "plan" || command == "outcome-plan" || command == "dataset" || command == "model-request" || command == "evidence-ingest-prepare" || command == "report" {
 		// Enforce read-only at the database connection, not only by convention.
 		if *driver == "sqlite" {
 			if db.Exec("PRAGMA query_only = ON").Error != nil {
@@ -186,6 +210,9 @@ func run(args []string) error {
 			if db.Exec("SET default_transaction_read_only = on").Error != nil {
 				return fmt.Errorf("read-only guard failed")
 			}
+		}
+		if command == "report" {
+			return runReport(ctx, db, *reportKind, *reportOut, time.Now(), os.Stdout)
 		}
 		if command == "context-prepare" {
 			asOf := time.Now().UTC()
@@ -476,6 +503,79 @@ func run(args []string) error {
 	}
 	return json.NewEncoder(os.Stdout).Encode(q)
 }
+
+// runReport builds one read-only report and writes <out>/<kind>-YYYY-MM-DD and
+// <out>/<kind>-latest (.json and .md, Asia/Shanghai date) atomically. Findings
+// never make it fail; only build or write errors do.
+func runReport(ctx context.Context, db *gorm.DB, kind, out string, now time.Time, stdout io.Writer) error {
+	var payload any
+	var markdown string
+	switch kind {
+	case "daily":
+		c, e := gpurisk.BuildDailyCheck(ctx, db, now)
+		if e != nil {
+			return fmt.Errorf("daily report failed: %w", e)
+		}
+		payload, markdown = c, gpurisk.RenderDailyMarkdown(c)
+	case "weekly":
+		r, e := gpurisk.BuildE2Report(ctx, db, now)
+		if e != nil {
+			return fmt.Errorf("weekly report failed: %w", e)
+		}
+		payload, markdown = r, gpurisk.RenderE2Markdown(r)
+	default:
+		return fmt.Errorf("unknown report kind")
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Errorf("report encoding failed")
+	}
+	data = append(data, '\n')
+	if err := os.MkdirAll(out, 0o750); err != nil {
+		return fmt.Errorf("report directory unavailable: %w", err)
+	}
+	day := now.In(time.FixedZone("Asia/Shanghai", 8*3600)).Format("2006-01-02")
+	for _, name := range []string{kind + "-" + day, kind + "-latest"} {
+		if err := writeAtomic(filepath.Join(out, name+".json"), data); err != nil {
+			return err
+		}
+		if err := writeAtomic(filepath.Join(out, name+".md"), []byte(markdown)); err != nil {
+			return err
+		}
+	}
+	_, err = io.WriteString(stdout, markdown)
+	return err
+}
+
+// writeAtomic writes a 0640 file through a temp file in the same directory.
+func writeAtomic(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("report write failed: %w", err)
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("report write failed: %w", err)
+	}
+	if err := tmp.Chmod(0o640); err != nil {
+		tmp.Close()
+		return fmt.Errorf("report write failed: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("report write failed: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("report write failed: %w", err)
+	}
+	if err := os.Rename(name, path); err != nil {
+		return fmt.Errorf("report write failed: %w", err)
+	}
+	return nil
+}
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)

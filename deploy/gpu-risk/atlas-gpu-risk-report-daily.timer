@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Atlas GPU risk read-only report
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=5m
+Persistent=true
+Unit=atlas-gpu-risk-report-daily.service
+
+[Install]
+WantedBy=timers.target
