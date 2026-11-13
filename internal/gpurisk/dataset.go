@@ -21,6 +21,36 @@ const HistoryFeatureVersion = "gpu-host-history-v2"
 // MaxSourceLag bounds the unknown tail after the last complete source pull.
 const MaxSourceLag = 24 * time.Hour
 
+// History contract v4 is selected only by an explicit DatasetSpec
+// history_contract "v4"; the default remains v2 and its output is unchanged.
+// ("dataset-v3" is already the available-context profile version.)
+const HistoryContractV4 = "v4"
+const DatasetVersionV4 = "gpu-host-history-dataset-v4"
+const HistoryFeatureVersionV4 = "gpu-host-history-v4"
+
+// LedgerMaxLag bounds the unknown tail after the declared hardware fault
+// ledger watermark under history contract v4. The ledger is an irregular
+// offline import; monitoring and identity keep MaxSourceLag.
+const LedgerMaxLag = 8 * 24 * time.Hour
+
+// HistoryContractManifest records the v4 lag allowances in the dataset.
+type HistoryContractManifest struct {
+	Version            string   `json:"version"`
+	LedgerMaxLagHours  float64  `json:"ledger_max_lag_hours"`
+	SourceMaxLagHours  float64  `json:"monitoring_identity_max_lag_hours"`
+	RowMetadata        []string `json:"row_metadata"`
+	AvailableAtCutoff  string   `json:"available_at_rule"`
+	CoreFeatureChanged bool     `json:"core_feature_changed"`
+}
+
+// DatasetRowMetadata is per-row provenance that is not a core feature and is
+// excluded from the core feature fingerprint.
+type DatasetRowMetadata struct {
+	// HistoryLedgerLagHours is cutoff minus the merged ledger coverage end;
+	// null when no ledger coverage interval is known before the cutoff.
+	HistoryLedgerLagHours *float64 `json:"history_ledger_lag_hours"`
+}
+
 // DatasetSpec pins immutable outcome batches. There is deliberately no "latest"
 // selector, automatic training, label balancing or request-time asset lookup.
 type DatasetSpec struct {
@@ -30,6 +60,8 @@ type DatasetSpec struct {
 	ValidationEnd time.Time `json:"validation_end"`
 	TestEnd       time.Time `json:"test_end"`
 	Profile       string    `json:"profile"`
+	// HistoryContract is empty (v2) or "v4". omitempty keeps v2 bytes unchanged.
+	HistoryContract string `json:"history_contract,omitempty"`
 }
 type FeatureField struct {
 	KnownAt     string `json:"known_at"`
@@ -140,26 +172,29 @@ type DatasetRow struct {
 	EpisodeKeys []string        `json:"episode_keys"`
 	Eligible    bool            `json:"eligible"`
 	Blockers    []string        `json:"blockers"`
+	// Metadata is set only under history contract v4.
+	Metadata *DatasetRowMetadata `json:"metadata,omitempty"`
 }
 type Dataset struct {
-	Availability           *AvailabilityManifest `json:"availability_manifest,omitempty"`
-	ProfileFeatureComplete *bool                 `json:"profile_feature_complete,omitempty"`
-	FeatureContract        string                `json:"feature_contract"`
-	ExplorationReady       bool                  `json:"exploration_ready"`
-	PaperCoreComplete      bool                  `json:"paper_core_complete"`
-	Version                string                `json:"version"`
-	Target                 string                `json:"target"`
-	Spec                   DatasetSpec           `json:"spec"`
-	Schema                 []FeatureField        `json:"schema"`
-	FeatureSHA             string                `json:"feature_sha"`
-	SplitSHA               string                `json:"split_sha"`
-	InputSHA               string                `json:"input_sha"`
-	SHA                    string                `json:"sha"`
-	Rows                   []DatasetRow          `json:"rows"`
-	Counts                 map[string]int        `json:"counts"`
-	Ready                  bool                  `json:"ready"`
-	Blockers               []string              `json:"blockers"`
-	Choices                []string              `json:"implementation_choices"`
+	Availability           *AvailabilityManifest    `json:"availability_manifest,omitempty"`
+	HistoryContract        *HistoryContractManifest `json:"history_contract_manifest,omitempty"`
+	ProfileFeatureComplete *bool                    `json:"profile_feature_complete,omitempty"`
+	FeatureContract        string                   `json:"feature_contract"`
+	ExplorationReady       bool                     `json:"exploration_ready"`
+	PaperCoreComplete      bool                     `json:"paper_core_complete"`
+	Version                string                   `json:"version"`
+	Target                 string                   `json:"target"`
+	Spec                   DatasetSpec              `json:"spec"`
+	Schema                 []FeatureField           `json:"schema"`
+	FeatureSHA             string                   `json:"feature_sha"`
+	SplitSHA               string                   `json:"split_sha"`
+	InputSHA               string                   `json:"input_sha"`
+	SHA                    string                   `json:"sha"`
+	Rows                   []DatasetRow             `json:"rows"`
+	Counts                 map[string]int           `json:"counts"`
+	Ready                  bool                     `json:"ready"`
+	Blockers               []string                 `json:"blockers"`
+	Choices                []string                 `json:"implementation_choices"`
 }
 type historyEvent struct {
 	key, kind   string
@@ -221,6 +256,14 @@ func historyAt(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs
 	return historyAtView(ctx, m, q, evs, reviews, nil)
 }
 func historyAtView(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs []api.GPURiskEvidenceRevision, reviews []api.HardwareFaultFeedbackReview, view *historyView) (HistoryFeatures, error) {
+	f, _, err := historyAtViewLag(ctx, m, q, evs, reviews, view, MaxSourceLag)
+	return f, err
+}
+
+// historyAtViewLag is historyAtView with an explicit ledger lag allowance. It
+// also returns the merged ledger coverage end (zero when unknown). The
+// AvailableAt < cutoff rule is unchanged.
+func historyAtViewLag(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery, evs []api.GPURiskEvidenceRevision, reviews []api.HardwareFaultFeedbackReview, view *historyView, ledgerLag time.Duration) (HistoryFeatures, time.Time, error) {
 	f := HistoryFeatures{Numeric: map[string]*float64{}, Categorical: map[string]*string{}, EvidenceSHAs: []string{}, Blockers: []string{}}
 	for _, field := range CoreSchema() {
 		if field.Dtype == "nullable_float64" {
@@ -253,7 +296,7 @@ func historyAtView(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery,
 	for index, e := range assertions {
 		if index%256 == 0 {
 			if err := ctx.Err(); err != nil {
-				return f, err
+				return f, time.Time{}, err
 			}
 		}
 		if index == len(view.decoded) {
@@ -266,7 +309,7 @@ func historyAtView(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery,
 			}
 		}
 		if view.invalid[index] {
-			return f, ErrInput
+			return f, time.Time{}, ErrInput
 		}
 		v := view.decoded[index]
 		if v.EntityRef != m.EntityRef {
@@ -337,7 +380,7 @@ func historyAtView(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery,
 			break
 		}
 	}
-	covered := !end.IsZero() && !end.Before(q.Cutoff.Add(-MaxSourceLag))
+	covered := !end.IsZero() && !end.Before(q.Cutoff.Add(-ledgerLag))
 	f.HistoryUnknown = !covered
 	if !end.IsZero() {
 		days := end.Sub(start).Hours() / 24
@@ -400,7 +443,7 @@ func historyAtView(ctx context.Context, m api.GPURiskMember, q api.GPURiskQuery,
 	}
 	applyHistorySources(&f, m, q, view.byEntity[m.EntityRef], sorted)
 	sort.Strings(f.EvidenceSHAs)
-	return f, nil
+	return f, end, nil
 }
 
 type components map[string]string
@@ -439,6 +482,25 @@ func BuildDataset(ctx context.Context, db *gorm.DB, spec DatasetSpec) (Dataset, 
 	out := Dataset{FeatureContract: HistoryFeatureVersion, Version: DatasetVersion, Target: Target, Spec: spec, Schema: CoreSchema(), Rows: []DatasetRow{}, Counts: map[string]int{"eligible": 0, "unknown": 0, "history_unknown": 0, "no_signal": 0}, Blockers: []string{}, Choices: []string{CoverageWatermarkContract, "paper_core only; unavailable source fields remain null", "3-day sampling from explicit UTC anchor; earliest pinned query per UTC date", "deterministic connected-component 60/20/20 assignment; time purge >=8d", "no preprocessing fit, no balancing, no training"}}
 	if (spec.Profile != "paper_core" && spec.Profile != AvailableContextProfile) || len(spec.BatchIDs) == 0 || len(spec.BatchIDs) > 200 || spec.Anchor.IsZero() || !spec.Anchor.Before(spec.TrainEnd) || !spec.TrainEnd.Before(spec.ValidationEnd) || !spec.ValidationEnd.Before(spec.TestEnd) || spec.TestEnd.After(time.Now()) {
 		return out, ErrInput
+	}
+	if spec.HistoryContract != "" && spec.HistoryContract != HistoryContractV4 {
+		return out, ErrInput
+	}
+	v4 := spec.HistoryContract == HistoryContractV4
+	if v4 && spec.Profile != "paper_core" {
+		// The available-context profile already owns dataset-v3; combining it
+		// with the v4 history contract has no defined version name yet.
+		return out, ErrInput
+	}
+	if v4 {
+		out.Version = DatasetVersionV4
+		out.FeatureContract = HistoryFeatureVersionV4
+		out.HistoryContract = &HistoryContractManifest{Version: HistoryFeatureVersionV4, LedgerMaxLagHours: LedgerMaxLag.Hours(), SourceMaxLagHours: MaxSourceLag.Hours(), RowMetadata: []string{"history_ledger_lag_hours"}, AvailableAtCutoff: "evidence and reviews strictly available before cutoff", CoreFeatureChanged: false}
+		out.Choices = append(out.Choices, LedgerDeclaredContract, "history contract v4: hardware_fault_ledger lag <= 192h; monitoring/identity lag <= 24h")
+	}
+	ledgerLag := MaxSourceLag
+	if v4 {
+		ledgerLag = LedgerMaxLag
 	}
 	if spec.Profile == AvailableContextProfile {
 		out.Version = AvailableDatasetVersion
@@ -602,11 +664,17 @@ func BuildDataset(ctx context.Context, db *gorm.DB, spec DatasetSpec) (Dataset, 
 				if label.NodeID != m.NodeID || label.Generation != m.Generation {
 					return ErrInput
 				}
-				features, e := historyAtView(ctx, m, q, nil, nil, view)
+				features, ledgerEnd, e := historyAtViewLag(ctx, m, q, nil, nil, view, ledgerLag)
 				if e != nil {
 					return e
 				}
 				row := DatasetRow{QueryID: q.ID, BatchID: batch.ID, NodeID: m.NodeID, Generation: m.Generation, Cutoff: q.Cutoff, EntityRef: m.EntityRef, Features: features, Label: label.Positive, EpisodeKeys: append([]string{}, label.EpisodeKeys...), Blockers: []string{}}
+				if v4 {
+					row.Metadata = &DatasetRowMetadata{}
+					if !ledgerEnd.IsZero() {
+						row.Metadata.HistoryLedgerLagHours = numberPtr(q.Cutoff.Sub(ledgerEnd).Hours())
+					}
+				}
 				if m.Status != "included" {
 					row.Blockers = append(row.Blockers, "scope:"+m.Reason)
 				}
