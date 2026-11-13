@@ -11,21 +11,43 @@ import (
 	"time"
 )
 
+// OperationsConfig selects the operations stages. Each stage keeps its own
+// explicit permission; coverage is off unless separately enabled.
+type OperationsConfig struct {
+	Ranking  bool
+	Coverage bool
+	Outcomes bool
+	CoverageOptions
+}
+
 // OperationsOnce preserves the two existing permissions. It never signs sources.
 func OperationsOnce(ctx context.Context, db *gorm.DB, now time.Time, ranking, outcomes bool) error {
+	return OperationsOnceWith(ctx, db, now, OperationsConfig{Ranking: ranking, Outcomes: outcomes})
+}
+
+// OperationsOnceWith runs ranking -> coverage -> outcomes. The coverage stage
+// writes only system-owned (atlas-system) assertions derived from source checks
+// and the operator ledger declaration; it never synthesizes Complete=true.
+func OperationsOnceWith(ctx context.Context, db *gorm.DB, now time.Time, cfg OperationsConfig) error {
 	var first error
+	coverage := func(ctx context.Context, db *gorm.DB, now time.Time) error {
+		return CoverageDaily(ctx, db, now, cfg.CoverageOptions)
+	}
 	for _, stage := range []struct {
 		name    string
 		enabled bool
 		run     func(context.Context, *gorm.DB, time.Time) error
-	}{{"ranking", ranking, Daily}, {"outcomes", outcomes, OutcomeDaily}} {
+	}{{"ranking", cfg.Ranking, Daily}, {"coverage", cfg.Coverage, coverage}, {"outcomes", cfg.Outcomes, OutcomeDaily}} {
 		if !stage.enabled {
 			continue
 		}
 		stageCtx, cancelStage := context.WithTimeout(ctx, 10*time.Minute)
 		err := stage.run(stageCtx, db, now)
 		cancelStage()
-		if err != nil && first == nil {
+		var sourceIncomplete *CoverageStageError
+		if err != nil && first == nil && !errors.As(err, &sourceIncomplete) {
+			// A per-source fail-closed result is recorded in the operations
+			// ledger below; it must not mask the other stages as a loop failure.
 			first = err
 		}
 		// Persist failure observation even when the invocation context was cancelled.
@@ -81,6 +103,8 @@ func observeOperationLocked(ctx context.Context, db *gorm.DB, now time.Time, sta
 	if stage == "ranking" {
 		k, _ := digest([]any{"daily", day, Contract, Target})
 		keys = append(keys, k)
+	} else if stage == "coverage" {
+		keys = append(keys, coverageJobKey(day))
 	} else {
 		var queries []api.GPURiskQuery
 		if e := db.WithContext(ctx).Where("status = ? AND cutoff >= ? AND cutoff <= ?", "completed", now.UTC().Add(-31*24*time.Hour), now.UTC()).Order("id DESC").Limit(201).Find(&queries).Error; e != nil {
@@ -104,9 +128,13 @@ func observeOperationLocked(ctx context.Context, db *gorm.DB, now time.Time, sta
 	complete := 0
 	failed := false
 	running := false
+	sourceCode := ""
 	for _, j := range jobs {
 		if j.Status == "completed" {
 			complete++
+			if stage == "coverage" && j.ErrorCode != "" {
+				sourceCode = j.ErrorCode
+			}
 		} else if j.Attempt >= 2 {
 			op.Exhausted++
 		} else if j.Status == "failed" {
@@ -119,12 +147,17 @@ func observeOperationLocked(ctx context.Context, db *gorm.DB, now time.Time, sta
 	case op.Exhausted > 0:
 		op.Status = "manual_required"
 		op.ErrorCode = "attempt_budget_exhausted"
-	case runErr != nil:
+	case runErr != nil && !errors.As(runErr, new(*CoverageStageError)):
 		op.Status = "failed"
 		op.ErrorCode = "operation_failed"
 	case failed:
 		op.Status = "failed"
 		op.ErrorCode = "job_failed"
+	case sourceCode != "":
+		// The coverage job ran; the named sources failed closed and wrote no
+		// assertion. This is persisted from the job so later ticks keep it.
+		op.Status = "blocked"
+		op.ErrorCode = sourceCode
 	case len(jobs) > 0 && complete == len(jobs) && (stage == "ranking" || len(jobs) == len(keys)):
 		op.Status = "completed"
 	case running:
@@ -134,13 +167,18 @@ func observeOperationLocked(ctx context.Context, db *gorm.DB, now time.Time, sta
 	return db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "day"}, {Name: "stage"}}, DoUpdates: clause.AssignmentColumns([]string{"status", "error_code", "job_count", "exhausted", "query_id", "member_count", "result_sha", "outcome_batch_id", "outcome_sha", "sha", "observed_at"}), Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "gpu_risk_operations.sha <> excluded.sha"}}}}).Create(&op).Error
 }
 func RunOperations(ctx context.Context, db *gorm.DB, ranking, outcomes bool) {
-	if !ranking && !outcomes {
+	RunOperationsWith(ctx, db, OperationsConfig{Ranking: ranking, Outcomes: outcomes})
+}
+
+// RunOperationsWith is RunOperations with the separately permitted coverage stage.
+func RunOperationsWith(ctx context.Context, db *gorm.DB, cfg OperationsConfig) {
+	if !cfg.Ranking && !cfg.Outcomes && !cfg.Coverage {
 		return
 	}
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
-		err := OperationsOnce(ctx, db, time.Now(), ranking, outcomes)
+		err := OperationsOnceWith(ctx, db, time.Now(), cfg)
 		if err != nil {
 			log.Print("GPU operations failed; inspect operational ledger")
 		}

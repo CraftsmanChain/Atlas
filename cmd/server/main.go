@@ -279,9 +279,24 @@ func main() {
 	gpuOutcomeEnabled := strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_OUTCOMES_ENABLED"), "true")
 	gpuOperationsEnabled := strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_OPERATIONS_ENABLED"), "true")
 	gpurisk.Handler{DB: db.DB, AutomaticJobsEnabled: gpuRiskDailyEnabled, OutcomeJobsEnabled: gpuOutcomeEnabled, OperationsEnabled: gpuOperationsEnabled}.Register(mux)
+	// Coverage is a separate permission (default off). The daily identity
+	// backfill runs under it unless explicitly disabled.
+	gpuCoverageEnabled := strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_COVERAGE_ENABLED"), "true")
+	gpuIdentityBackfillEnabled := gpuCoverageEnabled && !strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_IDENTITY_BACKFILL_ENABLED"), "false")
+	gpuCoverageOptions := gpurisk.CoverageOptions{
+		IdentityBackfill: gpuIdentityBackfillEnabled,
+		IdentitySource:   strings.TrimSpace(os.Getenv("ATLAS_GPU_RISK_IDENTITY_SOURCE")),
+		StartIdentityBackfill: func(_ context.Context, sourceKey string, start, end time.Time) (uint, error) {
+			run, err := historyService.StartIdentityBackfill(history.BackfillRequest{SourceKey: sourceKey, Start: &start, End: &end})
+			return run.ID, err
+		},
+	}
 	if gpuOperationsEnabled {
-		go gpurisk.RunOperations(context.Background(), db.DB, gpuRiskDailyEnabled, gpuOutcomeEnabled)
+		go gpurisk.RunOperationsWith(context.Background(), db.DB, gpurisk.OperationsConfig{Ranking: gpuRiskDailyEnabled, Coverage: gpuCoverageEnabled, Outcomes: gpuOutcomeEnabled, CoverageOptions: gpuCoverageOptions})
 	} else {
+		if gpuCoverageEnabled {
+			go gpurisk.RunCoverage(context.Background(), db.DB, gpuCoverageOptions)
+		}
 		if gpuOutcomeEnabled {
 			go gpurisk.RunOutcomes(context.Background(), db.DB)
 		}
