@@ -114,8 +114,10 @@ func observeOperationLocked(ctx context.Context, db *gorm.DB, now time.Time, sta
 			return ErrInput
 		}
 		for _, v := range queries {
-			k, _ := digest([]any{"outcome-daily", OutcomeVersion, v.Key, day})
-			keys = append(keys, k)
+			for _, version := range []string{OutcomeVersion, IncidentOutcomeVersion} {
+				k, _ := digest([]any{"outcome-daily", version, v.Key, day})
+				keys = append(keys, k)
+			}
 		}
 	}
 	var jobs []api.GPURiskJob

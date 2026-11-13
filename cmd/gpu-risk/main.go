@@ -40,6 +40,7 @@ func run(args []string) error {
 	mode := flags.String("mode", "full", "full or identity-only (evidence-ingest-prepare only)")
 	reviewID := flags.Uint("review", 0, "review row ID; selects latest feedback revision")
 	queryID := flags.Uint("query", 0, "frozen query ID for outcomes")
+	target := flags.String("target", "confirmed_hardware_failure", "outcome target for outcome-plan/outcomes: confirmed_hardware_failure (v1) or node_hardware_incident (T-A)")
 	source := flags.String("source", "", "history source for coverage-check/coverage-members: hardware_fault_ledger, monitoring or identity")
 	owner := flags.String("owner", "", "signing owner for coverage-check/coverage-members")
 	asOfText := flags.String("as-of", "", "RFC3339 outcome evaluation time; defaults to now")
@@ -266,7 +267,15 @@ func run(args []string) error {
 					return fmt.Errorf("invalid as-of")
 				}
 			}
-			batch, rows, e := gpurisk.EvaluateOutcomes(ctx, db, *queryID, asOf)
+			evaluate := gpurisk.EvaluateOutcomes
+			switch *target {
+			case "confirmed_hardware_failure":
+			case gpurisk.IncidentTarget:
+				evaluate = gpurisk.EvaluateIncidentOutcomes
+			default:
+				return fmt.Errorf("unknown outcome target")
+			}
+			batch, rows, e := evaluate(ctx, db, *queryID, asOf)
 			if e != nil {
 				return fmt.Errorf("outcome plan failed")
 			}
@@ -293,7 +302,15 @@ func run(args []string) error {
 		if e := gpurisk.Migrate(db.WithContext(ctx)); e != nil {
 			return fmt.Errorf("outcome migration failed")
 		}
-		batch, e := gpurisk.RecordOutcomes(ctx, db, *queryID, asOf)
+		record := gpurisk.RecordOutcomes
+		switch *target {
+		case "confirmed_hardware_failure":
+		case gpurisk.IncidentTarget:
+			record = gpurisk.RecordIncidentOutcomes
+		default:
+			return fmt.Errorf("unknown outcome target")
+		}
+		batch, e := record(ctx, db, *queryID, asOf)
 		if e != nil {
 			return fmt.Errorf("outcome record failed")
 		}

@@ -15,7 +15,20 @@ import (
 // OutcomeDaily processes at most 200 queries in a rolling 31-day reconciliation
 // window. Older label corrections remain available via explicit CLI replay.
 // Each query/day freezes as_of; retries are bounded and publish under fencing.
+// OutcomeDaily records the frozen v1 (confirmed GPU hardware) batches and then
+// the additive T-A node incident batches for every recent query. Each target
+// has its own job key so a failure in one never rewrites the other.
 func OutcomeDaily(ctx context.Context, db *gorm.DB, now time.Time) error {
+	first := outcomeDailyFor(ctx, db, now, OutcomeVersion, "outcome_record_failed", recordOutcomes)
+	if e := outcomeDailyFor(ctx, db, now, IncidentOutcomeVersion, "incident_outcome_record_failed", recordIncidentOutcomes); e != nil && first == nil {
+		first = e
+	}
+	return first
+}
+
+type outcomeRecorder func(context.Context, *gorm.DB, uint, time.Time, *Lease) (api.GPURiskOutcomeBatch, error)
+
+func outcomeDailyFor(ctx context.Context, db *gorm.DB, now time.Time, version, failCode string, record outcomeRecorder) error {
 	now = now.UTC()
 	local := now.In(time.FixedZone("Asia/Shanghai", 8*3600))
 	if local.Hour() < 2 || (local.Hour() == 2 && local.Minute() < 10) {
@@ -30,7 +43,7 @@ func OutcomeDaily(ctx context.Context, db *gorm.DB, now time.Time) error {
 		return ErrInput
 	}
 	for _, q := range queries {
-		key, _ := digest([]any{"outcome-daily", OutcomeVersion, q.Key, local.Format("2006-01-02")})
+		key, _ := digest([]any{"outcome-daily", version, q.Key, local.Format("2006-01-02")})
 		input, _ := json.Marshal(now.Truncate(time.Microsecond))
 		job := api.GPURiskJob{Key: key, Status: "pending", Input: string(input)}
 		if e := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&job).Error; e != nil {
@@ -54,11 +67,11 @@ func OutcomeDaily(ctx context.Context, db *gorm.DB, now time.Time) error {
 		if json.Unmarshal([]byte(job.Input), &asOf) != nil {
 			e = ErrInput
 		} else {
-			_, e = recordOutcomes(ctx, db, q.ID, asOf, &lease)
+			_, e = record(ctx, db, q.ID, asOf, &lease)
 		}
 		if e != nil {
 			release, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-			db.WithContext(release).Model(&api.GPURiskJob{}).Where("key = ? AND owner = ? AND token = ? AND status = ?", key, lease.Owner, lease.Token, "running").Updates(map[string]any{"status": "failed", "error_code": "outcome_record_failed"})
+			db.WithContext(release).Model(&api.GPURiskJob{}).Where("key = ? AND owner = ? AND token = ? AND status = ?", key, lease.Owner, lease.Token, "running").Updates(map[string]any{"status": "failed", "error_code": failCode})
 			cancel()
 			return e
 		}
