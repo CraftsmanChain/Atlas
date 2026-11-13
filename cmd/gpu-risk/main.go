@@ -49,8 +49,9 @@ func run(args []string) error {
 	datasetSHA := flags.String("dataset-sha", "", "exact dataset file SHA256")
 	artifactSHA := flags.String("artifact-sha", "", "exact model file SHA256")
 	scoresSHA := flags.String("scores-sha", "", "exact score file SHA256")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "context-prepare" && command != "core-source-plan" && command != "coverage-plan" && command != "coverage-check" && command != "coverage-members" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record") {
-		return fmt.Errorf("usage: gpu-risk [plan|record|context-prepare|core-source-plan|coverage-plan|evidence-ingest-prepare|evidence-ingest-apply|coverage-check|coverage-members|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record] [-driver postgres|sqlite] [-input plan.json]")
+	throughText := flags.String("through", "", "RFC3339 ledger complete-through for ledger-declare")
+	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "context-prepare" && command != "core-source-plan" && command != "coverage-plan" && command != "coverage-check" && command != "ledger-declare" && command != "coverage-members" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record") {
+		return fmt.Errorf("usage: gpu-risk [plan|record|context-prepare|core-source-plan|coverage-plan|evidence-ingest-prepare|evidence-ingest-apply|coverage-check|ledger-declare|coverage-members|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record] [-driver postgres|sqlite] [-input plan.json]")
 	}
 	modeSet := false
 	flags.Visit(func(f *flag.Flag) {
@@ -75,7 +76,43 @@ func run(args []string) error {
 		return fmt.Errorf("apply requires -input approved.json")
 	}
 	if command == "coverage-check" && (*source == "" || *owner == "") {
-		return fmt.Errorf("coverage-check requires -source hardware_fault_ledger|monitoring|identity and -owner")
+		return fmt.Errorf("coverage-check requires -source monitoring|identity and -owner")
+	}
+	if command == "coverage-check" && strings.TrimSpace(*source) == "hardware_fault_ledger" {
+		// v3: reading the ledger table at now would certify an offline import as
+		// complete through now. Refuse before any database access.
+		fmt.Fprintln(os.Stderr, "DEPRECATED: coverage-check -source hardware_fault_ledger is refused; use: gpu-risk ledger-declare -through <RFC3339> -owner <name>")
+		return fmt.Errorf("coverage check rejected: %w", gpurisk.ErrLedgerDeclarationRequired)
+	}
+	throughSet := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "through" {
+			throughSet = true
+		}
+	})
+	if throughSet && command != "ledger-declare" {
+		return fmt.Errorf("-through is only valid for ledger-declare")
+	}
+	var declaredThrough time.Time
+	if command == "ledger-declare" {
+		allowed := map[string]bool{"through": true, "owner": true, "driver": true}
+		invalid := false
+		flags.Visit(func(f *flag.Flag) {
+			if !allowed[f.Name] {
+				invalid = true
+			}
+		})
+		if invalid || strings.TrimSpace(*throughText) == "" || strings.TrimSpace(*owner) == "" {
+			return fmt.Errorf("ledger-declare requires -through <RFC3339> and -owner <name>, and only accepts -through, -owner and -driver")
+		}
+		at, e := time.Parse(time.RFC3339Nano, *throughText)
+		if e != nil {
+			return fmt.Errorf("invalid -through")
+		}
+		if at.After(time.Now()) {
+			return fmt.Errorf("ledger declaration rejected: through is in the future")
+		}
+		declaredThrough = at
 	}
 	if command == "coverage-members" && (*queryID == 0 || *source == "" || *owner == "") {
 		return fmt.Errorf("coverage-members requires -query and -source hardware_fault_ledger|monitoring|identity and -owner")
@@ -265,9 +302,23 @@ func run(args []string) error {
 		if e := gpurisk.Migrate(db.WithContext(ctx)); e != nil {
 			return fmt.Errorf("coverage migration failed")
 		}
-		row, e := gpurisk.RecordSourceCoverage(ctx, db, gpurisk.CoverageCheckInput{Source: *source, Owner: *owner})
+		identitySource := strings.TrimSpace(os.Getenv("ATLAS_GPU_RISK_IDENTITY_SOURCE"))
+		if identitySource == "" {
+			identitySource = gpurisk.DefaultIdentitySource
+		}
+		row, e := gpurisk.RecordSourceCoverageV3(ctx, db, gpurisk.CoverageCheckInput{Source: *source, Owner: *owner}, identitySource)
 		if e != nil {
 			return fmt.Errorf("coverage check rejected: %w", e)
+		}
+		return json.NewEncoder(os.Stdout).Encode(row)
+	}
+	if command == "ledger-declare" {
+		if e := gpurisk.Migrate(db.WithContext(ctx)); e != nil {
+			return fmt.Errorf("coverage migration failed")
+		}
+		row, e := gpurisk.DeclareLedgerCoverage(ctx, db, declaredThrough, *owner)
+		if e != nil {
+			return fmt.Errorf("ledger declaration rejected: %w", e)
 		}
 		return json.NewEncoder(os.Stdout).Encode(row)
 	}

@@ -260,15 +260,14 @@ func TestCoverageCheckCLIStrictInput(t *testing.T) {
 	if count != 0 {
 		t.Fatal("rejected source wrote a check row")
 	}
-	if e := run([]string{"coverage-check", "-driver", "sqlite", "-source", "hardware_fault_ledger", "-owner", "ops"}); e != nil {
-		t.Fatal(e)
+	// P1 taskcard §2.2/§4.2 contract change: the read-at-now ledger check is
+	// deprecated and refused; ledger coverage is declared via ledger-declare.
+	if e := run([]string{"coverage-check", "-driver", "sqlite", "-source", "hardware_fault_ledger", "-owner", "ops"}); e == nil || !strings.Contains(e.Error(), "deprecated") {
+		t.Fatal("deprecated ledger coverage-check accepted", e)
 	}
-	var row api.GPURiskSourceCoverageCheck
-	if e := store.DB.Order("id DESC").First(&row).Error; e != nil {
-		t.Fatal(e)
-	}
-	if row.Source != "hardware_fault_ledger" || row.Owner != "ops" || row.RecordCount != 0 || !row.ObservedAt.Equal(row.VerifiedThrough) {
-		t.Fatalf("unexpected coverage row: %+v", row)
+	store.DB.Model(&api.GPURiskSourceCoverageCheck{}).Count(&count)
+	if count != 0 {
+		t.Fatal("refused ledger check wrote a row")
 	}
 }
 

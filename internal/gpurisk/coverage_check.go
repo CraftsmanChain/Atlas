@@ -47,40 +47,9 @@ func RecordSourceCoverage(ctx context.Context, db *gorm.DB, in CoverageCheckInpu
 		return out, ErrInput
 	}
 	now := evidenceNow().UTC().Truncate(time.Microsecond)
-	keys := []string{}
-	through := now
-	switch source {
-	case "hardware_fault_ledger":
-		var rows []api.HardwareFaultFeedbackRequest
-		if err := db.WithContext(ctx).Order("request_key").Find(&rows).Error; err != nil {
-			return out, err
-		}
-		for _, r := range rows {
-			keys = append(keys, r.RequestKey)
-		}
-	case "identity":
-		var rows []api.HistoricalGPUIdentityInterval
-		if err := db.WithContext(ctx).Order("interval_key").Find(&rows).Error; err != nil {
-			return out, err
-		}
-		for _, r := range rows {
-			keys = append(keys, r.IntervalKey)
-		}
-	case "monitoring":
-		var rows []api.MonitoringHistoryAudit
-		if err := db.WithContext(ctx).Order("source_key, id").Find(&rows).Error; err != nil {
-			return out, err
-		}
-		for _, r := range rows {
-			keys = append(keys, fmt.Sprintf("%s|%d", r.SourceKey, r.ID))
-		}
-		pulled, err := monitoringWatermark(rows, now)
-		if err != nil {
-			return out, err
-		}
-		through = pulled
-	default:
-		return out, ErrInput
+	keys, through, err := readSourceCoverage(ctx, db, source, now)
+	if err != nil {
+		return out, err
 	}
 	sha, err := digest(keys)
 	if err != nil {
@@ -100,6 +69,67 @@ func RecordSourceCoverage(ctx context.Context, db *gorm.DB, in CoverageCheckInpu
 		return api.GPURiskSourceCoverageCheck{}, err
 	}
 	return out, nil
+}
+
+// readSourceCoverage reads the stable record keys of one canonical source and
+// its legacy (v2) completeness watermark. It never writes.
+func readSourceCoverage(ctx context.Context, db *gorm.DB, source string, now time.Time) ([]string, time.Time, error) {
+	keys := []string{}
+	through := now
+	switch source {
+	case "hardware_fault_ledger":
+		var err error
+		keys, err = ledgerKeys(ctx, db)
+		if err != nil {
+			return nil, time.Time{}, err
+		}
+	case "identity":
+		var err error
+		keys, err = identityKeys(ctx, db)
+		if err != nil {
+			return nil, time.Time{}, err
+		}
+	case "monitoring":
+		var rows []api.MonitoringHistoryAudit
+		if err := db.WithContext(ctx).Order("source_key, id").Find(&rows).Error; err != nil {
+			return nil, time.Time{}, err
+		}
+		for _, r := range rows {
+			keys = append(keys, fmt.Sprintf("%s|%d", r.SourceKey, r.ID))
+		}
+		pulled, err := monitoringWatermark(rows, now)
+		if err != nil {
+			return nil, time.Time{}, err
+		}
+		through = pulled
+	default:
+		return nil, time.Time{}, ErrInput
+	}
+	return keys, through, nil
+}
+
+func ledgerKeys(ctx context.Context, db *gorm.DB) ([]string, error) {
+	keys := []string{}
+	var rows []api.HardwareFaultFeedbackRequest
+	if err := db.WithContext(ctx).Order("request_key").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		keys = append(keys, r.RequestKey)
+	}
+	return keys, nil
+}
+
+func identityKeys(ctx context.Context, db *gorm.DB) ([]string, error) {
+	keys := []string{}
+	var rows []api.HistoricalGPUIdentityInterval
+	if err := db.WithContext(ctx).Order("interval_key").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		keys = append(keys, r.IntervalKey)
+	}
+	return keys, nil
 }
 
 // MemberCoverageVersion pins the per-member coverage assertion contract. A
@@ -143,7 +173,14 @@ func RecordMemberCoverage(ctx context.Context, db *gorm.DB, queryID uint, source
 			return ErrInput
 		}
 		var checks []api.GPURiskSourceCoverageCheck
-		if e := tx.Where("source = ?", source).Order("observed_at DESC, id DESC").Limit(1).Find(&checks).Error; e != nil {
+		query := tx.Where("source = ?", source)
+		if source == "hardware_fault_ledger" {
+			// v3: the ledger is an irregular offline import. Only an explicit
+			// operator delivery declaration states how far it is complete; a
+			// legacy "table read at now" check is never used for members.
+			query = query.Where("contract = ?", LedgerDeclaredContract)
+		}
+		if e := query.Order("observed_at DESC, id DESC").Limit(1).Find(&checks).Error; e != nil {
 			return e
 		}
 		if len(checks) != 1 {

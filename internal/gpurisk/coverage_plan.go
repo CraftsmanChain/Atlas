@@ -184,7 +184,7 @@ func BuildCoveragePlan(ctx context.Context, db *gorm.DB, queryID uint, asOf time
 				s.Check = &c
 				s.CheckStaleAtAsOf = c.VerifiedThrough.Before(asOf.Add(-MaxSourceLag))
 				s.CheckStatus = "within_query_tail"
-				if c.ObservedAt.IsZero() || c.Contract != CoverageWatermarkContract || c.VerifiedThrough.IsZero() || c.VerifiedThrough.After(c.ObservedAt) || !validSHA(c.CheckSHA256) {
+				if c.ObservedAt.IsZero() || !coverageCheckContractValid(source, c.Contract) || c.VerifiedThrough.IsZero() || c.VerifiedThrough.After(c.ObservedAt) || !validSHA(c.CheckSHA256) {
 					s.CheckStatus = "invalid"
 				} else if c.VerifiedThrough.Before(q.Cutoff.Add(-MaxSourceLag)) {
 					s.CheckStatus = "stale_for_query"
@@ -244,7 +244,13 @@ func BuildCoveragePlan(ctx context.Context, db *gorm.DB, queryID uint, asOf time
 				s.ActionReasons = append(s.ActionReasons, "member_assertions_missing")
 			}
 			if s.CheckStatus != "within_query_tail" || s.CheckStaleAtAsOf {
-				s.Commands = append(s.Commands, fmt.Sprintf("gpu-risk coverage-check -source %s -owner '<RESPONSIBLE_OWNER>'", source))
+				if source == "hardware_fault_ledger" {
+					// v3: the ledger is certified only by an explicit delivery declaration.
+					s.ActionReasons = append(s.ActionReasons, "ledger_requires_operator_delivery_declaration")
+					s.Commands = append(s.Commands, "gpu-risk ledger-declare -through '<RFC3339_COMPLETE_THROUGH>' -owner '<RESPONSIBLE_OWNER>'")
+				} else {
+					s.Commands = append(s.Commands, fmt.Sprintf("gpu-risk coverage-check -source %s -owner '<RESPONSIBLE_OWNER>'", source))
+				}
 			}
 			if s.MemberAssertions < out.Included || s.OutcomeWindowAssertions < out.Included {
 				s.Commands = append(s.Commands, fmt.Sprintf("gpu-risk coverage-members -query %d -source %s -owner '<RESPONSIBLE_OWNER>'", q.ID, source))
