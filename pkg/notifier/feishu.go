@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -265,7 +266,13 @@ func SendBotCard(bot config.FeishuBotConfig, title, template, content string) er
 	client := &http.Client{Timeout: 15 * time.Second}
 	response, err := client.Post(bot.WebhookURL, "application/json", bytes.NewReader(jsonData))
 	if err != nil {
-		return err
+		// *url.Error embeds the full webhook URL (its token is a credential);
+		// keep only the operation and the underlying cause.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			return fmt.Errorf("feishu webhook %s failed: %w", urlErr.Op, urlErr.Err)
+		}
+		return errors.New("feishu webhook request failed")
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {

@@ -7,6 +7,6 @@ Type=oneshot
 EnvironmentFile=/etc/atlas/atlas.env
 # $$ is systemd's escape for a literal $: bash, not systemd, expands the DSN,
 # so it never appears in the process argv.
-ExecStart=/bin/bash -c 'ATLAS_GPU_RISK_DSN="$$ATLAS_DATABASE_DSN" exec /ops/atlas/gpu-risk report -kind weekly -out /ops/atlas/reports/gpu-risk'
+ExecStart=/bin/bash -c 'ATLAS_GPU_RISK_DSN="$$ATLAS_DATABASE_DSN" exec /ops/atlas/gpu-risk report -kind weekly -out /ops/atlas/reports/gpu-risk -notify'
 Nice=10
 TimeoutStartSec=15min

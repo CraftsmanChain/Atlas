@@ -56,6 +56,8 @@ func run(args []string) error {
 	throughText := flags.String("through", "", "RFC3339 ledger complete-through for ledger-declare")
 	reportKind := flags.String("kind", "", "report: daily or weekly")
 	reportOut := flags.String("out", "", "report: output directory")
+	reportNotify := flags.Bool("notify", false, "report: push a Feishu card after the report files are written")
+	reportConfig := flags.String("config", defaultReportConfig, "report: Atlas config with feishu.bots (used with -notify)")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "context-prepare" && command != "core-source-plan" && command != "coverage-plan" && command != "coverage-check" && command != "ledger-declare" && command != "coverage-members" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record" && command != "shadow-score" && command != "report") {
 		return fmt.Errorf("usage: gpu-risk [plan|record|context-prepare|core-source-plan|coverage-plan|evidence-ingest-prepare|evidence-ingest-apply|coverage-check|ledger-declare|coverage-members|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record|shadow-score|report] [-driver postgres|sqlite] [-input plan.json]")
 	}
@@ -70,23 +72,23 @@ func run(args []string) error {
 	}
 	reportFlagSet := false
 	flags.Visit(func(f *flag.Flag) {
-		if f.Name == "kind" || f.Name == "out" {
+		if f.Name == "kind" || f.Name == "out" || f.Name == "notify" || f.Name == "config" {
 			reportFlagSet = true
 		}
 	})
 	if reportFlagSet && command != "report" {
-		return fmt.Errorf("-kind and -out are only valid for report")
+		return fmt.Errorf("-kind, -out, -notify and -config are only valid for report")
 	}
 	if command == "report" {
-		allowed := map[string]bool{"kind": true, "out": true, "driver": true}
+		allowed := map[string]bool{"kind": true, "out": true, "driver": true, "notify": true, "config": true}
 		invalid := false
 		flags.Visit(func(f *flag.Flag) {
 			if !allowed[f.Name] {
 				invalid = true
 			}
 		})
-		if invalid || (*reportKind != "daily" && *reportKind != "weekly") || strings.TrimSpace(*reportOut) == "" {
-			return fmt.Errorf("report requires -kind daily|weekly and -out DIR, and only accepts -kind, -out and -driver")
+		if invalid || (*reportKind != "daily" && *reportKind != "weekly") || strings.TrimSpace(*reportOut) == "" || strings.TrimSpace(*reportConfig) == "" {
+			return fmt.Errorf("report requires -kind daily|weekly and -out DIR, and only accepts -kind, -out, -driver, -notify and -config")
 		}
 	}
 	if command == "verify-model" {
@@ -212,7 +214,14 @@ func run(args []string) error {
 			}
 		}
 		if command == "report" {
-			return runReport(ctx, db, *reportKind, *reportOut, time.Now(), os.Stdout)
+			var notify func(title, template, content string) error
+			if *reportNotify {
+				path := *reportConfig
+				notify = func(title, template, content string) error {
+					return sendReportCard(path, title, template, content)
+				}
+			}
+			return runReport(ctx, db, *reportKind, *reportOut, time.Now(), os.Stdout, notify)
 		}
 		if command == "context-prepare" {
 			asOf := time.Now().UTC()
@@ -506,10 +515,13 @@ func run(args []string) error {
 
 // runReport builds one read-only report and writes <out>/<kind>-YYYY-MM-DD and
 // <out>/<kind>-latest (.json and .md, Asia/Shanghai date) atomically. Findings
-// never make it fail; only build or write errors do.
-func runReport(ctx context.Context, db *gorm.DB, kind, out string, now time.Time, stdout io.Writer) error {
+// never make it fail; only build or write errors do. When notify is non-nil it
+// is called once, only after all files are written, with the Feishu card; its
+// failure is returned (files are kept) so the run exits non-zero.
+func runReport(ctx context.Context, db *gorm.DB, kind, out string, now time.Time, stdout io.Writer, notify func(title, template, content string) error) error {
 	var payload any
 	var markdown string
+	var title, template, card string
 	switch kind {
 	case "daily":
 		c, e := gpurisk.BuildDailyCheck(ctx, db, now)
@@ -517,12 +529,14 @@ func runReport(ctx context.Context, db *gorm.DB, kind, out string, now time.Time
 			return fmt.Errorf("daily report failed: %w", e)
 		}
 		payload, markdown = c, gpurisk.RenderDailyMarkdown(c)
+		title, template, card = gpurisk.RenderDailyFeishu(c)
 	case "weekly":
 		r, e := gpurisk.BuildE2Report(ctx, db, now)
 		if e != nil {
 			return fmt.Errorf("weekly report failed: %w", e)
 		}
 		payload, markdown = r, gpurisk.RenderE2Markdown(r)
+		title, template, card = gpurisk.RenderE2Feishu(r)
 	default:
 		return fmt.Errorf("unknown report kind")
 	}
@@ -543,8 +557,15 @@ func runReport(ctx context.Context, db *gorm.DB, kind, out string, now time.Time
 			return err
 		}
 	}
-	_, err = io.WriteString(stdout, markdown)
-	return err
+	if _, err := io.WriteString(stdout, markdown); err != nil {
+		return err
+	}
+	if notify != nil {
+		if err := notify(title, template, card); err != nil {
+			return fmt.Errorf("report files written to %s, but Feishu push failed: %w", out, err)
+		}
+	}
+	return nil
 }
 
 // writeAtomic writes a 0640 file through a temp file in the same directory.
