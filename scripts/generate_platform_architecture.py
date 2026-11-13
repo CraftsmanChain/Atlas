@@ -23,7 +23,7 @@ LAYERS = [
     ('assessment', ('评估与发现', 'ASSESSMENT'), '#faf5ff', [
         ('quality', ('数据质量发现', 'Data quality detection'), [('采集可用性 · 指标连续性', 'Collection availability · continuity'), ('身份偏差 · 覆盖缺口', 'Identity drift · coverage gaps')]),
         ('gpu', ('GPU 健康与相对风险', 'GPU health & relative risk'), [('确定性规则 · 可解释健康分', 'Deterministic rules · health scores'), ('影子排名 · 独立效果验证', 'Shadow ranking · separate validation')]),
-        ('disk', ('物理盘健康', 'Physical disk health'), [('NVMe · 有限型号 SATA · 历史', 'NVMe · selected SATA profiles · history'), ('分维度评估 · 身份与证据', 'Health dimensions · identity · evidence')]),
+        ('disk', ('物理服务器硬件健康', 'Physical server hardware health'), [('建设中', 'Under development')]),
     ]),
     ('workspace', ('产品工作台', 'WORKSPACE'), '#fff7ed', [
         ('product', ('React 工作台 + Go API', 'React workbench + Go API'), [('总览 · 资产 · 健康 · 数据质量', 'Overview · assets · health · quality'), ('中英文界面 · 实例配置', 'Chinese / English UI · configuration')]),
@@ -39,12 +39,12 @@ def render(lang):
     def add(s): lines.append(s)
     def text(x, y, value, size=16, weight=400, color='#475569'):
         add(f'<text x="{x}" y="{y}" font-size="{size}" font-weight="{weight}" fill="{color}">{escape(value)}</text>')
-    add(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1060" role="img" aria-labelledby="title desc" lang="{lang}">')
+    add(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 930" role="img" aria-labelledby="title desc" lang="{lang}">')
     add(f'<title id="title">{pick(("ATLAS 平台架构", "ATLAS Platform Architecture"))}</title>')
     add(f'<desc id="desc">{pick(("证据来源、数据基础、评估发现、工作台及受门禁控制的离线研究。", "Evidence sources, data foundation, assessment, workspace and gated offline research."))}</desc>')
     add('<style>text {font-family:"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}</style>')
     add('<defs><marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0 0 L10 3.5 L0 7Z" fill="#2563eb"/></marker><marker id="research-arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0 0 L10 3.5 L0 7Z" fill="#9333ea"/></marker></defs>')
-    add('<rect width="1200" height="1060" fill="#ffffff"/>')
+    add('<rect width="1200" height="930" fill="#ffffff"/>')
     text(40, 46, pick(('ATLAS · 基础设施硬件可靠性工作台', 'ATLAS · Infrastructure Hardware Reliability')), 28, 700, '#111827')
     text(40, 76, pick(('真实证据驱动评估，人工掌握处置权', 'Traceable evidence informs assessment; people control consequential actions')), 17)
     for index, (layer_id, name, tint, nodes) in enumerate(LAYERS):
@@ -55,8 +55,14 @@ def render(lang):
             x = 56 + col * 372
             dashed = ' stroke-dasharray="6 4"' if node_id == 'research' else ''
             add(f'<g id="{node_id}"><rect x="{x}" y="{y+46}" width="344" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"{dashed}/>')
-            text(x + 16, y + 74, pick(title), 19, 600, '#111827')
-            for row, sub in enumerate(subtitles): text(x + 16, y + 99 + row * 22, pick(sub), 15)
+            if node_id == 'disk':
+                # Both locales use the same two-line title geometry.
+                text(x + 16, y + 71, pick(('物理服务器', 'Physical server')), 19, 600, '#111827')
+                text(x + 16, y + 94, pick(('硬件健康', 'hardware health')), 19, 600, '#111827')
+                text(x + 16, y + 121, pick(subtitles[0]), 15)
+            else:
+                text(x + 16, y + 74, pick(title), 19, 600, '#111827')
+                for row, sub in enumerate(subtitles): text(x + 16, y + 99 + row * 22, pick(sub), 15)
             add('</g>')
         add('</g>')
     # Same-column ingestion, followed by shared foundation / assessment buses.
@@ -70,13 +76,10 @@ def render(lang):
             color, marker = ('#9333ea', 'research-arrow') if optional else ('#2563eb', 'arrow')
             dash = ' stroke-dasharray="5 4"' if optional else ''
             add(f'<path id="{prefix}-target-{x}" d="M{x} {bus} V{bottom}" stroke="{color}" stroke-width="2" fill="none" marker-end="url(#{marker})"{dash}/>')
-    add('<rect x="40" y="930" width="1120" height="82" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>')
-    text(58, 960, pick(('共同边界：来源与证据可追溯 · 未知不补零 · 人工确认关键操作', 'Shared boundaries: provenance · explicit unknowns · human-controlled operations')), 18, 600)
-    text(58, 989, pick(('相对风险不等于故障概率；研究与影子输出不自动触发隔离或重启。', 'Relative risk is not failure probability; research and shadow output do not trigger isolation or restart.')), 15)
-    add('<path d="M48 1034 H90" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>')
-    text(104, 1040, pick(('证据 / 数据流', 'Evidence / data flow')), 14)
-    add('<path d="M360 1034 H402" stroke="#9333ea" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#research-arrow)"/>')
-    text(416, 1040, pick(('受门禁控制的研究路径', 'Gated research path')), 14)
+    add('<path d="M48 904 H90" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>')
+    text(104, 910, pick(('证据 / 数据流', 'Evidence / data flow')), 14)
+    add('<path d="M360 904 H402" stroke="#9333ea" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#research-arrow)"/>')
+    text(416, 910, pick(('受门禁控制的研究路径', 'Gated research path')), 14)
     add('</svg>')
     return '\n'.join(lines) + '\n'
 
