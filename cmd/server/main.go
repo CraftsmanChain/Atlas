@@ -292,7 +292,7 @@ func main() {
 		},
 	}
 	if gpuOperationsEnabled {
-		go gpurisk.RunOperationsWith(context.Background(), db.DB, gpurisk.OperationsConfig{Ranking: gpuRiskDailyEnabled, Coverage: gpuCoverageEnabled, Outcomes: gpuOutcomeEnabled, CoverageOptions: gpuCoverageOptions})
+		go gpurisk.RunOperationsWith(context.Background(), db.DB, gpurisk.OperationsConfig{Ranking: gpuRiskDailyEnabled, Coverage: gpuCoverageEnabled, Outcomes: gpuOutcomeEnabled, IncidentOutcomes: gpuOutcomeEnabled && strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_INCIDENT_OUTCOMES_ENABLED"), "true"), CoverageOptions: gpuCoverageOptions})
 	} else {
 		if gpuCoverageEnabled {
 			go gpurisk.RunCoverage(context.Background(), db.DB, gpuCoverageOptions)

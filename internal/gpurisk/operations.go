@@ -17,6 +17,9 @@ type OperationsConfig struct {
 	Ranking  bool
 	Coverage bool
 	Outcomes bool
+	// IncidentOutcomes enables the additive T-A node incident outcome stage
+	// (gpu-node-incident-outcome-v1), after the v1 outcomes stage.
+	IncidentOutcomes bool
 	CoverageOptions
 }
 
@@ -37,7 +40,7 @@ func OperationsOnceWith(ctx context.Context, db *gorm.DB, now time.Time, cfg Ope
 		name    string
 		enabled bool
 		run     func(context.Context, *gorm.DB, time.Time) error
-	}{{"ranking", cfg.Ranking, Daily}, {"coverage", cfg.Coverage, coverage}, {"outcomes", cfg.Outcomes, OutcomeDaily}} {
+	}{{"ranking", cfg.Ranking, Daily}, {"coverage", cfg.Coverage, coverage}, {"outcomes", cfg.Outcomes, OutcomeDaily}, {"incident_outcomes", cfg.IncidentOutcomes, IncidentOutcomeDaily}} {
 		if !stage.enabled {
 			continue
 		}
@@ -90,9 +93,14 @@ func observeOperationLocked(ctx context.Context, db *gorm.DB, now time.Time, sta
 	op.QueryID = q.ID
 	op.MemberCount = q.MemberCount
 	op.ResultSHA = q.ResultSHA
-	if stage == "outcomes" && q.ID != 0 {
+	if (stage == "outcomes" || stage == "incident_outcomes") && q.ID != 0 {
+		// Each outcome stage observes only its own label contract's batches.
+		version := OutcomeVersion
+		if stage == "incident_outcomes" {
+			version = IncidentOutcomeVersion
+		}
 		var batch api.GPURiskOutcomeBatch
-		if e := db.WithContext(ctx).Where("query_id = ? AND as_of <= ?", q.ID, now.UTC()).Order("as_of DESC,id DESC").First(&batch).Error; e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {
+		if e := db.WithContext(ctx).Where("query_id = ? AND version = ? AND as_of <= ?", q.ID, version, now.UTC()).Order("as_of DESC,id DESC").First(&batch).Error; e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {
 			return e
 		}
 		op.OutcomeBatchID = batch.ID
@@ -114,10 +122,12 @@ func observeOperationLocked(ctx context.Context, db *gorm.DB, now time.Time, sta
 			return ErrInput
 		}
 		for _, v := range queries {
-			for _, version := range []string{OutcomeVersion, IncidentOutcomeVersion} {
-				k, _ := digest([]any{"outcome-daily", version, v.Key, day})
-				keys = append(keys, k)
+			version := OutcomeVersion
+			if stage == "incident_outcomes" {
+				version = IncidentOutcomeVersion
 			}
+			k, _ := digest([]any{"outcome-daily", version, v.Key, day})
+			keys = append(keys, k)
 		}
 	}
 	var jobs []api.GPURiskJob

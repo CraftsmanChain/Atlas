@@ -15,15 +15,16 @@ import (
 // OutcomeDaily processes at most 200 queries in a rolling 31-day reconciliation
 // window. Older label corrections remain available via explicit CLI replay.
 // Each query/day freezes as_of; retries are bounded and publish under fencing.
-// OutcomeDaily records the frozen v1 (confirmed GPU hardware) batches and then
-// the additive T-A node incident batches for every recent query. Each target
-// has its own job key so a failure in one never rewrites the other.
+// OutcomeDaily records the frozen v1 (confirmed GPU hardware) batches only;
+// its behaviour and job keys are unchanged.
 func OutcomeDaily(ctx context.Context, db *gorm.DB, now time.Time) error {
-	first := outcomeDailyFor(ctx, db, now, OutcomeVersion, "outcome_record_failed", recordOutcomes)
-	if e := outcomeDailyFor(ctx, db, now, IncidentOutcomeVersion, "incident_outcome_record_failed", recordIncidentOutcomes); e != nil && first == nil {
-		first = e
-	}
-	return first
+	return outcomeDailyFor(ctx, db, now, OutcomeVersion, "outcome_record_failed", recordOutcomes)
+}
+
+// IncidentOutcomeDaily records the additive T-A node incident batches under
+// their own job keys. It is a separate, explicitly enabled operations stage.
+func IncidentOutcomeDaily(ctx context.Context, db *gorm.DB, now time.Time) error {
+	return outcomeDailyFor(ctx, db, now, IncidentOutcomeVersion, "incident_outcome_record_failed", recordIncidentOutcomes)
 }
 
 type outcomeRecorder func(context.Context, *gorm.DB, uint, time.Time, *Lease) (api.GPURiskOutcomeBatch, error)

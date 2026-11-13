@@ -226,7 +226,7 @@ func TestIncidentSafeguardsReplayAndVersionIsolation(t *testing.T) {
 	}
 }
 
-// The daily job records both targets under distinct keys.
+// The opt-in incident stage records T-A next to v1 under distinct keys, idempotently.
 func TestOutcomeDailyRecordsBothTargets(t *testing.T) {
 	db, q := incidentDB(t)
 	coverAll(t, db, q, 1, 2)
@@ -235,12 +235,22 @@ func TestOutcomeDailyRecordsBothTargets(t *testing.T) {
 	if local.Hour() < 2 || (local.Hour() == 2 && local.Minute() < 10) {
 		t.Skip("daily window not open at this wall clock; covered by explicit Record tests")
 	}
-	if e := OutcomeDaily(context.Background(), db, day); e != nil {
+	if e := db.AutoMigrate(&api.GPURiskOperation{}); e != nil {
 		t.Fatal(e)
+	}
+	for i := 0; i < 2; i++ {
+		if e := OperationsOnceWith(context.Background(), db, day, OperationsConfig{Outcomes: true, IncidentOutcomes: true}); e != nil {
+			t.Fatal(e)
+		}
 	}
 	var versions []string
 	db.Model(&api.GPURiskOutcomeBatch{}).Where("query_id = ?", q.ID).Order("version").Pluck("version", &versions)
-	if len(versions) != 2 || versions[0] != OutcomeVersion || versions[1] != IncidentOutcomeVersion {
-		t.Fatal(versions)
+	if len(versions) != 2 || versions[0] != IncidentOutcomeVersion || versions[1] != OutcomeVersion {
+		t.Fatal("expected exactly one batch per target after two runs", versions)
+	}
+	var stages []string
+	db.Model(&api.GPURiskOperation{}).Distinct().Order("stage").Pluck("stage", &stages)
+	if strings.Join(stages, ",") != "incident_outcomes,outcomes" {
+		t.Fatal(stages)
 	}
 }
