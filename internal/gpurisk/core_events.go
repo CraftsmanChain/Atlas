@@ -325,6 +325,9 @@ func ImportCoreEvents(ctx context.Context, db *gorm.DB, src RangeQuerier, from, 
 			run.NewEvents = int(res.RowsAffected)
 		}
 	}
+	if err == nil {
+		err = importNodeObservations(ctx, db, src, from, end)
+	}
 	save, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	run.FinishedAt = time.Now().UTC()
@@ -430,4 +433,66 @@ func coreLedgerReady(tx *gorm.DB, cutoff time.Time) (api.GPUCoreEventRun, error)
 		return run, ErrCoreLedgerStale
 	}
 	return run, nil
+}
+
+// importNodeObservations widens each node's first/last DCGM day over the
+// window (the whole ledger history when the table is still empty).
+func importNodeObservations(ctx context.Context, db *gorm.DB, src RangeQuerier, from, end time.Time) error {
+	var n int64
+	if e := db.Model(&api.GPUNodeObservation{}).Count(&n).Error; e != nil {
+		return e
+	}
+	from = dayStart(from)
+	if n == 0 || from.Before(CoreEventLedgerStart) {
+		from = CoreEventLedgerStart
+	}
+	seen := coreSeries{}
+	_, err := coreFetch(ctx, src, func(w string) string {
+		return `count by (host_ip,modelName)(max by (host_ip,modelName,UUID)(max_over_time(DCGM_FI_DEV_GPU_TEMP[` + w + `])))`
+	}, from, dayStart(end), end, func(m map[string]string) string { return strings.TrimSpace(m["host_ip"]) }, false, seen)
+	if err != nil {
+		return err
+	}
+	var old []api.GPUNodeObservation
+	if e := db.Find(&old).Error; e != nil {
+		return e
+	}
+	have := map[string]api.GPUNodeObservation{}
+	for _, o := range old {
+		have[o.NodeIP] = o
+	}
+	ips := make([]string, 0, len(seen))
+	for ip := range seen {
+		ips = append(ips, ip)
+	}
+	sort.Strings(ips)
+	now := time.Now().UTC()
+	for _, ip := range ips {
+		o, ok := have[ip]
+		changed := !ok
+		if !ok {
+			o = api.GPUNodeObservation{NodeIP: ip}
+		}
+		for day, obs := range seen[ip] {
+			if o.FirstSeenDay == "" || day < o.FirstSeenDay {
+				o.FirstSeenDay, changed = day, true
+			}
+			if day > o.LastSeenDay {
+				o.LastSeenDay, changed = day, true
+				if m := obs.labels["modelName"]; m != "" {
+					o.Model = m
+				}
+			}
+			if int(obs.value) > o.MaxGPUs {
+				o.MaxGPUs, changed = int(obs.value), true
+			}
+		}
+		if changed {
+			o.UpdatedAt = now
+			if e := db.Save(&o).Error; e != nil {
+				return e
+			}
+		}
+	}
+	return nil
 }

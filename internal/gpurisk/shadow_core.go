@@ -25,8 +25,23 @@ const CoreRecurrenceStrategy = "core-recurrence-v1"
 
 const coreRecurrenceWindow = 90 * 24 * time.Hour
 
+// CoreCohortStrategy is route R4 of plan v5: R1 plus cold-start cohort terms
+// from the 11-16 M3 retrospective (hypothesis, frozen here, judged only on
+// prospective batches):
+//
+//	score = R1 + 0.5*[node first seen in DCGM < 14 days before cutoff] + 0.3*[RTX 4090]
+//
+// A node never seen in DCGM before cutoff counts as young; unknown model is not 4090.
+const CoreCohortStrategy = "core-recurrence-cohort-v1"
+
+const (
+	cohortYoungDays   = 14
+	cohortYoungWeight = 0.5
+	cohort4090Weight  = 0.3
+)
+
 // ShadowStrategies are frozen daily, in order, by the shadow stage.
-var ShadowStrategies = []string{ShadowStrategy, CoreRecurrenceStrategy}
+var ShadowStrategies = []string{ShadowStrategy, CoreRecurrenceStrategy, CoreCohortStrategy}
 
 // ComputeShadowStrategy is the read-only projection of a named strategy.
 func ComputeShadowStrategy(ctx context.Context, db *gorm.DB, queryID uint, now time.Time, strategy string) (api.GPURiskShadowBatch, []api.GPURiskShadowScore, error) {
@@ -34,13 +49,23 @@ func ComputeShadowStrategy(ctx context.Context, db *gorm.DB, queryID uint, now t
 	case ShadowStrategy:
 		return ComputeShadow(ctx, db, queryID, now)
 	case CoreRecurrenceStrategy:
-		return ComputeCoreRecurrence(ctx, db, queryID, now)
+		return computeCoreRoute(ctx, db, queryID, now, false)
+	case CoreCohortStrategy:
+		return computeCoreRoute(ctx, db, queryID, now, true)
 	}
 	return api.GPURiskShadowBatch{}, nil, ErrInput
 }
 
 // ComputeCoreRecurrence projects R1 for a frozen query.
 func ComputeCoreRecurrence(ctx context.Context, db *gorm.DB, queryID uint, now time.Time) (api.GPURiskShadowBatch, []api.GPURiskShadowScore, error) {
+	return computeCoreRoute(ctx, db, queryID, now, false)
+}
+
+func computeCoreRoute(ctx context.Context, db *gorm.DB, queryID uint, now time.Time, cohort bool) (api.GPURiskShadowBatch, []api.GPURiskShadowScore, error) {
+	strategy := CoreRecurrenceStrategy
+	if cohort {
+		strategy = CoreCohortStrategy
+	}
 	var batch api.GPURiskShadowBatch
 	rows := []api.GPURiskShadowScore{}
 	now = now.UTC().Truncate(time.Microsecond)
@@ -87,7 +112,22 @@ func ComputeCoreRecurrence(ctx context.Context, db *gorm.DB, queryID uint, now t
 			}
 		}
 		eps := CoreEpisodes(keep)
-		inputSHA, err := digest([]any{CoreRecurrenceStrategy, CoreEventLedgerVersion, q.Key, q.ResultSHA, run.ID, ids})
+		obs := map[string]api.GPUNodeObservation{}
+		obsKeys := []string{}
+		if cohort {
+			var all []api.GPUNodeObservation
+			if err := tx.Order("node_ip").Find(&all).Error; err != nil {
+				return err
+			}
+			for _, o := range all {
+				obs[o.NodeIP] = o
+				obsKeys = append(obsKeys, o.NodeIP+"|"+o.FirstSeenDay+"|"+o.Model)
+			}
+			if len(all) == 0 {
+				return ErrCoreLedgerStale
+			}
+		}
+		inputSHA, err := digest([]any{strategy, CoreEventLedgerVersion, q.Key, q.ResultSHA, run.ID, ids, obsKeys})
 		if err != nil {
 			return err
 		}
@@ -109,6 +149,21 @@ func ComputeCoreRecurrence(ctx context.Context, db *gorm.DB, queryID uint, now t
 				d := cutoff.Sub(last).Hours() / 24
 				row.DaysSince = &d
 				s += 1 / (1 + math.Max(d, 0))
+			}
+			if cohort {
+				ip := strings.TrimSpace(m.NodeIP)
+				young := true
+				if o, ok := obs[ip]; ok {
+					if first, e := time.ParseInLocation("2006-01-02", o.FirstSeenDay, shanghai); e == nil && first.Before(cutoff) {
+						young = cutoff.Sub(first) < cohortYoungDays*24*time.Hour
+					}
+					if strings.Contains(o.Model, "4090") {
+						s += cohort4090Weight
+					}
+				}
+				if young {
+					s += cohortYoungWeight
+				}
 			}
 			if m.Status == "included" {
 				score[i] = s
@@ -136,11 +191,11 @@ func ComputeCoreRecurrence(ctx context.Context, db *gorm.DB, queryID uint, now t
 		if !now.After(q.CompletedAt.UTC().Add(ShadowProspectiveWindow)) {
 			timing = "prospective"
 		}
-		sha, err := digest([]any{CoreRecurrenceStrategy, q.Key, inputSHA, rows})
+		sha, err := digest([]any{strategy, q.Key, inputSHA, rows})
 		if err != nil {
 			return err
 		}
-		batch = api.GPURiskShadowBatch{QueryID: q.ID, Strategy: CoreRecurrenceStrategy, Cutoff: cutoff, ComputedAt: now, Timing: timing, InputSHA: inputSHA, SHA: sha, MemberCount: len(rows), ScoredCount: len(score)}
+		batch = api.GPURiskShadowBatch{QueryID: q.ID, Strategy: strategy, Cutoff: cutoff, ComputedAt: now, Timing: timing, InputSHA: inputSHA, SHA: sha, MemberCount: len(rows), ScoredCount: len(score)}
 		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	return batch, rows, err

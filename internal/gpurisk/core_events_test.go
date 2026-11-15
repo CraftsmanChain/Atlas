@@ -13,10 +13,10 @@ import (
 
 // fakeVM serves daily buckets: present[series][day] = value (xid: tfirst unix).
 type fakeVM struct {
-	xid, urr, rrf map[string]map[string]float64
-	labels        map[string]map[string]string
-	calls         int
-	fail          bool
+	xid, urr, rrf, gpus map[string]map[string]float64
+	labels              map[string]map[string]string
+	calls               int
+	fail                bool
 }
 
 func (f *fakeVM) QueryRange(_ context.Context, q string, start, end time.Time, step time.Duration) ([]prometheus.RangeSeries, error) {
@@ -25,7 +25,9 @@ func (f *fakeVM) QueryRange(_ context.Context, q string, start, end time.Time, s
 		return nil, errors.New("vm down")
 	}
 	src := f.xid
-	if strings.Contains(q, "UNCORRECTABLE_REMAPPED_ROWS") {
+	if strings.Contains(q, "GPU_TEMP") {
+		src = f.gpus
+	} else if strings.Contains(q, "UNCORRECTABLE_REMAPPED_ROWS") {
 		src = f.urr
 	} else if strings.Contains(q, "ROW_REMAP_FAILURE") {
 		src = f.rrf
@@ -57,7 +59,7 @@ func sday(s string) time.Time {
 }
 
 func newFakeVM() *fakeVM {
-	return &fakeVM{xid: map[string]map[string]float64{}, urr: map[string]map[string]float64{}, rrf: map[string]map[string]float64{}, labels: map[string]map[string]string{}}
+	return &fakeVM{xid: map[string]map[string]float64{}, urr: map[string]map[string]float64{}, rrf: map[string]map[string]float64{}, gpus: map[string]map[string]float64{}, labels: map[string]map[string]string{}}
 }
 
 func (f *fakeVM) setXID(ip, uuid, code string, days ...string) {
@@ -172,25 +174,50 @@ func TestCoreRecurrenceShadow(t *testing.T) {
 	if by[1].History != 3 || by[2].History != 0 || by[2].DaysSince == nil || *by[2].DaysSince < 199 {
 		t.Fatal(rows[0], rows[1])
 	}
+	// R4 cohort: node-2 first seen 3 days before cutoff (young) and 4090;
+	// node-1 old H100. node-2 gets +0.8 but stays below node-1's history.
+	if e := db.AutoMigrate(&api.GPUNodeObservation{}); e != nil {
+		t.Fatal(e)
+	}
+	db.Create(&api.GPUNodeObservation{NodeIP: "node-1", Model: "NVIDIA H100 80GB HBM3", FirstSeenDay: c.AddDate(0, 0, -100).In(shanghai).Format("2006-01-02"), LastSeenDay: "x"})
+	db.Create(&api.GPUNodeObservation{NodeIP: "node-2", Model: "NVIDIA GeForce RTX 4090", FirstSeenDay: c.AddDate(0, 0, -3).In(shanghai).Format("2006-01-02"), LastSeenDay: "x"})
+	_, crow, err := ComputeShadowStrategy(context.Background(), db, q.ID, *q.CompletedAt, CoreCohortStrategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range crow {
+		if r.History == 0 && (r.RawScore == nil || *r.RawScore < 0.8 || *r.RawScore > 0.81) {
+			t.Fatal("cohort score", *r.RawScore)
+		}
+		if r.History == 3 && (r.RawScore == nil || *r.RawScore > 3.1) {
+			t.Fatal("old H100 got cohort bonus", *r.RawScore)
+		}
+	}
 	if e := ShadowDailyStrategies(context.Background(), db, q.CompletedAt.Add(time.Minute), ShadowStrategies); e != nil {
 		t.Fatal(e)
 	}
 	db.Model(&api.GPURiskShadowBatch{}).Count(&n)
-	if n != 2 {
+	if n != 3 {
 		t.Fatal("batches", n)
 	}
 }
 
 func TestCoreEventsDailyImportIdempotent(t *testing.T) {
 	db := testDB(t)
-	if e := db.AutoMigrate(&api.GPUCoreEvent{}, &api.GPUCoreEventRun{}); e != nil {
+	if e := db.AutoMigrate(&api.GPUCoreEvent{}, &api.GPUCoreEventRun{}, &api.GPUNodeObservation{}); e != nil {
 		t.Fatal(e)
 	}
 	vm := newFakeVM()
 	vm.setXID("10.0.0.1", "GPU-a", "79", "2026-07-10")
+	vm.labels["n1"] = map[string]string{"host_ip": "10.0.0.1", "modelName": "NVIDIA GeForce RTX 4090"}
+	vm.gpus["n1"] = map[string]float64{"2026-07-05": 8, "2026-07-06": 7, "2026-07-19": 8}
 	now := sday("2026-07-20 03:00")
 	if e := CoreEventsDaily(context.Background(), db, vm, now); e != nil {
 		t.Fatal(e)
+	}
+	var ob api.GPUNodeObservation
+	if e := db.First(&ob, "node_ip = ?", "10.0.0.1").Error; e != nil || ob.FirstSeenDay != "2026-07-05" || ob.LastSeenDay != "2026-07-19" || ob.MaxGPUs != 8 {
+		t.Fatal(ob, e)
 	}
 	calls := vm.calls
 	// within refresh window and past newest cutoff: no-op

@@ -42,3 +42,16 @@ type GPUCoreEventRun struct {
 }
 
 func (GPUCoreEventRun) TableName() string { return "gpu_core_event_runs" }
+
+// GPUNodeObservation is the first/last Shanghai day a node reported DCGM GPU
+// telemetry in monitoring (plan v5 M2 host metadata; node age for cold start).
+type GPUNodeObservation struct {
+	NodeIP       string    `json:"node_ip" gorm:"primaryKey;size:64"`
+	Model        string    `json:"model" gorm:"size:96"`
+	FirstSeenDay string    `json:"first_seen_day" gorm:"size:10;not null"`
+	LastSeenDay  string    `json:"last_seen_day" gorm:"size:10;not null"`
+	MaxGPUs      int       `json:"max_gpus"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+func (GPUNodeObservation) TableName() string { return "gpu_node_observations" }
