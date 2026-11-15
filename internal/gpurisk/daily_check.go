@@ -608,19 +608,44 @@ func dailyRoutes(tx *gorm.DB, q api.GPURiskQuery, out *DailyCheck) error {
 		}
 	}
 	var recent []api.GPUCoreEvent
-	if e := tx.Where(timeSQL(tx, "observed_at", ">="), out.GeneratedAt.Add(-7*24*time.Hour)).Order("observed_at,id").Limit(50).Find(&recent).Error; e != nil {
+	if e := tx.Where(timeSQL(tx, "observed_at", ">="), out.GeneratedAt.Add(-7*24*time.Hour)).Order("observed_at,id").Limit(1000).Find(&recent).Error; e != nil {
 		return e
 	}
 	scope := map[string]bool{}
 	for _, ip := range ips {
 		scope[strings.TrimSpace(ip)] = true
 	}
+	// One line per (node, day, code, source): first time, GPU count.
+	type grp struct {
+		at       time.Time
+		host     string
+		gpus     map[string]bool
+		ip, code string
+		src      string
+	}
+	order, groups := []string{}, map[string]*grp{}
 	for _, e := range recent {
+		k := e.NodeIP + "|" + e.Day + "|" + e.Code + "|" + e.Source
+		g := groups[k]
+		if g == nil {
+			g = &grp{at: e.ObservedAt, gpus: map[string]bool{}, ip: e.NodeIP, code: e.Code, src: e.Source}
+			groups[k], order = g, append(order, k)
+		}
+		if g.host == "" {
+			g.host = e.Hostname
+		}
+		g.gpus[NormPCI(e.PCIBusID)+e.GPUUUID] = true
+	}
+	for _, k := range order {
+		g := groups[k]
 		tag := "范围外"
-		if scope[strings.TrimSpace(e.NodeIP)] {
+		if scope[strings.TrimSpace(g.ip)] {
 			tag = "范围内"
 		}
-		l.Recent = append(l.Recent, fmt.Sprintf("%s %s %s %s（%s，%s）", e.ObservedAt.In(shanghai).Format("01-02 15:04"), e.NodeIP, e.Hostname, e.Code, tag, e.Source))
+		l.Recent = append(l.Recent, fmt.Sprintf("%s %s %s %s ×%d GPU（%s，%s）", g.at.In(shanghai).Format("01-02 15:04"), g.ip, g.host, g.code, len(g.gpus), tag, g.src))
+		if len(l.Recent) >= 40 {
+			break
+		}
 	}
 	for _, st := range ShadowStrategies {
 		r := DailyRoute{Strategy: st}
