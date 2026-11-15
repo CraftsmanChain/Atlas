@@ -57,13 +57,14 @@ func run(args []string) error {
 	throughText := flags.String("through", "", "RFC3339 ledger complete-through for ledger-declare")
 	vmURL := flags.String("vm", "", "core-events: Prometheus/VictoriaMetrics select base URL (read-only detection, no database)")
 	fromText := flags.String("from", "", "core-events: RFC3339 window start (default ledger start)")
+	windowDays := flags.Int("window-days", 5, "core-events-kernel: collected kernel-log days ending today (Asia/Shanghai)")
 	strategy := flags.String("strategy", gpurisk.ShadowStrategy, "shadow-score: strategy name")
 	reportKind := flags.String("kind", "", "report: daily or weekly")
 	reportOut := flags.String("out", "", "report: output directory")
 	reportNotify := flags.Bool("notify", false, "report: push a Feishu card after the report files are written")
 	reportConfig := flags.String("config", defaultReportConfig, "report: Atlas config with feishu.bots (used with -notify)")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "context-prepare" && command != "core-source-plan" && command != "coverage-plan" && command != "coverage-check" && command != "ledger-declare" && command != "coverage-members" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record" && command != "shadow-score" && command != "report" && command != "core-events") {
-		return fmt.Errorf("usage: gpu-risk [plan|record|context-prepare|core-source-plan|coverage-plan|evidence-ingest-prepare|evidence-ingest-apply|coverage-check|ledger-declare|coverage-members|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record|shadow-score|report|core-events] [-driver postgres|sqlite] [-input plan.json]")
+	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "context-prepare" && command != "core-source-plan" && command != "coverage-plan" && command != "coverage-check" && command != "ledger-declare" && command != "coverage-members" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record" && command != "shadow-score" && command != "report" && command != "core-events" && command != "core-events-kernel") {
+		return fmt.Errorf("usage: gpu-risk [plan|record|context-prepare|core-source-plan|coverage-plan|evidence-ingest-prepare|evidence-ingest-apply|coverage-check|ledger-declare|coverage-members|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record|shadow-score|report|core-events|core-events-kernel] [-driver postgres|sqlite] [-input plan.json]")
 	}
 	modeSet := false
 	flags.Visit(func(f *flag.Flag) {
@@ -380,6 +381,30 @@ func run(args []string) error {
 			return fmt.Errorf("outcome record failed")
 		}
 		return json.NewEncoder(os.Stdout).Encode(batch)
+	}
+	if command == "core-events-kernel" {
+		if *input == "" || *windowDays < 3 || *windowDays > 60 {
+			return fmt.Errorf("core-events-kernel requires -input xid.tsv and 3 <= -window-days <= 60")
+		}
+		f, e := os.Open(*input)
+		if e != nil {
+			return fmt.Errorf("cannot open input")
+		}
+		defer f.Close()
+		lines, bad, e := gpurisk.ParseKernelXID(f)
+		if e != nil {
+			return fmt.Errorf("invalid input")
+		}
+		if e := gpurisk.Migrate(db.WithContext(ctx)); e != nil {
+			return fmt.Errorf("core-events migration failed")
+		}
+		end := time.Now()
+		start := end.AddDate(0, 0, -(*windowDays - 1))
+		run, e := gpurisk.ImportKernelCoreEvents(ctx, db, lines, start, end)
+		if e != nil {
+			return fmt.Errorf("core-events-kernel import failed: %v", e)
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"run": run, "malformed_rows": bad})
 	}
 	if command == "shadow-score" {
 		if *queryID == 0 {

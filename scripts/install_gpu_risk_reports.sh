@@ -8,8 +8,8 @@ set -euo pipefail
 
 unit_dir=/etc/systemd/system
 report_dir=/ops/atlas/reports/gpu-risk
-timers=(atlas-gpu-risk-report-daily.timer atlas-gpu-risk-report-weekly.timer)
-units=(atlas-gpu-risk-report-daily.service atlas-gpu-risk-report-daily.timer atlas-gpu-risk-report-weekly.service atlas-gpu-risk-report-weekly.timer)
+timers=(atlas-gpu-risk-report-daily.timer atlas-gpu-risk-report-weekly.timer atlas-gpu-node-collect.timer)
+units=(atlas-gpu-risk-report-daily.service atlas-gpu-risk-report-daily.timer atlas-gpu-risk-report-weekly.service atlas-gpu-risk-report-weekly.timer atlas-gpu-node-collect.service atlas-gpu-node-collect.timer)
 
 if [[ "$(id -u)" != 0 ]]; then
   echo "install_gpu_risk_reports.sh must run as root" >&2
@@ -43,6 +43,7 @@ for unit in "${units[@]}"; do
 done
 [[ -x /ops/atlas/gpu-risk ]] || echo "warning: /ops/atlas/gpu-risk is not installed yet; timers will fail until it is" >&2
 
+install -D -m 0755 "$source_dir/scripts/gpu_node_daily_collect.sh" /ops/atlas/scripts/gpu_node_daily_collect.sh
 for unit in "${units[@]}"; do
   install -m 0644 "$source_dir/deploy/gpu-risk/$unit" "$unit_dir/$unit"
 done
@@ -51,4 +52,4 @@ chmod 0750 "$report_dir"
 systemctl daemon-reload
 systemctl enable --now "${timers[@]}"
 echo "installed from $source_dir"
-systemctl list-timers --all --no-pager | grep -E 'atlas-gpu-risk-report-(daily|weekly)\.timer' || true
+systemctl list-timers --all --no-pager | grep -E 'atlas-gpu-(risk-report-(daily|weekly)|node-collect)\.timer' || true

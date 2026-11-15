@@ -224,3 +224,52 @@ func TestCoreEpisodesMerge(t *testing.T) {
 		t.Fatal(eps)
 	}
 }
+
+func TestKernelCoreEvents(t *testing.T) {
+	in := "10.0.0.1\t2026-11-10T09:22:26+08:00\t0000:24:00\t119\t3\n" +
+		"10.0.0.1\tNov 11 01:00:00\t0000:24:00\t119\t1\n" + // continues, no new onset
+		"10.0.0.1\t2026-11-14T08:00:00+08:00\t0000:24:00\t119\t1\n" + // 2 quiet days -> onset
+		"10.0.0.2\t2026-11-12T05:00:00+08:00\t0000:e1:00\t31\t9\n" + // non-critical
+		"10.0.0.3\t2026-11-08T05:00:00+08:00\t0000:e1:00\t79\t1\n" + // inside lookback only
+		"garbage\n"
+	lines, bad, err := ParseKernelXIDAt(strings.NewReader(in), sday("2026-11-15 02:00"))
+	if err != nil || bad != 1 || len(lines) != 5 {
+		t.Fatal(lines, bad, err)
+	}
+	ev := DetectKernelCoreEvents(lines, sday("2026-11-08 00:00"), sday("2026-11-15 02:00"))
+	got := []string{}
+	for _, e := range ev {
+		got = append(got, e.NodeIP+"/"+e.PCIBusID+"/"+e.Code+"/"+e.Day)
+	}
+	if strings.Join(got, ",") != "10.0.0.1/24:00/xid119/2026-11-10,10.0.0.1/24:00/xid119/2026-11-14" {
+		t.Fatal(got)
+	}
+	if y, _ := parseKernelTime("Dec 31 23:00:00", sday("2027-01-01 01:00")); y.Year() != 2026 {
+		t.Fatal("year", y)
+	}
+	if NormPCI("00000000:E1:00.0") != "e1:00" || NormPCI("0000:e1:00") != "e1:00" {
+		t.Fatal("pci")
+	}
+	db := testDB(t)
+	if e := db.AutoMigrate(&api.GPUCoreEvent{}, &api.GPUCoreEventRun{}); e != nil {
+		t.Fatal(e)
+	}
+	db.Create(&api.GPUCoreEvent{Key: "vm1", Source: CoreEventSourceVM, NodeIP: "10.0.0.1", GPUUUID: "GPU-x", PCIBusID: "00000000:24:00.0", Code: "xid119", Day: "2026-11-10", ObservedAt: sday("2026-11-10 09:22"), ImportedAt: time.Now()})
+	for i := 0; i < 2; i++ {
+		run, err := ImportKernelCoreEvents(context.Background(), db, lines, sday("2026-11-08 00:00"), sday("2026-11-15 02:00"))
+		if err != nil || (i == 0 && run.NewEvents != 2) || (i == 1 && run.NewEvents != 0) {
+			t.Fatal(i, run, err)
+		}
+	}
+	var all []api.GPUCoreEvent
+	db.Find(&all)
+	eps := CoreEpisodes(all)["10.0.0.1"]
+	if len(eps) != 2 || eps[0].GPUs != 1 {
+		t.Fatal(eps)
+	}
+	for _, e := range all {
+		if e.Source == CoreEventSourceKernel && e.GPUUUID != "GPU-x" {
+			t.Fatal("identity not attached", e)
+		}
+	}
+}

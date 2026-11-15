@@ -1,0 +1,10 @@
+[Unit]
+Description=Atlas GPU node daily read-only collector (plan v5 S1) and kernel core-event import
+After=atlas.service
+
+[Service]
+Type=oneshot
+# Read-only on GPU nodes (grep/awk kernel logs, ipmitool sel elist, lspci -vvv).
+ExecStart=/ops/atlas/scripts/gpu_node_daily_collect.sh 5
+Nice=10
+TimeoutStartSec=30min

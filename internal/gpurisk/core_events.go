@@ -395,10 +395,10 @@ func CoreEpisodes(events []api.GPUCoreEvent) map[string][]CoreEpisode {
 				cur.Last = e.ObservedAt
 			}
 			codes[e.Code] = true
-			if e.GPUUUID != "" {
+			if e.PCIBusID != "" {
+				gpus[NormPCI(e.PCIBusID)] = true
+			} else if e.GPUUUID != "" {
 				gpus[e.GPUUUID] = true
-			} else if e.PCIBusID != "" {
-				gpus[e.PCIBusID] = true
 			}
 			cur.Events = append(cur.Events, e.ID)
 			lastDay = e.Day

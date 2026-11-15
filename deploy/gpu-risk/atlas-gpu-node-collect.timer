@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Atlas GPU node read-only collector, before the 02:00 ranking cutoff
+
+[Timer]
+OnCalendar=*-*-* 01:20:00
+Persistent=true
+Unit=atlas-gpu-node-collect.service
+
+[Install]
+WantedBy=timers.target
