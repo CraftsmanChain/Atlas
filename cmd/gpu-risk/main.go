@@ -588,7 +588,12 @@ func runReport(ctx context.Context, db *gorm.DB, kind, out string, now time.Time
 		if e != nil {
 			return fmt.Errorf("weekly report failed: %w", e)
 		}
-		payload, markdown = r, gpurisk.RenderE2Markdown(r)
+		sc, e := gpurisk.BuildRouteScorecard(ctx, db, now)
+		if e != nil {
+			return fmt.Errorf("weekly route scorecard failed: %w", e)
+		}
+		r.RouteScorecard = &sc
+		payload, markdown = r, gpurisk.RenderE2Markdown(r)+gpurisk.RenderRouteScorecardMarkdown(sc)
 		title, template, card = gpurisk.RenderE2Feishu(r)
 	default:
 		return fmt.Errorf("unknown report kind")

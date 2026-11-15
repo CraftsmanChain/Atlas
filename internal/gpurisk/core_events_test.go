@@ -304,3 +304,29 @@ func TestKernelCoreEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestRouteCredit(t *testing.T) {
+	sc := make([]float64, 40) // K = 2
+	sc[0], sc[1], sc[2] = 5, 3, 3
+	if p, c := routeCredit(sc, 5); c != 1 || p != 1 {
+		t.Fatal(p, c)
+	}
+	if _, c := routeCredit(sc, 3); c != 0.5 {
+		t.Fatal(c)
+	}
+	if p, c := routeCredit(sc, 0); c != 0 || p < 0.45 || p > 0.47 {
+		t.Fatal(p, c)
+	}
+	if lo, hi := wilson(0.3, 20); lo <= 0 || hi >= 1 || lo > 0.3 || hi < 0.3 {
+		t.Fatal(lo, hi)
+	}
+	db := testDB(t)
+	if e := db.AutoMigrate(&api.GPUCoreEvent{}); e != nil {
+		t.Fatal(e)
+	}
+	sc2, err := BuildRouteScorecard(context.Background(), db, time.Now())
+	if err != nil || len(sc2.Routes) != len(ShadowStrategies) {
+		t.Fatal(sc2, err)
+	}
+	_ = RenderRouteScorecardMarkdown(sc2)
+}

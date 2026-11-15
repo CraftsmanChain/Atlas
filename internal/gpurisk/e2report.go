@@ -72,6 +72,8 @@ type E2Report struct {
 	PValue             *float64    `json:"p_value,omitempty"`
 	Verdict            string      `json:"verdict"`
 	UnreviewedFeedback []uint      `json:"unreviewed_feedback_since_start"`
+	// RouteScorecard is the plan-v5 multi-route section (set by the weekly report).
+	RouteScorecard *RouteScorecard `json:"route_scorecard,omitempty"`
 }
 
 func e2TieKey(queryKey string, nodeID uint, gen int) string {
