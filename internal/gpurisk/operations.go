@@ -23,6 +23,9 @@ type OperationsConfig struct {
 	// Shadow freezes the shadow-strategy ranking (ShadowStrategy) of the newest
 	// query right after ranking; it never changes the frozen query or scores.
 	Shadow bool
+	// CoreEvents, when set, enables the core-event ledger stage (plan v5 M1)
+	// before shadow, and the R1 shadow strategy (CoreRecurrenceStrategy).
+	CoreEvents RangeQuerier
 	CoverageOptions
 }
 
@@ -39,11 +42,21 @@ func OperationsOnceWith(ctx context.Context, db *gorm.DB, now time.Time, cfg Ope
 	coverage := func(ctx context.Context, db *gorm.DB, now time.Time) error {
 		return CoverageDaily(ctx, db, now, cfg.CoverageOptions)
 	}
+	strategies := []string{ShadowStrategy}
+	if cfg.CoreEvents != nil {
+		strategies = ShadowStrategies
+	}
+	shadow := func(ctx context.Context, db *gorm.DB, now time.Time) error {
+		return ShadowDailyStrategies(ctx, db, now, strategies)
+	}
+	coreEvents := func(ctx context.Context, db *gorm.DB, now time.Time) error {
+		return CoreEventsDaily(ctx, db, cfg.CoreEvents, now)
+	}
 	for _, stage := range []struct {
 		name    string
 		enabled bool
 		run     func(context.Context, *gorm.DB, time.Time) error
-	}{{"ranking", cfg.Ranking, Daily}, {"shadow", cfg.Shadow, ShadowDaily}, {"coverage", cfg.Coverage, coverage}, {"outcomes", cfg.Outcomes, OutcomeDaily}, {"incident_outcomes", cfg.IncidentOutcomes, IncidentOutcomeDaily}} {
+	}{{"ranking", cfg.Ranking, Daily}, {"core_events", cfg.CoreEvents != nil, coreEvents}, {"shadow", cfg.Shadow, shadow}, {"coverage", cfg.Coverage, coverage}, {"outcomes", cfg.Outcomes, OutcomeDaily}, {"incident_outcomes", cfg.IncidentOutcomes, IncidentOutcomeDaily}} {
 		if !stage.enabled {
 			continue
 		}
@@ -58,7 +71,7 @@ func OperationsOnceWith(ctx context.Context, db *gorm.DB, now time.Time, cfg Ope
 		}
 		// Persist failure observation even when the invocation context was cancelled.
 		save, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		e := observeOperation(save, db, now, stage.name, err)
+		e := observeOperation(save, db, now, stage.name, err, strategies...)
 		cancel()
 		if e != nil && first == nil {
 			first = e
@@ -66,7 +79,7 @@ func OperationsOnceWith(ctx context.Context, db *gorm.DB, now time.Time, cfg Ope
 	}
 	return first
 }
-func observeOperation(ctx context.Context, db *gorm.DB, now time.Time, stage string, runErr error) error {
+func observeOperation(ctx context.Context, db *gorm.DB, now time.Time, stage string, runErr error, strategies ...string) error {
 	day := now.In(time.FixedZone("Asia/Shanghai", 8*3600)).Format("2006-01-02")
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		seed := api.GPURiskOperation{Day: day, Stage: stage}
@@ -79,10 +92,10 @@ func observeOperation(ctx context.Context, db *gorm.DB, now time.Time, stage str
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("day = ? AND stage = ?", day, stage).First(&lock).Error; err != nil {
 			return err
 		}
-		return observeOperationLocked(ctx, tx, now, stage, runErr)
+		return observeOperationLocked(ctx, tx, now, stage, runErr, strategies...)
 	}, &sql.TxOptions{Isolation: sql.LevelSerializable})
 }
-func observeOperationLocked(ctx context.Context, db *gorm.DB, now time.Time, stage string, runErr error) error {
+func observeOperationLocked(ctx context.Context, db *gorm.DB, now time.Time, stage string, runErr error, strategies ...string) error {
 	local := now.In(time.FixedZone("Asia/Shanghai", 8*3600))
 	day := local.Format("2006-01-02")
 	op := api.GPURiskOperation{Day: day, Stage: stage, Status: "waiting_schedule", ObservedAt: time.Now().UTC()}
@@ -118,14 +131,32 @@ func observeOperationLocked(ctx context.Context, db *gorm.DB, now time.Time, sta
 		keys = append(keys, coverageJobKey(day))
 	} else if stage == "shadow" {
 		// The shadow stage has no job ledger; its frozen batch is the record.
+		if len(strategies) == 0 {
+			strategies = []string{ShadowStrategy}
+		}
 		var n int64
-		if e := db.WithContext(ctx).Model(&api.GPURiskShadowBatch{}).Where("query_id = ? AND strategy = ?", q.ID, ShadowStrategy).Count(&n).Error; e != nil {
+		if e := db.WithContext(ctx).Model(&api.GPURiskShadowBatch{}).Where("query_id = ? AND strategy IN ?", q.ID, strategies).Count(&n).Error; e != nil {
 			return e
 		}
-		if runErr == nil && n == 1 {
+		op.JobCount = int(n)
+		if runErr == nil && int(n) == len(strategies) {
 			op.Status = "completed"
 		} else if runErr != nil {
 			op.Status, op.ErrorCode = "failed", "operation_failed"
+		}
+		return saveOperation(ctx, db, op)
+	} else if stage == "core_events" {
+		// The ledger run table is the record: completed once an import reaches
+		// the newest query cutoff.
+		var run api.GPUCoreEventRun
+		if e := db.WithContext(ctx).Where("source = ? AND status = ?", CoreEventSourceVM, "completed").Order("window_end DESC,id DESC").Limit(1).Find(&run).Error; e != nil {
+			return e
+		}
+		op.JobCount = run.NewEvents
+		if run.ID != 0 && (q.ID == 0 || !run.WindowEnd.Before(q.Cutoff)) {
+			op.Status = "completed"
+		} else if runErr != nil {
+			op.Status, op.ErrorCode = "failed", "core_event_source_failed"
 		}
 		return saveOperation(ctx, db, op)
 	} else {

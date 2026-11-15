@@ -50,6 +50,24 @@ type DailyShadow struct {
 	LargestTie    int        `json:"largest_tie_group"`
 }
 
+// DailyRoute is one plan-v5 route's frozen batch for the newest query.
+type DailyRoute struct {
+	Strategy string `json:"strategy"`
+	DailyShadow
+}
+
+// DailyCoreLedger summarises the core-event ledger (plan v5 M1).
+type DailyCoreLedger struct {
+	Enabled       bool       `json:"enabled"`
+	Events        int64      `json:"events"`
+	ScopeEvents   int64      `json:"latest_query_scope_events"`
+	LastRunStatus string     `json:"last_run_status,omitempty"`
+	LastRunError  string     `json:"last_run_error_code,omitempty"`
+	WindowEnd     *time.Time `json:"window_end,omitempty"`
+	NewEvents     int        `json:"last_run_new_events"`
+	Recent        []string   `json:"recent_7d"`
+}
+
 type DailyDatasetCounts struct {
 	Version        string `json:"version,omitempty"`
 	SHA            string `json:"sha,omitempty"`
@@ -125,6 +143,8 @@ type DailyCheck struct {
 	LatestQuery        *DailyQuery      `json:"latest_query,omitempty"`
 	Operations         []DailyOperation `json:"operations"`
 	Shadow             DailyShadow      `json:"shadow"`
+	Routes             []DailyRoute     `json:"routes"`
+	CoreLedger         DailyCoreLedger  `json:"core_ledger"`
 	R1                 DailyR1          `json:"r1_history_unknown"`
 	Coverage           DailyCoverage    `json:"coverage"`
 	IncidentOutcomes   []DailyIncident  `json:"incident_outcomes"`
@@ -161,7 +181,7 @@ func dailyDataset(ctx context.Context, db *gorm.DB, spec DatasetSpec) DailyDatas
 func BuildDailyCheck(ctx context.Context, db *gorm.DB, now time.Time) (DailyCheck, error) {
 	now = now.UTC().Truncate(time.Microsecond)
 	local := now.In(dailyZone)
-	out := DailyCheck{Version: DailyCheckVersion, GeneratedAt: now, LocalDay: local.Format("2006-01-02"), Operations: []DailyOperation{}, Coverage: DailyCoverage{Sources: []DailySourceCheck{}}, IncidentOutcomes: []DailyIncident{}, UnreviewedFeedback: []DailyFeedback{}, Findings: []string{}}
+	out := DailyCheck{Version: DailyCheckVersion, GeneratedAt: now, LocalDay: local.Format("2006-01-02"), Operations: []DailyOperation{}, Routes: []DailyRoute{}, Coverage: DailyCoverage{Sources: []DailySourceCheck{}}, IncidentOutcomes: []DailyIncident{}, UnreviewedFeedback: []DailyFeedback{}, Findings: []string{}}
 	var r1Batch api.GPURiskOutcomeBatch
 	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var qs []api.GPURiskQuery
@@ -191,6 +211,12 @@ func BuildDailyCheck(ctx context.Context, db *gorm.DB, now time.Time) (DailyChec
 					if r.RawScore != nil && r.TieCount > out.Shadow.LargestTie {
 						out.Shadow.LargestTie = r.TieCount
 					}
+				}
+			}
+
+			if tx.Migrator().HasTable(&api.GPUCoreEventRun{}) {
+				if e := dailyRoutes(tx, q, &out); e != nil {
+					return e
 				}
 			}
 
@@ -352,6 +378,14 @@ func BuildDailyCheck(ctx context.Context, db *gorm.DB, now time.Time) (DailyChec
 
 func dailyFindings(c DailyCheck) []string {
 	f := []string{}
+	if c.CoreLedger.Enabled && c.CoreLedger.LastRunStatus == "failed" {
+		f = append(f, "WARN 核心事件账本最近一次导入失败（"+c.CoreLedger.LastRunError+"），路线 core-recurrence-v1 会等待账本追上查询截止时间")
+	}
+	for _, r := range c.Routes {
+		if c.CoreLedger.Enabled && !r.Exists {
+			f = append(f, fmt.Sprintf("WARN 最新查询缺少路线 %s 的影子批次", r.Strategy))
+		}
+	}
 	if c.LatestQuery == nil {
 		f = append(f, "WARN 无已完成的冻结查询（gpu_risk_queries status=completed）")
 	} else if !c.Shadow.Exists {
@@ -441,6 +475,24 @@ func RenderDailyMarkdown(c DailyCheck) string {
 	} else {
 		fmt.Fprintf(&b, "| 批次 | 时序 | 计算时间 | 打分数 | 非零信号成员 | 最大并列组 | SHA |\n| --- | --- | --- | --- | --- | --- | --- |\n| %d | %s | %s | %d | %d | %d | %s |\n", s.BatchID, s.Timing, fmtTime(s.ComputedAt), s.ScoredCount, s.NonZeroSignal, s.LargestTie, s.SHA)
 	}
+	if c.CoreLedger.Enabled {
+		l := c.CoreLedger
+		fmt.Fprintf(&b, "\n## 核心事件账本（%s）\n\n账本事件 %d 条，最新查询范围内 %d 条；最近一次导入 %s（新增 %d，窗口止于 %s）%s。\n", CoreEventLedgerVersion, l.Events, l.ScopeEvents, l.LastRunStatus, l.NewEvents, fmtTime(l.WindowEnd), map[bool]string{true: "，错误码 " + l.LastRunError, false: ""}[l.LastRunError != ""])
+		if len(l.Recent) > 0 {
+			b.WriteString("\n近 7 天关键事件：\n\n")
+			for _, r := range l.Recent {
+				fmt.Fprintf(&b, "- %s\n", r)
+			}
+		}
+		b.WriteString("\n## 计划 v5 路线影子批次\n\n| 路线 | 批次 | 时序 | 计算时间 | 打分数 | 非零信号成员 | 最大并列组 |\n| --- | --- | --- | --- | --- | --- | --- |\n")
+		for _, r := range c.Routes {
+			if !r.Exists {
+				fmt.Fprintf(&b, "| %s | 缺失 | - | - | - | - | - |\n", r.Strategy)
+				continue
+			}
+			fmt.Fprintf(&b, "| %s | %d | %s | %s | %d | %d | %d |\n", r.Strategy, r.BatchID, r.Timing, fmtTime(r.ComputedAt), r.ScoredCount, r.NonZeroSignal, r.LargestTie)
+		}
+	}
 	b.WriteString("\n## R1：history_unknown（最新查询的 v1 结果批次）\n\n")
 	if c.R1.Error != "" {
 		fmt.Fprintf(&b, "未计算：%s\n", c.R1.Error)
@@ -521,4 +573,79 @@ func RenderDailyMarkdown(c DailyCheck) string {
 		fmt.Fprintf(&b, "| 前瞻批次 | 已评价 | M2′ 命中 | M1 命中 | 读数点 | p 值 | 判定 |\n| --- | --- | --- | --- | --- | --- | --- |\n| %d | %d | %d | %d | %s | %s | %s |\n", c.E2.ProspectiveBatches, c.E2.Evaluated, c.E2.M2Hits, c.E2.M1Hits, c.E2.ReadPoint, p, c.E2.Verdict)
 	}
 	return b.String()
+}
+
+func dailyRoutes(tx *gorm.DB, q api.GPURiskQuery, out *DailyCheck) error {
+	l := &out.CoreLedger
+	l.Enabled, l.Recent = true, []string{}
+	var run api.GPUCoreEventRun
+	if e := tx.Where("source = ?", CoreEventSourceVM).Order("started_at DESC,id DESC").Limit(1).Find(&run).Error; e != nil {
+		return e
+	}
+	if run.ID == 0 {
+		l.Enabled = false
+		return nil
+	}
+	l.LastRunStatus, l.LastRunError, l.NewEvents = run.Status, run.ErrorCode, run.NewEvents
+	var done api.GPUCoreEventRun
+	if e := tx.Where("source = ? AND status = ?", CoreEventSourceVM, "completed").Order("window_end DESC,id DESC").Limit(1).Find(&done).Error; e != nil {
+		return e
+	}
+	if done.ID != 0 {
+		w := done.WindowEnd.UTC()
+		l.WindowEnd = &w
+	}
+	if e := tx.Model(&api.GPUCoreEvent{}).Count(&l.Events).Error; e != nil {
+		return e
+	}
+	var ips []string
+	if e := tx.Model(&api.GPURiskMember{}).Where("query_id = ?", q.ID).Pluck("node_ip", &ips).Error; e != nil {
+		return e
+	}
+	if len(ips) > 0 {
+		if e := tx.Model(&api.GPUCoreEvent{}).Where("node_ip IN ?", ips).Count(&l.ScopeEvents).Error; e != nil {
+			return e
+		}
+	}
+	var recent []api.GPUCoreEvent
+	if e := tx.Where(timeSQL(tx, "observed_at", ">="), out.GeneratedAt.Add(-7*24*time.Hour)).Order("observed_at,id").Limit(50).Find(&recent).Error; e != nil {
+		return e
+	}
+	scope := map[string]bool{}
+	for _, ip := range ips {
+		scope[strings.TrimSpace(ip)] = true
+	}
+	for _, e := range recent {
+		tag := "范围外"
+		if scope[strings.TrimSpace(e.NodeIP)] {
+			tag = "范围内"
+		}
+		l.Recent = append(l.Recent, fmt.Sprintf("%s %s %s %s（%s，%s）", e.ObservedAt.In(shanghai).Format("01-02 15:04"), e.NodeIP, e.Hostname, e.Code, tag, e.Source))
+	}
+	for _, st := range ShadowStrategies {
+		r := DailyRoute{Strategy: st}
+		var batches []api.GPURiskShadowBatch
+		if e := tx.Where("query_id = ? AND strategy = ?", q.ID, st).Limit(1).Find(&batches).Error; e != nil {
+			return e
+		}
+		if len(batches) == 1 {
+			b := batches[0]
+			at := b.ComputedAt.UTC()
+			r.DailyShadow = DailyShadow{Exists: true, BatchID: b.ID, Timing: b.Timing, SHA: b.SHA, ComputedAt: &at, ScoredCount: b.ScoredCount}
+			var rows []api.GPURiskShadowScore
+			if e := tx.Where("batch_id = ?", b.ID).Find(&rows).Error; e != nil {
+				return e
+			}
+			for _, x := range rows {
+				if x.History > 0 || x.Precursor > 0 || x.DaysSince != nil {
+					r.NonZeroSignal++
+				}
+				if x.RawScore != nil && x.TieCount > r.LargestTie {
+					r.LargestTie = x.TieCount
+				}
+			}
+		}
+		out.Routes = append(out.Routes, r)
+	}
+	return nil
 }

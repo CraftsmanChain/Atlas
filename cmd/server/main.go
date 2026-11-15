@@ -291,8 +291,17 @@ func main() {
 			return run.ID, err
 		},
 	}
+	// Core-event ledger (plan v5 M1) reads the monitoring source; separate switch.
+	var gpuCoreEvents gpurisk.RangeQuerier
+	if gpuOperationsEnabled && strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_CORE_EVENTS_ENABLED"), "true") && strings.TrimSpace(monitoringBaseURL) != "" {
+		if c, err := promclient.NewClient(monitoringBaseURL, 90*time.Second); err != nil {
+			log.Printf("GPU core-event ledger disabled: %v", err)
+		} else {
+			gpuCoreEvents = c
+		}
+	}
 	if gpuOperationsEnabled {
-		go gpurisk.RunOperationsWith(context.Background(), db.DB, gpurisk.OperationsConfig{Ranking: gpuRiskDailyEnabled, Coverage: gpuCoverageEnabled, Outcomes: gpuOutcomeEnabled, IncidentOutcomes: gpuOutcomeEnabled && strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_INCIDENT_OUTCOMES_ENABLED"), "true"), Shadow: gpuRiskDailyEnabled && strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_SHADOW_ENABLED"), "true"), CoverageOptions: gpuCoverageOptions})
+		go gpurisk.RunOperationsWith(context.Background(), db.DB, gpurisk.OperationsConfig{CoreEvents: gpuCoreEvents, Ranking: gpuRiskDailyEnabled, Coverage: gpuCoverageEnabled, Outcomes: gpuOutcomeEnabled, IncidentOutcomes: gpuOutcomeEnabled && strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_INCIDENT_OUTCOMES_ENABLED"), "true"), Shadow: gpuRiskDailyEnabled && strings.EqualFold(os.Getenv("ATLAS_GPU_RISK_SHADOW_ENABLED"), "true"), CoverageOptions: gpuCoverageOptions})
 	} else {
 		if gpuCoverageEnabled {
 			go gpurisk.RunCoverage(context.Background(), db.DB, gpuCoverageOptions)

@@ -17,6 +17,7 @@ import (
 
 	"atlas/internal/eventauditcli"
 	"atlas/internal/gpurisk"
+	promclient "atlas/internal/prometheus"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -54,12 +55,15 @@ func run(args []string) error {
 	artifactSHA := flags.String("artifact-sha", "", "exact model file SHA256")
 	scoresSHA := flags.String("scores-sha", "", "exact score file SHA256")
 	throughText := flags.String("through", "", "RFC3339 ledger complete-through for ledger-declare")
+	vmURL := flags.String("vm", "", "core-events: Prometheus/VictoriaMetrics select base URL (read-only detection, no database)")
+	fromText := flags.String("from", "", "core-events: RFC3339 window start (default ledger start)")
+	strategy := flags.String("strategy", gpurisk.ShadowStrategy, "shadow-score: strategy name")
 	reportKind := flags.String("kind", "", "report: daily or weekly")
 	reportOut := flags.String("out", "", "report: output directory")
 	reportNotify := flags.Bool("notify", false, "report: push a Feishu card after the report files are written")
 	reportConfig := flags.String("config", defaultReportConfig, "report: Atlas config with feishu.bots (used with -notify)")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "context-prepare" && command != "core-source-plan" && command != "coverage-plan" && command != "coverage-check" && command != "ledger-declare" && command != "coverage-members" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record" && command != "shadow-score" && command != "report") {
-		return fmt.Errorf("usage: gpu-risk [plan|record|context-prepare|core-source-plan|coverage-plan|evidence-ingest-prepare|evidence-ingest-apply|coverage-check|ledger-declare|coverage-members|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record|shadow-score|report] [-driver postgres|sqlite] [-input plan.json]")
+	if flags.Parse(args) != nil || flags.NArg() != 0 || (command != "evidence-ingest-prepare" && command != "evidence-ingest-apply" && command != "context-prepare" && command != "core-source-plan" && command != "coverage-plan" && command != "coverage-check" && command != "ledger-declare" && command != "coverage-members" && command != "plan" && command != "record" && command != "evidence" && command != "outcomes" && command != "outcome-plan" && command != "dataset" && command != "verify-model" && command != "register-model" && command != "model-request" && command != "model-record" && command != "shadow-score" && command != "report" && command != "core-events") {
+		return fmt.Errorf("usage: gpu-risk [plan|record|context-prepare|core-source-plan|coverage-plan|evidence-ingest-prepare|evidence-ingest-apply|coverage-check|ledger-declare|coverage-members|evidence|outcome-plan|outcomes|dataset|verify-model|register-model|model-request|model-record|shadow-score|report|core-events] [-driver postgres|sqlite] [-input plan.json]")
 	}
 	modeSet := false
 	flags.Visit(func(f *flag.Flag) {
@@ -163,6 +167,30 @@ func run(args []string) error {
 				return fmt.Errorf("invalid as-of")
 			}
 		}
+	}
+	if command == "core-events" {
+		c, e := promclient.NewClient(*vmURL, 120*time.Second)
+		if e != nil {
+			return fmt.Errorf("core-events requires a valid -vm")
+		}
+		from, end := gpurisk.CoreEventLedgerStart, time.Now()
+		if *fromText != "" {
+			if from, e = time.Parse(time.RFC3339, *fromText); e != nil {
+				return fmt.Errorf("invalid -from")
+			}
+		}
+		if *asOfText != "" {
+			if end, e = time.Parse(time.RFC3339, *asOfText); e != nil {
+				return fmt.Errorf("invalid -as-of")
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		events, series, e := gpurisk.DetectCoreEvents(ctx, c, from, end)
+		if e != nil {
+			return fmt.Errorf("core-events detection failed: %v", e)
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"version": gpurisk.CoreEventLedgerVersion, "from": from, "end": end, "series": series, "events": events})
 	}
 	dsn := os.Getenv("ATLAS_GPU_RISK_DSN")
 	if dsn == "" {
@@ -361,13 +389,13 @@ func run(args []string) error {
 			if e := gpurisk.Migrate(db.WithContext(ctx)); e != nil {
 				return fmt.Errorf("shadow migration failed")
 			}
-			batch, e := gpurisk.RecordShadow(ctx, db, *queryID, time.Now())
+			batch, e := gpurisk.RecordShadowStrategy(ctx, db, *queryID, time.Now(), *strategy)
 			if e != nil {
 				return fmt.Errorf("shadow record failed")
 			}
 			return json.NewEncoder(os.Stdout).Encode(batch)
 		}
-		batch, rows, e := gpurisk.ComputeShadow(ctx, db, *queryID, time.Now())
+		batch, rows, e := gpurisk.ComputeShadowStrategy(ctx, db, *queryID, time.Now(), *strategy)
 		if e != nil {
 			return fmt.Errorf("shadow score failed")
 		}

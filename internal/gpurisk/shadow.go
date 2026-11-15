@@ -10,7 +10,6 @@ import (
 
 	"atlas/pkg/api"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // ShadowStrategy is the route-v2 main candidate (M2' simplified, decided
@@ -254,34 +253,17 @@ func percentile(v []float64) []float64 {
 // RecordShadow freezes the shadow batch for a query exactly once. If a batch for
 // (query, strategy) already exists it is returned unchanged and never recomputed.
 func RecordShadow(ctx context.Context, db *gorm.DB, queryID uint, now time.Time) (api.GPURiskShadowBatch, error) {
-	var existing api.GPURiskShadowBatch
-	if e := db.WithContext(ctx).Where("query_id = ? AND strategy = ?", queryID, ShadowStrategy).First(&existing).Error; e == nil {
-		return existing, nil
-	} else if !errors.Is(e, gorm.ErrRecordNotFound) {
-		return existing, e
-	}
-	batch, rows, err := ComputeShadow(ctx, db, queryID, now)
-	if err != nil {
-		return batch, err
-	}
-	err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&batch)
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return tx.Where("query_id = ? AND strategy = ?", queryID, ShadowStrategy).First(&batch).Error
-		}
-		for i := range rows {
-			rows[i].BatchID = batch.ID
-		}
-		return tx.CreateInBatches(rows, 200).Error
-	})
-	return batch, err
+	return RecordShadowStrategy(ctx, db, queryID, now, ShadowStrategy)
 }
 
 // ShadowDaily freezes the shadow ranking of the newest completed query.
 func ShadowDaily(ctx context.Context, db *gorm.DB, now time.Time) error {
+	return ShadowDailyStrategies(ctx, db, now, []string{ShadowStrategy})
+}
+
+// ShadowDailyStrategies freezes each strategy for the newest completed query;
+// one strategy failing (for example a stale core ledger) never blocks another.
+func ShadowDailyStrategies(ctx context.Context, db *gorm.DB, now time.Time, strategies []string) error {
 	var q api.GPURiskQuery
 	if e := db.WithContext(ctx).Where("status = ? AND contract = ?", "completed", Contract).Order("cutoff DESC,id DESC").First(&q).Error; e != nil {
 		if errors.Is(e, gorm.ErrRecordNotFound) {
@@ -289,6 +271,11 @@ func ShadowDaily(ctx context.Context, db *gorm.DB, now time.Time) error {
 		}
 		return e
 	}
-	_, err := RecordShadow(ctx, db, q.ID, now)
-	return err
+	var first error
+	for _, s := range strategies {
+		if _, err := RecordShadowStrategy(ctx, db, q.ID, now, s); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
