@@ -154,7 +154,11 @@ func TestCoreRecurrenceShadow(t *testing.T) {
 	if err := db.Create(&api.GPUCoreEventRun{Source: CoreEventSourceVM, WindowStart: c.Add(-300 * 24 * time.Hour), WindowEnd: c.Add(time.Minute), StartedAt: c, Status: "completed"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	b, rows, err := ComputeCoreRecurrence(context.Background(), db, q.ID, q.CompletedAt.Add(time.Minute))
+	// An event imported after the caller's tick time (same operations tick,
+	// ledger stage ran first) must still be visible.
+	mk("node-1", "xid79", c.Add(-40*24*time.Hour), time.Now().Add(time.Second))
+	time.Sleep(1100 * time.Millisecond)
+	b, rows, err := ComputeCoreRecurrence(context.Background(), db, q.ID, *q.CompletedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +169,7 @@ func TestCoreRecurrenceShadow(t *testing.T) {
 	for _, r := range rows {
 		by[r.Rank] = r
 	}
-	if by[1].History != 2 || by[2].History != 0 || by[2].DaysSince == nil || *by[2].DaysSince < 199 {
+	if by[1].History != 3 || by[2].History != 0 || by[2].DaysSince == nil || *by[2].DaysSince < 199 {
 		t.Fatal(rows[0], rows[1])
 	}
 	if e := ShadowDailyStrategies(context.Background(), db, q.CompletedAt.Add(time.Minute), ShadowStrategies); e != nil {

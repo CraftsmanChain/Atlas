@@ -64,8 +64,15 @@ func ComputeCoreRecurrence(ctx context.Context, db *gorm.DB, queryID uint, now t
 		if len(members) != q.MemberCount || len(members) == 0 || len(members) > MaxNodes {
 			return ErrInput
 		}
+		// Known-at-freeze guard: events imported up to this transaction's
+		// start. The caller's now can predate a ledger import in the same
+		// operations tick, so wall-clock time is used here.
+		known := time.Now().UTC()
+		if known.Before(now) {
+			known = now
+		}
 		var events []api.GPUCoreEvent
-		if err := tx.Where(timeSQL(tx, "observed_at", "<")+" AND "+timeSQL(tx, "imported_at", "<"), cutoff, now.Add(time.Microsecond)).Order("id").Limit(500001).Find(&events).Error; err != nil {
+		if err := tx.Where(timeSQL(tx, "observed_at", "<")+" AND "+timeSQL(tx, "imported_at", "<"), cutoff, known.Add(time.Microsecond)).Order("id").Limit(500001).Find(&events).Error; err != nil {
 			return err
 		}
 		if len(events) > 500000 {
@@ -74,7 +81,7 @@ func ComputeCoreRecurrence(ctx context.Context, db *gorm.DB, queryID uint, now t
 		keep := events[:0]
 		ids := []uint{}
 		for _, e := range events {
-			if e.ObservedAt.Before(cutoff) && !e.ImportedAt.After(now) {
+			if e.ObservedAt.Before(cutoff) && !e.ImportedAt.After(known) {
 				keep = append(keep, e)
 				ids = append(ids, e.ID)
 			}
