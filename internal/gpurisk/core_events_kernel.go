@@ -15,8 +15,9 @@ import (
 )
 
 // Kernel-log source of the core-event ledger (plan v5 M1 second source).
-// Input is the S1 collector's xid.tsv: node_ip, local RFC3339 timestamp, PCI
-// address, XID code, line count. Onset rule mirrors the VM source: a
+// Input is the S1 collector's xid.tsv: node_ip, local timestamp (RFC3339 or
+// syslog), PCI address, XID code, line count; plus one "cover" row per node
+// with the timestamp of its oldest kernel-log line read. Onset rule mirrors the VM source: a
 // (node, GPU PCI address, code) has kernel lines on a day and none on the two
 // days before. Only days with a full two-day lookback inside the collected
 // window are emitted; re-imports are idempotent on Key.
@@ -96,6 +97,17 @@ func DetectKernelCoreEvents(lines []KernelXIDLine, windowStart, windowEnd time.T
 	}
 	type key struct{ ip, pci, code string }
 	first := map[key]map[string]time.Time{}
+	// Per-node log coverage start ("cover" rows): days whose two-day lookback
+	// starts before the oldest log line are not emitted.
+	cover := map[string]string{}
+	for _, l := range lines {
+		if l.Code == "cover" {
+			d := l.At.In(shanghai).Format("2006-01-02")
+			if c, ok := cover[l.NodeIP]; !ok || d < c {
+				cover[l.NodeIP] = d
+			}
+		}
+	}
 	for _, l := range lines {
 		if !crit[l.Code] {
 			continue
@@ -115,6 +127,9 @@ func DetectKernelCoreEvents(lines []KernelXIDLine, windowStart, windowEnd time.T
 	for k, byDay := range first {
 		for d, at := range byDay {
 			if d < emitFrom || d > last {
+				continue
+			}
+			if c, ok := cover[k.ip]; ok && prevDay(d, 2) < c {
 				continue
 			}
 			if _, a := byDay[prevDay(d, 1)]; a {

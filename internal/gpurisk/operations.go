@@ -50,7 +50,8 @@ func OperationsOnceWith(ctx context.Context, db *gorm.DB, now time.Time, cfg Ope
 		return ShadowDailyStrategies(ctx, db, now, strategies)
 	}
 	coreEvents := func(ctx context.Context, db *gorm.DB, now time.Time) error {
-		return CoreEventsDaily(ctx, db, cfg.CoreEvents, now)
+		// Wall clock: ranking freezes its cutoff inside this tick, after now.
+		return CoreEventsDaily(ctx, db, cfg.CoreEvents, time.Now())
 	}
 	for _, stage := range []struct {
 		name    string

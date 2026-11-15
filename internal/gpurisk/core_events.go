@@ -19,12 +19,18 @@ import (
 // Automatic critical GPU events, the HeaRank-style target and history source:
 //
 //	xidNN       - a DCGM_FI_DEV_XID_ERRORS{err_code=NN} series (per GPU UUID) is
-//	              present on a Shanghai day and absent on the two days before
-//	              (onset after >=3 days of absence; the series is the GPU's
-//	              latest XID, so a persisting XID is one onset);
+//	              present on a Shanghai day and absent on the two previous days
+//	              on which the GPU reported telemetry (looking back up to 7
+//	              days; with no telemetry at all, the two calendar days before).
+//	              The series is the GPU's latest XID, so a persisting XID is one
+//	              onset and an exporter gap does not create a new one;
 //	urr_growth  - daily max of DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS grows
 //	              over the previous observed day;
-//	remap_fail  - DCGM_FI_DEV_ROW_REMAP_FAILURE becomes > 0.
+//	remap_fail  - DCGM_FI_DEV_ROW_REMAP_FAILURE becomes > 0 after an observed 0.
+//
+// Counter events are timed to the hour (end of the first hour above the
+// previous value). The newest coreEventIngestMargin is never read, so a run's
+// WindowEnd only claims data that monitoring has ingested.
 //
 // It is read-only towards monitoring and writes only gpu_core_events/runs.
 const CoreEventLedgerVersion = "gpu-core-event-ledger-v1"
@@ -46,10 +52,12 @@ var CoreEventLedgerStart = time.Date(2026, 6, 30, 0, 0, 0, 0, shanghai)
 const (
 	coreEventChunk    = 14 * 24 * time.Hour
 	coreEventOverlap  = 3 * 24 * time.Hour
-	coreEventLookback = 3 // days fetched before a window for onset detection
-	coreEventRefresh  = 6 * time.Hour
-	coreEventRetry    = 10 * time.Minute
-	coreEventEpisode  = 3 // node days; a gap > 3 days starts a new episode
+	coreEventLookback = 7 // days fetched before a window for onset detection
+	// coreEventIngestMargin keeps reads behind scrape/ingest latency.
+	coreEventIngestMargin = 2 * time.Minute
+	coreEventRefresh      = 6 * time.Hour
+	coreEventRetry        = 10 * time.Minute
+	coreEventEpisode      = 3 // node days; a gap > 3 days starts a new episode
 )
 
 // RangeQuerier is the read-only monitoring interface the ledger needs.
@@ -148,6 +156,7 @@ func prevDay(day string, n int) string {
 // DetectCoreEvents fetches [from-lookback, end) and returns the onsets whose day
 // lies in [from, end). It is pure towards the database.
 func DetectCoreEvents(ctx context.Context, src RangeQuerier, from, end time.Time) ([]api.GPUCoreEvent, int, error) {
+	end = CoreEventReadEnd(end)
 	from = dayStart(from)
 	if emit := CoreEventLedgerStart.AddDate(0, 0, 2); from.Before(emit) {
 		from = emit
@@ -207,15 +216,13 @@ func DetectCoreEvents(ctx context.Context, src RangeQuerier, from, end time.Time
 	}
 	for k, byDay := range xid {
 		code := "xid" + k[strings.LastIndex(k, "|")+1:]
+		uuid := k[:strings.LastIndex(k, "|")]
 		for _, d := range window {
 			o, ok := byDay[d]
 			if !ok {
 				continue
 			}
-			if _, a := byDay[prevDay(d, 1)]; a {
-				continue
-			}
-			if _, b := byDay[prevDay(d, 2)]; b {
+			if !xidOnset(byDay, urr[uuid], d) {
 				continue
 			}
 			at := o.first
@@ -233,22 +240,37 @@ func DetectCoreEvents(ctx context.Context, src RangeQuerier, from, end time.Time
 		}
 		return coreObs{}, false
 	}
-	for _, byDay := range urr {
+	refine := func(metric, uuid, day string, above float64) time.Time {
+		// End of the first hour whose max exceeds `above`; day end if unknown.
+		t0, _ := time.ParseInLocation("2006-01-02", day, shanghai)
+		last := dayEnd(day)
+		q := `max(max_over_time(` + metric + `{UUID="` + strings.ReplaceAll(uuid, `"`, ``) + `"}[1h]))`
+		rs, err := src.QueryRange(ctx, q, t0.Add(time.Hour), last, time.Hour)
+		if err == nil && len(rs) == 1 {
+			for _, p := range rs[0].Values {
+				if p.Value > above && !p.Timestamp.After(last) {
+					return p.Timestamp
+				}
+			}
+		}
+		return last
+	}
+	for uuid, byDay := range urr {
 		for _, d := range window {
 			o, ok := byDay[d]
 			if p, has := prevObs(byDay, d); ok && has && o.value > p.value {
-				out = append(out, mk(o, "urr_growth", d, dayEnd(d)))
+				out = append(out, mk(o, "urr_growth", d, refine("DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS", uuid, d, p.value)))
 			}
 		}
 	}
-	for _, byDay := range rrf {
+	for uuid, byDay := range rrf {
 		for _, d := range window {
 			o, ok := byDay[d]
 			if !ok || o.value <= 0 {
 				continue
 			}
-			if p, has := prevObs(byDay, d); !has || p.value <= 0 {
-				out = append(out, mk(o, "remap_fail", d, dayEnd(d)))
+			if p, has := prevObs(byDay, d); has && p.value <= 0 {
+				out = append(out, mk(o, "remap_fail", d, refine("DCGM_FI_DEV_ROW_REMAP_FAILURE", uuid, d, 0)))
 			}
 		}
 	}
@@ -265,6 +287,34 @@ func DetectCoreEvents(ctx context.Context, src RangeQuerier, from, end time.Time
 		return keep[i].Key < keep[j].Key
 	})
 	return keep, total, nil
+}
+
+// CoreEventReadEnd is the newest instant the ledger reads for a run at end.
+func CoreEventReadEnd(end time.Time) time.Time { return end.Add(-coreEventIngestMargin) }
+
+// xidOnset: the XID series is present on day d and, looking back up to the
+// lookback, is absent on at least the two most recent days on which the GPU
+// reported telemetry (urr series presence) or absent for the whole lookback.
+// A GPU with no telemetry series at all uses two calendar days.
+func xidOnset(xid map[string]coreObs, telemetry map[string]coreObs, d string) bool {
+	if len(telemetry) == 0 {
+		_, a := xid[prevDay(d, 1)]
+		_, b := xid[prevDay(d, 2)]
+		return !a && !b
+	}
+	clean := 0
+	for i := 1; i <= coreEventLookback; i++ {
+		pd := prevDay(d, i)
+		if _, ok := xid[pd]; ok {
+			return false
+		}
+		if _, ok := telemetry[pd]; ok {
+			if clean++; clean == 2 {
+				return true
+			}
+		}
+	}
+	return true
 }
 
 // CoreEventsDaily imports new onsets from the VM source. It runs when the last
@@ -305,7 +355,7 @@ func CoreEventsDaily(ctx context.Context, db *gorm.DB, src RangeQuerier, now tim
 // ImportCoreEvents detects and stores onsets in [from, end); idempotent.
 func ImportCoreEvents(ctx context.Context, db *gorm.DB, src RangeQuerier, from, end time.Time) (api.GPUCoreEventRun, error) {
 	db = db.WithContext(ctx)
-	run := api.GPUCoreEventRun{Source: CoreEventSourceVM, WindowStart: dayStart(from).UTC(), WindowEnd: end.UTC(), StartedAt: time.Now().UTC(), Status: "running"}
+	run := api.GPUCoreEventRun{Source: CoreEventSourceVM, WindowStart: dayStart(from).UTC(), WindowEnd: CoreEventReadEnd(end).UTC(), StartedAt: time.Now().UTC(), Status: "running"}
 	if err := db.Create(&run).Error; err != nil {
 		return run, err
 	}
@@ -326,7 +376,7 @@ func ImportCoreEvents(ctx context.Context, db *gorm.DB, src RangeQuerier, from, 
 		}
 	}
 	if err == nil {
-		err = importNodeObservations(ctx, db, src, from, end)
+		err = importNodeObservations(ctx, db, src, from, CoreEventReadEnd(end))
 	}
 	save, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()

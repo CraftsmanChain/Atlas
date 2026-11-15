@@ -43,6 +43,7 @@ for kv in $ATLAS_DATABASE_DSN; do
     dbname=*) export PGDATABASE="${kv#dbname=}" ;; sslmode=*) export PGSSLMODE="${kv#sslmode=}" ;;
   esac
 done
+[ -n "${PGPASSWORD:-}" ] && [ -n "${PGDATABASE:-}" ] || { echo "cannot parse ATLAS_DATABASE_DSN (key=value form expected)" >&2; exit 1; }
 "$PSQL" -Atc "select distinct m.node_ip from gpu_risk_members m where m.query_id=(select id from gpu_risk_queries where status='completed' order by cutoff desc, id desc limit 1) and m.node_ip<>'' order by 1" > "$OUT/nodes.txt"
 
 # Syslog day prefixes ("Nov 15", "Nov  5") for the last $DAYS days, CST.
@@ -60,7 +61,12 @@ P="$1"
 if [ "$2" = 1 ]; then cat_logs() { zcat -f /var/log/kern.log* 2>/dev/null; }; else cat_logs() { cat /var/log/kern.log /var/log/kern.log.1 2>/dev/null; }; fi
 filt() { cat_logs | LC_ALL=C awk -v p="$P" 'BEGIN{n=split(p,a,"|"); for(i=1;i<=n;i++) k[a[i]]=1} k[substr($0,1,6)]'; }
 echo "##XID"
-filt | LC_ALL=C grep -a "NVRM: Xid" | LC_ALL=C sed -nE 's/^([A-Z][a-z]{2} +[0-9]+ [0-9:]{8}) .*NVRM: Xid \(PCI:([0-9a-fA-F:.]+)\): ([0-9]+).*/\1\t\2\t\3/p' | sort | uniq -c | sed -E 's/^ *([0-9]+) (.*)$/\2\t\1/' | head -2000
+# One row per (day, pci, code): earliest timestamp and line count; no truncation.
+filt | LC_ALL=C grep -a "NVRM: Xid" | LC_ALL=C sed -nE 's/^([A-Z][a-z]{2} +[0-9]+) ([0-9:]{8}) .*NVRM: Xid \(PCI:([0-9a-fA-F:.]+)\): ([0-9]+).*/\1\t\2\t\3\t\4/p' | LC_ALL=C awk -F'\t' '{k=$1"\t"$3"\t"$4; n[k]++; if(!(k in t) || $2<t[k]) t[k]=$2} END{for(k in n){split(k,a,"\t"); print a[1]" "t[k]"\t"a[2]"\t"a[3]"\t"n[k]}}'
+echo "##COVER"
+# oldest line actually read (first line of the oldest file in the read set)
+if [ "$2" = 1 ]; then oldest=$(ls -1v /var/log/kern.log* 2>/dev/null | tail -1); else oldest=$(ls -1v /var/log/kern.log /var/log/kern.log.1 2>/dev/null | tail -1); fi
+[ -n "$oldest" ] && zcat -f "$oldest" 2>/dev/null | head -1 | LC_ALL=C grep -aoE '^[A-Z][a-z]{2} +[0-9]+ [0-9:]{8}'
 echo "##GHES"
 filt | LC_ALL=C grep -a "\[Hardware Error\]:" | LC_ALL=C awk '
   /type: /&&/Error [0-9]+,/{sev=$NF; next}
@@ -81,7 +87,7 @@ REMOTE
 }
 export -f one
 : > "$OUT/_status"
-xargs -P "$PAR" -I{} bash -c 'one {}' < "$OUT/nodes.txt"
+grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' "$OUT/nodes.txt" | xargs -P "$PAR" -I{} bash -c 'one "$1"' _ {}
 
 # Collate (syslog timestamps stay as written; the importer infers the year).
 set +e +o pipefail
@@ -89,7 +95,8 @@ set +e +o pipefail
 : > "$OUT/ghes.tsv"
 for f in "$OUT"/nodes/*.txt; do
   ip=$(basename "$f" .txt)
-  LC_ALL=C sed -n '/^##XID$/,/^##GHES$/p' "$f" | LC_ALL=C grep -vE '^##' | LC_ALL=C awk -F'\t' -v ip="$ip" 'NF>=4{print ip"\t"$0}' >> "$OUT/xid.tsv"
+  LC_ALL=C sed -n '/^##XID$/,/^##COVER$/p' "$f" | LC_ALL=C grep -vE '^##' | LC_ALL=C awk -F'\t' -v ip="$ip" 'NF>=4{print ip"\t"$0}' >> "$OUT/xid.tsv"
+  LC_ALL=C sed -n '/^##COVER$/,/^##GHES$/p' "$f" | LC_ALL=C grep -vE '^##' | LC_ALL=C awk -v ip="$ip" 'NF>0{print ip"\t"$0"\t-\tcover\t0"}' >> "$OUT/xid.tsv"
   LC_ALL=C sed -n '/^##GHES$/,/^##HWLINES$/p' "$f" | LC_ALL=C grep -vE '^##' | LC_ALL=C awk -v ip="$ip" 'NF>0{print ip"\t"$0}' >> "$OUT/ghes.tsv"
 done
 set -e -o pipefail

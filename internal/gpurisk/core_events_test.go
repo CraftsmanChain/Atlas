@@ -84,6 +84,11 @@ func TestDetectCoreEventsOnsetRules(t *testing.T) {
 	vm.labels["GPU-c"] = map[string]string{"UUID": "GPU-c", "host_ip": "10.0.0.3"}
 	vm.urr["GPU-c"] = map[string]float64{"2026-07-10": 5, "2026-07-11": 5, "2026-07-12": 6, "2026-07-13": 6}
 	vm.rrf["GPU-c"] = map[string]float64{"2026-07-10": 0, "2026-07-11": 0, "2026-07-12": 1, "2026-07-13": 1}
+	// exporter gap: XID on 07-10 persists through a 2-day telemetry gap and is
+	// seen again 07-13 -> one onset (07-10), not two.
+	vm.setXID("10.0.0.4", "GPU-d", "79", "2026-07-10", "2026-07-13")
+	vm.labels["GPU-d"] = map[string]string{"UUID": "GPU-d", "host_ip": "10.0.0.4"}
+	vm.urr["GPU-d"] = map[string]float64{"2026-07-08": 0, "2026-07-09": 0, "2026-07-10": 0, "2026-07-13": 0}
 	events, _, err := DetectCoreEvents(context.Background(), vm, CoreEventLedgerStart, sday("2026-07-20 02:00"))
 	if err != nil {
 		t.Fatal(err)
@@ -91,11 +96,14 @@ func TestDetectCoreEventsOnsetRules(t *testing.T) {
 	got := []string{}
 	for _, e := range events {
 		got = append(got, e.NodeIP+"/"+e.Code+"/"+e.Day)
+		if e.Code == "remap_fail" && !e.ObservedAt.Equal(sday("2026-07-12 01:00").UTC()) {
+			t.Fatal("counter observed_at not refined to the hour", e.ObservedAt)
+		}
 		if e.Code == "xid79" && e.Day == "2026-07-10" && !e.ObservedAt.Equal(sday("2026-07-10 10:30").UTC()) {
 			t.Fatal("tfirst observed_at", e.ObservedAt)
 		}
 	}
-	want := "10.0.0.1/xid79/2026-07-10,10.0.0.3/remap_fail/2026-07-12,10.0.0.3/urr_growth/2026-07-12,10.0.0.1/xid79/2026-07-18"
+	want := "10.0.0.1/xid79/2026-07-10,10.0.0.3/remap_fail/2026-07-12,10.0.0.3/urr_growth/2026-07-12,10.0.0.1/xid79/2026-07-18,10.0.0.4/xid79/2026-07-10"
 	if strings.Join(sortedStrings(got), ",") != strings.Join(sortedStrings(strings.Split(want, ",")), ",") {
 		t.Fatal(got)
 	}
@@ -266,6 +274,12 @@ func TestKernelCoreEvents(t *testing.T) {
 	lines, bad, err := ParseKernelXIDAt(strings.NewReader(in), sday("2026-11-15 02:00"))
 	if err != nil || bad != 1 || len(lines) != 5 {
 		t.Fatal(lines, bad, err)
+	}
+	// coverage: node 10.0.0.5's log only starts 11-13, so its 11-14 line has
+	// no full lookback and is not an onset.
+	cov, _, _ := ParseKernelXIDAt(strings.NewReader("10.0.0.5\tNov 13 08:00:00\t-\tcover\t0\n10.0.0.5\tNov 14 08:00:00\t0000:01:00\t79\t1\n"), sday("2026-11-15 02:00"))
+	if got := DetectKernelCoreEvents(cov, sday("2026-11-08 00:00"), sday("2026-11-15 02:00")); len(got) != 0 {
+		t.Fatal("coverage not enforced", got)
 	}
 	ev := DetectKernelCoreEvents(lines, sday("2026-11-08 00:00"), sday("2026-11-15 02:00"))
 	got := []string{}
