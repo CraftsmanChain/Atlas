@@ -12,7 +12,7 @@ import {
 import './App.css';
 const GPURisk = lazy(() => import('./GPURisk'));
 const HardwareHealth = lazy(() => import('./HardwareHealth'));
-import { readPlatformBrand, writePlatformBrand, fetchJSON } from './progressiveLoading';
+import { readPlatformBrand, writePlatformBrand, fetchJSON, fetchAllPages } from './progressiveLoading';
 
 type PageId = 'overview' | 'gpus' | 'hardware' | 'issues' | 'incidents' | 'validations' | 'quality' | 'models' | 'about';
 type SubPage = { id: string; label: string };
@@ -336,11 +336,15 @@ export default function App() {
     const read = (url: string, apply: (data: Awaited<ReturnType<typeof fetchJSON>>) => void, fail?: () => void) => {
       jobs.push(fetchJSON(url, signal).then(data => { if (!signal?.aborted) apply(data); }).catch(() => { if (!signal?.aborted) fail?.(); }));
     };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const readAll = <T = any>(url: string, apply: (rows: T[]) => void, pageSize = 2000) => {
+      jobs.push(fetchAllPages<T>(url, signal, pageSize).then(rows => { if (!signal?.aborted) apply(rows); }).catch(() => undefined));
+    };
     read('/api/v1/status', setStatus);
     read('/api/v1/data-freshness', setFreshness);
     if (page === 'overview' || page === 'gpus' || page === 'quality' || page === 'models') {
       read('/api/v1/fleet/summary', data => { setSummary(data.data || null); setInventoryError(false); setLoading(false); }, () => { setInventoryError(true); setLoading(false); });
-      read('/api/v1/gpus?limit=2000', data => setGPUAssets(data.data || []));
+      readAll<GPUAsset>('/api/v1/gpus', setGPUAssets);
     }
     if (page === 'overview' || page === 'incidents') {
       read('/api/v1/fault-events/summary', data => setFaultSummary(data.data || null));
@@ -348,10 +352,10 @@ export default function App() {
     }
     if (page === 'gpus') {
       read('/api/v1/health/summary', data => setHealthSummary(data.data || null));
-      read('/api/v1/health/gpus?limit=1000', data => setHealthScores(data.data || []));
+      readAll('/api/v1/health/gpus', setHealthScores, 1000);
     }
     if (page === 'quality') {
-      read('/api/v1/targets?limit=2000', data => setTargets(data.data || []));
+      readAll('/api/v1/targets', setTargets);
       read('/api/v1/sync-runs?limit=20', data => setSyncRuns(data.data || []));
       read('/api/v1/inventory/changes?limit=50', data => setAssetChanges(data.data || []));
       read('/api/v1/health/telemetry-quality', data => { setTelemetryQuality(data.data || []); setTelemetryQualitySummary(data.summary || null); });
