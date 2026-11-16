@@ -145,6 +145,7 @@ type DailyCheck struct {
 	Shadow             DailyShadow      `json:"shadow"`
 	Routes             []DailyRoute     `json:"routes"`
 	CoreLedger         DailyCoreLedger  `json:"core_ledger"`
+	Intake             *DailyIntake     `json:"fleet_intake,omitempty"`
 	R1                 DailyR1          `json:"r1_history_unknown"`
 	Coverage           DailyCoverage    `json:"coverage"`
 	IncidentOutcomes   []DailyIncident  `json:"incident_outcomes"`
@@ -217,6 +218,11 @@ func BuildDailyCheck(ctx context.Context, db *gorm.DB, now time.Time) (DailyChec
 			if tx.Migrator().HasTable(&api.GPUCoreEventRun{}) {
 				if e := dailyRoutes(tx, q, &out); e != nil {
 					return e
+				}
+				if in, e := dailyIntake(tx, q, now); e != nil {
+					return e
+				} else {
+					out.Intake = in
 				}
 			}
 
@@ -386,6 +392,14 @@ func dailyFindings(c DailyCheck) []string {
 			f = append(f, fmt.Sprintf("WARN 最新查询缺少路线 %s 的影子批次", r.Strategy))
 		}
 	}
+	if in := c.Intake; in != nil {
+		if len(in.SeenNotInScope) > 0 {
+			f = append(f, fmt.Sprintf("WARN DCGM 近 2 天有上报但不在排名范围的节点 %d 台（资产源未录入？排名、账本统计和回测都会漏掉它们）：%s", len(in.SeenNotInScope), strings.Join(firstN(in.SeenNotInScope, 10), ", ")))
+		}
+		if len(in.ScopeNotSeen) > 0 {
+			f = append(f, fmt.Sprintf("INFO 排名范围内 %d 个节点近 2 天无 DCGM 上报（下线、导出器中断或采集异常）：%s", len(in.ScopeNotSeen), strings.Join(firstN(in.ScopeNotSeen, 10), ", ")))
+		}
+	}
 	if c.LatestQuery == nil {
 		f = append(f, "WARN 无已完成的冻结查询（gpu_risk_queries status=completed）")
 	} else if !c.Shadow.Exists {
@@ -468,6 +482,9 @@ func RenderDailyMarkdown(c DailyCheck) string {
 			}
 			fmt.Fprintf(&b, "| %s | %s | %s |\n", o.Stage, o.Status, code)
 		}
+	}
+	if in := c.Intake; in != nil {
+		fmt.Fprintf(&b, "\n## 机队接入\n\n排名范围 %d 个节点；近 7 天 DCGM 首次出现的节点 %d 台（其中已在范围内 %d 台）；DCGM 近 2 天有上报但不在范围 %d 台；范围内近 2 天无 DCGM 上报 %d 台。\n", in.ScopeNodes, in.NewLast7d, in.NewLast7dInScope, len(in.SeenNotInScope), len(in.ScopeNotSeen))
 	}
 	b.WriteString("\n## 影子批次\n\n")
 	if s := c.Shadow; !s.Exists {
@@ -673,4 +690,69 @@ func dailyRoutes(tx *gorm.DB, q api.GPURiskQuery, out *DailyCheck) error {
 		out.Routes = append(out.Routes, r)
 	}
 	return nil
+}
+
+// DailyIntake tracks fleet growth against the ranking scope: new racks keep
+// joining, and a node DCGM reports but the asset source has not admitted is
+// silently missing from ranking, ledger statistics and backtests.
+type DailyIntake struct {
+	ScopeNodes       int      `json:"scope_nodes"`
+	NewLast7d        int      `json:"new_last_7d"`
+	NewLast7dInScope int      `json:"new_last_7d_in_scope"`
+	SeenNotInScope   []string `json:"seen_not_in_scope"`
+	ScopeNotSeen     []string `json:"scope_not_seen"`
+}
+
+func dailyIntake(tx *gorm.DB, q api.GPURiskQuery, now time.Time) (*DailyIntake, error) {
+	if !tx.Migrator().HasTable(&api.GPUNodeObservation{}) {
+		return nil, nil
+	}
+	var obs []api.GPUNodeObservation
+	if e := tx.Order("node_ip").Find(&obs).Error; e != nil {
+		return nil, e
+	}
+	if len(obs) == 0 {
+		return nil, nil
+	}
+	var members []api.GPURiskMember
+	if e := tx.Where("query_id = ? AND status = ?", q.ID, "included").Find(&members).Error; e != nil {
+		return nil, e
+	}
+	scope := map[string]bool{}
+	for _, m := range members {
+		scope[strings.TrimSpace(m.NodeIP)] = true
+	}
+	local := now.In(dailyZone)
+	recent := local.AddDate(0, 0, -2).Format("2006-01-02")
+	week := local.AddDate(0, 0, -7).Format("2006-01-02")
+	in := &DailyIntake{ScopeNodes: len(scope), SeenNotInScope: []string{}, ScopeNotSeen: []string{}}
+	seen := map[string]bool{}
+	for _, o := range obs {
+		if o.LastSeenDay >= recent {
+			seen[o.NodeIP] = true
+			if !scope[o.NodeIP] {
+				in.SeenNotInScope = append(in.SeenNotInScope, o.NodeIP)
+			}
+		}
+		if o.FirstSeenDay >= week {
+			in.NewLast7d++
+			if scope[o.NodeIP] {
+				in.NewLast7dInScope++
+			}
+		}
+	}
+	for ip := range scope {
+		if !seen[ip] {
+			in.ScopeNotSeen = append(in.ScopeNotSeen, ip)
+		}
+	}
+	sort.Strings(in.ScopeNotSeen)
+	return in, nil
+}
+
+func firstN(v []string, n int) []string {
+	if len(v) > n {
+		return append(append([]string(nil), v[:n]...), fmt.Sprintf("…共 %d 台", len(v)))
+	}
+	return v
 }

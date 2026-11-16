@@ -216,3 +216,41 @@ func TestDailyR1SpecTestEnd(t *testing.T) {
 		t.Fatal("test end after now accepted")
 	}
 }
+
+func TestDailyIntakeFlagsNodesOutsideScope(t *testing.T) {
+	db := testDB(t)
+	if e := db.AutoMigrate(&api.GPUNodeObservation{}, &api.GPURiskMember{}); e != nil {
+		t.Fatal(e)
+	}
+	now := time.Date(2026, 11, 16, 3, 0, 0, 0, dailyZone)
+	for _, o := range []api.GPUNodeObservation{
+		{NodeIP: "10.0.0.1", FirstSeenDay: "2026-07-01", LastSeenDay: "2026-11-16"}, // in scope, reporting
+		{NodeIP: "10.0.0.2", FirstSeenDay: "2026-11-12", LastSeenDay: "2026-11-15"}, // new, in scope
+		{NodeIP: "10.0.0.3", FirstSeenDay: "2026-07-01", LastSeenDay: "2026-11-10"}, // in scope, silent
+		{NodeIP: "10.0.9.9", FirstSeenDay: "2026-11-14", LastSeenDay: "2026-11-16"}, // new, NOT in scope
+		{NodeIP: "10.0.8.8", FirstSeenDay: "2026-07-01", LastSeenDay: "2026-10-01"}, // old, gone, not in scope
+	} {
+		if e := db.Create(&o).Error; e != nil {
+			t.Fatal(e)
+		}
+	}
+	for i, ip := range []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"} {
+		if e := db.Create(&api.GPURiskMember{QueryID: 1, NodeID: uint(i + 1), Generation: 1, NodeIP: ip, Status: "included"}).Error; e != nil {
+			t.Fatal(e)
+		}
+	}
+	in, err := dailyIntake(db, api.GPURiskQuery{ID: 1}, now)
+	if err != nil || in == nil {
+		t.Fatal(in, err)
+	}
+	if in.ScopeNodes != 3 || in.NewLast7d != 2 || in.NewLast7dInScope != 1 || len(in.SeenNotInScope) != 1 || in.SeenNotInScope[0] != "10.0.9.9" || len(in.ScopeNotSeen) != 1 || in.ScopeNotSeen[0] != "10.0.0.3" {
+		t.Fatalf("%+v", in)
+	}
+	f := dailyFindings(DailyCheck{Intake: in})
+	if !dailyFinding(DailyCheck{Findings: f}, "WARN", "10.0.9.9") || !dailyFinding(DailyCheck{Findings: f}, "INFO", "10.0.0.3") {
+		t.Fatal(f)
+	}
+	if md := RenderDailyMarkdown(DailyCheck{Intake: in, Findings: f}); !strings.Contains(md, "机队接入") {
+		t.Fatal(md)
+	}
+}
