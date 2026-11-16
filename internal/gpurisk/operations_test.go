@@ -121,11 +121,7 @@ func TestOperationsOutcomeRestartPreservesPinnedHistory(t *testing.T) {
 	if e := db.AutoMigrate(&api.GPURiskOperation{}); e != nil {
 		t.Fatal(e)
 	}
-	now := time.Now().UTC()
-	local := now.In(time.FixedZone("Shanghai", 8*3600))
-	if local.Hour() < 3 {
-		now = now.Add(3 * time.Hour)
-	}
+	now := gateInstant(t, db, &q, time.Now())
 	before, _, e := EvaluateOutcomes(context.Background(), db, q.ID, now)
 	if e != nil {
 		t.Fatal(e)
@@ -328,11 +324,7 @@ func TestOperationsPreserveFixedCutoffHistoryFeatureSHA(t *testing.T) {
 		return v
 	}
 	beforeFeature := historySHA()
-	at := time.Now().UTC()
-	local := at.In(time.FixedZone("Shanghai", 8*3600))
-	if local.Hour() < 3 {
-		at = at.Add(3 * time.Hour)
-	}
+	at := gateInstant(t, db, &q, time.Now())
 	beforeOutcome, _, e := EvaluateOutcomes(context.Background(), db, q.ID, at)
 	if e != nil {
 		t.Fatal(e)

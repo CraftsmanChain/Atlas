@@ -524,3 +524,51 @@ func TestAdditiveOutcomeMigrationPreservesRanking(t *testing.T) {
 		t.Fatal("lost scores", count)
 	}
 }
+
+// scheduledPastNow returns an evaluation instant at or before wall that is
+// past the 02:10 Asia/Shanghai operations gate. Before 03:00 local it moves
+// back to 23:00 the previous day: EvaluateOutcomes rejects any asOf after the
+// real clock, so shifting forward (the old workaround) failed 00:00-03:00.
+func scheduledPastNow(wall time.Time) time.Time {
+	zone := time.FixedZone("Shanghai", 8*3600)
+	local := wall.In(zone)
+	if local.Hour() >= 3 {
+		return wall.UTC()
+	}
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, zone).Add(-time.Hour).UTC()
+}
+
+// gateInstant returns scheduledPastNow(wall) and, when that moved the instant
+// back, re-stamps the fixture query as completed one minute earlier so the
+// as-of reads (which require CompletedAt <= asOf) still see it. Daytime runs
+// are unchanged.
+func gateInstant(t *testing.T, db *gorm.DB, q *api.GPURiskQuery, wall time.Time) time.Time {
+	t.Helper()
+	at := scheduledPastNow(wall)
+	if q.CompletedAt != nil && q.CompletedAt.After(at) {
+		done := at.Add(-time.Minute)
+		if e := db.Model(&api.GPURiskQuery{}).Where("id = ?", q.ID).Update("completed_at", done).Error; e != nil {
+			t.Fatal(e)
+		}
+		q.CompletedAt = &done
+	}
+	return at
+}
+
+func TestScheduledPastNowNeverInFutureAndPastGate(t *testing.T) {
+	zone := time.FixedZone("Shanghai", 8*3600)
+	for _, h := range []int{0, 1, 2, 3, 10, 23} {
+		wall := time.Date(2026, 11, 16, h, 30, 0, 0, zone)
+		got := scheduledPastNow(wall)
+		local := got.In(zone)
+		if got.After(wall) {
+			t.Fatalf("hour %d: %v is after wall %v", h, got, wall)
+		}
+		if local.Hour() < 3 {
+			t.Fatalf("hour %d: %v still before 03:00 local", h, local)
+		}
+		if h >= 3 && !got.Equal(wall) {
+			t.Fatalf("hour %d: changed %v", h, got)
+		}
+	}
+}
