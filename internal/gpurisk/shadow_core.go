@@ -134,37 +134,8 @@ func computeCoreRoute(ctx context.Context, db *gorm.DB, queryID uint, now time.T
 		score := map[int]float64{}
 		for i, m := range members {
 			row := api.GPURiskShadowScore{NodeID: m.NodeID, Generation: m.Generation}
-			n90, last := 0, time.Time{}
-			for _, ep := range eps[strings.TrimSpace(m.NodeIP)] {
-				if !ep.Start.Before(cutoff.Add(-coreRecurrenceWindow)) {
-					n90++
-				}
-				if ep.Last.After(last) {
-					last = ep.Last
-				}
-			}
-			row.History = n90
-			s := float64(n90)
-			if !last.IsZero() {
-				d := cutoff.Sub(last).Hours() / 24
-				row.DaysSince = &d
-				s += 1 / (1 + math.Max(d, 0))
-			}
-			if cohort {
-				ip := strings.TrimSpace(m.NodeIP)
-				young := true
-				if o, ok := obs[ip]; ok {
-					if first, e := time.ParseInLocation("2006-01-02", o.FirstSeenDay, shanghai); e == nil && first.Before(cutoff) {
-						young = cutoff.Sub(first) < cohortYoungDays*24*time.Hour
-					}
-					if strings.Contains(o.Model, "4090") {
-						s += cohort4090Weight
-					}
-				}
-				if young {
-					s += cohortYoungWeight
-				}
-			}
+			s, n90, days := coreRouteScore(eps[strings.TrimSpace(m.NodeIP)], strings.TrimSpace(m.NodeIP), cutoff, cohort, obs)
+			row.History, row.DaysSince = n90, days
 			if m.Status == "included" {
 				score[i] = s
 			}
@@ -227,4 +198,41 @@ func RecordShadowStrategy(ctx context.Context, db *gorm.DB, queryID uint, now ti
 		return tx.CreateInBatches(rows, 200).Error
 	})
 	return batch, err
+}
+
+// coreRouteScore is the single R1/R4 scoring rule, shared by the frozen
+// shadow batches and the backtest (so the two cannot drift). eps are the
+// node's episodes from events observed before cutoff.
+func coreRouteScore(eps []CoreEpisode, ip string, cutoff time.Time, cohort bool, obs map[string]api.GPUNodeObservation) (float64, int, *float64) {
+	n90, last := 0, time.Time{}
+	for _, ep := range eps {
+		if !ep.Start.Before(cutoff.Add(-coreRecurrenceWindow)) {
+			n90++
+		}
+		if ep.Last.After(last) {
+			last = ep.Last
+		}
+	}
+	s := float64(n90)
+	var days *float64
+	if !last.IsZero() {
+		d := cutoff.Sub(last).Hours() / 24
+		days = &d
+		s += 1 / (1 + math.Max(d, 0))
+	}
+	if cohort {
+		young := true
+		if o, ok := obs[ip]; ok {
+			if first, e := time.ParseInLocation("2006-01-02", o.FirstSeenDay, shanghai); e == nil && first.Before(cutoff) {
+				young = cutoff.Sub(first) < cohortYoungDays*24*time.Hour
+			}
+			if strings.Contains(o.Model, "4090") {
+				s += cohort4090Weight
+			}
+		}
+		if young {
+			s += cohortYoungWeight
+		}
+	}
+	return s, n90, days
 }

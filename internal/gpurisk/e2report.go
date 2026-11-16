@@ -75,6 +75,7 @@ type E2Report struct {
 	// RouteScorecard is the plan-v5 multi-route section (set by the weekly report).
 	RouteScorecard *RouteScorecard `json:"route_scorecard,omitempty"`
 	E2B            *E2BReport      `json:"e2b,omitempty"`
+	Backtest       *RouteBacktest  `json:"route_backtest,omitempty"`
 }
 
 func e2TieKey(queryKey string, nodeID uint, gen int) string {

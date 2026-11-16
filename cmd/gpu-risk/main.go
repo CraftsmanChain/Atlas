@@ -598,7 +598,12 @@ func runReport(ctx context.Context, db *gorm.DB, kind, out string, now time.Time
 			return fmt.Errorf("weekly E2-B evaluation failed: %w", e)
 		}
 		r.E2B = &e2b
-		payload, markdown = r, gpurisk.RenderE2Markdown(r)+gpurisk.RenderRouteScorecardMarkdown(sc)+gpurisk.RenderE2BMarkdown(e2b)
+		bt, e := gpurisk.BuildRouteBacktest(ctx, db, now)
+		if e != nil {
+			return fmt.Errorf("weekly route backtest failed: %w", e)
+		}
+		r.Backtest = &bt
+		payload, markdown = r, gpurisk.RenderE2Markdown(r)+gpurisk.RenderRouteScorecardMarkdown(sc)+gpurisk.RenderE2BMarkdown(e2b)+gpurisk.RenderRouteBacktestMarkdown(bt)
 		title, template, card = gpurisk.RenderE2Feishu(r)
 	default:
 		return fmt.Errorf("unknown report kind")
