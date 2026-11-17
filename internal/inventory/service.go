@@ -163,7 +163,7 @@ func (s *Service) SyncTargets(ctx context.Context) (*api.InventorySyncRun, error
 	if len(nodeIPs) == 0 {
 		return s.failRun(run, fmt.Errorf("target sync found zero tracked GPU nodes"))
 	}
-	changes, err := s.persistTargets(now, run.ID, nodeIPs, indexTargets(targets, s.config), s.collectionHealth(ctx, now))
+	changes, err := s.persistTargets(now, run.ID, nodeIPs, indexTargets(targets, s.config), mergeDiagnostics(s.collectionHealth(ctx, now), s.ipmiCollectorHealth(ctx, now)))
 	if err != nil {
 		return s.failRun(run, err)
 	}
@@ -241,7 +241,7 @@ func (s *Service) syncInventory(ctx context.Context, taskType string, recoverHis
 	if err != nil {
 		return s.failRun(run, err)
 	}
-	targetChanges, targetErr := s.persistTargets(now, run.ID, nodeIPs, targetIndex, s.collectionHealth(ctx, now))
+	targetChanges, targetErr := s.persistTargets(now, run.ID, nodeIPs, targetIndex, mergeDiagnostics(s.collectionHealth(ctx, now), s.ipmiCollectorHealth(ctx, now)))
 	if targetErr != nil {
 		return s.failRun(run, targetErr)
 	}
@@ -613,6 +613,10 @@ func (s *Service) persistTargets(now time.Time, runID uint, nodeIPs []string, ta
 				key := targetKey(job, nodeIP)
 				var existing api.CollectorTarget
 				hasExisting := tx.Where("target_key = ?", key).First(&existing).Error == nil
+				if job == "ipmi_exporter" && health == "up" {
+					// Coverage standard: collector="ipmi" decides UP and continuity.
+					health, assessment.reasonCode = ipmiAssessment(diagnostics, t.Labels["instance"], existing.Health, existing.ReasonCode, hasExisting)
+				}
 				if job == "gpu_exporter" && health == "up" {
 					diagnosis := diagnostics[t.Labels["instance"]]
 					if diagnosis == "healthy" {

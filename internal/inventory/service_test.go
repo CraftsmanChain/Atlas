@@ -40,6 +40,7 @@ func TestVMHostLabelsMapBMCWithoutPrefixGuessing(t *testing.T) {
 			{Metric: map[string]string{"host_ip": "10.80.16.1", "Hostname": "H100-node001", "gpu": "0", "UUID": "GPU-1"}},
 			{Metric: map[string]string{"host_ip": "10.80.174.9", "Hostname": "H100-node009", "gpu": "0", "UUID": "GPU-9"}},
 		},
+		ipmi: ipmiRows("10.80.249.101", time.Now(), 1, 1, 45, 10*time.Second),
 	}
 	service := NewService(db, reader, cfg)
 	run, err := service.SyncIdentity(context.Background())
@@ -62,6 +63,17 @@ func TestVMHostLabelsMapBMCWithoutPrefixGuessing(t *testing.T) {
 	}
 	if target.TargetIP != node.BMCIP || target.Health != "up" {
 		t.Fatalf("wrong target: %+v", target)
+	}
+	// Scrape still up but collector="ipmi" failing: coverage must report down.
+	reader.ipmi = ipmiRows("10.80.249.101", time.Now(), 0, 0, 45, 10*time.Second)
+	if _, err := service.SyncIdentity(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("target_key = ?", "ipmi_exporter|10.80.16.1").First(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	if target.Health != "down" || target.ReasonCode != ipmiFailed {
+		t.Fatalf("collector=ipmi failure not reflected: %+v", target)
 	}
 	if ip, _ := bmcTarget("10.80.174.9", indexTargets(reader.targets, cfg), cfg); ip != "" {
 		t.Fatalf("invented BMC: %s", ip)
@@ -87,6 +99,7 @@ type fakePrometheus struct {
 	lastHistoryQuery string
 	queryCalls       int
 	queries          []string
+	ipmi             []prometheus.Sample
 }
 
 func (f *fakePrometheus) BaseURL() string { return "http://prometheus.test" }
@@ -96,6 +109,9 @@ func (f *fakePrometheus) ActiveTargets(context.Context) ([]prometheus.Target, er
 func (f *fakePrometheus) Query(_ context.Context, query string) ([]prometheus.Sample, error) {
 	f.queryCalls++
 	f.queries = append(f.queries, query)
+	if query == ipmiCollectorQuery {
+		return f.ipmi, nil
+	}
 	if strings.HasPrefix(query, "last_over_time") {
 		f.lastHistoryQuery = query
 		return f.history, nil
@@ -191,7 +207,7 @@ func TestSyncBuildsSlotsRecoversHistoryAndTracksReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if targetRun.TaskType != TaskTargetStatus || reader.queryCalls != queryCalls+2 || reader.queries[len(reader.queries)-2] != collectionHealthQuery || reader.queries[len(reader.queries)-1] != collectionTimestampQuery {
+	if targetRun.TaskType != TaskTargetStatus || reader.queryCalls != queryCalls+3 || reader.queries[len(reader.queries)-3] != collectionHealthQuery || reader.queries[len(reader.queries)-2] != collectionTimestampQuery || reader.queries[len(reader.queries)-1] != ipmiCollectorQuery {
 		t.Fatalf("target task must query only bounded exporter diagnostics, not GPU identity history: run=%+v query_calls=%d->%d", targetRun, queryCalls, reader.queryCalls)
 	}
 	var targetChanges []api.AssetChangeEvent
