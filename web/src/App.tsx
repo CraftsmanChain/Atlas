@@ -1464,6 +1464,12 @@ function Quality({ tx, view, targets, summary, issueSummary, inventoryError, syn
   }
   const ipmiReasonHint = (code?: string) => ({
     ipmi_collector_all_failed: tx('bmc / chassis / ipmi 全部失败：账号密码被拒绝或 BMC 不可达（指标无法区分，需看 exporter 日志）', 'bmc / chassis / ipmi all failed: login rejected or BMC unreachable (metrics cannot tell which; check exporter log)'),
+    ipmi_collector_username_invalid: tx('BMC 用户名无效：该 BMC 上没有 exporter 配置的账号', 'BMC username invalid: the configured account does not exist on this BMC'),
+    ipmi_collector_password_invalid: tx('BMC 密码无效：账号存在但密码被拒绝', 'BMC password invalid: the account exists but the password is rejected'),
+    ipmi_collector_connection_timeout: tx('BMC 连接超时：网络不可达或 BMC 无响应', 'BMC connection timeout: network unreachable or BMC not responding'),
+    ipmi_collector_sdr_cache_error: tx('BMC 传感器库（SDR）读取失败，可登录但无法读传感器；需检查 BMC / 固件', 'BMC sensor repository (SDR) read failed: login works but sensors cannot be read; check BMC / firmware'),
+    ipmi_collector_privilege_insufficient: tx('BMC 账号权限不足', 'BMC account privilege insufficient'),
+    ipmi_collector_bmc_busy: tx('BMC 繁忙，会话资源不足', 'BMC busy: session resources exhausted'),
     ipmi_collector_failed: tx('BMC 可登录（bmc、chassis 正常），但传感器读取 collector=ipmi 失败', 'BMC login works (bmc, chassis ok) but sensor read collector=ipmi fails'),
     ipmi_collector_stale: tx('collector=ipmi 样本超过 5 分钟未更新', 'collector=ipmi sample older than 5 minutes'),
     ipmi_collector_discontinuous: tx('近 1 小时采样间隔过大或成功率低于 95%', 'Last-hour sample gap too large or success below 95%'),

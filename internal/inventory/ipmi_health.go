@@ -45,6 +45,8 @@ var ipmiCollectorQuery = strings.Join([]string{
 	// Diagnosis only (never decides UP): tells "BMC unusable" from "sensor read broken".
 	ipmiSignal("bmc_max", `max by (instance) (ipmi_up{job="ipmi_exporter",collector="bmc"})`),
 	ipmiSignal("chassis_max", `max by (instance) (ipmi_up{job="ipmi_exporter",collector="chassis"})`),
+	// Exact failure cause reported passively from the exporter host's journal.
+	`label_replace(label_replace(max by (ipmi_target, reason) (atlas_ipmi_failure_reason), "instance", "$1", "ipmi_target", "(.+)"), "atlas_signal", "reason", "", "")`,
 	ipmiSignal("max_gap_1h", `max by (instance) (max_over_time((time() - timestamp(`+ipmiSelector+`))[`+ipmiWindow+`:15s]))`),
 }, " or ")
 
@@ -63,6 +65,7 @@ func (s *Service) ipmiCollectorHealth(ctx context.Context, now time.Time) map[st
 func classifyIPMICollectors(rows []prometheus.Sample, now time.Time) map[string]string {
 	type state struct {
 		min, max, ts, success, gap, bmc, chassis float64
+		reason                                   string
 		hasMin, hasMax, hasTS, hasSucc, hasGap   bool
 		hasBMC, hasChassis                       bool
 	}
@@ -86,6 +89,8 @@ func classifyIPMICollectors(rows []prometheus.Sample, now time.Time) map[string]
 			v.ts, v.hasTS = r.Value, true
 		case "success_1h":
 			v.success, v.hasSucc = r.Value, true
+		case "reason":
+			v.reason = r.Metric["reason"]
 		case "bmc_max":
 			v.bmc, v.hasBMC = r.Value, true
 		case "chassis_max":
@@ -106,6 +111,8 @@ func classifyIPMICollectors(rows []prometheus.Sample, now time.Time) map[string]
 			result[instance] = ipmiUnverified
 		case now.Sub(sampled) > collectionSampleMaxAge || sampled.After(now.Add(time.Minute)):
 			result[instance] = ipmiStale
+		case v.min != 1 && ipmiCauseCode(v.reason) != "":
+			result[instance] = ipmiCauseCode(v.reason)
 		case v.min != 1 && v.hasBMC && v.hasChassis && v.bmc == 0 && v.chassis == 0:
 			result[instance] = ipmiAllFailed
 		case v.min != 1:
@@ -117,6 +124,15 @@ func classifyIPMICollectors(rows []prometheus.Sample, now time.Time) map[string]
 		}
 	}
 	return result
+}
+
+// ipmiCauseCode maps the exporter-host reason label to a stored reason code.
+func ipmiCauseCode(reason string) string {
+	switch reason {
+	case "username_invalid", "password_invalid", "connection_timeout", "sdr_cache_error", "privilege_insufficient", "bmc_busy":
+		return "ipmi_collector_" + reason
+	}
+	return ""
 }
 
 // ipmiAssessment turns a scrape-up ipmi_exporter target into the stored
