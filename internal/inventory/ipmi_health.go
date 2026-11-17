@@ -29,7 +29,8 @@ const (
 	ipmiHealthy       = "healthy"
 	ipmiMissing       = "ipmi_collector_missing"
 	ipmiStale         = "ipmi_collector_stale"
-	ipmiFailed        = "ipmi_collector_failed"
+	ipmiFailed        = "ipmi_collector_failed"     // BMC answers bmc/chassis but sensor read (collector=ipmi) fails
+	ipmiAllFailed     = "ipmi_collector_all_failed" // bmc, chassis and ipmi all fail: login rejected or BMC unreachable
 	ipmiDiscontinuous = "ipmi_collector_discontinuous"
 	ipmiUnverified    = "ipmi_collector_unverified"
 )
@@ -41,6 +42,9 @@ var ipmiCollectorQuery = strings.Join([]string{
 	ipmiSignal("max", `max by (instance) (`+ipmiSelector+`)`),
 	ipmiSignal("sample_ts", `max by (instance) (timestamp(`+ipmiSelector+`))`),
 	ipmiSignal("success_1h", `min by (instance) (avg_over_time(`+ipmiSelector+`[`+ipmiWindow+`]))`),
+	// Diagnosis only (never decides UP): tells "BMC unusable" from "sensor read broken".
+	ipmiSignal("bmc_max", `max by (instance) (ipmi_up{job="ipmi_exporter",collector="bmc"})`),
+	ipmiSignal("chassis_max", `max by (instance) (ipmi_up{job="ipmi_exporter",collector="chassis"})`),
 	ipmiSignal("max_gap_1h", `max by (instance) (max_over_time((time() - timestamp(`+ipmiSelector+`))[`+ipmiWindow+`:15s]))`),
 }, " or ")
 
@@ -58,8 +62,9 @@ func (s *Service) ipmiCollectorHealth(ctx context.Context, now time.Time) map[st
 
 func classifyIPMICollectors(rows []prometheus.Sample, now time.Time) map[string]string {
 	type state struct {
-		min, max, ts, success, gap             float64
-		hasMin, hasMax, hasTS, hasSucc, hasGap bool
+		min, max, ts, success, gap, bmc, chassis float64
+		hasMin, hasMax, hasTS, hasSucc, hasGap   bool
+		hasBMC, hasChassis                       bool
 	}
 	by := map[string]*state{}
 	for _, r := range rows {
@@ -81,6 +86,10 @@ func classifyIPMICollectors(rows []prometheus.Sample, now time.Time) map[string]
 			v.ts, v.hasTS = r.Value, true
 		case "success_1h":
 			v.success, v.hasSucc = r.Value, true
+		case "bmc_max":
+			v.bmc, v.hasBMC = r.Value, true
+		case "chassis_max":
+			v.chassis, v.hasChassis = r.Value, true
 		case "max_gap_1h":
 			v.gap, v.hasGap = r.Value, true
 		}
@@ -97,6 +106,8 @@ func classifyIPMICollectors(rows []prometheus.Sample, now time.Time) map[string]
 			result[instance] = ipmiUnverified
 		case now.Sub(sampled) > collectionSampleMaxAge || sampled.After(now.Add(time.Minute)):
 			result[instance] = ipmiStale
+		case v.min != 1 && v.hasBMC && v.hasChassis && v.bmc == 0 && v.chassis == 0:
+			result[instance] = ipmiAllFailed
 		case v.min != 1:
 			result[instance] = ipmiFailed
 		case !v.hasSucc || !v.hasGap || v.success < ipmiMinSuccess || v.gap > ipmiMaxGap.Seconds():

@@ -27,6 +27,8 @@ func TestIPMICollectorClassification(t *testing.T) {
 	}{
 		{"healthy", ipmiRows("b", now, 1, 1, 45, 20*time.Second), ipmiHealthy},
 		{"collector_failed_while_scrape_up", ipmiRows("b", now, 0, 0, 45, 20*time.Second), ipmiFailed},
+		{"all_collectors_failed", append(ipmiRows("b", now, 0, 0, 45, 20*time.Second), prometheus.Sample{Metric: map[string]string{"instance": "b", "atlas_signal": "bmc_max"}, Value: 0}, prometheus.Sample{Metric: map[string]string{"instance": "b", "atlas_signal": "chassis_max"}, Value: 0}), ipmiAllFailed},
+		{"sensor_only_failed", append(ipmiRows("b", now, 0, 0, 45, 20*time.Second), prometheus.Sample{Metric: map[string]string{"instance": "b", "atlas_signal": "bmc_max"}, Value: 1}, prometheus.Sample{Metric: map[string]string{"instance": "b", "atlas_signal": "chassis_max"}, Value: 1}), ipmiFailed},
 		{"stale", ipmiRows("b", now, 1, 1, 45, 6*time.Minute), ipmiStale},
 		{"gap", ipmiRows("b", now, 1, 1, 400, 20*time.Second), ipmiDiscontinuous},
 		{"flapping", ipmiRows("b", now, 1, 0.9, 45, 20*time.Second), ipmiDiscontinuous},
