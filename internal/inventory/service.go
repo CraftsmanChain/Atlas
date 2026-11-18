@@ -613,6 +613,10 @@ func (s *Service) persistTargets(now time.Time, runID uint, nodeIPs []string, ta
 				key := targetKey(job, nodeIP)
 				var existing api.CollectorTarget
 				hasExisting := tx.Where("target_key = ?", key).First(&existing).Error == nil
+				if job == "ipmi_exporter" && health != "up" && diagnostics[ipmiScrapeRecentPrefix+t.Labels["instance"]] != "" {
+					// Scrape failed only briefly: not down until it has failed for ipmiHold.
+					health, assessment = "up", targetAssessment{}
+				}
 				if job == "ipmi_exporter" && health == "up" {
 					// Coverage standard: collector="ipmi" decides UP and continuity.
 					health, assessment.reasonCode = ipmiAssessment(diagnostics, t.Labels["instance"], existing.Health, existing.ReasonCode, hasExisting)

@@ -32,10 +32,12 @@ func TestIPMICollectorClassification(t *testing.T) {
 		{"username_invalid_cause", append(ipmiRows("b", now, 0, 0, 45, 20*time.Second), prometheus.Sample{Metric: map[string]string{"instance": "b", "atlas_signal": "reason", "reason": "username_invalid"}}), "ipmi_collector_username_invalid"},
 		{"sdr_cause_beats_sensor_only", append(ipmiRows("b", now, 0, 0, 45, 20*time.Second), prometheus.Sample{Metric: map[string]string{"instance": "b", "atlas_signal": "reason", "reason": "sdr_cache_error"}}), "ipmi_collector_sdr_cache_error"},
 		{"cause_ignored_when_healthy", append(ipmiRows("b", now, 1, 1, 45, 20*time.Second), prometheus.Sample{Metric: map[string]string{"instance": "b", "atlas_signal": "reason", "reason": "username_invalid"}}), ipmiHealthy},
-		{"stale", ipmiRows("b", now, 1, 1, 45, 6*time.Minute), ipmiStale},
+		{"stale", ipmiRows("b", now, 1, 1, 45, 11*time.Minute), ipmiStale},
 		{"gap", ipmiRows("b", now, 1, 1, 400, 20*time.Second), ipmiDiscontinuous},
 		{"flapping", ipmiRows("b", now, 1, 0.9, 45, 20*time.Second), ipmiDiscontinuous},
-		{"conflict", append(ipmiRows("b", now, 1, 1, 45, 0), prometheus.Sample{Metric: map[string]string{"instance": "b", "atlas_signal": "min"}, Value: 0}), ipmiUnverified},
+		// 10m hold: a failure inside the window that recovered (max=1) is not down.
+		{"transient_failure_not_down", append(ipmiRows("b", now, 1, 1, 45, 0), prometheus.Sample{Metric: map[string]string{"instance": "b", "atlas_signal": "min"}, Value: 0}), ipmiHealthy},
+		{"sample_8m_old_not_stale", ipmiRows("b", now, 1, 1, 45, 8*time.Minute), ipmiHealthy},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := classifyIPMICollectors(test.rows, now)
@@ -43,6 +45,12 @@ func TestIPMICollectorClassification(t *testing.T) {
 				t.Fatal(got)
 			}
 		})
+	}
+	scrapeRows := append(ipmiRows("b", now, 1, 1, 45, 0),
+		prometheus.Sample{Metric: map[string]string{"instance": "b", "atlas_signal": "scrape_max"}, Value: 1},
+		prometheus.Sample{Metric: map[string]string{"instance": "c", "atlas_signal": "scrape_max"}, Value: 0})
+	if got := classifyIPMICollectors(scrapeRows, now); got[ipmiScrapeRecentPrefix+"b"] == "" || got[ipmiScrapeRecentPrefix+"c"] != "" || got["c"] != "" {
+		t.Fatal(got)
 	}
 	if !strings.Contains(ipmiCollectorQuery, `collector="ipmi"`) || strings.Contains(ipmiCollectorQuery, `collector="sel"`) {
 		t.Fatal("IPMI coverage must be judged by collector=ipmi only")

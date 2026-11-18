@@ -23,6 +23,11 @@ const (
 	ipmiMaxGap         = 3 * time.Minute
 	ipmiMinSuccess     = 0.95
 	ipmiDiagnosticsKey = "atlas:ipmi_collector_query_ok"
+	// "atlas:ipmi_scrape_recent:<instance>" present = scrape succeeded within ipmiHold.
+	ipmiScrapeRecentPrefix = "atlas:ipmi_scrape_recent:"
+	// A failure or absence must persist this long before down/missing is reported.
+	ipmiHold       = 10 * time.Minute
+	ipmiHoldWindow = "10m"
 )
 
 const (
@@ -38,9 +43,11 @@ const (
 // One bounded query (one series per BMC instance per signal). The gap signal
 // is a 15s-step subquery of sample age, so it resolves gaps to ~15s.
 var ipmiCollectorQuery = strings.Join([]string{
-	ipmiSignal("min", `min by (instance) (`+ipmiSelector+`)`),
-	ipmiSignal("max", `max by (instance) (`+ipmiSelector+`)`),
-	ipmiSignal("sample_ts", `max by (instance) (timestamp(`+ipmiSelector+`))`),
+	// Debounce: judged over the last ipmiHold, so one failed scrape never flips a node.
+	ipmiSignal("min", `min by (instance) (min_over_time(`+ipmiSelector+`[`+ipmiHoldWindow+`]))`),
+	ipmiSignal("max", `max by (instance) (max_over_time(`+ipmiSelector+`[`+ipmiHoldWindow+`]))`),
+	ipmiSignal("sample_ts", `max by (instance) (timestamp(last_over_time(`+ipmiSelector+`[`+ipmiHoldWindow+`])))`),
+	ipmiSignal("scrape_max", `max by (instance) (max_over_time(up{job="ipmi_exporter"}[`+ipmiHoldWindow+`]))`),
 	ipmiSignal("success_1h", `min by (instance) (avg_over_time(`+ipmiSelector+`[`+ipmiWindow+`]))`),
 	// Diagnosis only (never decides UP): tells "BMC unusable" from "sensor read broken".
 	ipmiSignal("bmc_max", `max by (instance) (ipmi_up{job="ipmi_exporter",collector="bmc"})`),
@@ -70,9 +77,14 @@ func classifyIPMICollectors(rows []prometheus.Sample, now time.Time) map[string]
 		hasBMC, hasChassis                       bool
 	}
 	by := map[string]*state{}
+	scrape := map[string]float64{}
 	for _, r := range rows {
 		instance := r.Metric["instance"]
 		if instance == "" || math.IsNaN(r.Value) || math.IsInf(r.Value, 0) {
+			continue
+		}
+		if r.Metric["atlas_signal"] == "scrape_max" {
+			scrape[instance] = r.Value
 			continue
 		}
 		v := by[instance]
@@ -100,6 +112,11 @@ func classifyIPMICollectors(rows []prometheus.Sample, now time.Time) map[string]
 		}
 	}
 	result := map[string]string{ipmiDiagnosticsKey: "ok"}
+	for instance, up := range scrape {
+		if up == 1 {
+			result[ipmiScrapeRecentPrefix+instance] = "up"
+		}
+	}
 	for instance, v := range by {
 		if !v.hasMin || !v.hasMax || !v.hasTS {
 			result[instance] = ipmiMissing
@@ -107,15 +124,14 @@ func classifyIPMICollectors(rows []prometheus.Sample, now time.Time) map[string]
 		}
 		sampled := time.Unix(0, int64(v.ts*1e9))
 		switch {
-		case v.min != v.max:
-			result[instance] = ipmiUnverified
-		case now.Sub(sampled) > collectionSampleMaxAge || sampled.After(now.Add(time.Minute)):
+		case now.Sub(sampled) > ipmiHold || sampled.After(now.Add(time.Minute)):
 			result[instance] = ipmiStale
-		case v.min != 1 && ipmiCauseCode(v.reason) != "":
+		// max over the hold window is 0: every sample in the last 10 minutes failed.
+		case v.max != 1 && ipmiCauseCode(v.reason) != "":
 			result[instance] = ipmiCauseCode(v.reason)
-		case v.min != 1 && v.hasBMC && v.hasChassis && v.bmc == 0 && v.chassis == 0:
+		case v.max != 1 && v.hasBMC && v.hasChassis && v.bmc == 0 && v.chassis == 0:
 			result[instance] = ipmiAllFailed
-		case v.min != 1:
+		case v.max != 1:
 			result[instance] = ipmiFailed
 		case !v.hasSucc || !v.hasGap || v.success < ipmiMinSuccess || v.gap > ipmiMaxGap.Seconds():
 			result[instance] = ipmiDiscontinuous
