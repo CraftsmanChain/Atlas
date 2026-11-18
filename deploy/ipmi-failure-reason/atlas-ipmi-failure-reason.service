@@ -1,0 +1,20 @@
+[Unit]
+Description=Atlas IPMI failure-reason reporter (passive, reads ipmi-exporter journal)
+After=ipmi-exporter.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+SupplementaryGroups=systemd-journal
+ExecStart=/usr/bin/python3 /usr/local/exporters/ipmi-exporter/atlas_ipmi_failure_reason.py
+Restart=always
+RestartSec=10s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
