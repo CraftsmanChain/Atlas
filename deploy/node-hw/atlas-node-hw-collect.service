@@ -1,0 +1,10 @@
+[Unit]
+Description=Atlas fleet hardware (CPU/memory/disk) daily read-only collector
+After=atlas.service
+
+[Service]
+Type=oneshot
+# Read-only on nodes: ipmitool sel info/elist, dmidecode -t 17, lsblk, /sys, /proc, kernel-log grep.
+ExecStart=/ops/atlas/scripts/node_hw_daily_collect.sh 2
+Nice=10
+TimeoutStartSec=60min
