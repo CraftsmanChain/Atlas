@@ -5,14 +5,15 @@
 # with an IP (H200 is not in that table and is out of scope; ATLAS_HW_EXCLUDE_RE can add
 # exclusions). One SSH session per node; only read-only commands run on the node:
 #   ipmitool sel info / sel elist (in-band, read), storcli64 show all (if present), dmidecode -t 17, lsblk, cat /sys, /proc,
-#   awk/grep on kernel logs (journalctl -k when no kern.log), smartctl -x / nvme smart-log
-#   ONLY if already installed. Nothing is installed, changed, cleared or rebooted.
+#   awk/grep on kernel logs (journalctl -k when no kern.log), smartctl -x (smartmontools installed 2026-11-20 with user approval,
+#   smartd disabled). Nothing is installed, changed, cleared or rebooted.
 #
 # Output $ATLAS_HW_COLLECT_ROOT/<YYYY-MM-DD>/
 #   nodes.tsv     ip, entity_kind, name
 #   nodes/<ip>.txt raw per-node sections (##META ##TOOLS ##SELINFO ##SEL ##DIMM ##EDAC ##MEM
 #                 ##KERNCNT ##KERNLINES ##DISK ##NVME ##RAID ##IOERR ##SMART ##END)
 #   status.tsv    ip, kind, ssh_rc, status, flags      (one row per node; collection anomalies)
+#   smart.tsv     one row per physical disk (see node_hw_smart_parse.py header)
 #   storcli.tsv   ip, drive, state, media_err, other_err, pred_fail, smart_alert, sn, temp, model
 #   sel.tsv       ip, sel_id, date, time, sensor, event, direction   (Session Audit dropped)
 #   kern.tsv      ip, day, class, count
@@ -115,8 +116,17 @@ if [ -n "$SC" ]; then T 60 storcli "$SC" /call/eall/sall show all 2>&1 | grep -a
 echo "##IOERR"
 for b in /sys/block/sd*; do [ -f $b/device/ioerr_cnt ] && echo "$(basename $b)	ioerr=$(cat $b/device/ioerr_cnt)	iodone=$(cat $b/device/iodone_cnt 2>/dev/null)"; done
 echo "##SMART"
-if has smartctl; then for d in $(T 20 lsblk2 lsblk -dnpo NAME -e 7,1 | grep -v CMD_TIMEOUT); do echo "#dev $d"; timeout 30 smartctl -x "$d" 2>&1 | head -200; done; else echo "smartctl_missing"; fi
-if has nvme; then for d in /dev/nvme[0-9]*n1; do [ -e "$d" ] && { echo "#nvme $d"; timeout 20 nvme smart-log "$d" 2>&1; }; done; else echo "nvme_missing"; fi
+# smartctl only reads (-x = SMART/health logs, no self-test). --scan-open also finds disks behind MegaRAID
+# (sat+megaraid,N / megaraid,N). USB bridges (snt*/usb*) and USB-attached disks are skipped.
+if has smartctl; then
+  usb=" $(lsblk -dnpo NAME,TRAN 2>/dev/null | awk '$2=="usb"{printf "%s ", $1}')"
+  T 60 smartscan smartctl --scan-open 2>/dev/null | awk '$1 ~ /^\/dev/ && $2=="-d"{print $1, $3}' | while read -r dev ty; do
+    case "$ty" in snt*|usb*) continue ;; esac
+    case "$usb" in *" $dev "*) continue ;; esac
+    echo "#dev $dev $ty"
+    timeout 30 smartctl -x -j -d "$ty" "$dev" 2>/dev/null | tr -d '\n'; echo
+  done
+else echo "smartctl_missing"; fi
 echo "##END"
 REMOTE
   echo -e "$n\t$?" >> "$OUT/_rc"
@@ -152,8 +162,6 @@ while IFS=$'\t' read -r ip kind name; do
     [ -z "$(sec "$f" DIMM)" ] && flags="$flags,no_dimm_inventory"
     t kernlog || flags="$flags,no_kernlog(journal)"
     t smartctl || flags="$flags,no_smartctl"
-    { [ -n "$(sec "$f" NVME)" ] && ! t nvme; } && flags="$flags,no_nvme_cli"
-    { sec "$f" RAID | grep -qiE "megaraid" && sec "$f" STORCLI | grep -q storcli_missing; } && flags="$flags,megaraid_no_storcli"
   fi
   printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "$kind" "${rc:-NA}" "$status" "${flags#,}" >> "$OUT/status.tsv"
   [ "$status" = ok ] || continue
@@ -170,6 +178,9 @@ while IFS=$'\t' read -r ip kind name; do
   sec "$f" DIMM | LC_ALL=C awk -v ip="$ip" 'NF>0{print ip"\t"$0}' >> "$OUT/dimm.tsv"
   sec "$f" DISK | LC_ALL=C sed -nE 's/^NAME="([^"]*)" ROTA="([^"]*)" TRAN="([^"]*)" MODEL="([^"]*)" SERIAL="([^"]*)" SIZE="([^"]*)".*/\1\t\2\t\3\t\4\t\5\t\6/p' | LC_ALL=C awk -v ip="$ip" '{print ip"\t"$0}' >> "$OUT/disk.tsv"
 done < "$OUT/nodes.tsv"
+
+# SMART -> smart.tsv (python3 parser on the deploy node)
+python3 /ops/atlas/scripts/node_hw_smart_parse.py "$OUT" > "$OUT/smart.tsv" 2> "$OUT/smart_parse.err"
 
 # Per-node SEL span (device-resident history; may pre-date monitoring) + full/stopped state.
 LC_ALL=C awk -F'\t' '$3 ~ /^[0-9][0-9]\/[0-9][0-9]\/[0-9][0-9][0-9][0-9]$/ && substr($3,7,4)>="2015" {split($3,a,"/"); d=a[3]"-"a[1]"-"a[2]; if(!($1 in lo)||d<lo[$1]) lo[$1]=d; if(!($1 in hi)||d>hi[$1]) hi[$1]=d; n[$1]++; if($6 ~ /Uncorrectable ECC/) ue[$1]++; if($6 ~ /Correctable ECC/ && $6 !~ /Uncorrectable/) ce[$1]++}
@@ -203,10 +214,11 @@ DUR=$(( $(date +%s) - START ))
   echo "- SEL 条目（不含 Session Audit）：$(wc -l < "$OUT/sel.tsv")，涉及节点 $(cut -f1 "$OUT/sel.tsv" | sort -u | wc -l)"
   echo "- SEL 内存事件：CE 节点 $(awk -F'\t' 'NR>1&&$5>0' "$OUT/sel_span.tsv" | wc -l)，UE 节点 $(awk -F'\t' 'NR>1&&$6>0' "$OUT/sel_span.tsv" | wc -l)；SEL 最早记录早于 2026-07-01 的节点 $(awk -F'\t' 'NR>1&&$2<"2026-07-01"' "$OUT/sel_span.tsv" | wc -l)"
   echo "- RAID 后物理盘（storcli）：$(wc -l < "$OUT/storcli.tsv") 块，介质错误>0 $(awk -F'\t' '$4+0>0' "$OUT/storcli.tsv" | wc -l)，预测失败>0 $(awk -F'\t' '$6+0>0' "$OUT/storcli.tsv" | wc -l)，SMART 告警 $(awk -F'\t' '$7=="Yes"' "$OUT/storcli.tsv" | wc -l)"
+  echo "- SMART：$(awk -F'\t' 'NR>1' "$OUT/smart.tsv" | wc -l) 块盘（$(awk -F'\t' 'NR>1{print $1}' "$OUT/smart.tsv" | sort -u | wc -l) 个节点）；SMART 判定失败 $(awk -F'\t' 'NR>1&&$11=="false"' "$OUT/smart.tsv" | wc -l)，读取失败 $(awk -F'\t' 'NR>1&&$11=="read_error"' "$OUT/smart.tsv" | wc -l)"
   echo "- 内存条记录：$(wc -l < "$OUT/dimm.tsv")；磁盘记录：$(wc -l < "$OUT/disk.tsv")；内核硬件日志分组：$(wc -l < "$OUT/kern.tsv")"
 } > "$OUT/summary.md"
 set -e -o pipefail
-(cd "$OUT" && sha256sum nodes.tsv status.tsv sel.tsv sel_span.tsv storcli.tsv kern.tsv dimm.tsv disk.tsv summary.md nodes/*.txt > SHA256SUMS)
+(cd "$OUT" && sha256sum nodes.tsv status.tsv sel.tsv sel_span.tsv storcli.tsv smart.tsv kern.tsv dimm.tsv disk.tsv summary.md nodes/*.txt > SHA256SUMS)
 gzip -f "$OUT"/nodes/*.txt   # SHA256SUMS refers to the uncompressed text (zcat | sha256sum)
 cp "$OUT/summary.md" "$REPORT_DIR/daily-latest.md"
 cp "$OUT/status.tsv" "$REPORT_DIR/status-latest.tsv"
