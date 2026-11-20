@@ -72,6 +72,8 @@ echo "##TOOLS"
 for t in ipmitool dmidecode smartctl nvme storcli storcli64 perccli64 arcconf; do has $t && echo "$t=y" || echo "$t=n"; done
 [ -e /dev/ipmi0 ] || [ -e /dev/ipmi/0 ] || [ -e /dev/ipmidev/0 ] && echo "ipmidev=y" || echo "ipmidev=n"
 [ -f /var/log/kern.log ] && echo "kernlog=y" || echo "kernlog=n"
+echo "smartpkg=$(dpkg-query -W -f='${db:Status-Abbrev}' smartmontools 2>/dev/null | tr -d ' ')"
+echo "smartd=$(systemctl is-active smartmontools 2>/dev/null)"
 echo "##SELINFO"
 has ipmitool && T 30 sel_info ipmitool sel info 2>&1 | head -20
 echo "##SEL"
@@ -162,6 +164,8 @@ while IFS=$'\t' read -r ip kind name; do
     [ -z "$(sec "$f" DIMM)" ] && flags="$flags,no_dimm_inventory"
     t kernlog || flags="$flags,no_kernlog(journal)"
     t smartctl || flags="$flags,no_smartctl"
+    sp=$(sec "$f" TOOLS | sed -n 's/^smartpkg=//p'); { [ -n "$sp" ] && [ "$sp" != ii ]; } && flags="$flags,smartmontools_pkg_$sp"
+    sec "$f" TOOLS | grep -q '^smartd=active' && flags="$flags,smartd_active"
   fi
   printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "$kind" "${rc:-NA}" "$status" "${flags#,}" >> "$OUT/status.tsv"
   [ "$status" = ok ] || continue
