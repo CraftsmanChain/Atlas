@@ -4,7 +4,7 @@
 # Runs on the Atlas deploy node. Fleet = infrastructure_assets present gpu_node+cpu_node
 # with an IP (H200 is not in that table and is out of scope; ATLAS_HW_EXCLUDE_RE can add
 # exclusions). One SSH session per node; only read-only commands run on the node:
-#   ipmitool sel info / sel elist (in-band, read), dmidecode -t 17, lsblk, cat /sys, /proc,
+#   ipmitool sel info / sel elist (in-band, read), storcli64 show all (if present), dmidecode -t 17, lsblk, cat /sys, /proc,
 #   awk/grep on kernel logs (journalctl -k when no kern.log), smartctl -x / nvme smart-log
 #   ONLY if already installed. Nothing is installed, changed, cleared or rebooted.
 #
@@ -13,6 +13,7 @@
 #   nodes/<ip>.txt raw per-node sections (##META ##TOOLS ##SELINFO ##SEL ##DIMM ##EDAC ##MEM
 #                 ##KERNCNT ##KERNLINES ##DISK ##NVME ##RAID ##IOERR ##SMART ##END)
 #   status.tsv    ip, kind, ssh_rc, status, flags      (one row per node; collection anomalies)
+#   storcli.tsv   ip, drive, state, media_err, other_err, pred_fail, smart_alert, sn, temp, model
 #   sel.tsv       ip, sel_id, date, time, sensor, event, direction   (Session Audit dropped)
 #   kern.tsv      ip, day, class, count
 #   dimm.tsv      ip, locator, size, manufacturer, serial, part, speed
@@ -108,6 +109,9 @@ echo "##NVME"
 for c in /sys/class/nvme/nvme*; do [ -d "$c" ] && echo "$(basename $c)	$(cat $c/model 2>/dev/null|xargs)	$(cat $c/serial 2>/dev/null|xargs)	$(cat $c/firmware_rev 2>/dev/null|xargs)"; done
 echo "##RAID"
 T 20 lspci lspci 2>&1 | grep -iE "raid|sas|megaraid|storage controller|CMD_TIMEOUT" | cut -c1-200
+echo "##STORCLI"
+SC=$(command -v storcli64 || ls /opt/MegaRAID/storcli/storcli64 2>/dev/null | head -1)
+if [ -n "$SC" ]; then T 60 storcli "$SC" /call/eall/sall show all 2>&1 | grep -aE "^Drive /c[0-9]+/e[0-9]+/s[0-9]+ :|Media Error Count|Other Error Count|Predictive Failure Count|S.M.A.R.T alert|^SN =|^Model Number|^Drive Temperature|^[0-9]+:[0-9]+ +[0-9]+ +[A-Za-z]+ |CMD_TIMEOUT"; else echo "storcli_missing"; fi
 echo "##IOERR"
 for b in /sys/block/sd*; do [ -f $b/device/ioerr_cnt ] && echo "$(basename $b)	ioerr=$(cat $b/device/ioerr_cnt)	iodone=$(cat $b/device/iodone_cnt 2>/dev/null)"; done
 echo "##SMART"
@@ -123,7 +127,7 @@ cut -f1 "$OUT/nodes.tsv" | xargs -P "$PAR" -I{} bash -c 'one "$1"' _ {}
 
 # ---------- collate + anomaly classification ----------
 set +e +o pipefail
-: > "$OUT/sel.tsv"; : > "$OUT/kern.tsv"; : > "$OUT/dimm.tsv"; : > "$OUT/disk.tsv"
+: > "$OUT/sel.tsv"; : > "$OUT/storcli.tsv"; : > "$OUT/kern.tsv"; : > "$OUT/dimm.tsv"; : > "$OUT/disk.tsv"
 printf 'ip\tkind\tssh_rc\tstatus\tflags\n' > "$OUT/status.tsv"
 sec() { LC_ALL=C awk -v s="##$2" '/^##[A-Z]+$/{on=($0==s); next} on' "$1"; }
 while IFS=$'\t' read -r ip kind name; do
@@ -149,10 +153,19 @@ while IFS=$'\t' read -r ip kind name; do
     t kernlog || flags="$flags,no_kernlog(journal)"
     t smartctl || flags="$flags,no_smartctl"
     { [ -n "$(sec "$f" NVME)" ] && ! t nvme; } && flags="$flags,no_nvme_cli"
+    { sec "$f" RAID | grep -qiE "megaraid" && sec "$f" STORCLI | grep -q storcli_missing; } && flags="$flags,megaraid_no_storcli"
   fi
   printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "$kind" "${rc:-NA}" "$status" "${flags#,}" >> "$OUT/status.tsv"
   [ "$status" = ok ] || continue
   sec "$f" SEL | LC_ALL=C awk -F' *\\| *' -v ip="$ip" 'NF>=5{gsub(/^ +/,"",$1); d=$6; print ip"\t"$1"\t"$2"\t"$3"\t"$4"\t"$5"\t"d}' >> "$OUT/sel.tsv"
+  sec "$f" STORCLI | LC_ALL=C awk -v ip="$ip" '
+    function out(){ if(d!="") print ip"\t"d"\t"st"\t"me"\t"oe"\t"pf"\t"sa"\t"sn"\t"tp"\t"md }
+    /^Drive \/c/{out(); d=$2; st=me=oe=pf=sa=sn=tp=md=""; next}
+    /^[0-9]+:[0-9]+ /{st=$3}
+    /Media Error Count/{me=$NF} /Other Error Count/{oe=$NF} /Predictive Failure Count/{pf=$NF}
+    /S.M.A.R.T alert/{sa=$NF} /^SN =/{sn=$3} /^Drive Temperature/{tp=$4}
+    /^Model Number/{m=$0; sub(/^Model Number = */,"",m); gsub(/ +/," ",m); md=m}
+    END{out()}' >> "$OUT/storcli.tsv"
   sec "$f" KERNCNT | LC_ALL=C awk -v ip="$ip" 'NF>0{print ip"\t"$0}' >> "$OUT/kern.tsv"
   sec "$f" DIMM | LC_ALL=C awk -v ip="$ip" 'NF>0{print ip"\t"$0}' >> "$OUT/dimm.tsv"
   sec "$f" DISK | LC_ALL=C sed -nE 's/^NAME="([^"]*)" ROTA="([^"]*)" TRAN="([^"]*)" MODEL="([^"]*)" SERIAL="([^"]*)" SIZE="([^"]*)".*/\1\t\2\t\3\t\4\t\5\t\6/p' | LC_ALL=C awk -v ip="$ip" '{print ip"\t"$0}' >> "$OUT/disk.tsv"
@@ -189,10 +202,11 @@ DUR=$(( $(date +%s) - START ))
   echo
   echo "- SEL 条目（不含 Session Audit）：$(wc -l < "$OUT/sel.tsv")，涉及节点 $(cut -f1 "$OUT/sel.tsv" | sort -u | wc -l)"
   echo "- SEL 内存事件：CE 节点 $(awk -F'\t' 'NR>1&&$5>0' "$OUT/sel_span.tsv" | wc -l)，UE 节点 $(awk -F'\t' 'NR>1&&$6>0' "$OUT/sel_span.tsv" | wc -l)；SEL 最早记录早于 2026-07-01 的节点 $(awk -F'\t' 'NR>1&&$2<"2026-07-01"' "$OUT/sel_span.tsv" | wc -l)"
+  echo "- RAID 后物理盘（storcli）：$(wc -l < "$OUT/storcli.tsv") 块，介质错误>0 $(awk -F'\t' '$4+0>0' "$OUT/storcli.tsv" | wc -l)，预测失败>0 $(awk -F'\t' '$6+0>0' "$OUT/storcli.tsv" | wc -l)，SMART 告警 $(awk -F'\t' '$7=="Yes"' "$OUT/storcli.tsv" | wc -l)"
   echo "- 内存条记录：$(wc -l < "$OUT/dimm.tsv")；磁盘记录：$(wc -l < "$OUT/disk.tsv")；内核硬件日志分组：$(wc -l < "$OUT/kern.tsv")"
 } > "$OUT/summary.md"
 set -e -o pipefail
-(cd "$OUT" && sha256sum nodes.tsv status.tsv sel.tsv sel_span.tsv kern.tsv dimm.tsv disk.tsv summary.md nodes/*.txt > SHA256SUMS)
+(cd "$OUT" && sha256sum nodes.tsv status.tsv sel.tsv sel_span.tsv storcli.tsv kern.tsv dimm.tsv disk.tsv summary.md nodes/*.txt > SHA256SUMS)
 gzip -f "$OUT"/nodes/*.txt   # SHA256SUMS refers to the uncompressed text (zcat | sha256sum)
 cp "$OUT/summary.md" "$REPORT_DIR/daily-latest.md"
 cp "$OUT/status.tsv" "$REPORT_DIR/status-latest.tsv"
