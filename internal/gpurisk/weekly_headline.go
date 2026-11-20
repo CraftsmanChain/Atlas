@@ -110,7 +110,7 @@ func RenderWeeklyHeadlineMarkdown(sc *RouteScorecard, bt *RouteBacktest) string 
 			share := float64(r.Episodes-r.FirstTime) / float64(r.Episodes)
 			fmt.Fprintf(&b, "| %s | %d | %.2f | %.2f | %.2f | %.2f |\n", periodName(r.Period), r.Episodes, share, r.R1.RecurCapture, r.R1.FirstCapture, r.Ceiling)
 		}
-		fmt.Fprintf(&b, "\n首次故障停留在随机水平时，即使复发故障全部排进前 5%%，复发占比也要达到 %.2f 才能到 %.0f%%。复发占比随机队变老而上升、随新节点上架而下降；提高首次故障捕获只能靠复线新信号或 cohort 先验。\n", RequiredRecurrentShare(), PaperTop5Capture*100)
+		fmt.Fprintf(&b, "\n首次故障停留在随机水平时，即使复发故障全部排进前 5%%，复发占比也要达到 %.2f 才能到 %.0f%%。复发占比随着机队变老而上升、随新节点上架而下降；提高首次故障捕获只能靠复线新信号或 cohort 先验。\n", RequiredRecurrentShare(), PaperTop5Capture*100)
 	}
 	return b.String()
 }
