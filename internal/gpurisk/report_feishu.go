@@ -200,7 +200,8 @@ func RenderE2Feishu(r E2Report) (title, template, content string) {
 		template = "blue"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "**判定**：%s\n", verdictZH(r.Verdict))
+	b.WriteString(RenderWeeklyHeadlineFeishu(r.RouteScorecard, r.Backtest))
+	fmt.Fprintf(&b, "**E2′ 判定**：%s\n", verdictZH(r.Verdict))
 	fmt.Fprintf(&b, "**前瞻批次**：%d\n", r.ProspectiveBatches)
 	fmt.Fprintf(&b, "**episode**：已评价 %d · 范围外 %d · 无前瞻排名 %d · 跨边界 %d\n", r.Evaluated, r.OutOfScope, r.NoRanking, r.Ambiguous)
 	fmt.Fprintf(&b, "**M2′ 命中**：%d（期望值口径 %.2f）\n", r.M2Hits, r.M2Expected)

@@ -17,11 +17,15 @@ import (
 const DailyCheckVersion = "gpu-risk-daily-check-v1"
 
 // dailyLedgerMaxAgeDays: a ledger declaration whose verified_through is older
-// than this is reported as WARN (the v4 ledger lag budget is 8 days).
+// than this is reported (INFO, legacy T-A; the v4 ledger lag budget is 8 days).
 const dailyLedgerMaxAgeDays = 7.0
 
-// dailyHistoryUnknownWarn: v4 history_unknown above this share of rows is WARN.
+// dailyHistoryUnknownWarn: v4 history_unknown above this share of rows is
+// reported (INFO, legacy T-A).
 const dailyHistoryUnknownWarn = 0.10
+
+// legacyTA tags findings that only concern the legacy T-A target.
+const legacyTA = "[T-A 旧口径]"
 
 var dailyZone = time.FixedZone("Asia/Shanghai", 8*3600)
 
@@ -407,26 +411,32 @@ func dailyFindings(c DailyCheck) []string {
 	} else if c.Shadow.Timing != "prospective" {
 		f = append(f, fmt.Sprintf("WARN 最新查询 %d 的影子批次 %d 为 %s，非前瞻，不计入 E2′", c.LatestQuery.ID, c.Shadow.BatchID, c.Shadow.Timing))
 	}
+	// Coverage, the manual ledger declaration and v4 history_unknown only feed
+	// the legacy T-A target (plan v5 §7: the M/S/R lines use automatic core
+	// events only). Since 2026-11-20 they are reported as INFO tagged
+	// legacyTA so they no longer turn the daily card orange; stage failures
+	// (failed/manual_required) stay WARN.
 	ledgerStale := c.Coverage.Ledger == nil || (c.LatestQuery != nil && c.Coverage.Ledger.VerifiedThrough.Before(c.LatestQuery.Cutoff.Add(-24*time.Hour)))
+	var legacy []string
 	for _, o := range c.Operations {
 		switch {
 		case o.Status == "failed" || o.Status == "manual_required":
 			f = append(f, fmt.Sprintf("WARN 运行阶段 %s 状态 %s（%s）", o.Stage, o.Status, o.ErrorCode))
 		case o.Stage == "coverage" && o.Status == "blocked":
 			if o.ErrorCode == "coverage_hardware_fault_ledger_incomplete" && ledgerStale {
-				f = append(f, fmt.Sprintf("INFO coverage 阶段 blocked（%s）：ledger 声明早于最新 cutoff-24h，需要新的 ledger 声明", o.ErrorCode))
+				legacy = append(legacy, fmt.Sprintf("INFO %s coverage 阶段 blocked（%s）：ledger 声明早于最新 cutoff-24h，需要新的 ledger 声明", legacyTA, o.ErrorCode))
 			} else {
-				f = append(f, fmt.Sprintf("WARN coverage 阶段 blocked（%s）", o.ErrorCode))
+				legacy = append(legacy, fmt.Sprintf("INFO %s coverage 阶段 blocked（%s）", legacyTA, o.ErrorCode))
 			}
 		}
 	}
 	if l := c.Coverage.Ledger; l == nil {
-		f = append(f, "WARN 无 ledger 声明（hardware_fault_ledger / "+LedgerDeclaredContract+"）")
+		legacy = append(legacy, "INFO "+legacyTA+" 无 ledger 声明（hardware_fault_ledger / "+LedgerDeclaredContract+"）")
 	} else if l.AgeDays > dailyLedgerMaxAgeDays {
-		f = append(f, fmt.Sprintf("WARN ledger 声明 verified_through %s 已 %.1f 天（> %.0f 天）", l.VerifiedThrough.Format(time.RFC3339), l.AgeDays, dailyLedgerMaxAgeDays))
+		legacy = append(legacy, fmt.Sprintf("INFO %s ledger 声明 verified_through %s 已 %.1f 天（> %.0f 天）", legacyTA, l.VerifiedThrough.Format(time.RFC3339), l.AgeDays, dailyLedgerMaxAgeDays))
 	}
 	if v := c.R1.V4; v.Error == "" && v.Rows > 0 && float64(v.HistoryUnknown) > dailyHistoryUnknownWarn*float64(v.Rows) {
-		f = append(f, fmt.Sprintf("WARN v4 数据集 history_unknown %d/%d 行（> %.0f%%）", v.HistoryUnknown, v.Rows, dailyHistoryUnknownWarn*100))
+		legacy = append(legacy, fmt.Sprintf("INFO %s v4 数据集 history_unknown %d/%d 行（> %.0f%%）", legacyTA, v.HistoryUnknown, v.Rows, dailyHistoryUnknownWarn*100))
 	}
 	if c.R1.Error != "" || c.R1.V4.Error != "" || c.R1.V2.Error != "" {
 		f = append(f, "INFO R1 数据集探针未完整："+strings.Trim(strings.Join([]string{c.R1.Error, c.R1.V4.Error, c.R1.V2.Error}, "; "), "; "))
@@ -441,7 +451,7 @@ func dailyFindings(c DailyCheck) []string {
 		}
 		f = append(f, fmt.Sprintf("INFO 近 30 天有 %d 条未审核反馈（%s），待 Commander 核对", n, strings.Join(ids, ",")))
 	}
-	return f
+	return append(f, legacy...)
 }
 
 func fmtTime(t *time.Time) string {

@@ -52,7 +52,7 @@ func TestDailyCheckShadowMissingWarns(t *testing.T) {
 	if c.R1.Error == "" || c.R1.OutcomeBatchID != 0 {
 		t.Fatalf("%+v", c.R1)
 	}
-	if !dailyFinding(c, "WARN", "无 ledger 声明") || c.E2.Error != "" || c.E2.Verdict != "accumulating" {
+	if !dailyFinding(c, "INFO", "[T-A 旧口径] 无 ledger 声明") || dailyFinding(c, "WARN", "ledger") || c.E2.Error != "" || c.E2.Verdict != "accumulating" {
 		t.Fatal(c.Findings, c.E2)
 	}
 }
@@ -92,8 +92,8 @@ func TestDailyCheckRetrospectiveShadowWarns(t *testing.T) {
 	}
 }
 
-// Ledger declaration older than 7 days warns; a coverage stage blocked only on
-// the ledger with a declaration before cutoff-24h is INFO; failures are WARN.
+// Legacy T-A findings (stale ledger declaration, coverage blocked) are INFO
+// tagged [T-A 旧口径] and listed after everything else; stage failures stay WARN.
 func TestDailyCheckStaleLedgerAndOperations(t *testing.T) {
 	db, q := shadowDB(t)
 	now := time.Now().UTC()
@@ -113,20 +113,23 @@ func TestDailyCheckStaleLedgerAndOperations(t *testing.T) {
 	if len(c.Operations) != 3 {
 		t.Fatalf("%+v", c.Operations)
 	}
-	if !dailyFinding(c, "WARN", "ledger 声明 verified_through") || c.Coverage.Ledger == nil || c.Coverage.Ledger.AgeDays < 10.9 {
+	if !dailyFinding(c, "INFO", "[T-A 旧口径] ledger 声明 verified_through") || dailyFinding(c, "WARN", "ledger 声明") || c.Coverage.Ledger == nil || c.Coverage.Ledger.AgeDays < 10.9 {
 		t.Fatal(c.Findings, c.Coverage.Ledger)
 	}
 	if !dailyFinding(c, "INFO", "需要新的 ledger 声明") || !dailyFinding(c, "WARN", "outcomes 状态 manual_required") || dailyFinding(c, "WARN", "ranking") {
 		t.Fatal(c.Findings)
 	}
+	if last := c.Findings[len(c.Findings)-1]; !strings.Contains(last, legacyTA) || strings.Contains(c.Findings[0], legacyTA) {
+		t.Fatal("legacy T-A findings must come last", c.Findings)
+	}
 	if len(c.Coverage.Sources) != 1 || c.Coverage.Sources[0].Contract != LedgerDeclaredContract {
 		t.Fatalf("%+v", c.Coverage.Sources)
 	}
 
-	// Blocked on another source is a WARN even with a stale ledger.
+	// Blocked on another source is still legacy T-A INFO, never WARN.
 	db.Model(&api.GPURiskOperation{}).Where("day = ? AND stage = ?", day, "coverage").Update("error_code", "coverage_monitoring_incomplete")
 	c = buildDaily(t, db, now)
-	if !dailyFinding(c, "WARN", "coverage 阶段 blocked") || dailyFinding(c, "INFO", "需要新的 ledger 声明") {
+	if !dailyFinding(c, "INFO", "[T-A 旧口径] coverage 阶段 blocked（coverage_monitoring_incomplete）") || dailyFinding(c, "WARN", "coverage") || dailyFinding(c, "INFO", "需要新的 ledger 声明") {
 		t.Fatal(c.Findings)
 	}
 }
@@ -188,7 +191,7 @@ func TestDailyCheckR1AndIncidentCounts(t *testing.T) {
 	if c.R1.V4.Version != DatasetVersionV4 || c.R1.V2.Version == DatasetVersionV4 || c.R1.V4.SHA == c.R1.V2.SHA {
 		t.Fatalf("%+v %+v", c.R1.V4, c.R1.V2)
 	}
-	if !dailyFinding(c, "WARN", "history_unknown 2/2") {
+	if !dailyFinding(c, "INFO", "[T-A 旧口径] v4 数据集 history_unknown 2/2") || dailyFinding(c, "WARN", "history_unknown") {
 		t.Fatal(c.Findings)
 	}
 	if len(c.IncidentOutcomes) != 1 || c.IncidentOutcomes[0].BatchID != ib.ID {

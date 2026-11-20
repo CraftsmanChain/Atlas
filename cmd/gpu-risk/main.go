@@ -603,7 +603,7 @@ func runReport(ctx context.Context, db *gorm.DB, kind, out string, now time.Time
 			return fmt.Errorf("weekly route backtest failed: %w", e)
 		}
 		r.Backtest = &bt
-		payload, markdown = r, gpurisk.RenderE2Markdown(r)+gpurisk.RenderRouteScorecardMarkdown(sc)+gpurisk.RenderE2BMarkdown(e2b)+gpurisk.RenderRouteBacktestMarkdown(bt)
+		payload, markdown = r, fmt.Sprintf("# GPU 风险周报（%s）\n\n", now.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04"))+gpurisk.RenderWeeklyHeadlineMarkdown(&sc, &bt)+"\n"+strings.Replace(gpurisk.RenderE2Markdown(r), "# E2′", "## E2′", 1)+gpurisk.RenderRouteScorecardMarkdown(sc)+gpurisk.RenderE2BMarkdown(e2b)+gpurisk.RenderRouteBacktestMarkdown(bt)
 		title, template, card = gpurisk.RenderE2Feishu(r)
 	default:
 		return fmt.Errorf("unknown report kind")

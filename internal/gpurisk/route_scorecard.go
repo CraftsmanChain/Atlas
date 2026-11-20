@@ -36,6 +36,16 @@ type RouteScore struct {
 	CaptureHigh  float64 `json:"top5_capture_high"`
 	FirstCapture float64 `json:"first_time_top5_capture"`
 	RecurCapture float64 `json:"recurrent_top5_capture"`
+	// Split statistics (2026-11-20): first-time and recurrent episodes are
+	// reported separately because history-based routes cannot rank a node
+	// before its first core episode.
+	Recurrent    int     `json:"recurrent_episodes"`
+	FirstMeanPct float64 `json:"first_time_mean_percentile"`
+	RecurMeanPct float64 `json:"recurrent_mean_percentile"`
+	FirstLow     float64 `json:"first_time_top5_capture_low"`
+	FirstHigh    float64 `json:"first_time_top5_capture_high"`
+	RecurLow     float64 `json:"recurrent_top5_capture_low"`
+	RecurHigh    float64 `json:"recurrent_top5_capture_high"`
 }
 
 type RouteEpisode struct {
@@ -154,7 +164,7 @@ func BuildRouteScorecard(ctx context.Context, db *gorm.DB, now time.Time) (Route
 				cache[b.ID] = c
 				return c, nil
 			}
-			var sumPct, sumCap, sumFirst, sumRecur float64
+			var sumPct, sumCap, sumFirst, sumRecur, pctFirst, pctRecur float64
 			nFirst, nRecur := 0, 0
 			for i := range eps {
 				e := &eps[i]
@@ -186,21 +196,25 @@ func BuildRouteScorecard(ctx context.Context, db *gorm.DB, now time.Time) (Route
 				if e.FirstTime {
 					nFirst++
 					sumFirst += cap / float64(n)
+					pctFirst += pct / float64(n)
 				} else {
 					nRecur++
 					sumRecur += cap / float64(n)
+					pctRecur += pct / float64(n)
 				}
 			}
 			if r.Episodes > 0 {
 				r.MeanPct, r.Capture = sumPct/float64(r.Episodes), sumCap/float64(r.Episodes)
 				r.CaptureLow, r.CaptureHigh = wilson(r.Capture, r.Episodes)
 			}
-			r.FirstTime = nFirst
+			r.FirstTime, r.Recurrent = nFirst, nRecur
 			if nFirst > 0 {
-				r.FirstCapture = sumFirst / float64(nFirst)
+				r.FirstCapture, r.FirstMeanPct = sumFirst/float64(nFirst), pctFirst/float64(nFirst)
+				r.FirstLow, r.FirstHigh = wilson(r.FirstCapture, nFirst)
 			}
 			if nRecur > 0 {
-				r.RecurCapture = sumRecur / float64(nRecur)
+				r.RecurCapture, r.RecurMeanPct = sumRecur/float64(nRecur), pctRecur/float64(nRecur)
+				r.RecurLow, r.RecurHigh = wilson(r.RecurCapture, nRecur)
 			}
 			sc.Routes = append(sc.Routes, r)
 		}
@@ -220,7 +234,7 @@ func RenderRouteScorecardMarkdown(sc RouteScorecard) string {
 			fmt.Fprintf(&b, "| %s | %d | 0 | 0 | - | - | - | - | - |\n", r.Strategy, r.Batches)
 			continue
 		}
-		fmt.Fprintf(&b, "| %s | %d | %d | %d | %.3f | %.3f | %.2f–%.2f | %.3f | %.3f |\n", r.Strategy, r.Batches, r.Episodes, r.FirstTime, r.MeanPct, r.Capture, r.CaptureLow, r.CaptureHigh, r.FirstCapture, r.RecurCapture)
+		fmt.Fprintf(&b, "| %s | %d | %d | %d | %.3f | %.3f | %.2f–%.2f | %s | %s |\n", r.Strategy, r.Batches, r.Episodes, r.FirstTime, r.MeanPct, r.Capture, r.CaptureLow, r.CaptureHigh, splitCell(r.FirstTime, r.FirstCapture), splitCell(r.Recurrent, r.RecurCapture))
 	}
 	if len(sc.Episodes) > 0 {
 		b.WriteString("\n前瞻期关键故障：\n\n")
@@ -233,4 +247,12 @@ func RenderRouteScorecardMarkdown(sc RouteScorecard) string {
 		}
 	}
 	return b.String()
+}
+
+// splitCell renders a split capture, "-" when the split has no episodes.
+func splitCell(n int, v float64) string {
+	if n == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.3f", v)
 }
