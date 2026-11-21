@@ -82,7 +82,7 @@ def main(day):
     print("\t".join(COLS))
     for f in sorted(glob.glob(os.path.join(day, "nodes", "*.txt"))):
         ip = os.path.basename(f)[:-4]
-        on, dev, ty = False, None, None
+        on, dev, ty, seen = False, None, None, set()
         with open(f, errors="replace") as fh:
             for line in fh:
                 line = line.rstrip("\n")
@@ -103,9 +103,15 @@ def main(day):
                     j = None
                 r = row(ip, dev, ty, j)
                 # RAID virtual disks (MegaRAID VD exposed as SCSI) are not physical disks; members are read via megaraid,N
-                if r["protocol"] == "SCSI" and re.search(r"Logical Volume|AVAGO|^LSI|INSPUR|MR9\d", str(r["model"])):
+                if r["protocol"] == "SCSI" and re.search(r"Logical Volume|AVAGO|^LSI|INSPUR|MR9\d|XSG1", str(r["model"])):
                     dev = None
                     continue
+                # JBOD disks behind a MegaRAID card are visible twice (/dev/sdX and megaraid,N): keep one row per serial
+                key = r["serial"] or (dev + " " + ty)
+                if key in seen:
+                    dev = None
+                    continue
+                seen.add(key)
                 print("\t".join(str(r[c]).replace("\t", " ") for c in COLS))
                 dev = None
 

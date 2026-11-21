@@ -19,6 +19,8 @@
 #   kern.tsv      ip, day, class, count
 #   dimm.tsv      ip, locator, size, manufacturer, serial, part, speed
 #   disk.tsv      ip, name, rota, tran, model, serial, size
+#   followup.tsv  ip, kind, category, detail  (nodes to handle later: collect failures, missing/broken
+#                 smartmontools, smartd active, SEL full/unreadable, device-access hangs)
 #   summary.md    collection anomaly statistics + lists
 #   SHA256SUMS
 # Usage: node_hw_daily_collect.sh [days]   (days of kernel log, default 2)
@@ -57,7 +59,7 @@ export OUT PREFIXES DAYS
 
 one() {
   local n=$1
-  timeout 300 ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "root@$n" "bash -s -- '$PREFIXES' '$DAYS'" > "$OUT/nodes/$n.txt" 2>&1 <<'REMOTE'
+  timeout 420 ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "root@$n" "bash -s -- '$PREFIXES' '$DAYS'" > "$OUT/nodes/$n.txt" 2>&1 <<'REMOTE'
 P="$1"; D="$2"
 export LC_ALL=C
 has() { command -v "$1" >/dev/null 2>&1; }
@@ -122,7 +124,10 @@ echo "##SMART"
 # (sat+megaraid,N / megaraid,N). USB bridges (snt*/usb*) and USB-attached disks are skipped.
 if has smartctl; then
   usb=" $(lsblk -dnpo NAME,TRAN 2>/dev/null | awk '$2=="usb"{printf "%s ", $1}')"
+  s0=$SECONDS
   T 60 smartscan smartctl --scan-open 2>/dev/null | awk '$1 ~ /^\/dev/ && $2=="-d"{print $1, $3}' | while read -r dev ty; do
+    # section budget: overloaded nodes (load >1000, D-state storms) make each read slow; keep what we have
+    [ $((SECONDS - s0)) -gt 150 ] && { echo "#CMD_TIMEOUT smart_budget"; break; }
     case "$ty" in snt*|usb*) continue ;; esac
     case "$usb" in *" $dev "*) continue ;; esac
     echo "#dev $dev $ty"
@@ -145,30 +150,37 @@ sec() { LC_ALL=C awk -v s="##$2" '/^##[A-Z]+$/{on=($0==s); next} on' "$1"; }
 while IFS=$'\t' read -r ip kind name; do
   f="$OUT/nodes/$ip.txt"; rc=$(awk -F'\t' -v ip="$ip" '$1==ip{print $2}' "$OUT/_rc" | tail -1)
   status=ok; flags=""
-  if ! grep -q '^##END$' "$f" 2>/dev/null; then
+  if ! grep -q '^##META$' "$f" 2>/dev/null; then
     if grep -qE "Permission denied|Host key verification failed|Too many authentication" "$f"; then status=ssh_auth_failed
     elif grep -qE "timed out|No route to host|Connection refused|Could not resolve|Network is unreachable|closed by remote host" "$f" && ! grep -q '^##META$' "$f"; then status=ssh_unreachable
     elif [ "$rc" = 124 ]; then status=timeout
     else status=incomplete_rc$rc; fi
   else
+    # session reached the node: partial output is still collated; status records where it stopped
+    if ! grep -q '^##END$' "$f"; then
+      last=$(grep -E '^##[A-Z]+$' "$f" | tail -1 | tr -d '#' | tr 'A-Z' 'a-z')
+      if [ "$rc" = 124 ]; then status=partial_timeout; else status=partial_rc$rc; fi
+      flags="$flags,stopped_in:$last"
+    fi
     t() { sec "$f" TOOLS | grep -q "^$1=y"; }
-    t ipmitool || flags="$flags,no_ipmitool"
-    t ipmidev || flags="$flags,no_ipmi_dev"
+    tn() { sec "$f" TOOLS | grep -q "^$1=n"; }
+    tn ipmitool && flags="$flags,no_ipmitool"
+    tn ipmidev && flags="$flags,no_ipmi_dev"
     if t ipmitool && t ipmidev; then
       sec "$f" SELINFO | grep -qiE "error|unable|could not|timeout" && flags="$flags,sel_read_error"
       sec "$f" SELINFO | grep -qiE "Free Space +: 0 bytes|Overflow +: true" && flags="$flags,sel_full"
       [ -z "$(sec "$f" SELINFO | grep -v CMD_TIMEOUT)" ] && flags="$flags,sel_no_output"
     fi
     for c in $(grep -oE '^#CMD_TIMEOUT [a-z_0-9]+' "$f" | awk '{print $2}' | sort -u); do flags="$flags,cmd_timeout:$c"; done
-    t dmidecode || flags="$flags,no_dmidecode"
-    [ -z "$(sec "$f" DIMM)" ] && flags="$flags,no_dimm_inventory"
-    t kernlog || flags="$flags,no_kernlog(journal)"
-    t smartctl || flags="$flags,no_smartctl"
+    tn dmidecode && flags="$flags,no_dmidecode"
+    { grep -q "^##DIMM$" "$f" && grep -q "^##EDAC$" "$f" && [ -z "$(sec "$f" DIMM)" ]; } && flags="$flags,no_dimm_inventory"
+    tn kernlog && flags="$flags,no_kernlog(journal)"
+    tn smartctl && flags="$flags,no_smartctl"
     sp=$(sec "$f" TOOLS | sed -n 's/^smartpkg=//p'); { [ -n "$sp" ] && [ "$sp" != ii ]; } && flags="$flags,smartmontools_pkg_$sp"
     sec "$f" TOOLS | grep -q '^smartd=active' && flags="$flags,smartd_active"
   fi
   printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "$kind" "${rc:-NA}" "$status" "${flags#,}" >> "$OUT/status.tsv"
-  [ "$status" = ok ] || continue
+  case "$status" in ok|partial_*) ;; *) continue ;; esac
   sec "$f" SEL | LC_ALL=C awk -F' *\\| *' -v ip="$ip" 'NF>=5{gsub(/^ +/,"",$1); d=$6; print ip"\t"$1"\t"$2"\t"$3"\t"$4"\t"$5"\t"d}' >> "$OUT/sel.tsv"
   sec "$f" STORCLI | LC_ALL=C awk -v ip="$ip" '
     function out(){ if(d!="") print ip"\t"d"\t"st"\t"me"\t"oe"\t"pf"\t"sa"\t"sn"\t"tp"\t"md }
@@ -190,6 +202,20 @@ python3 /ops/atlas/scripts/node_hw_smart_parse.py "$OUT" > "$OUT/smart.tsv" 2> "
 LC_ALL=C awk -F'\t' '$3 ~ /^[0-9][0-9]\/[0-9][0-9]\/[0-9][0-9][0-9][0-9]$/ && substr($3,7,4)>="2015" {split($3,a,"/"); d=a[3]"-"a[1]"-"a[2]; if(!($1 in lo)||d<lo[$1]) lo[$1]=d; if(!($1 in hi)||d>hi[$1]) hi[$1]=d; n[$1]++; if($6 ~ /Uncorrectable ECC/) ue[$1]++; if($6 ~ /Correctable ECC/ && $6 !~ /Uncorrectable/) ce[$1]++}
   END{print "ip\tsel_first\tsel_last\tentries\tmem_ce\tmem_ue"; for(k in n) print k"\t"lo[k]"\t"hi[k]"\t"n[k]"\t"ce[k]+0"\t"ue[k]+0}' "$OUT/sel.tsv" > "$OUT/sel_span.tsv"
 
+# ---------- follow-up list: nodes needing later handling (not acted on automatically) ----------
+LC_ALL=C awk -F'\t' 'BEGIN{OFS="\t"; print "ip","kind","category","detail"}
+  NR==1{next}
+  $4!="ok" && $4 !~ /^partial_/ {print $1,$2,"collect_failed",$4; next}
+  $4 ~ /^partial_/ {print $1,$2,"collect_partial",$4" "$5}
+  { n=split($5,a,","); for(i=1;i<=n;i++){ f=a[i]
+      if(f=="no_smartctl") print $1,$2,"smartmontools_missing",f
+      else if(f ~ /^smartmontools_pkg_/) print $1,$2,"smartmontools_pkg_broken",f
+      else if(f=="smartd_active") print $1,$2,"smartd_active",f
+      else if(f=="sel_full") print $1,$2,"sel_full",f
+      else if(f ~ /^sel_(read_error|no_output)$/ || f=="no_ipmitool" || f=="no_ipmi_dev") print $1,$2,"sel_unreadable",f
+      else if(f ~ /^cmd_timeout:(lsblk|lspci|storcli)$/) print $1,$2,"device_access_hang",f } }' "$OUT/status.tsv" \
+  | LC_ALL=C awk -F'\t' 'BEGIN{OFS="\t"} NR==1{print; next} {k=$1 FS $3; if(k in d){d[k]=d[k]","$4} else {o[++n]=k; r[k]=$1 OFS $2 OFS $3; d[k]=$4}} END{for(i=1;i<=n;i++) print r[o[i]], d[o[i]]}' > "$OUT/followup.tsv"
+
 # ---------- summary ----------
 DUR=$(( $(date +%s) - START ))
 {
@@ -202,14 +228,18 @@ DUR=$(( $(date +%s) - START ))
   echo "| 状态 | gpu_node | cpu_node | 合计 |"; echo "|---|---|---|---|"
   awk -F'\t' 'NR>1{c[$4"\t"$2]++; s[$4]++; t[$2]++} END{for(x in s){printf "| %s | %d | %d | %d |\n", x, c[x"\tgpu_node"], c[x"\tcpu_node"], s[x]}; printf "| **合计** | %d | %d | %d |\n", t["gpu_node"], t["cpu_node"], t["gpu_node"]+t["cpu_node"]}' "$OUT/status.tsv" | sort
   echo
-  echo "## 成功节点上的采集缺项（flag → 节点数）"
+  echo "## 已连上节点（ok + partial）的采集缺项（flag → 节点数）"
   echo
   echo "| flag | gpu_node | cpu_node |"; echo "|---|---|---|"
-  awk -F'\t' 'NR>1 && $4=="ok" && $5!=""{n=split($5,a,","); for(i=1;i<=n;i++) c[a[i]"\t"$2]++; for(i=1;i<=n;i++) f[a[i]]=1} END{for(x in f) printf "| %s | %d | %d |\n", x, c[x"\tgpu_node"], c[x"\tcpu_node"]}' "$OUT/status.tsv" | sort
+  awk -F'\t' 'NR>1 && ($4=="ok" || $4 ~ /^partial_/) && $5!=""{n=split($5,a,","); for(i=1;i<=n;i++) c[a[i]"\t"$2]++; for(i=1;i<=n;i++) f[a[i]]=1} END{for(x in f) printf "| %s | %d | %d |\n", x, c[x"\tgpu_node"], c[x"\tcpu_node"]}' "$OUT/status.tsv" | sort
   echo
   echo "## 采集失败节点（按网段）"
   echo
   awk -F'\t' 'NR>1 && $4!="ok"{split($1,a,"."); k=$4" "a[1]"."a[2]"."a[3]".x"; c[k]++} END{for(k in c) print "- "k": "c[k]}' "$OUT/status.tsv" | sort
+  echo
+  echo "## 待后续处理清单（followup.tsv，按类别，节点数）"
+  echo
+  awk -F'\t' 'NR>1{c[$3]++} END{for(k in c) print "- "k": "c[k]}' "$OUT/followup.tsv" | sort
   echo
   echo "完整清单：status.tsv（每节点一行：ip / 类型 / ssh 返回码 / 状态 / 缺项）。"
   echo
@@ -222,8 +252,9 @@ DUR=$(( $(date +%s) - START ))
   echo "- 内存条记录：$(wc -l < "$OUT/dimm.tsv")；磁盘记录：$(wc -l < "$OUT/disk.tsv")；内核硬件日志分组：$(wc -l < "$OUT/kern.tsv")"
 } > "$OUT/summary.md"
 set -e -o pipefail
-(cd "$OUT" && sha256sum nodes.tsv status.tsv sel.tsv sel_span.tsv storcli.tsv smart.tsv kern.tsv dimm.tsv disk.tsv summary.md nodes/*.txt > SHA256SUMS)
+(cd "$OUT" && sha256sum nodes.tsv status.tsv followup.tsv sel.tsv sel_span.tsv storcli.tsv smart.tsv kern.tsv dimm.tsv disk.tsv summary.md nodes/*.txt > SHA256SUMS)
 gzip -f "$OUT"/nodes/*.txt   # SHA256SUMS refers to the uncompressed text (zcat | sha256sum)
 cp "$OUT/summary.md" "$REPORT_DIR/daily-latest.md"
 cp "$OUT/status.tsv" "$REPORT_DIR/status-latest.tsv"
+cp "$OUT/followup.tsv" "$REPORT_DIR/followup-latest.tsv"
 echo "done in ${DUR}s: $(awk -F'\t' 'NR>1{print $4}' "$OUT/status.tsv" | sort | uniq -c | tr '\n' ' ')"
