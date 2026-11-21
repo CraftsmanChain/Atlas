@@ -249,6 +249,10 @@ install -m 755 "$release_dir/output/hardware-health-replay" "$remote_root/hardwa
 mv -f "$remote_root/hardware-health-replay.next" "$remote_root/hardware-health-replay"
 install -m 755 "$release_dir/output/disk-installation-reconcile" "$remote_root/disk-installation-reconcile.next"
 mv -f "$remote_root/disk-installation-reconcile.next" "$remote_root/disk-installation-reconcile"
+# Keep the previous build's hashed assets so tabs opened before this deploy can still lazy-load.
+if [[ -d "$web_backup/assets" ]]; then
+  cp -n "$web_backup"/assets/* "$release_dir/web/dist/assets/" 2>/dev/null || true
+fi
 mv "$release_dir/web/dist" "$remote_root/web/dist"
 if [[ "$previous_server" == 1 ]]; then
   systemctl restart "$service_name"

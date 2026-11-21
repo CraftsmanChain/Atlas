@@ -26,6 +26,7 @@ import (
 	"atlas/internal/inventory"
 	"atlas/internal/issues"
 	"atlas/internal/nodeaccess"
+	"atlas/internal/nodehw"
 	"atlas/internal/platformconfig"
 	"atlas/internal/prediction"
 	promclient "atlas/internal/prometheus"
@@ -334,6 +335,11 @@ func main() {
 	mux.HandleFunc("/api/v1/hardware/disks", diskHealthHandler.HandleDisks)
 	mux.HandleFunc("/api/v1/hardware/disk-installations", diskHealthHandler.HandleInstallationRegistry)
 	mux.HandleFunc("/api/v1/hardware/disks/", diskHealthHandler.HandleDiskSubresource)
+	nodeHWRoot := os.Getenv("ATLAS_NODE_HW_ROOT")
+	if strings.TrimSpace(nodeHWRoot) == "" {
+		nodeHWRoot = "/data/atlas-research/node-hw-daily"
+	}
+	mux.HandleFunc("/api/v1/hardware/fleet", nodehw.NewHandler(nodeHWRoot).HandleFleet)
 	mux.HandleFunc("/api/v1/degradation/summary", degradationHandler.HandleSummary)
 	mux.HandleFunc("/api/v1/degradation/candidates", degradationHandler.HandleCandidates)
 	mux.HandleFunc("/api/v1/prediction/overview", predictionHandler.HandleOverview)

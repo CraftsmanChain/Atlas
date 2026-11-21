@@ -254,6 +254,8 @@ DUR=$(( $(date +%s) - START ))
 set -e -o pipefail
 (cd "$OUT" && sha256sum nodes.tsv status.tsv followup.tsv sel.tsv sel_span.tsv storcli.tsv smart.tsv kern.tsv dimm.tsv disk.tsv summary.md nodes/*.txt > SHA256SUMS)
 gzip -f "$OUT"/nodes/*.txt   # SHA256SUMS refers to the uncompressed text (zcat | sha256sum)
+# Fleet disk/memory snapshot for the web page (/api/v1/hardware/fleet); failure must not break collection.
+python3 /ops/atlas/scripts/node_hw_fleet_report.py "$OUT" > "$OUT/fleet-hw.log" 2>&1 || echo "fleet-hw report failed (see $OUT/fleet-hw.log)" >&2
 cp "$OUT/summary.md" "$REPORT_DIR/daily-latest.md"
 cp "$OUT/status.tsv" "$REPORT_DIR/status-latest.tsv"
 cp "$OUT/followup.tsv" "$REPORT_DIR/followup-latest.tsv"

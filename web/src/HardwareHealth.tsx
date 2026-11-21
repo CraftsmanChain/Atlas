@@ -1,267 +1,243 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { AlertTriangle, ArrowDownWideNarrow, CheckCircle2, ChevronLeft, ChevronRight, Download, FileCheck2, HardDrive, Loader2, MemoryStick, Network, RefreshCw, Search, ShieldAlert, Trash2, Upload, X } from 'lucide-react';
-import { MAX_BUNDLE_BYTES, diskDimensionForRule, levels, parseHealthBundle, selectRows, type HealthLevel, type HealthReport, type HealthRow, type ImportedHealthReport } from './hardwareHealthReport';
-import { parseDiskHistoryPayload, type DiskHistoryPayload, type DiskHistoryWindow, type DiskWindowFeature } from './diskHistoryWindows';
-import { diskInstallationListURL, diskInstallationView, diskInstallationViews, parseDiskInstallationPayload, type DiskInstallationSummary, type DiskInstallationView } from './diskInstallationViews';
-import './HardwareHealth.css';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, ChevronLeft, ChevronRight, HardDrive, Loader2, MemoryStick, RefreshCw, Search, ServerCrash, ShieldAlert } from 'lucide-react';
+import './HardwareFleet.css';
+
+const HardwareEvidence = lazy(() => import('./HardwareEvidence'));
 
 type Tx = (zh: string, en: string) => string;
-function navigateTabs(event: KeyboardEvent<HTMLButtonElement>) {
-  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-  const buttons = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? []);
-  const index = buttons.indexOf(event.currentTarget);
-  const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length;
-  event.preventDefault(); buttons[next]?.focus(); buttons[next]?.click();
-}
-function ruleTitle(rule: string, tx: Tx): string {
-  const names: Record<string, string> = {
-    ata_current_prefailure_threshold: tx('当前预失效属性达到厂商阈值', 'Current pre-failure attribute at manufacturer threshold'),
-    ata_current_usage_threshold: tx('当前使用属性达到厂商阈值', 'Current usage attribute at manufacturer threshold'),
-    ata_past_threshold_failure: tx('历史属性阈值越界', 'Historical attribute threshold failure'),
-    ata_pending_sectors: tx('存在待映射扇区', 'Pending sectors present'),
-    ata_uncorrectable_sectors: tx('存在不可纠正扇区', 'Uncorrectable sectors present'),
-    ata_historical_reallocated: tx('历史累计重映射', 'Historical reallocation'),
-    ata_new_reallocated: tx('基线后新增重映射', 'New reallocation since baseline'),
-    ata_historical_crc_errors: tx('历史累计链路 CRC 错误', 'Historical link CRC errors'),
-    ata_new_crc_errors: tx('基线后新增链路 CRC 错误', 'New link CRC errors since baseline'),
-    historical_ce_errors: tx('历史累计可纠正内存错误', 'Historical corrected memory errors'),
-    historical_ue_errors: tx('历史累计不可纠正内存错误', 'Historical uncorrected memory errors'),
-    new_ce_errors: tx('基线后新增可纠正错误', 'New corrected errors since baseline'),
-    new_ue_errors: tx('基线后新增不可纠正错误', 'New uncorrected errors since baseline'),
-    historical_media_errors: tx('历史累计介质错误', 'Historical cumulative media errors'),
-    new_media_errors: tx('基线后新增介质错误', 'New media errors since baseline'),
-    manufacturer_smart_failure: tx('厂商 SMART 故障标记', 'Manufacturer SMART failure'),
-    nvme_endurance_consumed: tx('估计耐久度已消耗', 'Estimated endurance consumed'),
-    nvme_spare_below_threshold: tx('备用容量低于阈值', 'Spare capacity below threshold'),
-    nvme_temperature_threshold: tx('温度阈值告警', 'Temperature threshold warning'),
-    nvme_reliability_degraded: tx('可靠性降级', 'Reliability degraded'),
-    nvme_media_read_only: tx('介质只读', 'Media read-only'),
-    nvme_volatile_backup_failed: tx('易失性备份失败', 'Volatile backup failed'),
-    nvme_pmr_unreliable: tx('持久内存区域异常', 'Persistent memory region unreliable'),
+type Level = 'critical' | 'warning' | 'attention' | 'clear';
+type Disk = {
+  ip: string; host: string; kind: string; dev: string; proto: string; model: string; serial: string; fw: string;
+  cap_gb: number | null; poh: number | null; temp: number | null; passed: string; wear: number | null; spare: number | null;
+  crit: number | null; media: number | null; errlog: number | null; realloc: number | null; unc: number | null; timeout: number | null;
+  pending: number | null; offunc: number | null; crc: number | null; written_tb: number | null; delta: Record<string, number>;
+  raid?: { slot: string; state: string; media_err: number | null; other_err: number | null; pred_fail: number | null };
+  hits: string[]; level: Level; life_days?: number;
+};
+type Memory = {
+  ip: string; host: string; kind: string; dimms: number; mem_gb: number; hw_corrupted_kb: number | null; edac: number; mce: number; mem_offline: number;
+  ce_7d?: number; ce_30d?: number; ue_30d?: number; ue_total?: number; ue_last?: string; ce_last?: string; disabled_30d?: number; limit_30d?: number; locs?: string[];
+  hits: string[]; level: Level;
+};
+type NodeRow = { ip: string; host: string; kind: string; status: string; flags: string[]; followup: string[]; node_exporter?: boolean | null; ipmi?: boolean | null };
+type LevelCount = Record<Level, number>;
+type Fleet = {
+  schema: string; rule_version: string; day: string; previous_day: string | null; collected_at: string | null; generated_at: string;
+  coverage: { nodes_total: number; collected: number; by_status: Record<string, number>; by_kind: Record<string, Record<string, number>>; flags: Record<string, number>; followup: Record<string, number>; smart_nodes: number; smart_disks: number; collected_without_smart: number; failed_not_in_vm: number | null };
+  summary: { disk: { total: number; by_level: LevelCount; by_rule: Record<string, number>; by_protocol: Record<string, number>; with_delta_baseline: number; models: [string, number][] }; memory: { nodes: number; by_level: LevelCount; by_rule: Record<string, number>; dimms: number } };
+  disks: Disk[]; memory: Memory[]; nodes: NodeRow[];
+};
+
+const rank: Record<Level, number> = { critical: 3, warning: 2, attention: 1, clear: 0 };
+const statusOrder = ['ok', 'partial_timeout', 'ssh_auth_failed', 'ssh_unreachable', 'incomplete_rc255'];
+
+function ruleText(code: string, tx: Tx): string {
+  const map: Record<string, [string, string]> = {
+    smart_overall_failed: ['SMART 总体判定失败', 'SMART overall failed'], smart_read_error: ['SMART 读取失败', 'SMART unreadable'],
+    nvme_critical_warning: ['NVMe 严重告警位', 'NVMe critical warning'], pending_sectors: ['待映射扇区', 'Pending sectors'],
+    offline_uncorrectable: ['离线不可纠正扇区', 'Offline uncorrectable'], reported_uncorrectable: ['上报不可纠正错误', 'Reported uncorrectable'],
+    nvme_spare_low: ['NVMe 备用块 ≤10%', 'NVMe spare ≤10%'], media_errors_new: ['介质错误新增', 'New media errors'],
+    raid_predictive_failure: ['RAID 预测失败', 'RAID predictive failure'], reallocated_new: ['重映射扇区新增', 'New reallocations'],
+    wear_ge_80: ['寿命消耗 ≥80%', 'Wear ≥80%'], media_errors_present: ['存在介质错误（未增长）', 'Media errors present (stable)'],
+    scsi_defects: ['SCSI 缺陷/不可纠正', 'SCSI defects'], raid_media_error: ['RAID 介质错误', 'RAID media errors'],
+    reallocated_present: ['存在重映射扇区（未增长）', 'Reallocations present (stable)'], wear_ge_50: ['寿命消耗 ≥50%', 'Wear ≥50%'],
+    crc_new: ['链路 CRC 新增', 'New link CRC errors'], cmd_timeout_new: ['命令超时新增', 'New command timeouts'],
+    nvme_errlog_new: ['NVMe 错误日志新增', 'New NVMe error-log entries'], temperature_ge_60: ['温度 ≥60°C', 'Temperature ≥60°C'],
+    sel_ue_30d: ['30 天内不可纠正 ECC', 'Uncorrectable ECC in 30d'], hardware_corrupted: ['内核已隔离损坏内存页', 'Kernel isolated corrupted pages'],
+    kernel_page_offline: ['内核内存页下线', 'Kernel page offline'], dimm_disabled_30d: ['30 天内内存条被禁用', 'DIMM disabled in 30d'],
+    sel_ce_storm_7d: ['7 天可纠正 ECC ≥100', '≥100 corrected ECC in 7d'], sel_ce_limit_reached: ['可纠正 ECC 记录达上限', 'Corrected-ECC log limit reached'],
+    kernel_edac_mce: ['内核 EDAC/MCE 日志', 'Kernel EDAC/MCE lines'], sel_ce_30d: ['30 天内可纠正 ECC', 'Corrected ECC in 30d'],
+    sel_ue_history: ['历史不可纠正 ECC（>30 天）', 'Uncorrectable ECC >30d ago'],
   };
-  return names[rule] || rule;
+  const v = map[code];
+  return v ? tx(v[0], v[1]) : code;
 }
-function State({ level, tx }: { level: HealthLevel; tx: Tx }) {
-  const labels = { critical: tx('严重', 'Critical'), warning: tx('警告', 'Warning'), attention: tx('关注', 'Attention'), unknown: tx('未知', 'Unknown'), clear_for_checked_signals: tx('已检查项未命中', 'Checked signals clear') };
-  const Icon = level === 'clear_for_checked_signals' ? CheckCircle2 : level === 'unknown' ? AlertTriangle : ShieldAlert;
-  return <span className={`hh-state hh-${level}`}><Icon size={14} />{labels[level]}</span>;
+function statusText(code: string, tx: Tx): string {
+  const map: Record<string, [string, string]> = {
+    ok: ['已采集', 'Collected'], partial_timeout: ['部分采集（超时）', 'Partial (timeout)'], ssh_auth_failed: ['SSH 认证失败', 'SSH auth failed'],
+    ssh_unreachable: ['SSH 不可达', 'SSH unreachable'], incomplete_rc255: ['连接中断', 'Connection reset'], missing: ['无记录', 'No record'],
+  };
+  const v = map[code];
+  return v ? tx(v[0], v[1]) : code;
 }
-function timestamp(value: string, lang: string): string {
-  if (value.startsWith('0001')) return '—';
-  return new Intl.DateTimeFormat(lang, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
+function followText(code: string, tx: Tx): string {
+  const map: Record<string, [string, string]> = {
+    collect_failed: ['采集失败', 'Collection failed'], collect_partial: ['部分采集', 'Partial collection'], device_access_hang: ['设备访问卡住（lsblk/lspci/storcli）', 'Device access hang'],
+    sel_full: ['SEL 已满', 'SEL full'], sel_unreadable: ['SEL 无法读取', 'SEL unreadable'], smartmontools_missing: ['未安装 smartctl', 'smartctl missing'],
+    smartmontools_pkg_broken: ['smartmontools 安装不完整', 'smartmontools half-installed'], smartd_active: ['节点自带 smartd 在运行', 'smartd already running'],
+  };
+  const v = map[code];
+  return v ? tx(v[0], v[1]) : code;
 }
-function installationLabel(state: string | undefined, tx: Tx): string {
-  return state === 'active' ? tx('已确认在用', 'Confirmed active') : state === 'historical' ? tx('历史安装', 'Historical installation') : state === 'unregistered' ? tx('待确认安装', 'Unregistered installation') : tx('安装未验证', 'Installation unverified');
+function LevelTag({ level, tx }: { level: Level; tx: Tx }) {
+  const label = { critical: tx('严重', 'Critical'), warning: tx('警告', 'Warning'), attention: tx('关注', 'Attention'), clear: tx('未命中', 'Clear') }[level];
+  return <span className={`hf-level hf-${level}`}><i />{label}</span>;
 }
+const fmt = (v: number | null | undefined, unit = '') => (v === null || v === undefined ? '—' : `${v.toLocaleString()}${unit}`);
+function lifeText(days: number | undefined, tx: Tx) {
+  if (days === undefined) return '—';
+  if (days > 3650) return tx('>10 年', '>10 y');
+  if (days > 365) return tx(`${(days / 365).toFixed(1)} 年`, `${(days / 365).toFixed(1)} y`);
+  return tx(`${days} 天`, `${days} d`);
+}
+function delta(d: Disk) {
+  const parts = Object.entries(d.delta).filter(([k, v]) => k !== 'wear' && v !== 0).map(([k, v]) => `${k} ${v > 0 ? '+' : ''}${v}`);
+  return parts.length ? parts.join(' · ') : '';
+}
+
+function Pager({ total, page, size, setPage }: { total: number; page: number; size: number; setPage: (n: number) => void }) {
+  const last = Math.max(0, Math.ceil(total / size) - 1);
+  return <div className="hf-pager"><span>{total ? page * size + 1 : 0}–{Math.min(total, (page + 1) * size)} / {total}</span><button className="icon-btn" disabled={page === 0} onClick={() => setPage(page - 1)} aria-label="previous"><ChevronLeft size={15} /></button><button className="icon-btn" disabled={page >= last} onClick={() => setPage(page + 1)} aria-label="next"><ChevronRight size={15} /></button></div>;
+}
+
 export default function HardwareHealth({ tx, lang }: { tx: Tx; lang: string }) {
-  const [imported, setImported] = useState<ImportedHealthReport | null>(null);
-  const [original, setOriginal] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [onlineBusy, setOnlineBusy] = useState(false);
-  const [installationView, setInstallationView] = useState<DiskInstallationView>('active');
-  const [installationSummary, setInstallationSummary] = useState<DiskInstallationSummary | null>(null);
+  const [fleet, setFleet] = useState<Fleet | null>(null);
+  const [days, setDays] = useState<string[]>([]);
+  const [day, setDay] = useState('');
   const [error, setError] = useState('');
-  const [tab, setTab] = useState('disk');
-  const [query, setQuery] = useState('');
-  const [level, setLevel] = useState('');
-  const [quality, setQuality] = useState('');
-  const [media, setMedia] = useState('');
-  const [order, setOrder] = useState('risk');
-  const [page, setPage] = useState(0);
-  const [size, setSize] = useState(25);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [detailTab, setDetailTab] = useState('evidence');
-  const fileInput = useRef<HTMLInputElement>(null);
-  const revision = useRef(0);
-  const rows = useMemo(() => imported?.report.rows ?? [], [imported]);
-  const diskRows = useMemo(() => rows.filter(row => row.entity_type !== 'memory_controller'), [rows]);
-  const memoryRows = useMemo(() => rows.filter(row => row.entity_type === 'memory_controller'), [rows]);
-  const typeRows = useMemo(() => tab === 'disk' ? diskRows : tab === 'memory' ? memoryRows : [], [tab, diskRows, memoryRows]);
-  const filtered = useMemo(() => selectRows(typeRows.filter(row => tab !== 'disk' || !media || `${row.protocol}:${row.disk?.media_type}` === media), query, level, quality, order), [typeRows, query, level, quality, order, media, tab]);
-  const actualPage = Math.min(page, Math.max(0, Math.ceil(filtered.length / size) - 1));
-  const visible = filtered.slice(actualPage * size, (actualPage + 1) * size);
-  const detail = rows.find(row => row.reference === selected);
-  const riskCount = rows.filter(row => ['critical', 'warning', 'attention'].includes(row.level)).length;
-  const staleCount = rows.filter(row => (row.observation?.state ?? row.freshness) === 'stale').length;
-  const online = imported?.report.mode === 'online_cache';
-  const installationVerified = online && installationSummary !== null;
-
-  const loadOnline = useCallback(async (view: DiskInstallationView = 'active', reportError = true, signal?: AbortSignal) => {
-    const ticket = ++revision.current; setOnlineBusy(true);
-    try {
-      const response = await fetch(diskInstallationListURL(view), { signal });
-      if (!response.ok) throw new Error(`online_cache_${response.status}`);
-      const payload = parseDiskInstallationPayload(await response.json(), view);
-      const onlineRows = payload.data;
-      if (ticket !== revision.current || signal?.aborted) return;
-      const report: HealthReport = {
-        schema: 'hardware-health-report-v1',
-        input_manifest_sha256: '0'.repeat(64),
-        rule_version: 'hardware-health-v1.4.0',
-        mode: 'online_cache',
-        as_of: payload.meta.generated_at || new Date().toISOString(),
-        alerts_emitted: false,
-        actions_executed: false,
-        summary: payload.summary,
-        rows: onlineRows,
-      };
-      setImported({ report, sha256: 'online-cache', fileName: 'online-cache' });
-      setInstallationSummary(payload.installation);
-      setTab('disk');
-      setOriginal(''); setSelected(current => onlineRows.some(row => row.reference === current) ? current : null); setError('');
-    } catch (cause) {
-      if (signal?.aborted || ticket !== revision.current) return;
-      if (reportError) setError(cause instanceof Error ? cause.message : 'online_cache_failed');
-    } finally {
-      if (!signal?.aborted && ticket === revision.current) setOnlineBusy(false);
-    }
-  }, []);
+  const [reload, setReload] = useState(0);
+  const requestKey = `${day}|${reload}`;
+  const [doneKey, setDoneKey] = useState('');
+  const loading = doneKey !== requestKey;
+  const [tab, setTab] = useState<'risk' | 'disk' | 'memory' | 'coverage' | 'evidence'>('risk');
 
   useEffect(() => {
     const controller = new AbortController();
-    void loadOnline('active', false, controller.signal);
-    return () => { controller.abort(); revision.current += 1; };
-  }, [loadOnline]);
-
-  function changeInstallationView(value: string) {
-    const view = diskInstallationView(value);
-    setInstallationView(view); setInstallationSummary(null); setSelected(null); setPage(0); setError('');
-    if (online) { setImported(null); setOriginal(''); }
-    void loadOnline(view);
-  }
-
-  async function importFile(file?: File) {
-    if (!file) return;
-    const ticket = ++revision.current; setBusy(true); setOnlineBusy(false); setError('');
-    try {
-      if (file.size > MAX_BUNDLE_BYTES) throw new Error('bundle_too_large');
-      const content = await file.text();
-      const value = await parseHealthBundle(content, file.name);
-      if (ticket !== revision.current) return;
-      setImported(value); setInstallationSummary(null); setOriginal(content); setSelected(null); setTab(value.report.rows.some(row => row.entity_type !== 'memory_controller') ? 'disk' : 'memory'); setQuery(''); setLevel(''); setQuality(''); setMedia(''); setPage(0);
-    } catch (cause) { if (ticket === revision.current) setError(cause instanceof Error ? cause.message : 'import_failed'); }
-    finally { if (ticket === revision.current) setBusy(false); }
-  }
-  function clear() { revision.current += 1; setImported(null); setInstallationSummary(null); setOriginal(''); setSelected(null); setTab('disk'); setQuery(''); setLevel(''); setQuality(''); setMedia(''); setPage(0); setError(''); setBusy(false); setOnlineBusy(false); }
-  function exportBundle() {
-    if (!imported || !original) return;
-    const url = URL.createObjectURL(new Blob([original], { type: 'application/json' }));
-    const link = document.createElement('a'); link.href = url; link.download = 'hardware-health-bundle.json'; link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
-  return <div className="hh-page" aria-busy={busy}>
-    <div className="hh-reportbar">
-      <div><FileCheck2 size={18} /><div><b>{online ? tx('在线硬盘缓存', 'Online disk cache') : imported?.fileName || tx('未载入健康证据', 'No health evidence loaded')}</b><span>{online ? tx('在线缓存 · 只读 API · 不触发采集', 'Online cache · read-only API · no collection') : tx('离线快照 · 非实时 · 生产采集未启用', 'Offline snapshot · not live · collection disabled')}</span></div></div>
-      <div className="hh-actions">
-        <input ref={fileInput} type="file" accept=".json,application/json" className="hh-file" aria-label={tx('选择报告文件', 'Select report file')} onChange={event => { void importFile(event.target.files?.[0]); event.target.value = ''; }} />
-        <button className="icon-btn" onClick={() => { void loadOnline(installationView); }} disabled={onlineBusy || busy} title={tx('刷新在线缓存', 'Refresh online cache')} aria-label={tx('刷新在线缓存', 'Refresh online cache')}>{onlineBusy ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}</button>
-        <button className="hh-command" onClick={() => fileInput.current?.click()} disabled={busy}>{busy ? <Loader2 size={15} className="spin" /> : <Upload size={15} />}{tx('导入报告', 'Import report')}</button>
-        <button className="icon-btn" onClick={exportBundle} disabled={!imported || !original || busy} title={tx('导出原始报告', 'Export original report')} aria-label={tx('导出原始报告', 'Export original report')}><Download size={16} /></button>
-        <button className="icon-btn" onClick={clear} disabled={!imported && !error && !busy} title={tx('清除本地报告', 'Clear local report')} aria-label={tx('清除本地报告', 'Clear local report')}><Trash2 size={16} /></button>
-      </div>
-    </div>
-    {error && <div className="hh-error" role="alert"><AlertTriangle size={17} /><div><b>{tx('报告未通过校验', 'Report validation failed')}</b><code>{error}</code></div><button className="icon-btn" onClick={() => setError('')} aria-label={tx('关闭错误', 'Dismiss error')}><X size={15} /></button></div>}
-    {imported && <div className="hh-provenance"><span>{tx('评估时点', 'Evaluation cutoff')} <b>{timestamp(imported.report.as_of, lang)}</b></span><span>{imported.report.rule_version}</span><span title={imported.sha256}>{imported.sha256 === 'online-cache' ? tx('在线缓存', 'Online cache') : <>SHA256 <code>{imported.sha256.slice(0, 16)}</code></>}</span><span className="hh-integrity"><CheckCircle2 size={13} />{imported.report.mode === 'online_cache' ? tx('只读 API 已加载', 'Read-only API loaded') : tx('文件完整性已校验', 'File integrity checked')}</span></div>}
-    <section className="hh-installations" aria-label={tx('安装名册', 'Installation registry')}>
-      <header><h3>{tx('物理盘安装成员', 'Disk installation membership')}</h3><label>{tx('在线安装视图', 'Online installation view')}<select aria-label={tx('在线安装视图', 'Online installation view')} value={installationView} disabled={busy} onChange={event => changeInstallationView(event.target.value)}>{diskInstallationViews.map(view => <option key={view} value={view}>{({ active: tx('已确认在用', 'Confirmed active'), historical: tx('历史安装', 'Historical installations'), unregistered: tx('待确认安装', 'Unregistered installations'), all: tx('全部证据', 'All evidence') })[view]}</option>)}</select></label></header>
-      <dl>{[[tx('已确认在用', 'Confirmed active'), installationSummary?.active_count], [tx('历史安装', 'Historical installations'), installationSummary?.historical_count], [tx('待确认安装', 'Unregistered installations'), installationSummary?.unregistered_count], [tx('已登记范围', 'Registered scopes'), installationSummary?.registered_scope_count]].map(([label, count]) => <div key={String(label)}><dt>{label}</dt><dd>{count ?? '—'}</dd></div>)}</dl>
-      <p>{onlineBusy ? tx('正在读取所选安装视图', 'Loading selected installation view') : installationVerified ? tx('全局安装计数独立于当前筛选；观测更新不会自动确认安装或退役。', 'Global membership counts are separate from filters; observations do not confirm installation or retirement.') : online ? tx('旧版接口未提供已验证安装名册；以下证据的安装状态未验证。', 'This API has no verified installation registry; membership of the evidence below is unverified.') : imported ? tx('离线报告只提供观测证据，不能确认当前安装成员。', 'Offline reports provide observations and cannot confirm current installation membership.') : tx('等待安装名册证据；未确认的观测不会计为在用盘。', 'Awaiting registry evidence; unregistered observations do not count as active disks.')}</p>
-    </section>
-    <section className="hh-metrics" aria-label={tx('报告摘要', 'Report summary')}>
-      {[{ label: tx('证据记录', 'Evidence records'), value: imported ? rows.length : '—', icon: HardDrive }, { label: tx('需复核风险', 'Risks to review'), value: imported ? riskCount : '—', icon: ShieldAlert }, { label: tx('数据不足', 'Insufficient data'), value: imported?.report.summary.unknown ?? '—', icon: AlertTriangle }, { label: imported?.report.mode === 'online_cache' ? tx('当前观测过期', 'Observation stale now') : tx('时点已过期', 'Stale at cutoff'), value: imported ? staleCount : '—', icon: Network }].map(metric => <div key={metric.label}><metric.icon size={17} /><span>{metric.label}</span><strong>{metric.value}</strong></div>)}
-    </section>
-    <div className="hh-tabs" role="tablist" aria-label={tx('硬件类型', 'Hardware type')}>
-      {[['disk', tx('硬盘', 'Disks'), HardDrive], ['memory', tx('内存', 'Memory'), MemoryStick]].map(([id, label, Icon]) => { const I = Icon as typeof HardDrive; return <button key={String(id)} id={`hh-tab-${id}`} role="tab" aria-controls="hh-records" tabIndex={tab === id ? 0 : -1} onKeyDown={navigateTabs} aria-selected={tab === id} onClick={() => { setTab(String(id)); setSelected(null); setQuery(''); setLevel(''); setQuality(''); setMedia(''); setPage(0); }}><I size={15} />{String(label)}<span>{id === 'disk' ? diskRows.length : memoryRows.length}</span></button>; })}
-    </div>
-    <section className="hh-list" id="hh-records" role="tabpanel" aria-labelledby={`hh-tab-${tab}`}>
-      <div className="hh-toolbar">
-        <label className="hh-search"><Search size={15} /><input aria-label={tx('搜索健康记录', 'Search health records')} placeholder={tx('节点、序列号、型号或设备', 'Node, serial, model or device')} value={query} onChange={event => { setQuery(event.target.value); setPage(0); }} /></label>
-        <select aria-label={tx('风险等级', 'Risk level')} value={level} onChange={event => { setLevel(event.target.value); setPage(0); }}><option value="">{tx('全部等级', 'All levels')}</option>{levels.map(value => <option key={value} value={value}>{({ critical: tx('严重', 'Critical'), warning: tx('警告', 'Warning'), attention: tx('关注', 'Attention'), unknown: tx('未知', 'Unknown'), clear_for_checked_signals: tx('已检查项未命中', 'Checked signals clear') })[value]}</option>)}</select>
-        <select aria-label={tx('数据状态', 'Data status')} value={quality} onChange={event => { setQuality(event.target.value); setPage(0); }}><option value="">{tx('全部数据状态', 'All data states')}</option><option value="assessed">{tx('已评估', 'Assessed')}</option><option value="insufficient_data">{tx('数据不足', 'Insufficient')}</option><option value="stale">{imported?.report.mode === 'online_cache' ? tx('当前观测过期', 'Observation stale now') : tx('时点已过期', 'Stale at cutoff')}</option></select>
-        {tab === 'disk' && <select aria-label={tx('硬盘类型', 'Disk type')} value={media} onChange={event => { setMedia(event.target.value); setPage(0); }}><option value="">{tx('全部硬盘类型', 'All disk types')}</option><option value="ATA:HDD">SATA HDD</option><option value="ATA:SSD">SATA SSD</option><option value="NVMe:SSD">NVMe SSD</option></select>}
-        <label className="hh-sort"><ArrowDownWideNarrow size={15} /><select aria-label={tx('排序', 'Sort order')} value={order} onChange={event => { setOrder(event.target.value); setPage(0); }}><option value="risk">{tx('风险优先', 'Risk first')}</option><option value="observed">{tx('观测时间', 'Observed time')}</option></select></label>
-      </div>
-      {tab === 'memory' && !memoryRows.length ? <div className="hh-empty"><AlertTriangle size={28} /><h2>{tx('当前报告无内存原始证据', 'No raw memory evidence in this report')}</h2><span>{tx('状态未知 · 未评分', 'Unknown · not scored')}</span></div> : !imported || !typeRows.length ? <div className="hh-empty"><HardDrive size={32} /><h2>{installationVerified ? installationView === 'active' ? tx('尚无已确认安装的硬盘', 'No confirmed active disk installations') : tx('所选安装视图暂无记录', 'No records in this installation view') : tx('尚无硬盘健康证据', 'No disk health evidence')}</h2><span>{tx('状态未知 · 未评分', 'Unknown · not scored')}</span>{installationVerified && installationView === 'active' && installationSummary.unregistered_count > 0 && <button className="hh-command" onClick={() => changeInstallationView('unregistered')}>{tx('查看待确认安装', 'View unregistered installations')} ({installationSummary.unregistered_count})</button>}</div> : <>
-        <div className="hh-table-scroll"><table className="hh-table"><thead><tr><th>{tx('硬件 / 身份', 'Hardware / identity')}</th><th>{tx('节点 / 设备', 'Node / device')}</th><th>{tx('健康检测', 'Health detection')}</th><th>{tx('数据 / 适用性', 'Data / support')}</th><th>{tx('观测时间', 'Observed')}</th><th><span className="hh-sr-only">{tx('证据详情', 'Evidence detail')}</span></th></tr></thead><tbody>{visible.map(row => <tr key={row.reference} className={selected === row.reference ? 'hh-selected' : ''}><td><b>{row.model || row.reference}</b><code>{row.memory ? `${row.memory.controller || '—'} · ${tx('启动内身份', 'Boot-scoped identity')}` : row.serial || tx('身份缺失', 'Identity missing')}</code>{row.entity_type !== 'memory_controller' && <small className="hh-installation-state">{installationLabel(installationVerified ? row.installation?.state : undefined, tx)}</small>}<small>{row.protocol || '—'} · {row.memory ? tx('控制器级 · DIMM 未定位', 'Controller scope · DIMM not located') : row.entity_type === 'nvme_controller' ? tx('控制器级', 'Controller scope') : tx('盘级', 'Disk scope')}</small></td><td><b>{row.node || '—'}</b><code>{row.device || '—'}</code><small>{row.source_kind === 'fixture' ? tx('测试样例', 'Fixture') : row.source_kind === 'operator_snapshot' ? tx('人工快照', 'Operator snapshot') : tx('来源未知', 'Source unknown')}</small></td><td><State level={row.level} tx={tx} /><small>{row.hits.length ? tx(`${row.hits.length} 条规则命中`, `${row.hits.length} rule hits`) : '—'}</small></td><td><span className={`hh-quality ${row.assessment_status === 'insufficient_data' ? 'hh-blocked' : ''}`}>{row.assessment_status === 'assessed' ? tx('时点可评估', 'Assessable at cutoff') : tx('数据不足', 'Insufficient data')}</span><small>{row.support === 'unsupported' ? tx('协议或型号未匹配', 'Protocol or model unmatched') : tx('有限规则 · 未经实机验证', 'Limited rules · not pilot verified')}</small><small>{row.blockers.length ? tx(`${row.blockers.length} 项阻断`, `${row.blockers.length} blockers`) : '—'}</small></td><td>{timestamp(row.observed_at, lang)}<small>{row.observation ? (row.observation.state === 'fresh' ? tx('当前观测有效 · 1 小时内', 'Observation within 1h') : row.observation.state === 'stale' ? tx('当前观测已过期', 'Observation stale now') : tx('当前时钟/时间待核验', 'Observation time unverified')) : row.freshness === 'stale' ? tx('已过期', 'Stale') : row.freshness === 'fresh_at_cutoff' ? tx('报告时点有效', 'Fresh at report cutoff') : tx('时点未通过', 'Time not validated')}</small></td><td><button className="icon-btn" title={tx('查看证据', 'View evidence')} aria-label={`${tx('查看证据', 'View evidence')} ${row.reference}`} onClick={() => { setSelected(row.reference); setDetailTab('evidence'); }}><ChevronRight size={16} /></button></td></tr>)}</tbody></table>{visible.length === 0 && <div className="hh-empty hh-empty-filter"><Search size={25} /><h2>{tx('没有匹配记录', 'No matching records')}</h2><button className="hh-command" onClick={() => { setQuery(''); setLevel(''); setQuality(''); setMedia(''); setPage(0); }}>{tx('重置筛选', 'Reset filters')}</button></div>}</div>
-        <div className="hh-pagination"><span>{filtered.length ? actualPage * size + 1 : 0}–{Math.min((actualPage + 1) * size, filtered.length)} / {filtered.length}</span><div><select aria-label={tx('每页条数', 'Page size')} value={size} onChange={event => { setSize(Number(event.target.value)); setPage(0); }}>{[25, 50, 100].map(value => <option key={value} value={value}>{value} / {tx('页', 'page')}</option>)}</select><button className="icon-btn" disabled={actualPage === 0} onClick={() => setPage(actualPage - 1)} title={tx('上一页', 'Previous page')} aria-label={tx('上一页', 'Previous page')}><ChevronLeft size={15} /></button><button className="icon-btn" disabled={(actualPage + 1) * size >= filtered.length} onClick={() => setPage(actualPage + 1)} title={tx('下一页', 'Next page')} aria-label={tx('下一页', 'Next page')}><ChevronRight size={15} /></button></div></div>
-      </>}
-    </section>
-    {detail && <EvidenceDetail row={detail} installationVerified={installationVerified} tx={tx} lang={lang} activeTab={detailTab} setTab={setDetailTab} close={() => setSelected(null)} />}
-  </div>;
-}
-
-function EvidenceDetail({ row, installationVerified, tx, lang, activeTab, setTab, close }: { row: HealthRow; installationVerified: boolean; tx: Tx; lang: string; activeTab: string; setTab: (value: string) => void; close: () => void }) {
-  const hitByEvidence = (id: string) => row.hits.filter(hit => hit.evidence_id === id);
-  return <section className="hh-detail" aria-label={tx('证据详情', 'Evidence detail')}>
-    <header><div><h2>{row.model || row.reference}</h2><code>{row.reference}</code>{row.entity_type !== 'memory_controller' && <small className="hh-installation-state">{installationLabel(installationVerified ? row.installation?.state : undefined, tx)}</small>}</div><State tx={tx} level={row.level} /><button className="icon-btn" onClick={close} aria-label={tx('关闭证据', 'Close evidence')} title={tx('关闭证据', 'Close evidence')}><X size={16} /></button></header>
-    {row.disk && <DiskHealthOverview row={row} tx={tx} />}
-    {row.observation && <DiskHistory key={row.entity_id + row.input_sha256} entityID={row.entity_id} tx={tx} lang={lang} />}
-    <div className="hh-detail-tabs" role="tablist" aria-label={tx('证据分区', 'Evidence sections')}>{[['evidence', tx('规则与字段', 'Rules & fields')], ['blockers', tx('数据缺口', 'Data gaps')], ['source', tx('来源与身份', 'Source & identity')]].map(([id, label]) => <button key={id} role="tab" tabIndex={activeTab === id ? 0 : -1} onKeyDown={navigateTabs} aria-selected={activeTab === id} onClick={() => setTab(id)}>{label}{id === 'blockers' && <span>{row.blockers.length}</span>}</button>)}</div>
-    {activeTab === 'evidence' && <div className="hh-table-scroll"><table className="hh-evidence-table"><thead><tr><th>{tx('字段 / 证据 ID', 'Field / evidence ID')}</th><th>{tx('精确值', 'Exact value')}</th><th>{tx('单位', 'Unit')}</th><th>{tx('命中规则', 'Matched rules')}</th></tr></thead><tbody>{row.evidence.map(item => <tr key={item.id}><td><code>{item.field}</code><small title={item.id}>{item.id.slice(0, 16)}</small></td><td><code>{item.value}</code></td><td>{item.unit}</td><td>{hitByEvidence(item.id).map(hit => <div className="hh-hit" key={hit.rule}><State tx={tx} level={hit.level} /><span>{ruleTitle(hit.rule, tx)}</span><code>{hit.rule}</code></div>)}</td></tr>)}</tbody></table>{!row.evidence.length && <div className="hh-empty hh-empty-filter">{tx('无可解析字段', 'No parsable fields')}</div>}</div>}
-    {activeTab === 'blockers' && <div className="hh-gaps">{row.blockers.length ? row.blockers.map(value => <div key={value}><AlertTriangle size={15} /><code>{value}</code></div>) : <span>{tx('本次有限规则无数据阻断', 'No blockers for the checked subset')}</span>}<dl><dt>{tx('趋势状态', 'Trend status')}</dt><dd>{row.trend_status}</dd>{row.memory ? <><dt>{tx('CE 新增量', 'CE delta')}</dt><dd>{row.memory.ce_delta ?? '—'}</dd><dt>{tx('UE 新增量', 'UE delta')}</dt><dd>{row.memory.ue_delta ?? '—'}</dd><dt>{tx('定位精度', 'Location precision')}</dt><dd>{tx('控制器级 · DIMM 未定位', 'Controller scope · DIMM not located')}</dd></> : <><dt>{tx('介质错误新增量', 'Media error delta')}</dt><dd>{row.media_delta ?? '—'}</dd></>}</dl></div>}
-    {activeTab === 'source' && <dl className="hh-source">{[...(installationVerified && row.installation ? [[tx('安装状态', 'Installation state'), installationLabel(row.installation.state, tx)], [tx('安装段标识', 'Installation ID'), row.installation.installation_id || '—'], [tx('登记范围 / 名册版本', 'Registry scope / roster version'), `${row.installation.scope_id || '—'} / ${row.installation.roster_version || '—'}`], [tx('安装起止', 'Installation range'), `${row.installation.opened_at ? timestamp(row.installation.opened_at, lang) : '—'} / ${row.installation.closed_at ? timestamp(row.installation.closed_at, lang) : '—'}`]] : []), [tx('实体标识', 'Entity ID'), row.entity_id], [tx('身份状态', 'Identity status'), row.identity_status], [tx('范围 / 代次', 'Scope / generation'), `${row.scope || '—'} / ${row.generation || '—'}`], [tx('启动标识', 'Boot ID'), row.boot_id || '—'], [row.memory ? tx('驱动 / 内核', 'Driver / kernel') : tx('序列号 / 固件', 'Serial / firmware'), row.memory ? `${row.memory.driver || '—'} / ${row.memory.kernel_release || '—'}` : `${row.serial || '—'} / ${row.firmware || '—'}`], [tx('工具 / 来源', 'Tool / source'), `${row.tool_version || '—'} / ${row.source || '—'}`], [tx('原始输入 SHA256', 'Raw input SHA256'), row.input_sha256], [tx('基线 SHA256', 'Baseline SHA256'), row.baseline_sha256 || '—'], [tx('观测 / 可用时间', 'Observed / available'), `${timestamp(row.observed_at, lang)} / ${timestamp(row.available_at, lang)}`], [tx('退出码', 'Exit code'), row.exit_code === null ? '—' : String(row.exit_code)]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd><code>{value}</code></dd></div>)}</dl>}
-  </section>;
-}
-
-function DiskHistory({ entityID, tx, lang }: { entityID: string; tx: Tx; lang: string }) {
-  const [payload, setPayload] = useState<DiskHistoryPayload | null>(null);
-  const [offset, setOffset] = useState(0);
-  const [error, setError] = useState(false);
-  function changePage(value: number) { setPayload(null); setError(false); setOffset(value); }
-  useEffect(() => {
-    const controller = new AbortController();
-    void fetch(`/api/v1/hardware/disks/${encodeURIComponent(entityID)}/history?limit=20&offset=${offset}`, { signal: controller.signal })
-      .then(async response => { if (!response.ok) throw new Error('history_failed'); return parseDiskHistoryPayload(await response.json()); })
-      .then(value => { if (!controller.signal.aborted) setPayload(value); })
-      .catch(() => { if (!controller.signal.aborted) setError(true); });
+    fetch(`/api/v1/hardware/fleet${day ? `?day=${day}` : ''}`, { signal: controller.signal })
+      .then(async response => { const body = await response.json().catch(() => null); if (!response.ok) throw new Error(body?.error?.message || `HTTP ${response.status}`); return body; })
+      .then(body => { if (body?.data?.schema !== 'node-hw-fleet-v1') throw new Error('unsupported snapshot schema'); setFleet(body.data); setDays(body.available_days || []); setError(''); })
+      .catch(cause => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); })
+      .finally(() => { if (!controller.signal.aborted) setDoneKey(requestKey); });
     return () => controller.abort();
-  }, [entityID, offset]);
-  return <section className="hh-history" aria-label={tx('观测历史', 'Observation history')}>
-    <header><h3>{tx('观测历史', 'Observation history')}</h3><div className="hh-actions"><button className="icon-btn" title={tx('上一页历史', 'Previous history page')} aria-label={tx('上一页历史', 'Previous history page')} disabled={offset === 0 || !payload} onClick={() => changePage(Math.max(0, offset - 20))}><ChevronLeft size={16} /></button><span>{payload ? `${payload.meta.total ? offset + 1 : 0}-${Math.min(offset + 20, payload.meta.total)} / ${payload.meta.total}` : '—'}</span><button className="icon-btn" title={tx('下一页历史', 'Next history page')} aria-label={tx('下一页历史', 'Next history page')} disabled={!payload || offset + 20 >= payload.meta.total} onClick={() => changePage(offset + 20)}><ChevronRight size={16} /></button></div></header>
-    {error ? <p role="alert">{tx('历史读取失败', 'History unavailable')}</p> : !payload ? <p role="status">{tx('加载历史', 'Loading history')}</p> : <>
-      <div className="hh-windows">{payload.windows.map(window => <DiskWindow key={window.window} window={window} tx={tx} lang={lang} />)}</div>
-      {!payload.windows.length && <p className="hh-history-note">{tx('尚无窗口覆盖证据', 'No window coverage evidence')}</p>}
-      <h4>{tx('逐次观测与最新两点增量', 'Observations and latest-pair deltas')}</h4>
-      <p className="hh-history-note">{tx('下表增量只对应该次观测的基线，不代表上方整窗增长。', 'Each delta below uses that observation’s baseline; window growth is shown above.')}</p>
-      {payload.data.length ? <div className="hh-table-scroll"><table className="hh-evidence-table"><thead><tr><th>{tx('观测时间', 'Observed')}</th><th>{tx('观测温度', 'Observed temperature')}</th><th>{tx('两点趋势状态', 'Pair trend state')}</th><th>{tx('精确两点错误增量', 'Exact pair error deltas')}</th></tr></thead><tbody>{payload.data.map(row => <tr key={row.input_sha256 + row.observed_at}><td>{timestamp(row.observed_at, lang)}</td><td>{row.disk?.temperature_celsius == null ? '—' : `${row.disk.temperature_celsius} °C`}</td><td>{row.trend_status}</td><td>{row.media_delta !== null ? `media +${row.media_delta}` : row.disk?.counter_deltas.length ? row.disk.counter_deltas.map(delta => `${delta.field} +${delta.value}`).join(' · ') : '—'}</td></tr>)}</tbody></table></div> : <p className="hh-history-note">{tx('尚无观测记录', 'No observation records')}</p>}
-    </>}
-  </section>;
-}
+  }, [day, requestKey]);
 
-function DiskWindow({ window, tx, lang }: { window: DiskHistoryWindow; tx: Tx; lang: string }) {
-  const duration = { '1h': 3600, '24h': 86400, '7d': 604800 }[window.window];
-  const state = { collecting: tx('采集中', 'Collecting'), partial: tx('覆盖不完整', 'Partial'), complete: tx('窗口完整', 'Complete'), unknown: tx('旧版 / 完整性未验证', 'Legacy / completeness unverified') }[window.coverage_status];
-  const kinds: Record<DiskWindowFeature['kind'], string> = { counter_delta: tx('累计增长', 'Counter growth'), gauge_change: tx('端点变化', 'Endpoint change'), minimum: tx('最小值', 'Minimum'), maximum: tx('最大值', 'Maximum'), mean: tx('均值', 'Mean') };
-  const statuses = { available: tx('可用', 'Available'), partial: tx('部分数据', 'Partial data'), blocked: tx('阻断', 'Blocked') };
-  return <section className="hh-window" aria-label={`${window.window} ${tx('历史窗口', 'history window')}`}>
-    <header><h4>{window.window}</h4><span className={`hh-window-state hh-window-${window.coverage_status}`}>{state}</span></header>
-    <dl className="hh-window-coverage">
-      <div><dt>{tx('去重观测', 'Unique observations')}</dt><dd>{window.sample_count}</dd></div>
-      <div><dt>{tx('30 分钟槽覆盖', '30-minute slot coverage')}</dt><dd>{window.coverage_ratio === undefined ? '—' : `${window.occupied_sample_count} / ${window.expected_sample_count} · ${(window.coverage_ratio * 100).toFixed(1)}%`}</dd></div>
-      <div><dt>{tx('实际端点跨度 / 名义窗口', 'Endpoint span / nominal window')}</dt><dd>{window.covered_seconds === undefined ? '—' : `${window.covered_seconds}s / ${duration}s`}</dd></div>
-      <div><dt>{tx('最大相邻间隔', 'Largest adjacent gap')}</dt><dd>{window.max_gap_seconds === undefined ? '—' : `${window.max_gap_seconds}s`}</dd></div>
-    </dl>
-    <p className="hh-history-note">{tx('名义起止：', 'Nominal range: ')}{window.window_start_at ? timestamp(window.window_start_at, lang) : '—'} / {window.window_end_at ? timestamp(window.window_end_at, lang) : '—'}</p>
-    <p className="hh-history-note">{tx('实际观测：', 'Observed range: ')}{window.first_observed_at ? timestamp(window.first_observed_at, lang) : '—'} / {window.last_observed_at ? timestamp(window.last_observed_at, lang) : '—'}</p>
-    {window.contract_version ? <p className="hh-history-note">{tx('排除未来 / 无效时间 / 重复观测：', 'Excluded future / invalid time / duplicate observations: ')}{window.excluded_future_count} / {window.excluded_invalid_time_count} / {window.duplicate_observation_count}</p> : <p className="hh-history-note">{tx('旧版接口未提供覆盖契约，样本数不能证明窗口完整。', 'This API lacks a verified coverage contract; sample count cannot establish completeness.')}</p>}
-    {window.blockers.length > 0 && <ul className="hh-window-blockers" aria-label={tx('窗口阻断原因', 'Window blockers')}>{window.blockers.map((reason, index) => <li key={`${reason}-${index}`}><code>{reason}</code></li>)}</ul>}
-    {window.features.length ? <div className="hh-table-scroll"><table className="hh-window-features"><thead><tr><th>{tx('窗口特征', 'Window feature')}</th><th>{tx('精确值 / 单位', 'Exact value / unit')}</th><th>{tx('可用性 / 实际跨度', 'Availability / actual range')}</th></tr></thead><tbody>{window.features.map(feature => <tr key={`${feature.field}-${feature.kind}`}><td><code>{feature.field}</code><small>{kinds[feature.kind]}</small></td><td><code>{feature.value ?? '—'}</code><small>{feature.unit}</small></td><td><span className={`hh-window-state hh-feature-${feature.status}`}>{statuses[feature.status]}</span><small>{feature.start_at ? timestamp(feature.start_at, lang) : '—'} / {feature.end_at ? timestamp(feature.end_at, lang) : '—'}</small>{feature.blockers.map((reason, index) => <small className="hh-blocked" key={`${reason}-${index}`}><code>{reason}</code></small>)}</td></tr>)}</tbody></table></div> : <p className="hh-history-note">{tx('尚无可验证的窗口特征', 'No verified window features')}</p>}
-  </section>;
-}
+  const tabs = [
+    { id: 'risk', label: tx('待复核', 'To review'), count: fleet ? fleet.disks.filter(d => d.level !== 'clear').length + fleet.memory.filter(m => m.level !== 'clear').length : undefined },
+    { id: 'disk', label: tx('硬盘', 'Disks'), count: fleet?.summary.disk.total },
+    { id: 'memory', label: tx('内存', 'Memory'), count: fleet?.summary.memory.nodes },
+    { id: 'coverage', label: tx('采集覆盖', 'Coverage'), count: fleet ? fleet.coverage.nodes_total - fleet.coverage.collected : undefined },
+    { id: 'evidence', label: tx('单盘证据（旧）', 'Disk evidence (legacy)'), count: undefined },
+  ] as const;
 
-function DiskHealthOverview({ row, tx }: { row: HealthRow; tx: Tx }) {
-  const disk = row.disk;
-  if (!disk) return null;
-  const names = { media: tx('介质状态', 'Media'), endurance: tx('耐久状态', 'Endurance'), temperature: tx('温度状态', 'Temperature'), path_power: tx('链路 / 供电', 'Link / power') };
-  return <div className="hh-disk-overview" aria-label={tx('硬盘健康维度', 'Disk health dimensions')}>
-    <dl className="hh-disk-readings">
-      <div><dt>{tx('物理介质', 'Physical media')}</dt><dd>{row.protocol} / {disk.media_type}</dd></div>
-      <div><dt>{tx('观测温度', 'Observed temperature')}</dt><dd>{disk.temperature_celsius === null ? '—' : `${disk.temperature_celsius} °C`}</dd></div>
-      <div><dt>{disk.wear?.kind === 'consumed_percent' ? tx('耐久消耗估计', 'Estimated endurance consumed') : tx('厂商归一化磨损值', 'Vendor normalized wear')}</dt><dd>{disk.wear ? `${disk.wear.value}${disk.wear.kind === 'consumed_percent' ? '%' : ''}` : '—'}</dd></div>
-      <div><dt>{tx('适用规则', 'Rule profile')}</dt><dd><code>{disk.profile || tx('未匹配', 'Unmatched')}</code></dd></div>
-    </dl>
-    <div className="hh-dimensions">{disk.dimensions.map(dimension => <div key={dimension.id}><b>{names[dimension.id]}</b><State level={dimension.level} tx={tx} /><small>{dimension.state === 'not_applicable' ? tx('不适用', 'Not applicable') : dimension.state === 'insufficient_data' ? tx('覆盖不足', 'Incomplete coverage') : tx('有限检查', 'Limited checks')}</small>{row.hits.filter(hit => diskDimensionForRule(hit.rule) === dimension.id).map(hit => <span key={hit.rule}>{ruleTitle(hit.rule, tx)}</span>)}</div>)}</div>
-    <dl className="hh-disk-deltas"><div><dt>{tx('趋势状态', 'Trend state')}</dt><dd>{row.trend_status}</dd></div>{disk.counter_deltas.map(delta => <div key={delta.field}><dt><code>{delta.field}</code></dt><dd>+{delta.value} {delta.unit}</dd></div>)}{row.media_delta !== null && <div><dt>{tx('介质错误新增', 'New media errors')}</dt><dd>+{row.media_delta}</dd></div>}<div><dt>{tx('故障概率 / 剩余寿命', 'Failure probability / remaining life')}</dt><dd>{tx('未建立模型', 'Model not established')}</dd></div></dl>
+  return <div className="hf-page" aria-busy={loading}>
+    <div className="hf-source">
+      <p>{fleet ? tx(`${fleet.day} 每日只读采集 · 规则 ${fleet.rule_version}${fleet.previous_day ? ` · 增量对比 ${fleet.previous_day}` : ' · 无前一日基线'}`, `${fleet.day} daily read-only collection · rules ${fleet.rule_version}${fleet.previous_day ? ` · delta vs ${fleet.previous_day}` : ' · no previous-day baseline'}`) : tx('读取每日只读采集结果', 'Loading daily read-only collection')}</p>
+      <div className="hf-source-actions">
+        {days.length > 1 && <select aria-label={tx('采集日期', 'Collection day')} value={day || fleet?.day || ''} onChange={event => setDay(event.target.value === days[0] ? '' : event.target.value)}>{days.map(value => <option key={value} value={value}>{value}</option>)}</select>}
+        <button className="icon-btn" onClick={() => setReload(value => value + 1)} title={tx('重新读取', 'Reload')} aria-label={tx('重新读取', 'Reload')}>{loading ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}</button>
+      </div>
+    </div>
+    {error && <div className="hf-error" role="alert"><AlertTriangle size={16} /><div><b>{tx('未能读取机队硬件快照', 'Fleet hardware snapshot unavailable')}</b><span>{error}</span><small>{tx('快照由每日 01:40 采集生成；仍可在“单盘证据（旧）”查看导入报告。', 'Generated by the 01:40 daily collection; imported reports remain under “Disk evidence (legacy)”.')}</small></div></div>}
+    {fleet && <Overview fleet={fleet} tx={tx} go={setTab} />}
+    <div className="hf-tabs" role="tablist">{tabs.map(item => <button key={item.id} role="tab" aria-selected={tab === item.id} onClick={() => setTab(item.id)}>{item.label}{item.count !== undefined && <span>{item.count}</span>}</button>)}</div>
+    {tab === 'evidence' ? <Suspense fallback={<div className="hf-empty"><Loader2 size={18} className="spin" /></div>}><HardwareEvidence tx={tx} lang={lang} /></Suspense>
+      : !fleet ? <div className="hf-empty">{loading ? <Loader2 size={18} className="spin" /> : tx('暂无数据', 'No data')}</div>
+      : tab === 'risk' ? <RiskList fleet={fleet} tx={tx} />
+      : tab === 'disk' ? <DiskTable fleet={fleet} tx={tx} />
+      : tab === 'memory' ? <MemoryTable fleet={fleet} tx={tx} />
+      : <Coverage fleet={fleet} tx={tx} />}
   </div>;
+}
+
+function Overview({ fleet, tx, go }: { fleet: Fleet; tx: Tx; go: (tab: 'risk' | 'disk' | 'memory' | 'coverage') => void }) {
+  const c = fleet.coverage;
+  const segments = statusOrder.map(id => ({ id, n: c.by_status[id] || 0 })).concat(Object.entries(c.by_status).filter(([k]) => !statusOrder.includes(k)).map(([id, n]) => ({ id, n })) ).filter(s => s.n > 0);
+  const d = fleet.summary.disk.by_level, m = fleet.summary.memory.by_level;
+  const wearValues = fleet.disks.map(x => x.wear).filter((x): x is number => x !== null);
+  const buckets = [[0, 10], [10, 30], [30, 50], [50, 80], [80, 101]].map(([lo, hi]) => wearValues.filter(v => v >= lo && v < hi).length);
+  return <section className="hf-overview">
+    <div className="hf-coverage">
+      <header><h2>{tx(`${c.collected} / ${c.nodes_total} 个节点已采集`, `${c.collected} of ${c.nodes_total} nodes collected`)}</h2><button className="hf-link" onClick={() => go('coverage')}>{tx('查看未采集节点', 'See uncollected nodes')}</button></header>
+      <div className="hf-bar" role="img" aria-label={segments.map(s => `${statusText(s.id, tx)} ${s.n}`).join(', ')}>{segments.map(s => <span key={s.id} className={`hf-seg hf-seg-${s.id}`} style={{ flexGrow: s.n }} title={`${statusText(s.id, tx)} ${s.n}`} />)}</div>
+      <ul className="hf-legend">{segments.map(s => <li key={s.id}><i className={`hf-seg-${s.id}`} />{statusText(s.id, tx)}<b>{s.n}</b></li>)}</ul>
+      <p>{tx(`SMART 覆盖 ${c.smart_nodes} 个节点 ${c.smart_disks} 块盘；已连上但无 SMART 的节点 ${c.collected_without_smart} 个（无 smartctl、超时或仅有 RAID 虚拟盘）。`, `SMART covers ${c.smart_disks} disks on ${c.smart_nodes} nodes; ${c.collected_without_smart} reachable nodes returned no SMART (no smartctl, timeout or RAID-only).`)}{c.failed_not_in_vm !== null && tx(` 未采集节点中 ${c.failed_not_in_vm} 个也不在 VM 监控内。`, ` ${c.failed_not_in_vm} uncollected nodes are also absent from VM monitoring.`)}</p>
+    </div>
+    <div className="hf-health">
+      <button onClick={() => go('disk')}><HardDrive size={17} /><span>{tx('硬盘', 'Disks')}</span><strong>{fleet.summary.disk.total.toLocaleString()}</strong><LevelRow counts={d} tx={tx} /><small>{tx('寿命消耗分布', 'Wear distribution')}</small><div className="hf-wear">{buckets.map((n, i) => <span key={i} title={`${['0–10', '10–30', '30–50', '50–80', '≥80'][i]}%: ${n}`}><i style={{ height: `${Math.max(2, (n / Math.max(1, ...buckets)) * 100)}%` }} className={i >= 3 ? 'hot' : ''} /><em>{['<10', '10', '30', '50', '80'][i]}</em></span>)}</div></button>
+      <button onClick={() => go('memory')}><MemoryStick size={17} /><span>{tx('内存（按节点）', 'Memory (per node)')}</span><strong>{fleet.summary.memory.nodes.toLocaleString()}</strong><LevelRow counts={m} tx={tx} /><small>{tx(`${fleet.summary.memory.dimms.toLocaleString()} 根内存条；来源 BMC SEL、内核日志、HardwareCorrupted`, `${fleet.summary.memory.dimms.toLocaleString()} DIMMs; sources BMC SEL, kernel log, HardwareCorrupted`)}</small></button>
+    </div>
+  </section>;
+}
+
+function LevelRow({ counts, tx }: { counts: LevelCount; tx: Tx }) {
+  return <div className="hf-levelrow">{(['critical', 'warning', 'attention'] as Level[]).map(level => <span key={level} className={counts[level] ? `hf-${level}` : 'hf-zero'}><b>{counts[level]}</b>{({ critical: tx('严重', 'critical'), warning: tx('警告', 'warning'), attention: tx('关注', 'attention'), clear: '' })[level]}</span>)}</div>;
+}
+
+type RiskItem = { key: string; type: 'disk' | 'memory'; level: Level; ip: string; host: string; what: string; hits: string[]; detail: string };
+function RiskList({ fleet, tx }: { fleet: Fleet; tx: Tx }) {
+  const [level, setLevel] = useState('');
+  const [type, setType] = useState('');
+  const items = useMemo<RiskItem[]>(() => [
+    ...fleet.memory.filter(m => m.level !== 'clear').map(m => ({ key: `m-${m.ip}`, type: 'memory' as const, level: m.level, ip: m.ip, host: m.host, what: tx(`${m.dimms} 根 · ${m.mem_gb} GB`, `${m.dimms} DIMMs · ${m.mem_gb} GB`), hits: m.hits, detail: [m.ue_30d ? `UE30d ${m.ue_30d}` : '', m.ue_total ? `UE ${m.ue_total}${m.ue_last ? ` (${m.ue_last})` : ''}` : '', m.ce_7d ? `CE7d ${m.ce_7d}` : '', m.ce_30d ? `CE30d ${m.ce_30d}` : '', m.hw_corrupted_kb ? `HardwareCorrupted ${m.hw_corrupted_kb} kB` : '', m.edac ? `EDAC ${m.edac}` : '', m.mce ? `MCE ${m.mce}` : '', m.locs?.length ? m.locs.join(', ') : ''].filter(Boolean).join(' · ') })),
+    ...fleet.disks.filter(d => d.level !== 'clear').map(d => ({ key: `d-${d.ip}-${d.serial}-${d.dev}`, type: 'disk' as const, level: d.level, ip: d.ip, host: d.host, what: `${d.model} · ${d.serial || d.dev}`, hits: d.hits, detail: [d.realloc ? `realloc ${d.realloc}` : '', d.media ? `media ${d.media}` : '', d.wear !== null ? `wear ${d.wear}%` : '', delta(d)].filter(Boolean).join(' · ') })),
+  ].filter(i => (!level || i.level === level) && (!type || i.type === type)).sort((a, b) => rank[b.level] - rank[a.level] || a.type.localeCompare(b.type) || a.ip.localeCompare(b.ip, undefined, { numeric: true })), [fleet, level, type, tx]);
+  return <section className="hf-panel">
+    <p className="hf-note">{tx('状态与劣化规则命中，不是故障概率；不会触发任何处置。“未增长”项为历史累计值，需与次日数据对比确认是否在恶化。', 'Status and degradation rule hits, not failure probability; no action is taken. “Stable” items are historical totals — compare with the next day to see whether they grow.')}</p>
+    <div className="hf-toolbar"><select value={type} onChange={e => setType(e.target.value)} aria-label={tx('类型', 'Type')}><option value="">{tx('硬盘与内存', 'Disks and memory')}</option><option value="memory">{tx('内存', 'Memory')}</option><option value="disk">{tx('硬盘', 'Disks')}</option></select><select value={level} onChange={e => setLevel(e.target.value)} aria-label={tx('等级', 'Level')}><option value="">{tx('全部等级', 'All levels')}</option><option value="critical">{tx('严重', 'Critical')}</option><option value="warning">{tx('警告', 'Warning')}</option><option value="attention">{tx('关注', 'Attention')}</option></select><span>{items.length}</span></div>
+    {items.length === 0 ? <div className="hf-empty"><ShieldAlert size={20} />{tx('没有命中规则的项', 'No rule hits')}</div> :
+    <div className="hf-scroll"><table className="hf-table"><thead><tr><th>{tx('等级', 'Level')}</th><th>{tx('节点', 'Node')}</th><th>{tx('部件', 'Component')}</th><th>{tx('命中规则', 'Rule hits')}</th><th>{tx('证据', 'Evidence')}</th></tr></thead><tbody>{items.map(i => <tr key={i.key}><td><LevelTag level={i.level} tx={tx} /></td><td><b>{i.ip}</b><small>{i.host}</small></td><td>{i.type === 'disk' ? <HardDrive size={13} /> : <MemoryStick size={13} />} {i.what}</td><td>{i.hits.map(h => <span key={h} className="hf-rule">{ruleText(h, tx)}</span>)}</td><td><code>{i.detail || '—'}</code></td></tr>)}</tbody></table></div>}
+  </section>;
+}
+
+function DiskTable({ fleet, tx }: { fleet: Fleet; tx: Tx }) {
+  const [q, setQ] = useState('');
+  const [proto, setProto] = useState('');
+  const [level, setLevel] = useState('');
+  const [sort, setSort] = useState('risk');
+  const [page, setPage] = useState(0);
+  const size = 50;
+  const rows = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const list = fleet.disks.filter(d => (!proto || d.proto === proto) && (!level || d.level === level) && (!needle || [d.ip, d.host, d.model, d.serial, d.fw].some(v => v.toLowerCase().includes(needle))));
+    const key: Record<string, (d: Disk) => number> = { risk: d => rank[d.level] * 1000 + (d.wear || 0), wear: d => d.wear ?? -1, life: d => -(d.life_days ?? 1e9), temp: d => d.temp ?? -1, poh: d => d.poh ?? -1 };
+    return list.sort((a, b) => key[sort](b) - key[sort](a) || a.ip.localeCompare(b.ip, undefined, { numeric: true }));
+  }, [fleet, q, proto, level, sort]);
+  const visible = rows.slice(page * size, (page + 1) * size);
+  return <section className="hf-panel">
+    <p className="hf-note">{tx('剩余寿命按该盘至今的平均磨损速度线性外推，仅适用于 SSD，且未经故障数据验证；HDD 与无磨损指标的盘不估计。', 'Remaining life extrapolates each SSD’s lifetime-average wear rate; unvalidated against failures. HDDs and drives without a wear indicator are not estimated.')}</p>
+    <div className="hf-toolbar"><label className="hf-search"><Search size={14} /><input value={q} onChange={e => { setQ(e.target.value); setPage(0); }} placeholder={tx('节点、型号、序列号', 'Node, model, serial')} /></label>
+      <select value={proto} onChange={e => { setProto(e.target.value); setPage(0); }} aria-label={tx('协议', 'Protocol')}><option value="">{tx('全部协议', 'All protocols')}</option>{Object.entries(fleet.summary.disk.by_protocol).map(([p, n]) => <option key={p} value={p}>{p} ({n})</option>)}</select>
+      <select value={level} onChange={e => { setLevel(e.target.value); setPage(0); }} aria-label={tx('等级', 'Level')}><option value="">{tx('全部等级', 'All levels')}</option><option value="critical">{tx('严重', 'Critical')}</option><option value="warning">{tx('警告', 'Warning')}</option><option value="attention">{tx('关注', 'Attention')}</option><option value="clear">{tx('未命中', 'Clear')}</option></select>
+      <select value={sort} onChange={e => { setSort(e.target.value); setPage(0); }} aria-label={tx('排序', 'Sort')}><option value="risk">{tx('风险优先', 'Risk first')}</option><option value="wear">{tx('寿命消耗最高', 'Highest wear')}</option><option value="life">{tx('剩余寿命最短', 'Shortest remaining life')}</option><option value="temp">{tx('温度最高', 'Hottest')}</option><option value="poh">{tx('通电时间最长', 'Longest power-on')}</option></select>
+    </div>
+    <div className="hf-scroll"><table className="hf-table"><thead><tr><th>{tx('等级', 'Level')}</th><th>{tx('节点', 'Node')}</th><th>{tx('型号 / 序列号', 'Model / serial')}</th><th className="num">{tx('容量', 'Size')}</th><th className="num">{tx('通电', 'Power-on')}</th><th className="num">{tx('温度', 'Temp')}</th><th className="num">{tx('寿命消耗', 'Wear')}</th><th className="num">{tx('估计剩余', 'Est. left')}</th><th>{tx('错误计数 / 日增量', 'Error counters / daily delta')}</th></tr></thead>
+      <tbody>{visible.map(d => <tr key={`${d.ip}-${d.serial}-${d.dev}`}><td><LevelTag level={d.level} tx={tx} />{d.hits.map(h => <small key={h}>{ruleText(h, tx)}</small>)}</td><td><b>{d.ip}</b><small>{d.host}</small></td><td><b>{d.model || '—'}</b><small>{d.proto} · {d.serial || d.dev}{d.raid ? ` · RAID ${d.raid.state}` : ''}</small></td><td className="num">{d.cap_gb ? (d.cap_gb >= 1000 ? `${(d.cap_gb / 1000).toFixed(1)} TB` : `${d.cap_gb} GB`) : '—'}</td><td className="num">{d.poh !== null ? tx(`${Math.round(d.poh / 24)} 天`, `${Math.round(d.poh / 24)} d`) : '—'}</td><td className="num">{fmt(d.temp, '°C')}</td><td className="num"><span className="hf-wearcell"><i style={{ width: `${Math.min(100, d.wear ?? 0)}%` }} className={(d.wear ?? 0) >= 50 ? 'hot' : ''} />{fmt(d.wear, '%')}</span></td><td className="num">{lifeText(d.life_days, tx)}</td><td><code>{[d.proto === 'NVMe' ? `media ${fmt(d.media)} · spare ${fmt(d.spare, '%')} · errlog ${fmt(d.errlog)}` : `realloc ${fmt(d.realloc)} · pending ${fmt(d.pending)} · crc ${fmt(d.crc)}`, delta(d) && `Δ ${delta(d)}`].filter(Boolean).join('  ')}</code></td></tr>)}</tbody></table></div>
+    <Pager total={rows.length} page={page} size={size} setPage={setPage} />
+  </section>;
+}
+
+function MemoryTable({ fleet, tx }: { fleet: Fleet; tx: Tx }) {
+  const [q, setQ] = useState('');
+  const [level, setLevel] = useState('');
+  const [page, setPage] = useState(0);
+  const size = 50;
+  const rows = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return fleet.memory.filter(m => (!level || m.level === level) && (!needle || [m.ip, m.host].some(v => v.toLowerCase().includes(needle))))
+      .sort((a, b) => rank[b.level] - rank[a.level] || (b.ce_30d || 0) - (a.ce_30d || 0) || a.ip.localeCompare(b.ip, undefined, { numeric: true }));
+  }, [fleet, q, level]);
+  const visible = rows.slice(page * size, (page + 1) * size);
+  return <section className="hf-panel">
+    <p className="hf-note">{tx('多数机型为固件优先（firmware-first），操作系统 EDAC 看不到大部分可纠正错误，因此以 BMC SEL 为主；SEL 已满的 96 个 GPU 节点新事件可能缺失。定位到具体内存条仅在 SEL 提供槽位时可用。', 'Most platforms are firmware-first, so OS EDAC misses most corrected errors; BMC SEL is the main source. 96 GPU nodes have a full SEL and may miss new events. DIMM location only when the SEL names a slot.')}</p>
+    <div className="hf-toolbar"><label className="hf-search"><Search size={14} /><input value={q} onChange={e => { setQ(e.target.value); setPage(0); }} placeholder={tx('节点 IP 或主机名', 'Node IP or hostname')} /></label><select value={level} onChange={e => { setLevel(e.target.value); setPage(0); }} aria-label={tx('等级', 'Level')}><option value="">{tx('全部等级', 'All levels')}</option><option value="critical">{tx('严重', 'Critical')}</option><option value="warning">{tx('警告', 'Warning')}</option><option value="attention">{tx('关注', 'Attention')}</option><option value="clear">{tx('未命中', 'Clear')}</option></select></div>
+    <div className="hf-scroll"><table className="hf-table"><thead><tr><th>{tx('等级', 'Level')}</th><th>{tx('节点', 'Node')}</th><th className="num">{tx('内存', 'Memory')}</th><th className="num">{tx('CE 7 天', 'CE 7d')}</th><th className="num">{tx('CE 30 天', 'CE 30d')}</th><th className="num">{tx('UE 30 天 / 累计', 'UE 30d / total')}</th><th className="num">HardwareCorrupted</th><th className="num">{tx('内核 EDAC / MCE', 'Kernel EDAC / MCE')}</th><th>{tx('涉及槽位', 'Slots named')}</th></tr></thead>
+      <tbody>{visible.map(m => <tr key={m.ip}><td><LevelTag level={m.level} tx={tx} />{m.hits.map(h => <small key={h}>{ruleText(h, tx)}</small>)}</td><td><b>{m.ip}</b><small>{m.host}</small></td><td className="num">{m.dimms ? `${m.dimms} × · ${m.mem_gb} GB` : '—'}</td><td className="num">{fmt(m.ce_7d ?? 0)}</td><td className="num">{fmt(m.ce_30d ?? 0)}</td><td className="num">{m.ue_30d || 0} / {m.ue_total || 0}{m.ue_last && <small>{m.ue_last}</small>}</td><td className="num">{m.hw_corrupted_kb === null ? '—' : `${m.hw_corrupted_kb} kB`}</td><td className="num">{m.edac} / {m.mce}{m.mem_offline ? <small>offline {m.mem_offline}</small> : null}</td><td>{m.locs?.length ? <code>{m.locs.join(', ')}</code> : '—'}</td></tr>)}</tbody></table></div>
+    <Pager total={rows.length} page={page} size={size} setPage={setPage} />
+  </section>;
+}
+
+function Coverage({ fleet, tx }: { fleet: Fleet; tx: Tx }) {
+  const [status, setStatus] = useState('failed');
+  const [page, setPage] = useState(0);
+  const size = 50;
+  const rows = fleet.nodes.filter(n => status === 'failed' ? !(n.status === 'ok' || n.status.startsWith('partial')) : status === 'issues' ? n.followup.length > 0 : n.status === status);
+  const vmKnown = fleet.nodes.some(n => n.node_exporter !== undefined);
+  return <section className="hf-panel">
+    <div className="hf-follow">{Object.entries(fleet.coverage.followup).sort((a, b) => b[1] - a[1]).map(([k, n]) => <div key={k}><b>{n}</b><span>{followText(k, tx)}</span></div>)}</div>
+    <div className="hf-toolbar"><select value={status} onChange={e => { setStatus(e.target.value); setPage(0); }} aria-label={tx('节点筛选', 'Node filter')}><option value="failed">{tx('未采集节点', 'Uncollected nodes')}</option><option value="issues">{tx('有待处理项的节点', 'Nodes with follow-ups')}</option>{Object.keys(fleet.coverage.by_status).map(s => <option key={s} value={s}>{statusText(s, tx)} ({fleet.coverage.by_status[s]})</option>)}</select><span>{rows.length}</span></div>
+    {rows.length === 0 ? <div className="hf-empty"><ServerCrash size={20} />{tx('没有节点', 'No nodes')}</div> : <>
+    <div className="hf-scroll"><table className="hf-table"><thead><tr><th>{tx('节点', 'Node')}</th><th>{tx('类型', 'Kind')}</th><th>{tx('采集状态', 'Collection')}</th>{vmKnown && <th>{tx('VM 监控', 'In VM')}</th>}<th>{tx('待处理 / 缺项', 'Follow-ups / gaps')}</th></tr></thead>
+      <tbody>{rows.slice(page * size, (page + 1) * size).map(n => <tr key={n.ip}><td><b>{n.ip}</b><small>{n.host}</small></td><td>{n.kind === 'gpu_node' ? 'GPU' : 'CPU'}</td><td><span className={`hf-st hf-st-${n.status}`}>{statusText(n.status, tx)}</span></td>{vmKnown && <td>{n.node_exporter === true ? tx('在线', 'Up') : n.node_exporter === false ? tx('在册但 down', 'Down') : n.ipmi != null ? tx('仅 IPMI', 'IPMI only') : <span className="hf-critical">{tx('不在监控', 'Not monitored')}</span>}</td>}<td>{n.followup.map(f => <span key={f} className="hf-rule">{followText(f, tx)}</span>)}{n.flags.length > 0 && <small><code>{n.flags.join(', ')}</code></small>}</td></tr>)}</tbody></table></div>
+    <Pager total={rows.length} page={page} size={size} setPage={setPage} /></>}
+  </section>;
 }
