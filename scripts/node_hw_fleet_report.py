@@ -106,14 +106,27 @@ def main():
     prev = prev_day_dir(day_dir)
 
     nodes = {r[0]: {"kind": r[1], "host": r[2] if len(r) > 2 else ""} for r in rows(os.path.join(day_dir, "nodes.tsv")) if r}
-    status = {r["ip"]: r for r in rows(os.path.join(day_dir, "status.tsv"), True)}
+    # Out-of-scope nodes (user decision 2026-11-23): the day's excluded.tsv (written by the collector) plus the
+    # current exclude file, so snapshots of days collected before the decision are filtered the same way on re-run.
+    excluded = {}
+    for r in rows(os.path.join(day_dir, "excluded.tsv")):
+        if r and r[0]:
+            excluded[r[0]] = {"ip": r[0], "kind": r[1] if len(r) > 1 else "", "host": r[2] if len(r) > 2 else "",
+                              "reason": r[3] if len(r) > 3 else ""}
+    for r in rows(os.environ.get("ATLAS_HW_EXCLUDE_FILE", "/ops/atlas/configs/node-hw-exclude.tsv")):
+        if r and r[0] and not r[0].startswith("#") and r[0] not in excluded and r[0] in nodes:
+            excluded[r[0]] = {"ip": r[0], "kind": nodes[r[0]]["kind"], "host": nodes[r[0]]["host"] or (r[2] if len(r) > 2 else ""),
+                              "reason": r[1] if len(r) > 1 else ""}
+    for ip in excluded:
+        nodes.pop(ip, None)
+    status = {r["ip"]: r for r in rows(os.path.join(day_dir, "status.tsv"), True) if r["ip"] not in excluded}
     follow = defaultdict(list)
     for r in rows(os.path.join(day_dir, "followup.tsv"), True):
         follow[r["ip"]].append(r["category"])
     mon = monitored_ips()
 
     # ---------------- disks ----------------
-    smart = rows(os.path.join(day_dir, "smart.tsv"), True)
+    smart = [r for r in rows(os.path.join(day_dir, "smart.tsv"), True) if r.get("ip") not in excluded]
     prev_smart = {r["serial"]: r for r in rows(os.path.join(prev, "smart.tsv"), True) if r.get("serial")} if prev else {}
     storcli = {}
     for r in rows(os.path.join(day_dir, "storcli.tsv")):
@@ -260,10 +273,9 @@ def main():
     flags = Counter(f.split(":")[0] if f.startswith("stopped_in") else f for r in node_rows for f in r["flags"])
     smart_nodes = {d["ip"] for d in disks}
     collected = [r for r in node_rows if r["status"] == "ok" or r["status"].startswith("partial")]
-    excl = Counter(r[3] if len(r) > 3 else "" for r in rows(os.path.join(day_dir, "excluded.tsv")) if r) \
-        if os.path.exists(os.path.join(day_dir, "excluded.tsv")) else Counter()
+    excl = Counter(e["reason"] for e in excluded.values())
     cov = {"nodes_total": len(node_rows), "collected": len(collected),
-           "excluded": sum(excl.values()), "excluded_by_reason": dict(excl),
+           "excluded": sum(excl.values()), "excluded_by_reason": dict(excl.most_common()),
            "by_status": dict(Counter(r["status"] for r in node_rows)),
            "by_kind": {k: dict(v) for k, v in by_kind.items()},
            "flags": dict(flags.most_common()),
@@ -294,7 +306,8 @@ def main():
                                    "models": [[m, c] for m, c in models.most_common(15)]},
                           "memory": {"nodes": len(memory), "by_level": lv(memory), "by_rule": dict(rulem.most_common()),
                                      "dimms": sum(m["dimms"] for m in memory)}},
-              "disks": disks, "memory": memory, "nodes": node_rows}
+              "disks": disks, "memory": memory, "nodes": node_rows,
+              "excluded_nodes": sorted(excluded.values(), key=lambda e: [int(p) for p in e["ip"].split(".")])}
     tmp = out_path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(report, f, ensure_ascii=False, separators=(",", ":"))
