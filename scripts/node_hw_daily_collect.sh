@@ -3,7 +3,8 @@
 #
 # Runs on the Atlas deploy node. Fleet = infrastructure_assets present gpu_node+cpu_node
 # with an IP (H200 is not in that table and is out of scope; ATLAS_HW_EXCLUDE_RE can add
-# exclusions). One SSH session per node; only read-only commands run on the node:
+# exclusions; ATLAS_HW_EXCLUDE_FILE = exact-IP out-of-scope list, default
+# /ops/atlas/configs/node-hw-exclude.tsv, repo copy deploy/node-hw/node-hw-exclude.tsv). One SSH session per node; only read-only commands run on the node:
 #   ipmitool sel info / sel elist (in-band, read), storcli64 show all (if present), dmidecode -t 17, lsblk, cat /sys, /proc,
 #   awk/grep on kernel logs (journalctl -k when no kern.log), smartctl -x (smartmontools installed 2026-11-20 with user approval,
 #   smartd disabled). Nothing is installed, changed, cleared or rebooted.
@@ -52,7 +53,18 @@ for kv in $ATLAS_DATABASE_DSN; do
   esac
 done
 PGOPTIONS="-c default_transaction_read_only=on" "$PSQL" -AtF $'\t' -c "select ip_address, entity_kind, coalesce(name,'') from infrastructure_assets where present and entity_kind in ('gpu_node','cpu_node') and ip_address ~ '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' order by 1" \
-  | LC_ALL=C grep -vE "$EXCL" | LC_ALL=C grep -E "${ATLAS_HW_ONLY_RE:-.}" | sort -u -t$'\t' -k1,1 > "$OUT/nodes.tsv"
+  | LC_ALL=C grep -vE "$EXCL" | LC_ALL=C grep -E "${ATLAS_HW_ONLY_RE:-.}" | sort -u -t$'\t' -k1,1 > "$OUT/nodes.all.tsv"
+# Explicit out-of-scope list (user decision 2026-11-23: Obs object storage / GPFS / Upload servers are not
+# compute nodes). Format: ip<TAB>reason[<TAB>...]; '#' comments. Exact IP match, so new compute nodes in the
+# same subnets are still collected. Excluded nodes go to excluded.tsv (not counted as collection failures).
+EXCL_FILE="${ATLAS_HW_EXCLUDE_FILE:-/ops/atlas/configs/node-hw-exclude.tsv}"
+if [ -s "$EXCL_FILE" ]; then
+  LC_ALL=C awk -F'\t' 'BEGIN{OFS="\t"} NR==FNR{if($1!~/^#/ && $1!="") x[$1]=$2; next} ($1 in x){print $1,$2,$3,x[$1] > ex; next} {print}' \
+    ex="$OUT/excluded.tsv" "$EXCL_FILE" "$OUT/nodes.all.tsv" > "$OUT/nodes.tsv"
+else
+  cp "$OUT/nodes.all.tsv" "$OUT/nodes.tsv"
+fi
+touch "$OUT/excluded.tsv"
 
 PREFIXES="$(for i in $(seq 0 $((DAYS - 1))); do TZ=Asia/Shanghai LC_ALL=C date -d "-$i day" '+%b %e'; done | paste -sd'|')"
 export OUT PREFIXES DAYS
@@ -223,6 +235,8 @@ DUR=$(( $(date +%s) - START ))
   echo
   echo "范围：infrastructure_assets present 的 gpu_node + cpu_node（H200 不在其中）；内核日志窗口 ${DAYS} 天；耗时 ${DUR}s；并发 ${PAR}。"
   echo
+  echo "按排除清单移出范围：$(wc -l < "$OUT/excluded.tsv") 台（$(cut -f4 "$OUT/excluded.tsv" | sort | uniq -c | awk '{c=$1; $1=""; sub(/^ /,""); printf "%s%s %d", (n++?"，":""), $0, c}')），见 excluded.tsv；不计入采集失败。"
+  echo
   echo "## 采集状态（按节点类型）"
   echo
   echo "| 状态 | gpu_node | cpu_node | 合计 |"; echo "|---|---|---|---|"
@@ -252,7 +266,7 @@ DUR=$(( $(date +%s) - START ))
   echo "- 内存条记录：$(wc -l < "$OUT/dimm.tsv")；磁盘记录：$(wc -l < "$OUT/disk.tsv")；内核硬件日志分组：$(wc -l < "$OUT/kern.tsv")"
 } > "$OUT/summary.md"
 set -e -o pipefail
-(cd "$OUT" && sha256sum nodes.tsv status.tsv followup.tsv sel.tsv sel_span.tsv storcli.tsv smart.tsv kern.tsv dimm.tsv disk.tsv summary.md nodes/*.txt > SHA256SUMS)
+(cd "$OUT" && sha256sum nodes.all.tsv nodes.tsv excluded.tsv status.tsv followup.tsv sel.tsv sel_span.tsv storcli.tsv smart.tsv kern.tsv dimm.tsv disk.tsv summary.md nodes/*.txt > SHA256SUMS)
 gzip -f "$OUT"/nodes/*.txt   # SHA256SUMS refers to the uncompressed text (zcat | sha256sum)
 # Fleet disk/memory snapshot for the web page (/api/v1/hardware/fleet); failure must not break collection.
 python3 /ops/atlas/scripts/node_hw_fleet_report.py "$OUT" > "$OUT/fleet-hw.log" 2>&1 || echo "fleet-hw report failed (see $OUT/fleet-hw.log)" >&2

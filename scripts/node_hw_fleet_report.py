@@ -260,7 +260,10 @@ def main():
     flags = Counter(f.split(":")[0] if f.startswith("stopped_in") else f for r in node_rows for f in r["flags"])
     smart_nodes = {d["ip"] for d in disks}
     collected = [r for r in node_rows if r["status"] == "ok" or r["status"].startswith("partial")]
+    excl = Counter(r[3] if len(r) > 3 else "" for r in rows(os.path.join(day_dir, "excluded.tsv")) if r) \
+        if os.path.exists(os.path.join(day_dir, "excluded.tsv")) else Counter()
     cov = {"nodes_total": len(node_rows), "collected": len(collected),
+           "excluded": sum(excl.values()), "excluded_by_reason": dict(excl),
            "by_status": dict(Counter(r["status"] for r in node_rows)),
            "by_kind": {k: dict(v) for k, v in by_kind.items()},
            "flags": dict(flags.most_common()),
