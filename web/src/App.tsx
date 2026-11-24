@@ -103,8 +103,8 @@ const pageCopy = (tx: Tx): Record<PageId, { label: string; title: string; desc: 
 const subPages = (page: PageId, tx: Tx): SubPage[] => ({
   overview: [],
   gpu: [{ id: 'health', label: tx('健康', 'Health') }, { id: 'ranking', label: tx('风险排名', 'Risk Ranking') }, { id: 'events', label: tx('硬件事件', 'Hardware Events') }, { id: 'degradation', label: tx('性能衰减', 'Degradation') }, { id: 'inventory', label: tx('资产清单', 'Inventory') }],
-  memory: [{ id: 'hits', label: tx('规则命中', 'Rule Hits') }, { id: 'list', label: tx('全部节点', 'All Nodes') }],
-  disk: [{ id: 'hits', label: tx('规则命中', 'Rule Hits') }, { id: 'list', label: tx('全部磁盘', 'All Disks') }],
+  memory: [{ id: 'hits', label: tx('规则命中', 'Rule Hits') }, { id: 'events', label: tx('事件台账', 'Event Ledger') }, { id: 'list', label: tx('全部节点', 'All Nodes') }],
+  disk: [{ id: 'hits', label: tx('规则命中', 'Rule Hits') }, { id: 'events', label: tx('事件台账', 'Event Ledger') }, { id: 'list', label: tx('全部磁盘', 'All Disks') }],
   data: [{ id: 'targets', label: tx('采集覆盖', 'Coverage') }, { id: 'continuity', label: tx('指标连续性', 'Continuity') }, { id: 'hardware', label: tx('硬件采集', 'Hardware Collection') }, { id: 'assets', label: tx('资产对账', 'Asset Reconciliation') }, { id: 'audit', label: tx('资产核查', 'Asset Audit') }, { id: 'issues', label: tx('问题台账', 'Issue Ledger') }],
   ai: [{ id: 'inspection', label: tx('只读巡检', 'Read-only Checks') }, { id: 'diagnosis', label: tx('故障分析', 'Fault Analysis') }, { id: 'assistant', label: tx('运维助手', 'Ops Assistant') }, { id: 'skills', label: tx('运维技能', 'Ops Skills') }],
   settings: [{ id: 'platform', label: tx('平台配置', 'Platform') }, { id: 'sync', label: tx('同步审计', 'Sync Audit') }],

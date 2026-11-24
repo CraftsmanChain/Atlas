@@ -13,7 +13,7 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 cd "$repo_root"
 for d in "$@"; do [[ "$d" == all || "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "bad day: $d" >&2; exit 1; }; done
 
-scp "${atlas_ssh_options[@]}" scripts/node_hw_daily_collect.sh scripts/node_hw_fleet_report.py scripts/node_hw_smart_parse.py \
+scp "${atlas_ssh_options[@]}" scripts/node_hw_daily_collect.sh scripts/node_hw_fleet_report.py scripts/node_hw_ledger.py scripts/node_hw_smart_parse.py \
   scripts/node_add_pubkey.sh "$remote_ssh:$remote_root/scripts/"
 scp "${atlas_ssh_options[@]}" deploy/node-hw/node-hw-exclude.tsv "$remote_ssh:$remote_root/configs/node-hw-exclude.tsv"
 scp "${atlas_ssh_options[@]}" deploy/node-hw/pubkey-b-2026-11-23.txt "$remote_ssh:$remote_root/reports/node-hw/"

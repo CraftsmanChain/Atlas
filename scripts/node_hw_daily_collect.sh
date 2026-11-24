@@ -12,13 +12,15 @@
 # Output $ATLAS_HW_COLLECT_ROOT/<YYYY-MM-DD>/
 #   nodes.tsv     ip, entity_kind, name
 #   nodes/<ip>.txt raw per-node sections (##META ##TOOLS ##SELINFO ##SEL ##DIMM ##EDAC ##MEM
-#                 ##KERNCNT ##KERNLINES ##DISK ##NVME ##RAID ##IOERR ##SMART ##END)
+#                 ##SELRAW ##BOARD ##KERNCNT ##KERNLINES ##DISK ##NVME ##RAID ##IOERR ##SMART ##END)
 #   status.tsv    ip, kind, ssh_rc, status, flags      (one row per node; collection anomalies)
 #   smart.tsv     one row per physical disk (see node_hw_smart_parse.py header)
 #   storcli.tsv   ip, drive, state, media_err, other_err, pred_fail, smart_alert, sn, temp, model
 #   sel.tsv       ip, sel_id, date, time, sensor, event, direction   (Session Audit dropped)
 #   kern.tsv      ip, day, class, count
-#   dimm.tsv      ip, locator, size, manufacturer, serial, part, speed
+#   dimm.tsv      ip, locator, size, manufacturer, serial, part, speed, bank_locator
+#   selraw.tsv    ip, sel_id, sensor_number, event_data   (raw memory SEL records; slot decode in fleet report)
+#   board.tsv     ip, board_vendor, board_name
 #   disk.tsv      ip, name, rota, tran, model, serial, size
 #   followup.tsv  ip, kind, category, detail  (nodes to handle later: collect failures, missing/broken
 #                 smartmontools, smartd active, SEL full/unreadable, device-access hangs)
@@ -91,12 +93,23 @@ echo "smartd=$(systemctl is-active smartmontools 2>/dev/null)"
 echo "##SELINFO"
 has ipmitool && T 30 sel_info ipmitool sel info 2>&1 | head -20
 echo "##SEL"
-has ipmitool && T 120 sel_elist ipmitool sel elist 2>&1 | grep -v "Session Audit" | tail -5000
+has ipmitool && T 120 sel_elist ipmitool sel elist 2>&1 | grep -v "Session Audit" | tail -5000 > /tmp/.atlas_sel.$$
+cat /tmp/.atlas_sel.$$ 2>/dev/null
+echo "##SELRAW"
+# Raw event data of memory SEL records (one verbose pass; newest 300). The BMC text often only names a sensor
+# (#0xd3) or "CPU 1 DIMM 0"; the slot is in event data 2/3 and is decoded per board in the fleet report.
+if has ipmitool && grep -q "| Memory" /tmp/.atlas_sel.$$ 2>/dev/null; then
+  T 120 sel_raw ipmitool -v sel elist 2>/dev/null | awk -F' *: ' '/^SEL Record ID/{id=$2; st=sn=""} /^ Sensor Type/{st=$2} /^ Sensor Number/{sn=$2}
+    /^ Event Data/{if(st ~ /^Memory/) print id"\t"sn"\t"$2}' | tail -300
+fi
+rm -f /tmp/.atlas_sel.$$
+echo "##BOARD"
+echo "$(cat /sys/class/dmi/id/board_vendor 2>/dev/null)	$(cat /sys/class/dmi/id/board_name 2>/dev/null)"
 echo "##DIMM"
 has dmidecode && T 20 dmidecode dmidecode -t 17 2>/dev/null | awk -F': ' '
-  /^Memory Device/{if(l!="") print l"\t"s"\t"m"\t"sn"\t"pn"\t"sp; l=s=m=sn=pn=sp=""}
-  /^\tLocator:/{l=$2} /^\tSize:/{s=$2} /^\tManufacturer:/{m=$2} /^\tSerial Number:/{sn=$2} /^\tPart Number:/{pn=$2} /^\tSpeed:/{sp=$2}
-  END{if(l!="") print l"\t"s"\t"m"\t"sn"\t"pn"\t"sp}' | grep -v "No Module Installed"
+  /^Memory Device/{if(l!="") print l"\t"s"\t"m"\t"sn"\t"pn"\t"sp"\t"bl; l=s=m=sn=pn=sp=bl=""}
+  /^\tLocator:/{l=$2} /^\tBank Locator:/{bl=$2} /^\tSize:/{s=$2} /^\tManufacturer:/{m=$2} /^\tSerial Number:/{sn=$2} /^\tPart Number:/{pn=$2} /^\tSpeed:/{sp=$2}
+  END{if(l!="") print l"\t"s"\t"m"\t"sn"\t"pn"\t"sp"\t"bl}' | grep -v "No Module Installed"
 echo "##EDAC"
 for f in /sys/devices/system/edac/mc/mc*/dimm*/dimm_ce_count; do
   [ -f "$f" ] || continue; d=$(dirname "$f"); echo "$(cat $d/dimm_label 2>/dev/null)	ce=$(cat $f)	ue=$(cat $d/dimm_ue_count 2>/dev/null)"
@@ -156,7 +169,7 @@ cut -f1 "$OUT/nodes.tsv" | xargs -P "$PAR" -I{} bash -c 'one "$1"' _ {}
 
 # ---------- collate + anomaly classification ----------
 set +e +o pipefail
-: > "$OUT/sel.tsv"; : > "$OUT/storcli.tsv"; : > "$OUT/kern.tsv"; : > "$OUT/dimm.tsv"; : > "$OUT/disk.tsv"
+: > "$OUT/sel.tsv"; : > "$OUT/storcli.tsv"; : > "$OUT/kern.tsv"; : > "$OUT/dimm.tsv"; : > "$OUT/disk.tsv"; : > "$OUT/selraw.tsv"; : > "$OUT/board.tsv"
 printf 'ip\tkind\tssh_rc\tstatus\tflags\n' > "$OUT/status.tsv"
 sec() { LC_ALL=C awk -v s="##$2" '/^##[A-Z]+$/{on=($0==s); next} on' "$1"; }
 while IFS=$'\t' read -r ip kind name; do
@@ -204,6 +217,8 @@ while IFS=$'\t' read -r ip kind name; do
     END{out()}' >> "$OUT/storcli.tsv"
   sec "$f" KERNCNT | LC_ALL=C awk -v ip="$ip" 'NF>0{print ip"\t"$0}' >> "$OUT/kern.tsv"
   sec "$f" DIMM | LC_ALL=C awk -v ip="$ip" 'NF>0{print ip"\t"$0}' >> "$OUT/dimm.tsv"
+  sec "$f" SELRAW | LC_ALL=C awk -F'\t' -v ip="$ip" 'NF>=3 && $1 !~ /^#/{print ip"\t"$0}' >> "$OUT/selraw.tsv"
+  sec "$f" BOARD | LC_ALL=C awk -v ip="$ip" 'NF>0{print ip"\t"$0}' >> "$OUT/board.tsv"
   sec "$f" DISK | LC_ALL=C sed -nE 's/^NAME="([^"]*)" ROTA="([^"]*)" TRAN="([^"]*)" MODEL="([^"]*)" SERIAL="([^"]*)" SIZE="([^"]*)".*/\1\t\2\t\3\t\4\t\5\t\6/p' | LC_ALL=C awk -v ip="$ip" '{print ip"\t"$0}' >> "$OUT/disk.tsv"
 done < "$OUT/nodes.tsv"
 
@@ -266,7 +281,7 @@ DUR=$(( $(date +%s) - START ))
   echo "- 内存条记录：$(wc -l < "$OUT/dimm.tsv")；磁盘记录：$(wc -l < "$OUT/disk.tsv")；内核硬件日志分组：$(wc -l < "$OUT/kern.tsv")"
 } > "$OUT/summary.md"
 set -e -o pipefail
-(cd "$OUT" && sha256sum nodes.all.tsv nodes.tsv excluded.tsv status.tsv followup.tsv sel.tsv sel_span.tsv storcli.tsv smart.tsv kern.tsv dimm.tsv disk.tsv summary.md nodes/*.txt > SHA256SUMS)
+(cd "$OUT" && sha256sum nodes.all.tsv nodes.tsv excluded.tsv status.tsv followup.tsv sel.tsv sel_span.tsv storcli.tsv smart.tsv kern.tsv dimm.tsv disk.tsv selraw.tsv board.tsv summary.md nodes/*.txt > SHA256SUMS)
 gzip -f "$OUT"/nodes/*.txt   # SHA256SUMS refers to the uncompressed text (zcat | sha256sum)
 # Fleet disk/memory snapshot for the web page (/api/v1/hardware/fleet); failure must not break collection.
 python3 /ops/atlas/scripts/node_hw_fleet_report.py "$OUT" > "$OUT/fleet-hw.log" 2>&1 || echo "fleet-hw report failed (see $OUT/fleet-hw.log)" >&2

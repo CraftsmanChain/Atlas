@@ -20,13 +20,14 @@ type Memory = {
   hits: string[]; level: Level;
 };
 type DimmIssue = { slot: string; sensor?: string; ce_30d: number; ue_30d: number; ue_total: number; ce_total: number; disabled_30d: number; first: string; last: string; mapped: boolean; dmi_slot?: string; sn?: string; part?: string; size?: string; vendor?: string; speed?: string };
+type LedgerEvent = { type: 'memory' | 'disk'; ip: string; host: string; date: string; time: string; kind: string; count?: number; new?: number; slot: string; sn: string; part: string; size: string | number; first_seen: string; mapped: boolean; before?: number | string; after?: number | string };
 type NodeRow = { ip: string; host: string; kind: string; status: string; flags: string[]; followup: string[]; node_exporter?: boolean | null; ipmi?: boolean | null };
 type LevelCount = Record<Level, number>;
 type Fleet = {
   schema: string; rule_version: string; day: string; previous_day: string | null; collected_at: string | null; generated_at: string;
   coverage: { nodes_total: number; collected: number; by_status: Record<string, number>; by_kind: Record<string, Record<string, number>>; flags: Record<string, number>; followup: Record<string, number>; smart_nodes: number; smart_disks: number; collected_without_smart: number; failed_not_in_vm: number | null; excluded?: number; excluded_by_reason?: Record<string, number> };
   summary: { disk: { total: number; by_level: LevelCount; by_rule: Record<string, number>; by_protocol: Record<string, number>; with_delta_baseline: number; models: [string, number][] }; memory: { nodes: number; by_level: LevelCount; by_rule: Record<string, number>; dimms: number } };
-  disks: Disk[]; memory: Memory[]; nodes: NodeRow[]; excluded_nodes?: { ip: string; kind: string; host: string; reason: string }[];
+  disks: Disk[]; memory: Memory[]; nodes: NodeRow[]; events?: LedgerEvent[]; ledger?: { version: string; mem_new?: number; mem_total?: number; disk_new?: number; kern_new?: number }; excluded_nodes?: { ip: string; kind: string; host: string; reason: string }[];
 };
 
 const rank: Record<Level, number> = { critical: 3, warning: 2, attention: 1, clear: 0 };
@@ -164,6 +165,7 @@ export default function HardwareHealth({ tx, kind, view }: { tx: Tx; lang?: stri
     {!fleet ? <div className="hf-empty">{loading ? <Loader2 size={18} className="spin" /> : tx('暂无数据', 'No data')}</div>
       : kind === 'coverage' ? <CoverageView fleet={fleet} tx={tx} />
       : drill ? <RiskList key={drill.label} fleet={fleet} tx={tx} kind={kind} drill={drill} clearDrill={() => setDrill(null)} />
+      : view === 'events' ? <EventLedger fleet={fleet} tx={tx} kind={kind} />
       : view === 'list' ? (kind === 'disk' ? <DiskTable fleet={fleet} tx={tx} /> : <MemoryTable fleet={fleet} tx={tx} />)
       : <RiskList fleet={fleet} tx={tx} kind={kind} />}
   </div>;
@@ -278,7 +280,7 @@ function DimmList({ m, tx }: { m: Memory; tx: Tx }) {
   const issues = m.dimm_issues || [];
   if (!issues.length) return <p className="hf-nolocate">{m.hw_corrupted_kb || m.mce || m.edac ? tx('内核侧信号，未定位到具体内存条（BMC SEL 无槽位记录）', 'Kernel-side signal; BMC SEL names no DIMM slot') : tx('BMC SEL 未记录槽位', 'BMC SEL names no slot')}</p>;
   return <div className="hf-parts">{issues.map((e, i) => <div className={`hf-part${e.ue_30d || e.disabled_30d ? ' hot' : ''}`} key={`${e.slot}-${e.sensor}-${i}`}>
-    <div className="hf-part-id"><b>{e.mapped ? e.dmi_slot : e.slot || (e.sensor ? tx(`传感器 ${e.sensor}`, `Sensor ${e.sensor}`) : tx('未知槽位', 'Unknown slot'))}</b>{e.mapped && e.slot !== e.dmi_slot && <small>SEL {e.slot}</small>}</div>
+    <div className="hf-part-id"><b>{e.mapped ? e.dmi_slot : e.slot || (e.sensor ? tx(`传感器 ${e.sensor}`, `Sensor ${e.sensor}`) : tx('未知槽位', 'Unknown slot'))}</b>{e.mapped && e.slot && e.slot !== e.dmi_slot && <small>{tx(`BMC 记为 ${e.slot}`, `BMC: ${e.slot}`)}</small>}</div>
     {e.mapped ? <div className="hf-part-spec"><span>SN <code>{e.sn || '—'}</code></span><span>{[e.vendor, e.part, e.size, e.speed].filter(Boolean).join(' / ')}</span></div>
       : <div className="hf-part-spec muted">{e.slot ? tx('SEL 槽位名缺通道信息，无法唯一对应 SN', 'SEL slot lacks channel; SN not unique') : tx('SEL 只给出传感器号，无法对应槽位', 'SEL gives only a sensor number')}</div>}
     <div className="hf-part-count">{[e.ue_30d ? tx(`UE ${e.ue_30d}（30 天）`, `UE ${e.ue_30d} (30d)`) : e.ue_total ? tx(`UE ${e.ue_total}（历史）`, `UE ${e.ue_total} (history)`) : '', e.disabled_30d ? tx(`禁用 ${e.disabled_30d}`, `disabled ${e.disabled_30d}`) : '', e.ce_30d ? tx(`CE ${e.ce_30d}（30 天）`, `CE ${e.ce_30d} (30d)`) : e.ce_total ? tx(`CE ${e.ce_total}（历史）`, `CE ${e.ce_total} (history)`) : ''].filter(Boolean).join('，')}<small>{e.first === e.last ? e.last : `${e.first} → ${e.last}`}</small></div>
@@ -311,6 +313,41 @@ function RiskList({ fleet, tx, kind, drill, clearDrill }: { fleet: Fleet; tx: Tx
       <thead><tr><th>{tx('等级', 'Level')}</th><th>{tx('节点', 'Node')}</th><th>{tx('命中规则', 'Rule hits')}</th><th>{kind === 'disk' ? tx('问题硬盘（槽位 / SN / 型号与容量）', 'Disk (slot / SN / model & size)') : tx('问题内存条（槽位 / SN / 规格）', 'DIMM (slot / SN / spec)')}</th><th>{tx('证据', 'Evidence')}</th></tr></thead>
       <tbody>{kind === 'disk' ? disks.map(d => <tr key={`${d.ip}-${d.serial}-${d.dev}`}><td><LevelTag level={d.level} tx={tx} /></td><td><b>{d.ip}</b><small>{d.host}</small></td><td>{d.hits.map(h => <span key={h} className="hf-rule">{ruleText(h, tx)}</span>)}</td><td><DiskPart d={d} tx={tx} /></td><td><Facts items={diskEvidence(d, tx)} /></td></tr>)
         : mem.map(m => <tr key={m.ip}><td><LevelTag level={m.level} tx={tx} /></td><td><b>{m.ip}</b><small>{m.host}</small><small>{tx(`${m.dimms} 根，共 ${m.mem_gb} GB`, `${m.dimms} DIMMs, ${m.mem_gb} GB`)}</small></td><td>{m.hits.map(h => <span key={h} className="hf-rule">{ruleText(h, tx)}</span>)}</td><td><DimmList m={m} tx={tx} /></td><td><Facts items={memEvidence(m, tx)} /></td></tr>)}</tbody></table></div>}
+  </section>;
+}
+
+function EventLedger({ fleet, tx, kind }: { fleet: Fleet; tx: Tx; kind: 'memory' | 'disk' }) {
+  const [q, setQ] = useState('');
+  const [k, setK] = useState('');
+  const needle = q.trim().toLowerCase();
+  const all = (fleet.events || []).filter(e => e.type === kind);
+  const rows = all.filter(e => (!k || e.kind === k) && (!needle || [e.ip, e.host, e.slot, e.sn, e.part].some(v => String(v || '').toLowerCase().includes(needle))));
+  const kindText: Record<string, [string, string, Level]> = {
+    ue: ['不可纠正 ECC', 'Uncorrectable ECC', 'critical'], disabled: ['内存条被禁用', 'DIMM disabled', 'critical'], ce: ['可纠正 ECC', 'Correctable ECC', 'attention'],
+    realloc: ['重映射扇区增加', 'Reallocated +', 'warning'], pending: ['待映射扇区增加', 'Pending +', 'critical'], media: ['介质错误增加', 'Media errors +', 'critical'], unc: ['不可纠正增加', 'Uncorrectable +', 'critical'],
+    offunc: ['离线不可纠正增加', 'Offline uncorrectable +', 'critical'], errlog: ['NVMe 错误日志增加', 'NVMe error log +', 'attention'], crc: ['链路 CRC 增加', 'Link CRC +', 'attention'], timeout: ['命令超时增加', 'Command timeouts +', 'attention'],
+  };
+  const kinds = Array.from(new Set(all.map(e => e.kind)));
+  const days = new Set(all.map(e => e.date)).size;
+  const located = all.filter(e => e.mapped).length;
+  if (!fleet.events) return <div className="hf-empty">{tx('该日快照没有事件台账（台账从 2026-11-24 起生成）', 'No ledger in this snapshot (ledger starts 2026-11-24)')}</div>;
+  return <section className="hf-panel">
+    <p className="hf-note">{kind === 'memory'
+      ? tx(`近 30 天，按"节点 + 内存条 + 类型 + 日期"合并。不可纠正与禁用全部列出；可纠正只列当天新出现的。台账跨天累计，BMC 日志写满被覆盖后也不会丢。${all.length} 条，${located} 条已定位到 SN。`, `Last 30 days, merged per node + DIMM + type + day. ${all.length} rows, ${located} located to a serial.`)
+      : tx(`近 30 天，SMART / RAID 错误计数比前一天增加的硬盘。${all.length} 条，涉及 ${days} 天。`, `Last 30 days, disks whose SMART / RAID error counters grew day over day. ${all.length} rows over ${days} days.`)}</p>
+    <div className="hf-toolbar"><label className="hf-search"><Search size={14} /><input value={q} onChange={e => setQ(e.target.value)} placeholder={tx('节点、槽位、SN', 'Node, slot, SN')} /></label>
+      <select value={k} onChange={e => setK(e.target.value)} aria-label={tx('类型', 'Type')}><option value="">{tx('全部类型', 'All types')}</option>{kinds.map(x => <option key={x} value={x}>{kindText[x] ? tx(kindText[x][0], kindText[x][1]) : x}</option>)}</select><span>{tx(`${rows.length} 条`, `${rows.length} rows`)}</span></div>
+    {rows.length === 0 ? <div className="hf-empty"><ShieldAlert size={20} />{tx('近 30 天没有事件', 'No events in the last 30 days')}</div> :
+    <div className="hf-scroll"><table className="hf-table hf-hits"><colgroup><col style={{ width: 104 }} /><col style={{ width: 150 }} /><col style={{ width: 190 }} /><col /><col style={{ width: 150 }} /><col style={{ width: 110 }} /></colgroup>
+      <thead><tr><th>{tx('发生日期', 'Date')}</th><th>{tx('类型', 'Type')}</th><th>{tx('节点', 'Node')}</th><th>{kind === 'memory' ? tx('内存条（槽位 / SN / 规格）', 'DIMM (slot / SN / spec)') : tx('硬盘（槽位 / SN / 型号）', 'Disk (slot / SN / model)')}</th><th className="num">{kind === 'memory' ? tx('次数', 'Count') : tx('计数变化', 'Counter')}</th><th>{tx('首次看到', 'First seen')}</th></tr></thead>
+      <tbody>{rows.map((e, i) => { const kt = kindText[e.kind]; return <tr key={`${e.ip}-${e.sn}-${e.kind}-${e.date}-${i}`}>
+        <td><b>{e.date}</b>{e.time && <small>{e.time}</small>}</td>
+        <td>{kt ? <LevelTag level={kt[2]} tx={tx} /> : null}<small>{kt ? tx(kt[0], kt[1]) : e.kind}</small></td>
+        <td><b>{e.ip}</b><small>{e.host}</small></td>
+        <td>{e.mapped ? <div className="hf-ledger-part"><b>{e.slot}</b><span>SN <code>{e.sn}</code></span><span>{[e.part, e.size && (e.type === 'disk' ? capText(Number(e.size)) : e.size)].filter(Boolean).join(' / ')}</span></div>
+          : <div className="hf-ledger-part"><b>{e.slot || tx('未知槽位', 'Unknown slot')}</b><span className="muted">{tx('无法对应到具体内存条', 'Not resolvable to a DIMM')}</span></div>}</td>
+        <td className="num">{e.type === 'disk' ? `${e.before} → ${e.after}` : <>{e.count}{e.new ? <small>{tx(`新增 ${e.new}`, `${e.new} new`)}</small> : null}</>}</td>
+        <td>{e.first_seen}</td></tr>; })}</tbody></table></div>}
   </section>;
 }
 

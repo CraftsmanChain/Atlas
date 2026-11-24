@@ -140,3 +140,7 @@ button.hf-kpi:hover { background:var(--surface-2); }
 .hf-modal header b { display:block; font-size:14px; }.hf-modal header small { color:var(--muted); font-size:12px; }
 .hf-modal textarea { width:100%; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border); border-radius:6px; background:var(--surface-2); color:var(--text); font:12px/1.6 ui-monospace,monospace; resize:vertical; }
 .hf-modal footer { display:flex; justify-content:flex-end; }
+.hf-ledger-part { display:flex; flex-direction:column; gap:2px; font-size:12px; color:var(--muted); }
+.hf-ledger-part b { font:600 12px ui-monospace,monospace; color:var(--text); }
+.hf-ledger-part code { color:var(--text); font-size:12px; user-select:all; }
+.hf-ledger-part .muted { color:var(--faint); }

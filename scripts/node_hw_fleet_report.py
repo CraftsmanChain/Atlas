@@ -22,12 +22,16 @@ Rules (node-hw-rules-v1) are status/degradation rules only - no probability, no 
                    kernel 'Machine check events logged' (undecoded MCE, no EDAC error line)
   v1.1 (2026-11-24): kernel EDAC/MCE counts error lines only (driver-init lines ignored); per-slot memory
                    issues mapped to dmidecode slot/SN/part ("dimm_issues"); unmonitored nodes moved to excluded.
+  v1.2 (2026-11-24): memory windows counted from the cross-day ledger (node_hw_ledger.py); DIMM slot decoded from raw
+                   SEL event data per board (selraw.tsv/board.tsv); disk 'slot'; snapshot gains 'ledger' + 'events'.
   life (SSD only): remaining_days = power_on_hours*(100-wear)/wear/24 at the lifetime-average wear rate (wear>=1).
 """
 import csv, datetime as dt, glob, gzip, json, os, re, sys, urllib.parse, urllib.request
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import node_hw_ledger as ledger  # noqa: E402
 from collections import Counter, defaultdict
 
-RULES = "node-hw-rules-v1.1"
+RULES = "node-hw-rules-v1.2"
 csv.field_size_limit(1 << 24)
 LEVEL_RANK = {"critical": 3, "warning": 2, "attention": 1, "clear": 0}
 
@@ -143,6 +147,38 @@ def slot_key(name):
     return None
 
 
+def decode_sel_slot(board, sensor, ed):
+    """Slot from raw memory SEL event data (data2/data3), per board family. Verified 2026-11-24 on 96 nodes
+    (Atlas-Docs evidence/hw-sel-decode-2026-11-24): Supermicro H12 189/189 equal to the BMC text; SuperCloud
+    R8428 / ASUS KMPG 9257/9257 decode to a populated slot with CPU = sensor (d1/d3); GOOXI G3DCTR 5145/5145
+    CPU equal to the BMC text 'CPU n DIMM m'. Returns (cpu, channel_letter, slot_index_in_channel, style) or None."""
+    try:
+        d1, d2, d3 = int(ed[0:2], 16), int(ed[2:4], 16), int(ed[4:6], 16)
+    except (ValueError, IndexError):
+        return None
+    b = board.upper()
+    if "H12DSG" in b and d2 >> 4 and (d2 & 15) in (0xA, 0xB):          # DIMM<ch><1|2>(CPU<n>)
+        return ((d3 & 1) + 1, chr(64 + (d2 >> 4)), (d2 & 15) - 9, "smc")
+    if ("R8428" in b or "KMPG" in b) and d2 == 0xFF:                    # DIMM_<A..P><n>, CPU1 = A..H
+        cpu = (d3 >> 5) & 1
+        return (cpu, chr(65 + ((d3 >> 2) & 7) + 8 * cpu), (d3 & 3) + 1, "letter")
+    if "G3DCTR" in b and d3 <= 1:                                       # DIMM <m> / P<cpu> CHANNEL <X>
+        return (d3, chr(65 + (d2 >> 4)), d2 & 15, "goo")
+    return None
+
+
+def dimm_for_decoded(dec, dimms):
+    cpu, ch, idx, style = dec
+    if style == "smc":
+        want = ["P%d-DIMM%s%d" % (cpu, ch, idx), "DIMM%s%d" % (ch, idx)]
+        hits = [d for d in dimms if d["slot"].upper() in want]
+    elif style == "letter":
+        hits = [d for d in dimms if d["slot"].upper() in ("DIMM_%s%d" % (ch, idx), "DIMM%s%d" % (ch, idx))]
+    else:
+        hits = [d for d in dimms if d["slot"].upper() == "DIMM %d" % idx and d.get("bank", "").upper() == "P%d CHANNEL %s" % (cpu, ch)]
+    return hits[0] if len(hits) == 1 else None
+
+
 def match_dimm(loc, dimms):
     """Unique dmidecode record for a SEL slot name, else None (ambiguous or unmappable, e.g. '#0x08')."""
     if not loc or loc.startswith("#"):
@@ -156,10 +192,28 @@ def match_dimm(loc, dimms):
     return hits[0] if len(hits) == 1 else None
 
 
-def _slot_add(s, name, kind, iso, age):
-    if not name.startswith("#"):
-        s["locs"][name] += 1
-    e = s["slots"].setdefault(name, {"slot": name, "ce_30d": 0, "ue_30d": 0, "ue_total": 0, "ce_total": 0,
+def resolve_slot(ip, sel_id, text_loc, board, selraw, dimms):
+    """Per SEL record: {'key','slot','sensor','dimm','via'}; raw decode first, then BMC text, then sensor number."""
+    raw = selraw.get((ip, sel_id.lower().lstrip("0")))
+    if raw:
+        dec = decode_sel_slot(board, raw[0], raw[1])
+        if dec:
+            d = dimm_for_decoded(dec, dimms)
+            if d:
+                return {"key": d["slot"] + "|" + d.get("bank", ""), "slot": text_loc if text_loc and not text_loc.startswith("#") else "", "dimm": d, "via": "sel_raw"}
+    if text_loc and not text_loc.startswith("#"):
+        d = match_dimm(text_loc, dimms)
+        return {"key": (d["slot"] + "|" + d.get("bank", "")) if d else text_loc, "slot": text_loc, "dimm": d, "via": "sel_text" if d else ""}
+    sensor = text_loc or ("#0x" + raw[0] if raw else "")
+    return {"key": sensor or "#unknown", "slot": "", "sensor": sensor, "dimm": None, "via": ""}
+
+
+def _slot_add(s, r, kind, iso, age):
+    name = r["key"]
+    if r.get("dimm") or (r.get("slot") and not r["slot"].startswith("#")):
+        s["locs"][r["dimm"]["slot"] if r.get("dimm") else r["slot"]] += 1
+    e = s["slots"].setdefault(name, {"slot": r.get("slot", ""), "sensor": r.get("sensor", ""), "dimm": r.get("dimm"), "via": r.get("via", ""),
+                                     "ce_30d": 0, "ue_30d": 0, "ue_total": 0, "ce_total": 0,
                                      "disabled_30d": 0, "first": iso, "last": iso})
     e["first"], e["last"] = min(e["first"], iso), max(e["last"], iso)
     if kind == "ue":
@@ -195,6 +249,7 @@ def main():
         if r and r[0] and not r[0].startswith("#") and r[0] not in excluded and r[0] in nodes:
             excluded[r[0]] = {"ip": r[0], "kind": nodes[r[0]]["kind"], "host": nodes[r[0]]["host"] or (r[2] if len(r) > 2 else ""),
                               "reason": r[1] if len(r) > 1 else ""}
+    ledger_stats = {"version": ledger.LEDGER_VERSION}
     mon = monitored_ips()
     # User decision 2026-11-24: nodes absent from monitoring (no node_exporter and no IPMI series in VM)
     # are not shown; they are listed under excluded_nodes with this reason so the count stays auditable.
@@ -269,13 +324,39 @@ def main():
         d["level"] = worst([h[0] for h in hits])
         if d["wear"] and d["wear"] >= 1 and d["poh"]:
             d["life_days"] = int(d["poh"] * (100 - d["wear"]) / d["wear"] / 24)
+        m_slot = re.search(r"megaraid,(\d+)", d["dev"])
+        d["slot"] = (sc or {}).get("slot") or ("RAID PD %s" % m_slot.group(1) if m_slot else d["dev"].split(" ")[0])
         disks.append(d)
+    disk_ledger, disk_new = ledger.update_disk(day, disks)
+    ledger_stats["disk_new"] = disk_new
 
     # ---------------- memory ----------------
-    sel = defaultdict(lambda: {"ce_7d": 0, "ce_30d": 0, "ue_30d": 0, "ue_total": 0, "ue_last": "", "ce_last": "",
-                               "disabled_30d": 0, "limit_30d": 0, "locs": Counter(), "slots": {}, "noloc": []})
+    # Every memory SEL record seen today is resolved to a DIMM (raw event data > BMC text) and added to the
+    # cross-day ledger (scripts/node_hw_ledger.py); the 7/30-day windows below are counted from the ledger, so a
+    # BMC SEL that wraps (97 nodes have a full SEL) or a node missing a day does not lose events.
+    kern = defaultdict(Counter)  # legacy class counts (all matched lines); errors re-derived per node below
+    kern_rows = []
+    for r in rows(os.path.join(day_dir, "kern.tsv")):
+        if len(r) >= 4:
+            kern[r[0]][r[2]] += num(r[3]) or 0
+            kern_rows.append((r[0], r[1], r[2], r[3]))
+    dimms = defaultdict(lambda: [0, 0])
+    dimm_rec = defaultdict(list)
+    for r in rows(os.path.join(day_dir, "dimm.tsv")):
+        if len(r) >= 3:
+            g = num(r[2].split()[0]) if r[2].split() else None
+            dimms[r[0]][0] += 1
+            dimms[r[0]][1] += g or 0
+            r = r + [""] * (8 - len(r))
+            dimm_rec[r[0]].append({"slot": r[1].strip(), "size": r[2].strip(), "vendor": r[3].strip(), "sn": r[4].strip(),
+                                   "part": r[5].strip(), "speed": r[6].strip(), "bank": r[7].strip()})
+    board = {r[0]: " ".join(r[1:3]) for r in rows(os.path.join(day_dir, "board.tsv")) if r}
+    selraw = {(r[0], r[1].strip().lower().lstrip("0")): (r[2].strip().lower(), r[3].strip().lower())
+              for r in rows(os.path.join(day_dir, "selraw.tsv")) if len(r) >= 4}
+    extra_cache = {}
+    today_recs = []
     for r in rows(os.path.join(day_dir, "sel.tsv")):
-        if len(r) < 6 or not r[4].startswith("Memory") or (len(r) > 6 and r[6].strip() == "Deasserted"):
+        if len(r) < 6 or not r[4].startswith("Memory") or r[0] in excluded or (len(r) > 6 and r[6].strip() == "Deasserted"):
             continue
         m = re.fullmatch(r"(\d\d)/(\d\d)/(\d{4})", r[2])
         if not m:
@@ -284,45 +365,62 @@ def main():
             date = dt.date(int(m.group(3)), int(m.group(1)), int(m.group(2)))
         except ValueError:
             continue
-        age = (day_date - date).days
-        ev, s = r[5], sel[r[0]]
+        ev = r[5]
+        if "Uncorrectable ECC" in ev: kind = "ue"
+        elif "logging limit reached" in ev: kind = "limit"
+        elif "Correctable ECC" in ev: kind = "ce"
+        elif "Memory Device Disabled" in ev: kind = "disabled"
+        else: continue
+        ip, sel_id = r[0], r[1].strip()
         loc = re.search(r"@([^)]*\))", ev) or re.search(r"Memory (\S+)$", r[4])
-        iso = date.isoformat()
-        if "Uncorrectable ECC" in ev:
+        name = loc.group(1) if loc else ""
+        if not name:
+            if ip not in extra_cache:
+                extra_cache[ip] = sel_extra_locs(node_text(day_dir, ip))
+            name = extra_cache[ip].get(sel_id, "")
+        raw = selraw.get((ip, sel_id.lower().lstrip("0")))
+        rs = resolve_slot(ip, sel_id, name, board.get(ip, ""), selraw, dimm_rec.get(ip, [])) if kind != "limit" else {"dimm": None}
+        d = rs.get("dimm") or {}
+        today_recs.append({"ip": ip, "sel_id": sel_id, "date": date.isoformat(), "time": r[3].strip(), "kind": kind,
+                           "text_loc": name, "sensor": ("0x" + raw[0]) if raw else "", "raw": raw[1] if raw else "",
+                           "slot": d.get("slot", ""), "bank": d.get("bank", ""), "sn": d.get("sn", ""), "part": d.get("part", ""),
+                           "size": d.get("size", ""), "vendor": d.get("vendor", ""), "via": rs.get("via", "") if d else ""})
+    ledger_rows, ledger_new = ledger.update_mem(day, today_recs)
+    ledger_stats["mem_new"] = ledger_new
+    ledger_stats["mem_total"] = len(ledger_rows)
+    kern_ledger, kern_new = ledger.update_kern(day, kern_rows, day_date.year)
+    ledger_stats["kern_new"] = kern_new
+    sel = defaultdict(lambda: {"ce_7d": 0, "ce_30d": 0, "ue_30d": 0, "ue_total": 0, "ue_last": "", "ce_last": "",
+                               "disabled_30d": 0, "limit_30d": 0, "locs": Counter(), "slots": {}, "new_today": 0})
+    for e in ledger_rows:
+        if e["ip"] in excluded or e["date"] > day:
+            continue
+        s, kind, iso = sel[e["ip"]], e["kind"], e["date"]
+        age = (day_date - dt.date.fromisoformat(iso)).days
+        if e["first_seen"] == day and kind in ("ue", "disabled", "ce"):
+            s["new_today"] += 1
+        if kind == "ue":
             s["ue_total"] += 1
             s["ue_last"] = max(s["ue_last"], iso)
             if 0 <= age <= 30: s["ue_30d"] += 1
-        elif "logging limit reached" in ev:
+        elif kind == "limit":
             if 0 <= age <= 30: s["limit_30d"] += 1
-        elif "Correctable ECC" in ev:
+            continue
+        elif kind == "ce":
             s["ce_last"] = max(s["ce_last"], iso)
             if 0 <= age <= 30: s["ce_30d"] += 1
             if 0 <= age <= 7: s["ce_7d"] += 1
-        elif "Memory Device Disabled" in ev:
+        elif kind == "disabled":
             if 0 <= age <= 30: s["disabled_30d"] += 1
+        if e["sn"]:
+            rs = {"key": e["slot"] + "|" + e["bank"], "slot": e["text_loc"] if not e["text_loc"].startswith("#") else "",
+                  "dimm": {k: e[k] for k in ("slot", "bank", "sn", "part", "size", "vendor")} | {"speed": ""}, "via": e["via"]}
+        elif e["text_loc"] and not e["text_loc"].startswith("#"):
+            rs = {"key": e["text_loc"], "slot": e["text_loc"], "dimm": None, "via": ""}
         else:
-            continue
-        kind = ("ue" if "Uncorrectable ECC" in ev else "limit" if "logging limit reached" in ev
-                else "ce" if "Correctable ECC" in ev else "disabled")
-        name = loc.group(1) if loc else ""
-        if not name:
-            s["noloc"].append((r[1].strip(), kind, iso, age))
-            continue
-        _slot_add(s, name, kind, iso, age)
-    kern = defaultdict(Counter)  # legacy class counts (all matched lines); errors re-derived per node below
-    for r in rows(os.path.join(day_dir, "kern.tsv")):
-        if len(r) >= 4:
-            kern[r[0]][r[2]] += num(r[3]) or 0
-    dimms = defaultdict(lambda: [0, 0])
-    dimm_rec = defaultdict(list)
-    for r in rows(os.path.join(day_dir, "dimm.tsv")):
-        if len(r) >= 3:
-            g = num(r[2].split()[0]) if r[2].split() else None
-            dimms[r[0]][0] += 1
-            dimms[r[0]][1] += g or 0
-            r = r + [""] * (7 - len(r))
-            dimm_rec[r[0]].append({"slot": r[1].strip(), "size": r[2].strip(), "vendor": r[3].strip(), "sn": r[4].strip(),
-                                   "part": r[5].strip(), "speed": r[6].strip()})
+            sensor = e["text_loc"] or ("#" + e["sensor"] if e["sensor"] else "")
+            rs = {"key": sensor or "#unknown", "slot": "", "sensor": sensor, "dimm": None, "via": ""}
+        _slot_add(s, rs, kind, iso, age)
     memory = []
     for ip, st in sorted(status.items()):
         if st["status"] not in ("ok",) and not st["status"].startswith("partial"):
@@ -334,23 +432,21 @@ def main():
         edac_err, mce_err = kern_errors(full)
         m = {"ip": ip, "host": nodes.get(ip, {}).get("host", ""), "kind": nodes.get(ip, {}).get("kind", ""),
              "dimms": dimms[ip][0], "mem_gb": dimms[ip][1], "hw_corrupted_kb": int(hc.group(1)) if hc else None,
-             "edac": edac_err, "mce": mce_err, "mem_offline": k.get("mem_offline", 0)}
+             "edac": edac_err, "mce": mce_err, "mem_offline": k.get("mem_offline", 0), "board": board.get(ip, "")}
         if s:
-            if s["noloc"]:
-                extra = sel_extra_locs(full)
-                for sel_id, kind, iso, age in s["noloc"]:
-                    _slot_add(s, extra.get(sel_id, "") or "#unknown", kind, iso, age)
-            m.update({x: s[x] for x in ("ce_7d", "ce_30d", "ue_30d", "ue_total", "ue_last", "ce_last", "disabled_30d", "limit_30d")})
+            m.update({x: s[x] for x in ("ce_7d", "ce_30d", "ue_30d", "ue_total", "ue_last", "ce_last", "disabled_30d", "limit_30d", "new_today")})
             m["locs"] = [l for l, _ in s["locs"].most_common(6)]
             issues = []
             for e in sorted(s["slots"].values(), key=lambda e: (-e["ue_30d"], -e["disabled_30d"], -e["ue_total"], -e["ce_30d"], -e["ce_total"], e["slot"])):
-                d = match_dimm(e["slot"], dimm_rec.get(ip, []))
+                e = dict(e)
+                d = e.pop("dimm")
                 row = dict(e)
-                if e["slot"].startswith("#"):
-                    row["slot"] = ""
-                    row["sensor"] = e["slot"] if e["slot"] != "#unknown" else ""
+                if not row.get("sensor") or row["sensor"] == "#unknown":
+                    row.pop("sensor", None)
                 if d:
-                    row.update({"dmi_slot": d["slot"], "sn": d["sn"], "part": d["part"], "size": d["size"], "vendor": d["vendor"], "speed": d["speed"]})
+                    bank = d.get("bank", "")
+                    row.update({"dmi_slot": d["slot"] + (" / " + bank if bank and "CHANNEL" in bank.upper() else ""),
+                                "sn": d["sn"], "part": d["part"], "size": d["size"], "vendor": d["vendor"], "speed": d.get("speed", "")})
                 row["mapped"] = bool(d)
                 issues.append(row)
             m["dimm_issues"] = issues[:16]
@@ -370,6 +466,28 @@ def main():
         m["hits"] = [h[1] for h in sorted(hits, key=lambda h: -LEVEL_RANK[h[0]])]
         m["level"] = worst([h[0] for h in hits])
         memory.append(m)
+
+    # ledger: memory events for the page, aggregated per (node, DIMM, kind, day), last 30 days, in scope.
+    # UE / DIMM disabled always listed; CE only on days where that DIMM logged a CE newly seen in the ledger.
+    since = (day_date - dt.timedelta(days=30)).isoformat()
+    agg = {}
+    for e in ledger_rows:
+        if e["ip"] in excluded or e["kind"] == "limit" or not (since <= e["date"] <= day):
+            continue
+        where = e["sn"] or e["text_loc"] or e["sensor"] or "?"
+        k = (e["ip"], where, e["kind"], e["date"])
+        a_ = agg.get(k)
+        if a_ is None:
+            a_ = agg[k] = {"type": "memory", "ip": e["ip"], "host": nodes.get(e["ip"], {}).get("host", ""), "date": e["date"],
+                           "time": e["time"], "kind": e["kind"], "count": 0, "new": 0,
+                           "slot": e["slot"] + (" / " + e["bank"] if e["bank"] and "CHANNEL" in e["bank"].upper() else "") if e["sn"] else (e["text_loc"] or ("#" + e["sensor"] if e["sensor"] else "")),
+                           "sn": e["sn"], "part": e["part"], "size": e["size"], "first_seen": e["first_seen"], "mapped": bool(e["sn"])}
+        a_["count"] += 1
+        a_["time"] = min(a_["time"], e["time"])
+        a_["first_seen"] = min(a_["first_seen"], e["first_seen"])
+        if e["first_seen"] == day:
+            a_["new"] += 1
+    recent = [v for v in agg.values() if v["kind"] in ("ue", "disabled") or v["new"] > 0]
 
     # ---------------- coverage ----------------
     node_rows = []
@@ -421,7 +539,12 @@ def main():
                                    "models": [[m, c] for m, c in models.most_common(15)]},
                           "memory": {"nodes": len(memory), "by_level": lv(memory), "by_rule": dict(rulem.most_common()),
                                      "dimms": sum(m["dimms"] for m in memory)}},
-              "disks": disks, "memory": memory, "nodes": node_rows,
+              "disks": disks, "memory": memory, "nodes": node_rows, "ledger": ledger_stats,
+              "events": sorted(recent + [{"type": "disk", "ip": r["ip"], "host": nodes.get(r["ip"], {}).get("host", ""), "date": r["day"], "time": "",
+                                          "kind": r["counter"], "slot": r["slot"], "sn": r["serial"], "part": r["model"], "size": r["cap_gb"],
+                                          "before": r["before"], "after": r["after"], "first_seen": r["day"], "mapped": True}
+                                         for r in disk_ledger if r["ip"] not in excluded and since <= r["day"] <= day],
+                              key=lambda e: (e["date"], e["time"]), reverse=True)[:500],
               "excluded_nodes": sorted(excluded.values(), key=lambda e: [int(p) for p in e["ip"].split(".")])}
     tmp = out_path + ".tmp"
     with open(tmp, "w") as f:
