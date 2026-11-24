@@ -162,10 +162,11 @@ func clamp(value int) int {
 // code reappearing after >=15 minutes of absence. XID 0 ("No Error") and label
 // churn are ignored; the old rule fired on any changes() of the raw series,
 // including XID 0 and exporter relabels.
-//   core XIDs (same set as the GPU risk ledger): any onset in 24h -> critical
-//   XID 94 (contained ECC): onset in 24h -> attention; >=3 onsets in 7d -> warning
-//   other XIDs (mostly workload-triggered: 13/31/43/45/109...): onset in 24h and
-//     >=5 onsets in 7d -> attention; otherwise evidence only
+//
+//	core XIDs (same set as the GPU risk ledger): any onset in 24h -> critical
+//	XID 94 (contained ECC): onset in 24h -> attention; >=3 onsets in 7d -> warning
+//	other XIDs (mostly workload-triggered: 13/31/43/45/109...): onset in 24h and
+//	  >=5 onsets in 7d -> attention; otherwise evidence only
 const (
 	xidOnsets24hPrefix  = "xid_onsets_24h_"
 	xidOnsets7dPrefix   = "xid_onsets_7d_"

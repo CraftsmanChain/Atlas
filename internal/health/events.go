@@ -80,6 +80,25 @@ func reconcileFaultEvents(tx *gorm.DB, asset api.GPUAsset, score api.GPUHealthSc
 	return nil
 }
 
+// oneShotWindow: XIDs are point events with no "recovered" signal. An open XID
+// event closes once no new onset has been seen for this long, even when the GPU
+// is no longer evaluated (confidence D, swapped card, node out of scope).
+const oneShotWindow = 24 * time.Hour
+
+func expireOneShotEvents(tx *gorm.DB, now time.Time) error {
+	var events []api.GPUFaultEvent
+	if err := tx.Where("source = ? AND state = ? AND rule_code = ? AND last_observed_at < ?", healthRuleEventSource, "open", "recent_xid_change", now.Add(-oneShotWindow)).Find(&events).Error; err != nil {
+		return err
+	}
+	for _, event := range events {
+		recoveredAt := event.LastObservedAt
+		if err := tx.Model(&event).Updates(map[string]any{"state": "recovered", "recovered_at": &recoveredAt}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func accumulatesAcrossRecoveries(ruleCode string) bool {
 	return ruleCode == "gpu_temp_sustained_15m" || ruleCode == "gpu_temp_sustained_5m_critical"
 }

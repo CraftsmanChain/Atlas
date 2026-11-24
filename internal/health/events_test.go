@@ -82,3 +82,28 @@ func TestReconcileThermalEventsAccumulatesAcrossRecovery(t *testing.T) {
 		t.Fatalf("thermal recurrences must reopen and accumulate one event: %+v", events)
 	}
 }
+
+func TestExpireOneShotEventsClosesStaleXID(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	old, fresh := now.Add(-25*time.Hour), now.Add(-time.Hour)
+	events := []api.GPUFaultEvent{
+		{EpisodeKey: "GPU-A:recent_xid_change", Source: healthRuleEventSource, State: "open", GPUUUID: "GPU-A", RuleCode: "recent_xid_change", FirstObservedAt: old, LastObservedAt: old},
+		{EpisodeKey: "GPU-B:recent_xid_change", Source: healthRuleEventSource, State: "open", GPUUUID: "GPU-B", RuleCode: "recent_xid_change", FirstObservedAt: fresh, LastObservedAt: fresh},
+		{EpisodeKey: "GPU-C:gpu_temp_sustained_15m", Source: healthRuleEventSource, State: "open", GPUUUID: "GPU-C", RuleCode: "gpu_temp_sustained_15m", FirstObservedAt: old, LastObservedAt: old},
+	}
+	if err := db.Create(&events).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := expireOneShotEvents(db.DB, now); err != nil {
+		t.Fatal(err)
+	}
+	var got []api.GPUFaultEvent
+	db.Order("id").Find(&got)
+	if got[0].State != "recovered" || got[0].RecoveredAt == nil || !got[0].RecoveredAt.Equal(old) || got[1].State != "open" || got[2].State != "open" {
+		t.Fatalf("unexpected states: %s %s %s", got[0].State, got[1].State, got[2].State)
+	}
+}

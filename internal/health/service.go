@@ -255,6 +255,9 @@ func (s *Service) Evaluate(ctx context.Context) (*api.HealthEvaluationRun, error
 				return err
 			}
 		}
+		if err := expireOneShotEvents(tx, now); err != nil {
+			return err
+		}
 		if err := s.pruneHistory(tx, now); err != nil {
 			return err
 		}
