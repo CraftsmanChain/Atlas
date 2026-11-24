@@ -60,7 +60,7 @@ type FaultAnalysisReport = {
   operator_actions: LocalizedText[]; limitations: LocalizedText[]; no_action_executed: boolean;
 };
 type CursorMeta = { total: number; limit: number; has_more: boolean; next_before_id: number };
-type FaultEventSummary = { total: number; open: number; by_state: Record<string, number>; open_by_severity: Record<string, number> };
+type FaultEventSummary = { total: number; open: number; by_state: Record<string, number>; open_by_severity: Record<string, number>; xid_24h?: number; xid_24h_by_severity?: Record<string, number> };
 type PlatformIssue = { id: number; issue_key: string; category: string; issue_type: string; title: string; description: string; entity_type: string; entity_key: string; node_ip: string; gpu_uuid: string; severity: string; status: string; detection_state: string; detection_source: string; source_record_id: number; first_detected_at: string; last_detected_at: string; source_recovered_at?: string; resolved_at?: string; latest_resolution_id: number };
 type IssueResolution = { id: number; issue_id: number; status: string; root_cause: string; solution: string; resolution_process: string; result: string; evidence: string[]; operator: string; training_eligible: boolean; created_at: string };
 type IssueDetail = { issue: PlatformIssue; resolutions: IssueResolution[]; node_evidence_collection?: NodeEvidenceCollection | null };
@@ -324,7 +324,9 @@ export default function App() {
     gpuAssets.forEach(x => { const name = x.model_name || x.model || 'UNKNOWN'; counts.set(name, (counts.get(name) || 0) + 1); });
     return [...counts.entries()].map(([model, count]) => ({ model, short: model.replace(/^NVIDIA\s+/i, '').replace('GeForce ', ''), count })).sort((a, b) => b.count - a.count);
   }, [gpuAssets]);
-  const openFaults = faultEvents.filter(x => x.state === 'open');
+  // XID events are one-shot (recorded closed); show them for 24h next to open condition events.
+  const xidCutoff = Date.now() - 24 * 3600 * 1000;
+  const openFaults = faultEvents.filter(x => x.state === 'open' || (x.rule_code === 'recent_xid_change' && Date.parse(x.last_observed_at) >= xidCutoff));
   const hosts = new Set(openFaults.map(x => x.node_ip).filter(Boolean)).size;
   const lang = zh ? 'zh-CN' : 'en-US';
   const freshnessLatest = useMemo(() => {
@@ -346,7 +348,7 @@ export default function App() {
     <aside className={`sidebar ${sidebar ? 'open' : ''}`}>
       <div className="brand"><span className="brand-icon"><Layers3 size={19} /></span><div><b>{platformConfig.instance_name}</b><small>{platformConfig.product_name}</small></div><button className="mobile-only icon-btn" onClick={() => setSidebar(false)}><X size={17} /></button></div>
       <button className="cluster-switch" onClick={() => navigate('settings', 'platform')}><span><i /> {platformConfig.environment}</span><small>{platformConfig.product_tagline}</small><ChevronRight size={14} /></button>
-      <nav>{pageGroups.map(group => <div className="nav-group" key={group.id}><label>{tx(group.zh, group.en)}</label>{group.pages.map(id => { const Icon = pageIcons[id]; const count = id === 'gpu' ? faultSummary?.open_by_severity?.critical : id === 'data' ? issueSummary?.remaining : 0; return <button key={id} className={page === id ? 'active' : ''} onClick={() => navigate(id)}><Icon size={16} /><span>{copy[id].label}</span>{(count || 0) > 0 && <em>{count}</em>}</button>; })}</div>)}</nav>
+      <nav>{pageGroups.map(group => <div className="nav-group" key={group.id}><label>{tx(group.zh, group.en)}</label>{group.pages.map(id => { const Icon = pageIcons[id]; const count = id === 'gpu' ? (faultSummary?.open_by_severity?.critical || 0) + (faultSummary?.xid_24h_by_severity?.critical || 0) : id === 'data' ? issueSummary?.remaining : 0; return <button key={id} className={page === id ? 'active' : ''} onClick={() => navigate(id)}><Icon size={16} /><span>{copy[id].label}</span>{(count || 0) > 0 && <em>{count}</em>}</button>; })}</div>)}</nav>
       <div className="sidebar-footer"><span><i className={status?.status === 'ok' ? 'online' : ''} />API {status?.status === 'ok' ? 'ONLINE' : 'WAITING'}</span><small>{status?.version || 'dev'} · {status?.commit || 'local'}</small></div>
     </aside>
     {sidebar && <button className="scrim" onClick={() => setSidebar(false)} />}
@@ -434,7 +436,7 @@ function Overview({ tx, faults, faultSummary, loading, summary, models, healthSu
       <StatusCard icon={<HardDrive size={17} />} label={tx('硬盘', 'Disks')} value={head ? String(head.summary.disk.total) : '—'} unit={tx('块', 'disks')} parts={level(head?.summary.disk.by_level)} total={head?.summary.disk.total} note={head ? tx('SSD / HDD / NVMe，SMART 日采', 'SSD / HDD / NVMe, daily SMART') : hwNote} onOpen={() => navigate('disk')} />
       <StatusCard icon={<Database size={17} />} label={tx('硬件采集覆盖', 'Hardware coverage')} value={coverage} unit="%" parts={head ? [{ label: tx('已采集', 'collected'), value: head.coverage.collected, tone: 'healthy' }, { label: tx('未采集', 'missing'), value: head.coverage.nodes_total - head.coverage.collected, tone: 'warning' }] : []} note={head ? tx(`监控范围内 ${head.coverage.nodes_total} 个算力节点`, `${head.coverage.nodes_total} compute nodes in scope`) : hwNote} onOpen={() => navigate('data', 'hardware')} />
     </div>
-    <Card className="span-8 overview-events"><CardHead title={tx('未恢复 GPU 事件', 'Open GPU events')} action={<span className="card-head-actions"><Badge value={tx(`${faultSummary?.open ?? '—'} 未恢复，${faultSummary?.open_by_severity.critical || 0} 严重`, `${faultSummary?.open ?? '—'} open, ${faultSummary?.open_by_severity.critical || 0} critical`)} kind={faultSummary?.open_by_severity.critical ? 'danger' : 'neutral'} /><button className="link" onClick={() => navigate('gpu', 'events')}>{tx('全部', 'View all')}<ChevronRight size={13} /></button></span>} /><FaultEventList tx={tx} items={faults.slice(0, 8)} /></Card>
+    <Card className="span-8 overview-events"><CardHead title={tx('GPU 事件（未恢复 + 近 24h XID）', 'GPU events (open + XID in 24h)')} action={<span className="card-head-actions"><Badge value={tx(`${faultSummary?.open ?? '—'} 未恢复 · ${faultSummary?.xid_24h ?? 0} 次 XID，${(faultSummary?.open_by_severity.critical || 0) + (faultSummary?.xid_24h_by_severity?.critical || 0)} 严重`, `${faultSummary?.open ?? '—'} open · ${faultSummary?.xid_24h ?? 0} XID, ${(faultSummary?.open_by_severity.critical || 0) + (faultSummary?.xid_24h_by_severity?.critical || 0)} critical`)} kind={(faultSummary?.open_by_severity.critical || 0) + (faultSummary?.xid_24h_by_severity?.critical || 0) ? 'danger' : 'neutral'} /><button className="link" onClick={() => navigate('gpu', 'events')}>{tx('全部', 'View all')}<ChevronRight size={13} /></button></span>} /><FaultEventList tx={tx} items={faults.slice(0, 8)} /></Card>
     <Card className="span-4 fleet-card overview-fleet"><CardHead title={tx('GPU 型号', 'GPU models')} action={<Badge value={inventoryError ? tx('资产接口异常', 'Inventory error') : loading ? tx('加载中', 'Loading') : tx(`${gpuTotal ?? '—'} 卡 / ${summary?.nodes.total ?? '—'} 节点`, `${gpuTotal ?? '—'} GPUs / ${summary?.nodes.total ?? '—'} nodes`)} kind={inventoryError ? 'warning' : 'info'} />} /><div className="fleet-list">{models.map(x => <div key={x.model}><span><b>{x.short}</b><small>{x.model}</small></span><div><i style={{ width: `${gpuTotal ? x.count / gpuTotal * 100 : 0}%` }} /></div><strong>{x.count}</strong></div>)}{models.length === 0 && <Empty tx={tx} title={tx('无资产数据', 'No inventory data')} />}</div></Card>
   </div>;
 }
@@ -1020,7 +1022,7 @@ function HardwareEvents({ tx, faultRows, faultMeta, faultPage, faultLoading, pre
         <td className="wrap"><b>{name(ruleName, x.rule_code)}</b><p className="ev-detail">{x.evidence}</p><small className="ev-meta">{x.rule_code} · {tx('条件', 'condition')} {x.threshold}</small></td>
         <td><b>{x.node_ip} · GPU {x.gpu_index}</b><ShortID value={x.gpu_uuid} /></td>
         <td>{name(domainName, x.domain)}</td>
-        <td><Badge value={x.state === 'open' ? tx('未恢复', 'Open') : x.state === 'recovered' ? tx('已恢复', 'Recovered') : x.state} kind={tone(x.state)} /></td>
+        <td><Badge value={x.rule_code === 'recent_xid_change' ? tx('一次性', 'One-shot') : x.state === 'open' ? tx('未恢复', 'Open') : x.state === 'recovered' ? tx('已恢复', 'Recovered') : x.state} kind={x.rule_code === 'recent_xid_change' ? 'neutral' : tone(x.state)} /></td>
         <td><Badge value={x.workflow_status ? ({ open: tx('待处理', 'Open'), in_progress: tx('处理中', 'In progress'), resolved: tx('已关闭', 'Resolved'), ignored: tx('已忽略', 'Ignored') } as Record<string, string>)[x.workflow_status] || x.workflow_status : tx('同步中', 'Syncing')} kind={x.workflow_status ? issueTone(x.workflow_status) : 'neutral'} /></td>
         <td className="num">{x.occurrence_count}</td>
         <td>{time(x.first_observed_at, lang)}<small>{time(x.last_observed_at, lang)}</small></td>
@@ -1241,7 +1243,7 @@ function LXOPAssetSettings({ tx }: { tx: Tx }) {
   </>;
 }
 
-function FaultEventList({ tx, items }: { tx: Tx; items: FaultEvent[] }) { const lv: Record<string, string> = { critical: tx('严重', 'Critical'), warning: tx('警告', 'Warning'), attention: tx('关注', 'Attention') }; return <div className="event-list">{items.map(x => <div className="event-row" key={x.id}><Badge value={lv[x.severity] || x.severity} kind={tone(x.severity)} /><span><b>{ruleName[x.rule_code] ? tx(ruleName[x.rule_code][0], ruleName[x.rule_code][1]) : x.rule_code}</b><small>{x.node_ip} · GPU {x.gpu_index} · {x.evidence}</small></span><code>×{x.occurrence_count}</code></div>)}{items.length === 0 && <Empty tx={tx} title={tx('无未恢复硬件事件', 'No open hardware events')} />}</div>; }
+function FaultEventList({ tx, items }: { tx: Tx; items: FaultEvent[] }) { const lv: Record<string, string> = { critical: tx('严重', 'Critical'), warning: tx('警告', 'Warning'), attention: tx('关注', 'Attention') }; return <div className="event-list">{items.map(x => <div className="event-row" key={x.id}><Badge value={lv[x.severity] || x.severity} kind={tone(x.severity)} /><span><b>{ruleName[x.rule_code] ? tx(ruleName[x.rule_code][0], ruleName[x.rule_code][1]) : x.rule_code}</b><small>{x.node_ip} · GPU {x.gpu_index} · {x.evidence}</small></span><code>×{x.occurrence_count}</code></div>)}{items.length === 0 && <Empty tx={tx} title={tx('无未恢复事件，近 24h 无 XID', 'No open events, no XID in 24h')} />}</div>; }
 function Empty({ tx, title }: { tx: Tx; title: string }) { return <div className="empty"><Command size={20} /><b>{title}</b><span>{tx('等待数据', 'Waiting for data')}</span></div>; }
 
 function GlobalSearch({ tx, query, setQuery, pagesCopy, assets, close, navigate }: { tx: Tx; query: string; setQuery: (v: string) => void; pagesCopy: ReturnType<typeof pageCopy>; assets: GPUAsset[]; close: () => void; navigate: (p: PageId, view?: string) => void }) {

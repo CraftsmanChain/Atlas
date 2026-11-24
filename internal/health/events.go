@@ -17,6 +17,12 @@ func reconcileFaultEvents(tx *gorm.DB, asset api.GPUAsset, score api.GPUHealthSc
 		episodeKey := fmt.Sprintf("%s:%s", asset.CurrentUUID, hit.code)
 		active[hit.code] = struct{}{}
 
+		if isOneShotRule(hit.code) {
+			if err := recordOneShotEvent(tx, asset, score, hit, episodeKey, observedAt, ruleVersion); err != nil {
+				return err
+			}
+			continue
+		}
 		var event api.GPUFaultEvent
 		err := tx.Where("episode_key = ? AND state = ?", episodeKey, "open").First(&event).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) && accumulatesAcrossRecoveries(hit.code) {
@@ -80,18 +86,55 @@ func reconcileFaultEvents(tx *gorm.DB, asset api.GPUAsset, score api.GPUHealthSc
 	return nil
 }
 
-// oneShotWindow: XIDs are point events with no "recovered" signal. An open XID
-// event closes once no new onset has been seen for this long, even when the GPU
-// is no longer evaluated (confidence D, swapped card, node out of scope).
+// XIDs are point events with no "recovered" signal, so their events are
+// recorded already closed: state=recovered, recovered_at=first onset. While the
+// rule keeps matching (the 24h onset window), hits update the latest record of
+// the episode instead of creating a new one; a hit more than oneShotWindow after
+// the last observation starts a new record.
 const oneShotWindow = 24 * time.Hour
 
-func expireOneShotEvents(tx *gorm.DB, now time.Time) error {
+func isOneShotRule(ruleCode string) bool {
+	return ruleCode == "recent_xid_change"
+}
+
+func recordOneShotEvent(tx *gorm.DB, asset api.GPUAsset, score api.GPUHealthScore, hit ruleHit, episodeKey string, observedAt time.Time, ruleVersion string) error {
+	var event api.GPUFaultEvent
+	err := tx.Where("episode_key = ? AND last_observed_at >= ?", episodeKey, observedAt.Add(-oneShotWindow)).Order("id DESC").First(&event).Error
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		recoveredAt := observedAt
+		event = api.GPUFaultEvent{
+			EpisodeKey: episodeKey, Source: healthRuleEventSource, State: "recovered", RecoveredAt: &recoveredAt,
+			GPUAssetID: asset.ID, GPUUUID: asset.CurrentUUID, NodeIP: asset.NodeIP, GPUIndex: asset.GPUIndex, ModelName: asset.ModelName,
+			RuleCode: hit.code, Domain: hit.domain, Severity: hit.severity, Evidence: hit.evidence,
+			ObservedValue: hit.value, Threshold: hit.threshold, OccurrenceCount: 1, LatestScoreID: score.ID,
+			RuleVersion: ruleVersion, FirstObservedAt: observedAt, LastObservedAt: observedAt,
+		}
+		return tx.Create(&event).Error
+	case err != nil:
+		return err
+	}
+	updates := map[string]any{
+		"severity": hit.severity, "evidence": hit.evidence, "observed_value": hit.value,
+		"threshold": hit.threshold, "occurrence_count": event.OccurrenceCount + 1,
+		"latest_score_id": score.ID, "rule_version": ruleVersion, "last_observed_at": observedAt,
+	}
+	if event.State != "recovered" || event.RecoveredAt == nil {
+		recoveredAt := event.FirstObservedAt
+		updates["state"], updates["recovered_at"] = "recovered", &recoveredAt
+	}
+	return tx.Model(&event).Updates(updates).Error
+}
+
+// closeOpenOneShotEvents closes XID events left open by earlier rule versions
+// (including GPUs no longer evaluated: confidence D, swapped card, out of scope).
+func closeOpenOneShotEvents(tx *gorm.DB) error {
 	var events []api.GPUFaultEvent
-	if err := tx.Where("source = ? AND state = ? AND rule_code = ? AND last_observed_at < ?", healthRuleEventSource, "open", "recent_xid_change", now.Add(-oneShotWindow)).Find(&events).Error; err != nil {
+	if err := tx.Where("source = ? AND state = ? AND rule_code = ?", healthRuleEventSource, "open", "recent_xid_change").Find(&events).Error; err != nil {
 		return err
 	}
 	for _, event := range events {
-		recoveredAt := event.LastObservedAt
+		recoveredAt := event.FirstObservedAt
 		if err := tx.Model(&event).Updates(map[string]any{"state": "recovered", "recovered_at": &recoveredAt}).Error; err != nil {
 			return err
 		}

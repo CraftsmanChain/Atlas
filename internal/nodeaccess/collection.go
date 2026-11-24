@@ -281,7 +281,9 @@ func (s *CollectionService) collectPending(ctx context.Context, limit int) {
 	err := s.db.Model(&api.GPUFaultEvent{}).
 		Select("gpu_fault_events.id").
 		Joins("JOIN gpu_nodes ON gpu_nodes.node_ip = gpu_fault_events.node_ip AND gpu_nodes.lifecycle <> ?", "retired").
-		Where("gpu_fault_events.state = ?", "open").
+		// XID events are recorded already closed (one-shot), so recent ones are
+		// collected regardless of state.
+		Where("gpu_fault_events.state = ? OR (gpu_fault_events.rule_code = ? AND gpu_fault_events.last_observed_at >= ?)", "open", "recent_xid_change", time.Now().Add(-24*time.Hour)).
 		Where("NOT EXISTS (?)",
 			s.db.Model(&api.NodeEvidenceCollection{}).
 				Select("1").

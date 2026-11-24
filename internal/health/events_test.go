@@ -83,27 +83,56 @@ func TestReconcileThermalEventsAccumulatesAcrossRecovery(t *testing.T) {
 	}
 }
 
-func TestExpireOneShotEventsClosesStaleXID(t *testing.T) {
+func TestXIDEventsAreRecordedClosed(t *testing.T) {
+	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := api.GPUAsset{ID: 9, CurrentUUID: "GPU-X", NodeIP: "10.0.0.1", GPUIndex: 1, ModelName: "NVIDIA H100"}
+	hit := ruleHit{code: "recent_xid_change", domain: "stability", severity: "attention", value: 94, threshold: "XID 94 onset in 24h", evidence: "XID 94: 1 new in 24h, 1 in 7d"}
+	t0 := time.Date(2026, 11, 24, 8, 0, 0, 0, time.UTC)
+
+	if err := reconcileFaultEvents(db.DB, asset, api.GPUHealthScore{ID: 1}, []ruleHit{hit}, "A", t0, "test"); err != nil {
+		t.Fatal(err)
+	}
+	hit.severity = "warning"
+	if err := reconcileFaultEvents(db.DB, asset, api.GPUHealthScore{ID: 2}, []ruleHit{hit}, "A", t0.Add(10*time.Minute), "test"); err != nil {
+		t.Fatal(err)
+	}
+	var events []api.GPUFaultEvent
+	db.Order("id").Find(&events)
+	if len(events) != 1 || events[0].State != "recovered" || events[0].RecoveredAt == nil || !events[0].RecoveredAt.Equal(t0) || events[0].OccurrenceCount != 2 || events[0].Severity != "warning" {
+		t.Fatalf("XID hits within the window must update one closed event: %+v", events)
+	}
+	if err := reconcileFaultEvents(db.DB, asset, api.GPUHealthScore{ID: 3}, []ruleHit{hit}, "A", t0.Add(10*time.Minute+25*time.Hour), "test"); err != nil {
+		t.Fatal(err)
+	}
+	db.Order("id").Find(&events)
+	if len(events) != 2 || events[1].State != "recovered" {
+		t.Fatalf("XID hit after the window must create a new closed event: %+v", events)
+	}
+}
+
+func TestCloseOpenOneShotEventsClosesLegacyXID(t *testing.T) {
 	db, err := storage.InitDB(t.TempDir() + "/atlas.db")
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
-	old, fresh := now.Add(-25*time.Hour), now.Add(-time.Hour)
+	first := now.Add(-time.Hour)
 	events := []api.GPUFaultEvent{
-		{EpisodeKey: "GPU-A:recent_xid_change", Source: healthRuleEventSource, State: "open", GPUUUID: "GPU-A", RuleCode: "recent_xid_change", FirstObservedAt: old, LastObservedAt: old},
-		{EpisodeKey: "GPU-B:recent_xid_change", Source: healthRuleEventSource, State: "open", GPUUUID: "GPU-B", RuleCode: "recent_xid_change", FirstObservedAt: fresh, LastObservedAt: fresh},
-		{EpisodeKey: "GPU-C:gpu_temp_sustained_15m", Source: healthRuleEventSource, State: "open", GPUUUID: "GPU-C", RuleCode: "gpu_temp_sustained_15m", FirstObservedAt: old, LastObservedAt: old},
+		{EpisodeKey: "GPU-A:recent_xid_change", Source: healthRuleEventSource, State: "open", GPUUUID: "GPU-A", RuleCode: "recent_xid_change", FirstObservedAt: first, LastObservedAt: now},
+		{EpisodeKey: "GPU-C:gpu_temp_sustained_15m", Source: healthRuleEventSource, State: "open", GPUUUID: "GPU-C", RuleCode: "gpu_temp_sustained_15m", FirstObservedAt: first, LastObservedAt: now},
 	}
 	if err := db.Create(&events).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := expireOneShotEvents(db.DB, now); err != nil {
+	if err := closeOpenOneShotEvents(db.DB); err != nil {
 		t.Fatal(err)
 	}
 	var got []api.GPUFaultEvent
 	db.Order("id").Find(&got)
-	if got[0].State != "recovered" || got[0].RecoveredAt == nil || !got[0].RecoveredAt.Equal(old) || got[1].State != "open" || got[2].State != "open" {
-		t.Fatalf("unexpected states: %s %s %s", got[0].State, got[1].State, got[2].State)
+	if got[0].State != "recovered" || got[0].RecoveredAt == nil || !got[0].RecoveredAt.Equal(first) || got[1].State != "open" {
+		t.Fatalf("unexpected states: %s %s", got[0].State, got[1].State)
 	}
 }

@@ -402,7 +402,14 @@ func (h *Handler) HandleEventSummary(w http.ResponseWriter, r *http.Request) {
 	h.db.Model(&api.GPUFaultEvent{}).Where("state = ?", "open").Count(&open)
 	h.db.Model(&api.GPUFaultEvent{}).Select("state AS name, count(*) AS count").Group("state").Scan(&states)
 	h.db.Model(&api.GPUFaultEvent{}).Where("state = ?", "open").Select("severity AS name, count(*) AS count").Group("severity").Scan(&severities)
-	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"total": total, "open": open, "by_state": rowsToMap(states), "open_by_severity": rowsToMap(severities)}})
+	// XID events are recorded closed (one-shot); expose the last 24h separately so
+	// they stay visible next to the open (condition) events.
+	var xid24h int64
+	var xidSeverities []countRow
+	xidSince := time.Now().Add(-24 * time.Hour)
+	h.db.Model(&api.GPUFaultEvent{}).Where("rule_code = ? AND last_observed_at >= ?", "recent_xid_change", xidSince).Count(&xid24h)
+	h.db.Model(&api.GPUFaultEvent{}).Where("rule_code = ? AND last_observed_at >= ?", "recent_xid_change", xidSince).Select("severity AS name, count(*) AS count").Group("severity").Scan(&xidSeverities)
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"total": total, "open": open, "by_state": rowsToMap(states), "open_by_severity": rowsToMap(severities), "xid_24h": xid24h, "xid_24h_by_severity": rowsToMap(xidSeverities)}})
 }
 
 func rowsToMap(rows []countRow) map[string]int64 {

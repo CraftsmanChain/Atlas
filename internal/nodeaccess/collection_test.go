@@ -162,6 +162,20 @@ func TestPendingCollectionRunsOnceForOpenManagedEvents(t *testing.T) {
 	if err := db.Create(&recoveredEvent).Error; err != nil {
 		t.Fatal(err)
 	}
+	xidEvent := api.GPUFaultEvent{
+		EpisodeKey: "xid", State: "recovered", RuleCode: "recent_xid_change", NodeIP: "10.114.4.25",
+		FirstObservedAt: now, LastObservedAt: now,
+	}
+	staleXID := api.GPUFaultEvent{
+		EpisodeKey: "xid-old", State: "recovered", RuleCode: "recent_xid_change", NodeIP: "10.114.4.25",
+		FirstObservedAt: now.Add(-48 * time.Hour), LastObservedAt: now.Add(-48 * time.Hour),
+	}
+	if err := db.Create(&xidEvent).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&staleXID).Error; err != nil {
+		t.Fatal(err)
+	}
 	access := NewService(config.NodeAccessConfig{
 		Enabled: true, MaxCommandsPerNode: 3,
 		CredentialProfiles: []config.NodeCredentialProfile{
@@ -184,14 +198,14 @@ func TestPendingCollectionRunsOnceForOpenManagedEvents(t *testing.T) {
 	}), 1)
 	collector.collectPending(context.Background(), 10)
 	collector.collectPending(context.Background(), 10)
-	if calls != 1 {
-		t.Fatalf("open event must be collected once, got %d calls", calls)
+	if calls != 2 {
+		t.Fatalf("open event and recent one-shot XID event must each be collected once, got %d calls", calls)
 	}
 	var collections []api.NodeEvidenceCollection
-	if err := db.Find(&collections).Error; err != nil {
+	if err := db.Order("fault_event_id").Find(&collections).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(collections) != 1 || collections[0].FaultEventID != openEvent.ID {
+	if len(collections) != 2 || collections[0].FaultEventID != openEvent.ID || collections[1].FaultEventID != xidEvent.ID {
 		t.Fatalf("unexpected pending collections: %#v", collections)
 	}
 }
