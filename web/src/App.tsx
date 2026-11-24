@@ -3,34 +3,20 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from 'next-themes';
 import {
-  Activity, AlertTriangle, BarChart3, Bell, BookOpen, BrainCircuit, CheckCircle2,
+  Activity, AlertTriangle, BarChart3, HardDrive, Settings2, BookOpen, CheckCircle2,
   ChevronLeft, ChevronRight, CircleGauge, ClipboardList, Command, Cpu, Database, Download, Eye, Filter, Gauge,
   Languages, Layers3, MemoryStick, Menu, Moon, Network,
   Palette, RefreshCw, Save, Search, Server, ShieldAlert, ShieldCheck, Sun,
-  Thermometer, Trash2, X, Zap,
+  Thermometer, X, Zap,
 } from 'lucide-react';
 import './App.css';
 const GPURisk = lazy(() => import('./GPURisk'));
 const HardwareHealth = lazy(() => import('./HardwareHealth'));
+import { pages, parseRoute, type PageId } from './routes';
 import { readPlatformBrand, writePlatformBrand, fetchJSON, fetchAllPages } from './progressiveLoading';
 
-type PageId = 'overview' | 'gpus' | 'hardware' | 'issues' | 'incidents' | 'validations' | 'quality' | 'models' | 'about';
 type SubPage = { id: string; label: string };
 type Tx = (zh: string, en: string) => string;
-
-type Ingestion = {
-  id: number; event_id: string; source: string; host: string; level: string; message: string;
-  process_status: string; callback_status: string; raw_payload?: string;
-  labels?: Record<string, string>; created_at: string; ai_report_status?: string;
-  event_timestamp?: string; ai_report_summary?: string; ai_report_confidence?: number;
-};
-type IngestionMeta = {
-  total: number; all_total: number; limit: number; has_more: boolean; next_before_id: number;
-  latest_received_at?: string; received_5m: number; received_1h: number;
-  source_mode: string; stream_status: string; server_time?: string;
-};
-type Failure = { id: number; source: string; level: string; message: string; process_status: string; callback_status: string; process_last_error: string; callback_last_error: string; updated_at: string };
-type Report = { status: string; model: string; severity: string; summary: string; probable_causes?: string[]; recommended_actions?: string[]; confidence?: number };
 type ServerStatus = { status: string; version: string; commit: string; build_time: string; server_time: string };
 type PlatformConfig = { instance_name: string; product_name: string; product_tagline: string; environment: string; updated_at?: string };
 type LXOPAssetConfig = {
@@ -81,11 +67,6 @@ type IssueDetail = { issue: PlatformIssue; resolutions: IssueResolution[]; node_
 type IssueSummary = { discovered: number; resolved: number; remaining: number; ignored: number; active_detection: number; training_eligible: number; by_category: Record<string, number>; resolved_by_category: Record<string, number>; remaining_by_category: Record<string, number>; active_by_category: Record<string, number>; by_status: Record<string, number>; by_severity: Record<string, number>; generated_at: string };
 type TelemetryQualityItem = { gpu_asset_id: number; gpu_uuid: string; node_ip: string; gpu_index: number; model_name: string; status: string; sample_count_1h?: number; presence_ratio_1h?: number; sample_age_seconds?: number; uuid_presence_flap_count_1h?: number; metric_gap_max_seconds_1h?: number; target_scrape_success_ratio_5m?: number; target_scrape_samples_ratio_5m?: number; target_scrape_duration_ratio_5m?: number; observed_at: string };
 type TelemetryQualitySummary = { total: number; by_status: Record<string, number>; average_presence_ratio_1h: number; max_sample_age_seconds: number; max_metric_gap_seconds_1h?: number; max_uuid_flap_count_1h?: number; min_target_scrape_success_ratio_5m?: number; min_target_scrape_samples_ratio_5m?: number; max_target_scrape_duration_ratio_5m?: number; feature_catalog_version: string; evaluation_run_id: number; evaluated_at?: string };
-type NodeAccessCommand = { id: string; category: string; approval_class: string; planning_status: string; collection_mode: string; purpose: LocalizedText; preview: string };
-type NodeAccessSkill = { id: string; version: string; class: string; status: string; purpose: LocalizedText };
-type AlertEvidencePolicy = { category: string; issue_types: string[]; semantics: string; collection_trigger: string; purpose: LocalizedText };
-type NodeCredentialStatus = { id: string; priority: number; username_masked: string; auth_type: string; secret_provider: string; enabled: boolean; secret_available: boolean; status: string };
-type NodeAccessCheck = { id: number; node_ip: string; status: string; credential_profile_id?: string; attempts: string[]; alert_required: boolean; no_credential_disclosed: boolean; no_command_executed: boolean; started_at: string; finished_at: string };
 type NodeEvidenceRecord = { id: number; collection_id: number; command_id: string; kind: string; status: string; output?: string; output_bytes: number; truncated: boolean; observed_at: string };
 type NodeEvidenceCollection = {
   id: number; fault_event_id?: number; platform_issue_id?: number; retry_of_collection_id?: number;
@@ -94,123 +75,8 @@ type NodeEvidenceCollection = {
   no_credential_disclosed: boolean; read_only: boolean; started_at: string; finished_at: string;
   records?: NodeEvidenceRecord[];
 };
-type NodeAccessOverview = {
-  skill_id: string; skill_version: string; status: string; enabled: boolean; execution_enabled: boolean;
-  no_arbitrary_shell: boolean; no_change_executed: boolean; encryption_ready: boolean; management_ready: boolean; secure_write_only: boolean; insecure_http_allowed: boolean; connectivity_check_enabled: boolean; known_hosts_ready: boolean; default_read_only_collection: boolean;
-  budget: { connect_timeout_seconds: number; command_timeout_seconds: number; max_output_bytes: number; max_concurrent_nodes: number; max_commands_per_node: number; max_log_lines: number; default_window_minutes: number };
-  credential_profiles: NodeCredentialStatus[]; skills: NodeAccessSkill[]; commands: NodeAccessCommand[]; alert_evidence_policies: AlertEvidencePolicy[]; collection_summary: { waiting_recovery: number; completed: number; partial: number; failed: number }; boundaries: LocalizedText[]; generated_at: string;
-};
 type DegradationSummary = { version: string; mode: string; evaluated_gpus: number; eligible_gpus: number; baseline_ready_gpus: number; historical_baseline_gpus: number; candidate_gpus: number; insufficient_gpus: number; minimum_utilization: number; ratio_threshold: number; freshness_sla_seconds: number; by_model: Record<string, number>; latest_observed_at?: string; evaluated_at: string };
 type DegradationCandidate = { gpu_asset_id: number; gpu_uuid: string; node_ip: string; gpu_index: number; model_name: string; status: string; metric: string; observed_value: number; baseline_value: number; performance_ratio: number; gpu_utilization: number; peer_count: number; baseline_id?: number; baseline_scope: string; baseline_maturity: string; data_confidence: string; evidence: string[]; recommended_action: string; feature_version: string; observed_at: string; evaluated_at: string };
-type PredictionModelSpec = { id: number; model_key: string; version: string; hardware_class: string; entity_type: string; task: string; horizon_minutes: number; algorithm: string; runtime: string; mode: string; status: string; feature_contract_version: string; label_contract_version: string; dataset_version?: string; source_baseline_build_id?: number; scope_event_type?: string; scope_model_name?: string; artifact_uri?: string; artifact_sha256?: string; registry_gate_version?: string; decision_threshold?: number; current: boolean };
-type PredictionFeatureParityAudit = { id: number; model_spec_id: number; model_key: string; model_version: string; source_baseline_build_id: number; artifact_sha256: string; feature_contract_version: string; transformation_contract_version: string; status: string; training_feature_count: number; contract_matched_count: number; source_metric_count: number; missing_source_count: number; unsupported_transform_count: number; replay_verified_count: number; source_metrics: string[]; contract_matched_columns: string[]; missing_source_columns: string[]; unsupported_transform_columns: string[]; blocking_reasons: string[]; scoring_allowed: boolean; audited_at: string };
-type PredictionFeatureReplayRun = { id: number; replay_key: string; version: string; status: string; model_spec_id: number; model_key: string; model_version: string; source_baseline_build_id: number; source_matrix_build_id: number; source_key: string; transformation_contract_version: string; requested_sample_count: number; selected_sample_count: number; completed_sample_count: number; failed_sample_count: number; training_feature_count: number; compared_value_count: number; verified_column_count: number; mismatch_count: number; missing_training_value_count: number; missing_replay_value_count: number; maximum_absolute_error: number; maximum_relative_error: number; failed_columns: string[]; blocking_reasons: string[]; output_dir: string; report_sha256?: string; error_message?: string; started_at: string; finished_at?: string };
-type PredictionLiveCoverageAudit = { id: number; audit_key: string; version: string; status: string; model_spec_id: number; model_key: string; model_version: string; source_key: string; scope_model_name: string; window_minutes: number; query_step_seconds: number; expected_samples: number; minimum_samples: number; freshness_sla_seconds: number; source_metric_count: number; target_gpu_count: number; eligible_gpu_count: number; blocked_gpu_count: number; metric_pair_count: number; passing_metric_pair_count: number; missing_metric_pair_count: number; sparse_metric_pair_count: number; stale_metric_pair_count: number; eligible_ratio: number; blocking_reasons: string[]; report_sha256?: string; error_message?: string; started_at: string; finished_at?: string };
-type PredictionShadowScoringRun = { id: number; run_key: string; version: string; status: string; trigger: string; model_spec_id: number; model_key: string; model_version: string; artifact_sha256: string; source_key: string; scope_model_name: string; transformation_contract_version: string; window_minutes: number; query_step_seconds: number; target_gpu_count: number; scored_gpu_count: number; blocked_gpu_count: number; positive_gpu_count: number; positive_ratio: number; minimum_probability?: number; maximum_probability?: number; mean_probability?: number; median_probability?: number; p90_probability?: number; p95_probability?: number; p99_probability?: number; maximum_node_mean?: number; all_above_threshold_nodes: number; distribution_status: string; blocking_reasons: string[]; no_alert_emitted: boolean; no_action_executed: boolean; report_sha256?: string; error_message?: string; started_at: string; finished_at?: string };
-type PredictionFeatureDistributionSnapshot = { id: number; snapshot_key: string; version: string; status: string; distribution_role: string; source_baseline_build_id: number; model_spec_id?: number; model_key?: string; model_version?: string; feature_contract_version: string; scope_model_name?: string; source_key?: string; feature_name: string; sample_count: number; missing_count: number; missing_ratio: number; mean: number; stddev: number; minimum: number; p50: number; p95: number; maximum: number; bin_edges: number[]; bin_proportions: number[]; report_sha256?: string; blocking_reasons: string[]; observed_at: string };
-type PredictionFeatureDistributionArchiveMeta = { archive_version?: string; archive_sha256?: string; scope?: { name: string; status: string; limit: number; source_baseline_build_id?: number; model_spec_id?: number; model_key?: string; model_version?: string; distribution_role?: string; feature_contract_version?: string; scope_model_name?: string }; comparability_status?: string; minimum_feature_pairs?: number; paired_feature_count?: number; missing_training_features?: string[]; missing_live_shadow_features?: string[]; snapshot_count?: number; training_snapshot_count?: number; live_shadow_snapshot_count?: number; baseline_count?: number; feature_count?: number; latest_observed_at?: string; blocking_reasons?: string[]; raw_samples_stored?: boolean; scoring_allowed?: boolean; alerts_emitted?: boolean; actions_executed?: boolean };
-type HardwareRiskPrediction = { id: number; shadow_run_id?: number; model_spec_id: number; model_version?: string; entity_key: string; gpu_asset_id: number; gpu_uuid: string; node_ip: string; horizon_minutes: number; probability?: number; risk_level: string; status: string; feature_vector_sha256?: string; transformation_contract_version?: string; explanations: string[]; observed_at: string; evaluated_at: string; expires_at: string };
-type PredictionReadinessSummary = { total: number; ready_for_dataset: number; blocked: number; by_reason: Record<string, number>; latest_observed_at?: string; probability_emitted: boolean; evaluated_at: string };
-type PredictionReadinessItem = { hardware_class: string; entity_type: string; entity_key: string; gpu_asset_id: number; gpu_uuid: string; node_ip: string; gpu_index: number; model_name: string; status: string; data_confidence: string; feature_coverage: number; feature_snapshot_id: number; feature_catalog_version: string; observed_at: string; blocking_reasons: string[]; probability_emitted: boolean; no_action_executed: boolean };
-type MonitoringHistoryAudit = { id: number; source_key: string; source_name: string; source_type: string; base_url: string; status: string; source_version?: string; configured_retention?: string; dcgm_target_count: number; gpu_exporter_target_count: number; current_gpu_series: number; scrape_interval_seconds?: number; metric_families: string[]; required_metric_families: string[]; missing_metric_families: string[]; capabilities: string[]; earliest_sample_at?: string; latest_sample_at?: string; error_message?: string; finished_at: string };
-type MonitoringHistorySource = { id: string; name: string; type: string; base_url: string; tenant_id?: string; enabled: boolean; read_only: boolean; execution: string; dataset_dir: string; latest_audit?: MonitoringHistoryAudit };
-type HistoryBackfillRun = { id: number; source_key: string; job_type: string; status: string; query_version: string; range_start: string; range_end: string; step_seconds: number; chunk_hours: number; chunks_total: number; chunks_completed: number; series_scanned: number; signal_points: number; candidates_created: number; candidates_updated: number; records_created: number; records_updated: number; records_annotated: number; error_message?: string; started_at: string; finished_at?: string };
-type HistoricalFaultCandidate = { id: number; candidate_key: string; source_key: string; gpu_uuid: string; node_ip: string; hostname: string; model_name: string; pci_bus_id: string; event_type: string; event_code: string; event_message: string; severity: string; quality_tier: string; operational_priority: string; hardware_certainty: string; training_disposition: string; recommended_action: string; recovery_aware: boolean; review_status: string; reviewed_at?: string; reviewed_by?: string; review_note?: string; identity_evidence_status?: string; identity_interval_id?: number; identity_evidence?: Record<string, string>; rule_decision?: string; rule_decision_version?: string; rule_decision_reason?: string; rule_confidence?: number; rule_decided_at?: string; source_metric: string; source_alert_name: string; signal_samples: number; onset_at: string; detection_window_end_at: string };
-type HistoricalCandidateSummary = { total: number; pending_review: number; by_review_status: Record<string, number>; by_rule_decision: Record<string, number>; by_event_code: Record<string, number>; by_quality_tier: Record<string, number>; by_operational_priority: Record<string, number>; by_hardware_certainty: Record<string, number>; by_training_disposition: Record<string, number>; by_model: Record<string, number>; earliest_onset_at?: string; latest_onset_at?: string };
-type HistoricalGPUIdentityInterval = { id: number; interval_key: string; source_key: string; backfill_run_id: number; node_ip: string; host_id?: string; host_serial?: string; hostname?: string; data_center_id?: string; gpu_index: number; gpu_uuid: string; pci_bus_id?: string; model_name?: string; driver_version?: string; first_seen_at: string; last_seen_at: string; observation_count: number; transition_type: string; predecessor_uuid?: string; transition_at?: string; evidence_strength: string };
-type HistoricalIdentitySummary = { total: number; by_transition_type: Record<string, number>; by_evidence_strength: Record<string, number>; candidate_evidence: Record<string, number>; earliest_seen_at?: string; latest_seen_at?: string };
-type TrainingDatasetBuild = { id: number; dataset_key: string; version: string; status: string; source_key: string; prediction_target: 'gpu_hardware_failure' | 'high_priority_xid_event'; horizons: string[]; candidate_count: number; eligible_candidate_count: number; episode_count: number; window_count: number; pending_review_count: number; identity_missing_count: number; context_only_count: number; excluded_count: number; output_dir: string; manifest_path?: string; window_manifest_path?: string; window_manifest_sha256?: string; error_message?: string; started_at: string; finished_at?: string };
-type TrainingFeatureBuild = { id: number; feature_dataset_key: string; version: string; status: string; source_key: string; source_dataset_build_id: number; source_dataset_key: string; prediction_target: 'gpu_hardware_failure' | 'high_priority_xid_event'; feature_contract_version: string; lookback_minutes: number; query_step_seconds: number; episode_count: number; window_count: number; processed_episodes: number; completed_windows: number; failed_windows: number; metric_count: number; feature_column_count: number; average_metric_coverage: number; minimum_metric_coverage: number; structural_feature_count: number; structural_complete_windows: number; structural_extraction_failed_windows: number; average_structural_feature_coverage: number; minimum_structural_feature_coverage: number; output_dir: string; feature_path?: string; feature_sha256?: string; quality_report_path?: string; error_message?: string; started_at: string; finished_at?: string };
-type ManualFeedbackFeatureRequestBuild = { id: number; request_key: string; version: string; status: string; source_key: string; source_manifest_version: string; source_manifest_sha256: string; feature_contract_version: string; lookback_minutes: number; query_step_seconds: number; hardware_feedback_requests: number; training_eligible_requests: number; pack_ready_requests: number; warning_reviewed_requests: number; warning_miss_requests: number; blocked_requests: number; window_count: number; metric_family_count: number; metric_families: string[]; blocking_reasons: string[]; completed_windows: number; failed_windows: number; feature_column_count: number; average_metric_coverage: number; minimum_metric_coverage: number; output_dir: string; manifest_path?: string; manifest_sha256?: string; feature_path?: string; feature_sha256?: string; quality_report_path?: string; no_raw_telemetry_stored: boolean; no_alert_emitted: boolean; no_action_executed: boolean; error_message?: string; started_at: string; finished_at?: string };
-const feedbackPackReadyStatus = 'manifest_ready_pending_metric_extraction';
-const feedbackFeatureManifestReadyStatus = 'manifest_ready_pending_offline_worker';
-const feedbackFeatureDoneStatuses = new Set(['features_ready_pending_training_preparation', 'features_ready_with_errors_pending_training_preparation']);
-const feedbackReviewedStatuses = new Set(['manual_feedback_no_prior_shadow_warning', 'manual_feedback_prior_shadow_candidate_found', 'manual_feedback_prior_shadow_below_threshold', 'manual_feedback_prior_shadow_window_reviewed']);
-const isFeedbackWarningReviewed = (status?: string) => feedbackReviewedStatuses.has(status || '');
-const isFeedbackFeatureActive = (status?: string) => status === 'queued' || status === 'running';
-const isFeedbackFeatureDone = (status?: string) => feedbackFeatureDoneStatuses.has(status || '');
-const shortHash = (value?: string) => value ? value.slice(0, 12) : '—';
-const compactWorkflowStatus = (status?: string) => ({
-  [feedbackPackReadyStatus]: 'PACK READY',
-  [feedbackFeatureManifestReadyStatus]: 'MANIFEST READY',
-  features_ready_pending_training_preparation: 'FEATURES READY',
-  features_ready_with_errors_pending_training_preparation: 'FEATURES PARTIAL',
-  manual_feedback_ready_pending_control_extraction: 'CONTROL TODO',
-  manual_feedback_matrix_ready_pending_training_gate: 'MATRIX GATED',
-  manual_feedback_ready_pending_control_sampling: 'REFRESH REQ',
-  manual_feedback_blocked_by_quality_gate: 'QUALITY BLOCKED',
-  manual_feedback_no_prior_shadow_warning: 'NO PRIOR WARN',
-  manual_feedback_prior_shadow_candidate_found: 'WARN FOUND',
-  manual_feedback_prior_shadow_below_threshold: 'BELOW THRESHOLD',
-  manual_feedback_prior_shadow_window_reviewed: 'WARN REVIEWED',
-  pending_history_pack_preparation: 'PACK TODO',
-  pending_warning_review: 'REVIEW TODO',
-  current_identity_selected: 'IDENTITY OK',
-  requires_historical_identity_at_fault_time: 'HIST ID REQ',
-  queued: 'QUEUED',
-  running: 'RUNNING',
-  blocked: 'BLOCKED',
-  failed: 'FAILED',
-}[status || ''] || (status || 'not_started').replace(/^manual_feedback_/, '').replace(/_/g, ' ').toUpperCase());
-type TrainingPreparationBuild = { id: number; prepared_dataset_key: string; version: string; status: string; source_kind?: string; source_feature_build_id: number; source_manual_feedback_feature_request_build_id?: number; source_feature_dataset_key: string; minimum_metric_coverage: number; source_window_count: number; eligible_positive_count: number; telemetry_censored_count: number; low_coverage_count: number; extraction_failed_count: number; positive_discontinuous_count: number; label_ineligible_count: number; correlated_event_count: number; entity_time_conflict_count: number; train_count: number; validation_count: number; test_count: number; control_request_count: number; control_shortfall_count: number; train_end_at?: string; validation_end_at?: string; output_dir: string; manifest_path?: string; prepared_samples_path?: string; prepared_samples_sha256?: string; control_requests_path?: string; control_requests_sha256?: string; error_message?: string; started_at: string; finished_at?: string };
-type TrainingControlFeatureBuild = { id: number; control_feature_dataset_key: string; version: string; status: string; source_preparation_build_id: number; source_prepared_dataset_key: string; source_key: string; feature_contract_version: string; request_count: number; unique_window_count: number; processed_unique_windows: number; completed_request_count: number; eligible_request_count: number; telemetry_censored_count: number; low_coverage_count: number; discontinuous_count: number; load_unknown_count: number; load_mismatch_count: number; extraction_failed_count: number; output_dir: string; feature_path?: string; feature_sha256?: string; quality_report_path?: string; error_message?: string; started_at: string; finished_at?: string };
-type TrainingMatrixBuild = { id: number; training_matrix_key: string; version: string; status: string; source_preparation_build_id: number; source_prepared_dataset_key: string; source_control_build_id: number; source_control_dataset_key: string; feature_contract_version: string; feature_column_count: number; positive_count: number; control_count: number; sample_count: number; train_positive_count: number; train_control_count: number; validation_positive_count: number; validation_control_count: number; test_positive_count: number; test_control_count: number; duplicate_count: number; entity_split_conflict_count: number; point_in_time_violation_count: number; pairing_violation_count: number; contract_violation_count: number; output_dir: string; matrix_path?: string; matrix_sha256?: string; manifest_path?: string; error_message?: string; started_at: string; finished_at?: string };
-type CohortSplitReadiness = { positive_count: number; control_count: number; positive_gpus: number; control_gpus: number };
-type CohortReadinessDeficit = { event_type: string; model_name: string; horizon_minutes: number; split: string; metric: string; actual: number; required: number; shortfall: number };
-type CohortTrainingCandidateGate = { status: string; baseline_training_enabled: boolean; ready_strata: number; blocked_strata: number; blocking_reasons: string[] };
-type CohortAccumulationTarget = { event_type: string; model_name: string; horizon_minutes: number; status: string; needed_train_positives: number; needed_train_controls: number; needed_evaluation_positives: number; needed_evaluation_controls: number; needed_positive_gpus: number; total_shortfall: number; recommended_priority: string };
-type CohortStratumReadiness = { event_type: string; model_name: string; horizon_minutes: number; status: string; blocking_reasons: string[]; deficits?: CohortReadinessDeficit[]; splits: Record<string, CohortSplitReadiness> };
-type MatrixReadinessReport = { matrix_key: string; policy: Record<string, number>; ready_strata: number; insufficient_strata: number; training_candidate_gate?: CohortTrainingCandidateGate; accumulation_targets?: CohortAccumulationTarget[]; deficits?: CohortReadinessDeficit[]; recommended_next_run?: string[]; strata: CohortStratumReadiness[] };
-type BaselineModelBuild = { id: number; baseline_model_key: string; version: string; status: string; algorithm: string; feature_window_policy?: string; feature_plane_policy?: string; source_matrix_build_id: number; feature_contract_version: string; scope_event_type?: string; scope_model_name?: string; readiness_gate_version?: string; feature_column_count: number; feature_audit_status?: string; excluded_feature_count: number; prohibited_feature_count: number; statistically_stable_count: number; shadow_candidate_count: number; horizon_count: number; trained_model_count: number; train_count: number; validation_count: number; test_count: number; test_macro_roc_auc: number; test_macro_pr_auc: number; test_macro_precision: number; test_macro_recall: number; output_dir: string; artifact_sha256?: string; error_message?: string };
-type BaselineMetrics = { count: number; positive: number; control: number; roc_auc: number; pr_auc: number; precision: number; recall: number; f1: number; brier: number };
-type BaselineUncertainty = { version: string; method: string; resamples: number; confidence_level: number; entity_count: number; roc_auc_lower: number; roc_auc_upper: number; pr_auc_lower: number; pr_auc_upper: number; null_pr_auc: number; status: string };
-type BaselineCalibration = { version: string; status: string; bin_count: number; ece: number; model_brier: number; null_brier: number; brier_skill_score: number };
-type BaselineEvaluationReport = { matrix_key: string; horizons: { horizon_minutes: number; test_by_event_type: Record<string, BaselineMetrics>; validation_uncertainty?: BaselineUncertainty; test_uncertainty?: BaselineUncertainty; cross_split_status?: string; raw_test_calibration?: BaselineCalibration; test_calibration?: BaselineCalibration; release_readiness?: string }[]; by_test_event_type: Record<string, BaselineMetrics>; by_test_driver_version: Record<string, BaselineMetrics>; by_test_label_source: Record<string, BaselineMetrics>; by_test_hardware_certainty: Record<string, BaselineMetrics>; by_test_rule_version: Record<string, BaselineMetrics> };
-type ModelRaceComparison = { version: string; reference_build_id: number; build_ids: number[]; source_matrix_build_id: number; source_training_matrix_key: string; matrix_sha256: string; comparison_sha256: string; builds: Array<{ build_id: number; model_key: string; version: string; algorithm: string; feature_window_policy: string; feature_plane_policy: string; macro_test: BaselineMetrics; stable_count: number; candidate_count: number; selected_source_metric_count: number; selected_source_metrics: string[]; selected_window_counts: Record<string, number> }>; deltas_vs_reference: Array<{ build_id: number; reference_build_id: number; roc_auc: number; pr_auc: number; precision: number; recall: number }>; horizons: Array<{ horizon_minutes: number; selected_feature_count_by_build_id: Record<string, number>; selected_source_metrics_by_build_id: Record<string, string[]>; selected_window_counts_by_build_id: Record<string, Record<string, number>> }> };
-type TrainingCohortPolicy = { version: string; positive_horizons_minutes: number[]; healthy_censor_before_hours: number; healthy_censor_after_hours: number; control_match_dimensions: string[]; normal_range_statistics: string[]; positive_candidate_policy: string; healthy_window_policy: string; replacement_evidence_policy: string };
-type FailureLabel = { id: number; label_key: string; hardware_class: string; entity_type: string; entity_key: string; gpu_asset_id?: number; gpu_uuid?: string; node_ip?: string; model_name?: string; event_type: string; rule_version?: string; label_value: number; quality_tier: string; source_type: string; source_record_id: number; confirmation_resolution_id?: number; label_contract_version: string; occurred_at: string; available_at: string; confirmed_at?: string; excluded: boolean; exclusion_reason?: string };
-type RankingAtK = { k: number; status: string; eligible: number; positives: number; hits: number; precision?: number; recall?: number; ndcg?: number; lift?: number };
-type RankingAtPercent = { percent: number; limit: number; status: string; eligible: number; positives: number; hits: number; precision?: number; recall?: number; ndcg?: number; lift?: number };
-type AccuracyMetrics = { tp: number; fp: number; fn: number; tn: number; evaluated: number; precision?: number; recall?: number; specificity?: number; false_positive_rate?: number; false_negative_rate?: number; accuracy?: number; ranking_at_k?: RankingAtK[]; node_ranking_at_k?: RankingAtK[]; ranking_at_percent?: RankingAtPercent[]; node_ranking_at_percent?: RankingAtPercent[] };
-type PredictionAccuracy = { rule: AccuracyMetrics; final: AccuracyMetrics; pending: number; censored: number; human_overrides: number; rule_decision_version: string; by_model: Array<{ model_key: string; model_version: string; horizon_minutes: number; rule: AccuracyMetrics; final: AccuracyMetrics }>; evaluated_at: string };
-type BaselineComparison = { name: string; prediction_policy: string; rule: AccuracyMetrics; final: AccuracyMetrics };
-type OutcomeStability = { status: string; minimum_matured_samples: number; minimum_matured_ratio: number; minimum_probability_coverage: number; minimum_positive_samples: number; probability_coverage: number; positive_samples: number; ranking_interpretation_status: string; false_positive_review_hint: string; false_negative_review_hint: string; blocking_reasons: string[]; recommended_review: string[] };
-type PredictionOutcomeReport = { version: string; framework_version: string; mode: string; safety: { read_only_shadow: boolean; no_alert_emitted: boolean; no_action_taken: boolean; probability_use: string }; sample_maturity: { total: number; matured: number; pending: number; censored: number; matured_ratio: number; probability_scored: number; node_eligible: number }; stability: OutcomeStability; accuracy: PredictionAccuracy; baseline_comparisons?: BaselineComparison[]; interpretation: string[]; recommended_next_run: string[]; generated_at: string };
-type PredictionModelGovernance = { version: string; framework_version: string; mode: string; dataset: { version?: string; dataset_key?: string; source_key?: string; candidate_count: number; eligible_candidate_count: number; episode_count: number; window_count: number; pending_review_count: number; identity_missing_count: number; context_only_count: number; excluded_count: number; feature_dataset_key?: string; feature_contract_version?: string; feature_column_count: number; average_metric_coverage?: number; minimum_metric_coverage?: number; prepared_dataset_key?: string; eligible_positive_count: number; telemetry_censored_count: number; low_coverage_count: number; extraction_failed_count: number; train_count: number; validation_count: number; test_count: number; matrix_key?: string; matrix_sha256?: string; matrix_sample_count: number; matrix_positive_count: number; matrix_control_count: number; duplicate_count: number; point_in_time_violation_count: number; entity_split_conflict_count: number; contract_violation_count: number; finished_at?: string }; models: Array<{ model_key: string; model_version: string; horizon_minutes: number; algorithm: string; runtime: string; mode: string; status: string; feature_contract_version: string; label_contract_version: string; source_baseline_build_id?: number; artifact_sha256?: string; registry_gate_version?: string; decision_threshold?: number; baseline_version?: string; baseline_status?: string; feature_audit_status?: string; prohibited_feature_count: number; statistically_stable_count: number; shadow_candidate_count: number; train_count: number; validation_count: number; test_count: number; test_macro_roc_auc?: number; test_macro_pr_auc?: number; test_macro_precision?: number; test_macro_recall?: number }>; shadow_gates: { feature_parity_status?: string; replay_status?: string; replay_verified_columns: number; replay_compared_values: number; replay_mismatch_count: number; live_coverage_status?: string; live_coverage_eligible_ratio?: number; shadow_run_status?: string; shadow_distribution_status?: string; scored_gpu_count: number; positive_gpu_count: number; positive_ratio?: number; no_alert_emitted: boolean; no_action_executed: boolean; evaluated_at?: string }; limitations: string[]; recommended_next_run: string[]; generated_at: string };
-type LabelManifest = { version: string; label_contract_version: string; mode: string; total: number; positive: number; excluded: number; confirmed: number; strong_proxy: number; weak_proxy: number; human_confirmed: number; quality_gate_status: string; blocking_reasons: string[]; recommended_next_run: string[]; manifest_sha256: string; sample_label_keys: string[]; by_event_type: Record<string, number>; by_model: Record<string, number>; by_source_type: Record<string, number>; by_rule_version: Record<string, number>; exclusion_reasons: Record<string, number>; positive_policy: string[]; negative_policy: string; gray_sample_policy: string[]; human_evidence_policy: string[]; evidence_scope: string[]; known_gaps: string[]; generated_at: string };
-type EvidenceBundleItem = { label_key: string; entity_key: string; gpu_asset_id?: number; gpu_uuid?: string; node_ip?: string; model_name?: string; label_value: number; quality_tier: string; event_type: string; source_type: string; source_record_id: number; source_reference: string; rule_version?: string; confirmation_resolution_id?: number; human_confirmation_reference?: string; human_confirmation_training_use?: string; exclusion_reason?: string; included_in_positive_denominator: boolean; evidence_status: string; occurred_at: string; available_at: string; confirmed_at?: string };
-type EvidenceBundleReport = { version: string; label_contract_version: string; mode: string; total_labels: number; positive_labels: number; excluded_labels: number; confirmed_labels: number; strong_proxy_labels: number; weak_proxy_labels: number; human_confirmation_references: number; sample_evidence_limit: number; bundle_sha256: string; by_event_type: Record<string, number>; by_source_type: Record<string, number>; by_rule_version: Record<string, number>; by_quality_tier: Record<string, number>; exclusion_reasons: Record<string, number>; positive_evidence: EvidenceBundleItem[]; excluded_evidence: EvidenceBundleItem[]; answerable_questions: string[]; known_gaps: string[]; generated_at: string };
-type HumanFeedbackRecord = { source: string; reference_id: number; entity_key: string; gpu_uuid?: string; node_ip?: string; model_name?: string; event_type?: string; outcome?: string; quality_tier?: string; operator?: string; repair_action?: string; history_pack_status?: string; warning_review_status?: string; occurred_at?: string; available_at?: string; prediction_window_end_at?: string; status: string; blocking_reasons: string[] };
-type HumanFeedbackManifest = { version: string; framework_version: string; label_contract_version: string; outcome_rule_version: string; mode: string; status: string; manifest_sha256: string; total_labels: number; human_confirmed_labels: number; confirmed_positive_labels: number; human_override_outcomes: number; human_positive_outcomes: number; hardware_fault_feedback_requests: number; hardware_feedback_training_eligible: number; hardware_feedback_pack_ready: number; hardware_feedback_warning_reviewed: number; hardware_feedback_warning_misses: number; hardware_feedback_blocked: number; matched_prediction_windows: number; matched_positive_prediction_windows: number; confirmed_labels_without_prediction_window_match: number; labels_missing_identity: number; labels_missing_available_at: number; outcome_overrides_missing_operator: number; point_in_time_violations: number; by_event_type: Record<string, number>; by_model: Record<string, number>; by_outcome: Record<string, number>; feedback_policy: string[]; blocking_reasons: string[]; recommended_next_run: string[]; sample_records: HumanFeedbackRecord[]; generated_at: string };
-type HardwareFaultFeedbackRequest = { id: number; request_key: string; status: string; node_ip: string; target_scope?: string; gpu_uuid?: string; reported_gpu_uuid?: string; gpu_index: number; affected_gpu_indexes?: string[]; gpu_asset_id?: number; model_name?: string; fault_type: string; fault_occurred_at: string; fault_time_precision?: string; fault_window_start_at?: string; fault_window_end_at?: string; pre_window_hours: number; post_window_hours: number; operator: string; description?: string; repair_action?: string; hardware_replaced: boolean; evidence_note?: string; source_record_id?: string; triage_status?: string; episode_key?: string; training_eligible: boolean; history_pack_status: string; history_pack_scope: string; history_pack_sha256?: string; identity_resolution_status: string; identity_resolution_note?: string; warning_review_status?: string; warning_review_window_hours?: number; matched_warning_count?: number; matched_warning_keys?: string[]; warning_review_note?: string; blocking_reasons: string[]; created_at: string; updated_at: string };
-type HardwareFaultFeedbackImportRecord = { row_number: number; source_record_id?: string; source_host_serial?: string; source_hostname?: string; source_status?: string; raw_category?: string; raw_phenomenon?: string; reported_at?: string; resolved_at?: string; node_ip?: string; asset_resolution_status: string; asset_resolution_note?: string; target_scope?: string; fault_type?: string; decision: string; blocking_reasons?: string[]; existing_request_id?: number; imported_request_id?: number };
-type HardwareFaultFeedbackImportReport = { version: string; mode: string; source_sha256: string; parsed_rows: number; unique_source_records: number; mapped_rows: number; unresolved_rows: number; duplicate_rows: number; existing_rows: number; importable_rows: number; imported_rows: number; skipped_rows: number; training_eligible_rows: number; records: HardwareFaultFeedbackImportRecord[] };
-type HardwareFaultEpisodeReport = { version: string; feedback_count: number; reviewed_count: number; pending_count: number; episode_count: number; training_episodes: number; report_sha256: string };
-type HardwareFaultValueReport = { version: string; reviewed_count: number; confirmed_count: number; excluded_count: number; context_only_count: number; pending_evidence_count: number; training_episode_count: number; horizons: Array<{ horizon_minutes: number; eligible_faults: number; covered_faults: number; warning_hits: number; recall_at_observed_threshold: number; median_lead_minutes: number }>; ranking_at_k: Array<{ k: number; eligible_faults: number; hits: number; recall_at_k: number }>; report_sha256: string };
-type ShadowDistributionSnapshot = { run_id: number; run_key: string; version: string; status: string; model_key: string; model_version: string; report_sha256?: string; scored_gpu_count: number; positive_gpu_count: number; positive_ratio: number; median_probability?: number; p95_probability?: number; p99_probability?: number; distribution_status: string; distribution_blocking: string[]; no_alert_emitted: boolean; no_action_executed: boolean; finished_at?: string };
-type LiveCoverageQualitySnapshot = { audit_id: number; audit_key: string; version: string; status: string; model_key: string; model_version: string; report_sha256?: string; target_gpu_count: number; eligible_gpu_count: number; metric_pair_count: number; passing_metric_pair_count: number; missing_metric_pair_count: number; sparse_metric_pair_count: number; stale_metric_pair_count: number; eligible_ratio: number; metric_pass_ratio: number; missing_ratio: number; sparse_ratio: number; stale_ratio: number; blocking_reasons: string[]; finished_at?: string };
-type DataDriftReport = { version: string; framework_version: string; mode: string; status: string; report_sha256: string; method: string; minimum_shadow_runs: number; minimum_coverage_audits: number; psi_proxy_threshold: number; ks_proxy_threshold: number; positive_ratio_delta_threshold: number; coverage_delta_threshold: number; latest?: ShadowDistributionSnapshot; baseline?: ShadowDistributionSnapshot; latest_coverage?: LiveCoverageQualitySnapshot; baseline_coverage?: LiveCoverageQualitySnapshot; psi_proxy: number; ks_proxy: number; positive_ratio_delta: number; median_delta: number; p95_delta: number; p99_delta: number; coverage_quality_status: string; eligible_ratio_delta: number; metric_pass_ratio_delta: number; missing_ratio_delta: number; sparse_ratio_delta: number; stale_ratio_delta: number; blocking_reasons: string[]; recommended_next_run: string[]; generated_at: string };
-type CalibrationDriftSnapshot = { build_id: number; baseline_model_key: string; version: string; status: string; report_sha256: string; horizon_count: number; calibration_passed: number; calibration_required: number; insufficient_labels: number; mean_ece: number; mean_model_brier: number; mean_null_brier: number; mean_brier_skill_score: number; release_ready_horizons: number; finished_at?: string };
-type CalibrationDriftReport = { version: string; framework_version: string; mode: string; status: string; report_sha256: string; method: string; minimum_reports: number; ece_delta_threshold: number; brier_delta_threshold: number; brier_skill_drop_threshold: number; latest?: CalibrationDriftSnapshot; baseline?: CalibrationDriftSnapshot; ece_delta: number; model_brier_delta: number; brier_skill_score_delta: number; blocking_reasons: string[]; recommended_next_run: string[]; generated_at: string };
-type FeatureDriftReplaySnapshot = { replay_id: number; replay_key: string; version: string; status: string; report_sha256?: string; training_feature_count: number; verified_column_count: number; compared_value_count: number; mismatch_count: number; missing_training_value_count: number; missing_replay_value_count: number; finished_at?: string };
-type FeatureDistributionSnapshot = { snapshot_id: number; snapshot_key: string; version: string; status: string; distribution_role: string; feature_name: string; sample_count: number; missing_ratio: number; mean: number; stddev: number; minimum: number; p50: number; p95: number; maximum: number; bin_count: number; report_sha256?: string; observed_at: string };
-type FeatureDriftComparison = { feature_name: string; status: string; training_snapshot_id?: number; live_snapshot_id?: number; training_samples: number; live_samples: number; psi: number; ks: number; mean_delta: number; p50_delta: number; p95_delta: number; blocking_reasons: string[] };
-type FeatureDriftFeature = { name: string; mean: number; scale: number; distribution_status: string };
-type FeatureDriftReport = { version: string; framework_version: string; mode: string; status: string; report_sha256: string; method: string; source_baseline_build_id: number; baseline_model_key?: string; baseline_version?: string; artifact_sha256?: string; artifact_local_sha256?: string; feature_contract_version?: string; feature_column_count: number; feature_distribution_count: number; compared_feature_count: number; passed_feature_count: number; review_required_feature_count: number; psi_threshold: number; ks_threshold: number; maximum_psi: number; maximum_ks: number; psi_status: string; ks_status: string; latest_replay?: FeatureDriftReplaySnapshot; sample_distributions: FeatureDistributionSnapshot[]; feature_comparisons: FeatureDriftComparison[]; sample_features: FeatureDriftFeature[]; blocking_reasons: string[]; recommended_next_run: string[]; generated_at: string };
-type HeaRankChallengerReport = { version: string; framework_version: string; mode: string; status: string; report_sha256: string; confidence_status: string; target_horizon_minutes: number; minimum_seven_day_rows: number; minimum_seven_day_nodes: number; minimum_seven_day_positives: number; sample_summary: { total: number; matured: number; pending: number; censored: number; matured_ratio: number; probability_scored: number; node_eligible: number }; all_matured: Array<{ policy: string; description: string; rows: number; nodes: number; positives: number; non_zero_score_rows: number; non_zero_score_nodes: number; signal_coverage_status: string; ranking_at_k?: RankingAtK[] }>; seven_day: Array<{ policy: string; description: string; rows: number; nodes: number; positives: number; non_zero_score_rows: number; non_zero_score_nodes: number; signal_coverage_status: string; ranking_at_k?: RankingAtK[] }>; policy_comparisons: Array<{ reference_policy: string; challenger_policy: string; status: string; reason: string }>; blocking_reasons: string[]; interpretation: string[]; recommended_next_run: string[]; generated_at: string };
-type ObservabilityTemporalConsistency = { status: string; metric: string; positive_direction_rule: string; minimum_independent_cohorts: number; minimum_direction_ratio: number; evaluable_independent_cohorts: number; positive_direction_cohorts: number; direction_consistency_ratio?: number; blocking_reasons: string[] };
-type ObservabilityPolicyResult = { policy: string; plane: string; description: string; status: string; scored_gpu_count: number; scored_node_count: number; distinct_score_count: number; score_coverage: number; positive_node_count: number; scored_positive_node_count: number; unscored_positive_node_count: number; ranking_at_k: RankingAtK[]; ranking_at_percent: RankingAtPercent[]; blocking_reasons: string[] };
-type ObservabilityRankingValidationReport = { cohort_selection_mode: string; evaluation_as_of: string; replay_url: string; version: string; framework_version: string; mode: string; status: string; report_sha256: string; signal: string; primary_policy: string; candidate_policy?: string; score_semantics: string; target_horizon_minutes: number; negative_censor_hours: number; cohort_limit: number; minimum_score_coverage: number; minimum_unique_positive_entities: number; cohort_count: number; evaluable_cohort_count: number; positive_cohort_count: number; unique_positive_entity_count: number; recurrent_positive_entity_count: number; positive_episode_count: number; evidence_independence_status: string; evidence_independence_blocking_reasons: string[]; cohorts: Array<{ health_evaluation_run_id: number; cutoff_at: string; window_end_at: string; status: string; gpu_count: number; node_count: number; scored_gpu_count: number; scored_node_count: number; score_coverage: number; positive_node_count: number; scored_positive_node_count: number; unscored_positive_node_count: number; matched_label_count: number; policy_results: ObservabilityPolicyResult[]; ranking_at_k: RankingAtK[]; ranking_at_percent: RankingAtPercent[]; blocking_reasons: string[] }>; policy_summaries: Array<{ policy: string; plane: string; description: string; blocked_positive_cohorts: number; temporal_consistency: ObservabilityTemporalConsistency }>; temporal_consistency: ObservabilityTemporalConsistency; safety: { read_only_shadow: boolean; no_alert_emitted: boolean; no_action_executed: boolean; model_registry_independent: boolean }; blocking_reasons: string[]; interpretation: string[]; recommended_next_run: string[]; generated_at: string };
-type RiskRankingSnapshotReport = { version: string; framework_version: string; mode: string; status: string; report_sha256: string; policy: string; score_semantics: string; shadow_run_id?: number; shadow_run_key?: string; model_spec_id?: number; model_key?: string; model_version?: string; scope_model_name?: string; transformation_contract_version?: string; horizon_minutes: number; decision_threshold?: number; snapshot_cutoff_at?: string; target_gpu_count: number; scored_gpu_count: number; node_count: number; items: Array<{ rank: number; top_percentile: number; node_ip: string; risk_score: number; maximum_probability: number; mean_probability: number; gpu_count: number; above_threshold_gpu_count: number; top_gpu_uuid: string }>; safety: { read_only_shadow: boolean; no_alert_emitted: boolean; no_action_executed: boolean }; blocking_reasons: string[]; interpretation: string[]; recommended_next_run: string[]; generated_at: string };
-type ValidationReadinessReport = { version: string; framework_version: string; mode: string; status: string; readiness_sha256: string; label_gate_status: string; label_manifest_version: string; label_manifest_sha256: string; evidence_bundle_version: string; evidence_bundle_sha256: string; evidence_positive_labels: number; evidence_excluded_labels: number; human_feedback_manifest_version: string; human_feedback_manifest_sha256: string; human_feedback_status: string; human_feedback_confirmed_labels: number; human_feedback_outcome_overrides: number; human_feedback_hardware_fault_requests: number; human_feedback_hardware_pack_ready: number; human_feedback_hardware_warning_reviewed: number; human_feedback_hardware_warning_misses: number; human_feedback_hardware_blocked: number; human_feedback_matched_prediction_windows: number; human_feedback_point_in_time_violations: number; outcome_report_version: string; outcome_stability_status: string; outcome_maturity: { total: number; matured: number; pending: number; censored: number; matured_ratio: number; probability_scored: number; node_eligible: number }; challenger_version: string; challenger_status: string; challenger_confidence_status: string; challenger_historical_signal_status: string; risk_ranking_version: string; risk_ranking_sha256: string; risk_ranking_status: string; risk_ranking_policy: string; risk_ranking_score_semantics: string; risk_ranking_shadow_run_id: number; risk_ranking_shadow_run_key?: string; risk_ranking_horizon_minutes: number; risk_ranking_snapshot_cutoff_at?: string; risk_ranking_target_gpu_count: number; risk_ranking_scored_gpu_count: number; risk_ranking_node_count: number; temporal_consistency_version: string; temporal_summary: { cohort_limit: number; cohort_count: number; matured_cohort_count: number; independent_cohort_count: number; comparable_ranking_cohort_count: number; comparable_probability_cohort_count: number }; temporal_consistency: { ranking_track: { status: string; metric: string; positive_direction_rule: string; minimum_independent_cohorts: number; minimum_direction_ratio: number; evaluable_independent_cohorts: number; positive_direction_cohorts: number; direction_consistency_ratio?: number; blocking_reasons: string[] }; probability_track: { status: string; metric: string; positive_direction_rule: string; minimum_independent_cohorts: number; minimum_direction_ratio: number; evaluable_independent_cohorts: number; positive_direction_cohorts: number; direction_consistency_ratio?: number; blocking_reasons: string[] } }; slice_audit_version: string; slice_contract_version: string; slice_audit_status: string; slice_ready_dimensions: number; slice_partial_dimensions: number; validation_slice_count: number; validation_slices_sha256: string; comparable_ranking_slices: number; comparable_probability_slices: number; slice_blocking_reasons: string[]; data_drift_version: string; data_drift_sha256: string; data_drift_status: string; data_drift_coverage_quality_status: string; data_drift_psi_proxy: number; data_drift_ks_proxy: number; calibration_drift_version: string; calibration_drift_sha256: string; calibration_drift_status: string; calibration_ece_delta: number; calibration_brier_skill_score_delta: number; feature_drift_version: string; feature_drift_sha256: string; feature_drift_status: string; feature_drift_feature_columns: number; feature_drift_feature_distributions: number; feature_drift_compared_features: number; feature_drift_passed_features: number; feature_drift_review_required_features: number; feature_drift_maximum_psi: number; feature_drift_maximum_ks: number; feature_drift_psi_status: string; feature_drift_ks_status: string; feature_drift_blocking_reasons: string[]; feature_drift_recommended_next_run: string[]; feature_distribution_archive_version: string; feature_distribution_archive_sha256: string; feature_distribution_archive_scope: { name: string; status: string; limit: number; source_baseline_build_id?: number; model_spec_id?: number; model_key?: string; model_version?: string; feature_contract_version?: string; scope_model_name?: string }; feature_distribution_comparability_status: string; feature_distribution_minimum_feature_pairs: number; feature_distribution_paired_feature_count: number; feature_distribution_missing_training_features: string[]; feature_distribution_missing_live_shadow_features: string[]; feature_distribution_snapshots: number; feature_distribution_training_snapshots: number; feature_distribution_live_shadow_snapshots: number; feature_distribution_feature_count: number; feature_distribution_blocking_reasons: string[]; seven_day_rows: number; seven_day_nodes: number; seven_day_positives: number; seven_day: Array<{ policy: string; description: string; rows: number; nodes: number; positives: number; ranking_at_k?: RankingAtK[] }>; blocking_reasons: string[]; recommended_next_run: string[]; generated_at: string };
-type ValidationSliceComparability = { slice_comparability_status: string; slice_required_dimensions: number; comparable_ranking_dimensions: number; comparable_probability_dimensions: number; comparable_joint_dimensions: number; missing_ranking_dimensions: string[]; missing_probability_dimensions: string[] };
-type TemporalProbabilityQuality = { status: string; tp: number; fp: number; fn: number; tn: number; evaluated: number; precision?: number; recall?: number; accuracy?: number; f1_score?: number; brier_score?: number; null_brier_score?: number; brier_skill_score?: number; roc_auc?: number; pr_auc_average_precision?: number; expected_calibration_error?: number; scored_rows: number; positive_rows: number; negative_rows: number; invalid_probability_rows: number; invalid_label_rows: number; calibration_bins: number; calibration_bins_used: number; blocking_reasons: string[] };
-type DualTrackSliceAudit = { version: string; contract_version: string; status: string; total_rows: number; dimensions: Array<{ dimension: string; source: string; status: string; applicable_rows: number; frozen_rows: number; missing_rows: number; distinct_values: number; values: string[]; blocking_reasons: string[] }> };
-type DualTrackValidationSlice = { dimension: string; value: string; total_rows: number; matured_rows: number; node_count: number; positive_rows: number; ranking_status: string; probability_status: string; node_ranking_at_k: RankingAtK[]; node_ranking_at_percent: RankingAtPercent[]; probability_metrics: TemporalProbabilityQuality; blocking_reasons: string[] };
-type DualTrackValidationReport = { version: string; framework_version: string; mode: string; status: string; report_sha256: string; alignment: { status: string; model_spec_id?: number; model_key?: string; model_version?: string; horizon_minutes: number; snapshot_cutoff_at?: string; aligned_outcome_rows: number }; ranking_track: { status: string; policy: string; score_semantics: string; snapshot_version: string; snapshot_sha256: string; nodes: number; matured_rows: number; positive_rows: number; ranking_at_k: RankingAtK[]; ranking_at_percent: RankingAtPercent[]; blocking_reasons: string[] }; probability_track: { status: string; outcome_report_version: string; horizon_minutes: number; maturity: { total: number; matured: number; pending: number; censored: number; matured_ratio: number; probability_scored: number; node_eligible: number }; positive_rows: number; probability_coverage: number; rule: AccuracyMetrics; final: AccuracyMetrics; quality: TemporalProbabilityQuality; calibration_status: string; blocking_reasons: string[] }; evidence: { readiness_version: string; readiness_sha256: string; readiness_status: string; challenger_version: string; challenger_status: string; data_drift_status: string; calibration_drift_status: string; feature_drift_status: string }; readiness: ValidationReadinessReport; temporal_summary: { cohort_limit: number; cohort_count: number; matured_cohort_count: number; independent_cohort_count: number; comparable_ranking_cohort_count: number; comparable_probability_cohort_count: number }; temporal_cohorts: Array<{ prediction_cutoff_at: string; independent_time_batch: boolean; total_rows: number; matured_rows: number; pending_rows: number; censored_rows: number; node_count: number; positive_rows: number; ranking_status: string; probability_status: string; node_ranking_at_k: RankingAtK[]; node_ranking_at_percent: RankingAtPercent[]; probability_metrics: TemporalProbabilityQuality }>; temporal_consistency: { ranking_track: { status: string; metric: string; positive_direction_rule: string; minimum_independent_cohorts: number; minimum_direction_ratio: number; evaluable_independent_cohorts: number; positive_direction_cohorts: number; direction_consistency_ratio?: number; blocking_reasons: string[] }; probability_track: { status: string; metric: string; positive_direction_rule: string; minimum_independent_cohorts: number; minimum_direction_ratio: number; evaluable_independent_cohorts: number; positive_direction_cohorts: number; direction_consistency_ratio?: number; blocking_reasons: string[] } }; slice_audit: DualTrackSliceAudit; validation_slices: DualTrackValidationSlice[]; safety: { read_only_shadow: boolean; no_alert_emitted: boolean; no_action_executed: boolean }; interpretation: string[]; recommended_next_run: string[]; generated_at: string };
-type PromotionDecisionReport = { version: string; framework_version: string; mode: string; status: string; decision_sha256: string; dual_track_version: string; dual_track_sha256: string; readiness_version: string; readiness_sha256: string; model_spec_id?: number; model_key?: string; model_version?: string; horizon_minutes: number; snapshot_cutoff_at?: string; gates: Array<{ name: string; status: string; evidence_version?: string; evidence_sha256?: string; blocking_reasons: string[] }>; safety: { read_only_shadow: boolean; no_alert_emitted: boolean; no_action_executed: boolean }; blocking_reasons: string[]; recommended_next_run: string[]; generated_at: string };
-type PredictionOutcome = { id: number; prediction_id: number; model_key: string; model_version: string; gpu_uuid?: string; node_ip?: string; horizon_minutes: number; probability?: number; decision_threshold?: number; predicted_positive: boolean; prediction_evaluated_at: string; window_end_at: string; maturity_status: string; maturity_reason?: string; rule_actual_value?: number; rule_outcome: string; rule_label_quality?: string; human_actual_value?: number; human_outcome?: string; human_reason?: string; human_decided_by?: string; human_decided_at?: string; final_actual_value?: number; final_outcome: string; final_source: string };
-type PredictionOverview = { framework_version: string; phase: string; mode: string; scoring_enabled: boolean; probability_emitted: boolean; no_action_executed: boolean; feature_contract_version: string; label_contract_version: string; feature_catalog_version: string; horizons_minutes: number[]; models: PredictionModelSpec[]; readiness: PredictionReadinessSummary; results: { total: number; current: number; probability_emitted: boolean }; labels: { total: number; confirmed: number; strong_proxy: number; weak_proxy: number; excluded: number; affected_gpus: number; by_event_type: Record<string, number>; by_model: Record<string, number>; materialized: boolean; latest_available_at?: string }; retention: { online_retention_days: number; cold_archive_status: string; training_history_safe: boolean }; label_policy: { confirmed_positive: string[]; weak_positive: string[]; excluded_as_positive: string[]; point_in_time_rule: string; entity_isolation: string }; release_gates: { minimum_precision: number; minimum_recall: number; calibration: string; time_split: boolean; entity_split: boolean; shadow_required: boolean; auto_action: boolean } };
 type FleetSummary = {
   nodes: { total: number; by_state: Record<string, number> };
   gpus: { total: number; known_uuid: number; unknown_uuid: number; by_state: Record<string, number> };
@@ -218,30 +84,28 @@ type FleetSummary = {
   latest_sync: SyncRun | null;
 };
 
-const pageIcons = { overview: BarChart3, gpus: Cpu, hardware: MemoryStick, issues: ClipboardList, incidents: Bell, validations: Gauge, quality: Database, models: BrainCircuit, about: BookOpen };
-const pages: PageId[] = ['overview', 'gpus', 'hardware', 'incidents', 'validations', 'issues', 'quality', 'models', 'about'];
-const pageCopy = (tx: Tx): Record<PageId, { label: string; group: string; title: string; desc: string }> => ({
-  overview: { label: tx('集群总览', 'Overview'), group: tx('运行', 'OPERATIONS'), title: tx('GPU 集群', 'GPU Fleet'), desc: tx('资产、状态、事件与交付进度', 'Assets, status, incidents and delivery') },
-  gpus: { label: tx('GPU 资产', 'GPU Assets'), group: tx('运行', 'OPERATIONS'), title: tx('GPU 资产', 'GPU Assets'), desc: tx('健康、异常、性能与取值来源', 'Health, anomaly, performance and source lineage') },
-  hardware: { label: tx('硬件健康', 'Hardware Health'), group: tx('运行', 'OPERATIONS'), title: tx('硬件健康', 'Hardware Health'), desc: tx('GPU / CPU 算力节点的硬盘 SMART 与内存错误，每日一次；存储等不监控的节点已移出', 'Disk SMART and memory errors for GPU / CPU compute nodes, daily; out-of-scope nodes such as storage are excluded') },
-  issues: { label: tx('数据统计', 'Data Statistics'), group: tx('运行', 'OPERATIONS'), title: tx('数据问题统计与处置', 'Data Issue Analytics & Resolution'), desc: tx('数据、资产与可用性问题的发现、分类、状态及训练记录', 'Discovery, categories, status and training records for data, inventory and availability issues') },
-  incidents: { label: tx('告警中心', 'Alert Center'), group: tx('运行', 'OPERATIONS'), title: tx('告警中心', 'Alert Center'), desc: tx('硬件告警、接收记录、详情与人工处置', 'Hardware alerts, ingestion records, details and operator resolution') },
-  validations: { label: tx('性能验证', 'Validation'), group: tx('运行', 'OPERATIONS'), title: tx('性能验证', 'Performance Validation'), desc: tx('算力衰减检测与维护窗口复测', 'Degradation detection and maintenance validation') },
-  quality: { label: tx('数据质量', 'Data Quality'), group: tx('系统', 'SYSTEM'), title: tx('数据质量', 'Data Quality'), desc: tx('采集覆盖、身份映射与能力矩阵', 'Coverage, identity mapping and capability matrix') },
-  models: { label: tx('规则与模型', 'Rules & Models'), group: tx('系统', 'SYSTEM'), title: tx('规则与模型', 'Rules & Models'), desc: tx('健康评分、异常检测与故障预警', 'Health score, anomaly detection and failure early warning') },
-  about: { label: tx('平台概览', 'Platform Overview'), group: tx('系统', 'SYSTEM'), title: tx('平台概览', 'Platform Overview'), desc: tx('定位、能力模块、版本与路线', 'Positioning, capability modules, versions and roadmap') },
+const pageIcons = { overview: BarChart3, gpu: Cpu, memory: MemoryStick, disk: HardDrive, data: Database, settings: Settings2 };
+const pageGroups: { id: string; zh: string; en: string; pages: PageId[] }[] = [
+  { id: 'health', zh: '健康', en: 'HEALTH', pages: ['overview', 'gpu', 'memory', 'disk'] },
+  { id: 'system', zh: '系统', en: 'SYSTEM', pages: ['data', 'settings'] },
+];
+const pageCopy = (tx: Tx): Record<PageId, { label: string; title: string; desc: string }> => ({
+  overview: { label: tx('总览', 'Overview'), title: tx('总览', 'Overview'), desc: tx('GPU、内存、硬盘健康状态汇总', 'GPU, memory and disk health at a glance') },
+  gpu: { label: 'GPU', title: 'GPU', desc: tx('GPU 卡与节点的健康、风险与事件', 'GPU and node health, risk and events') },
+  memory: { label: tx('内存', 'Memory'), title: tx('内存', 'Memory'), desc: tx('GPU / CPU 算力节点的内存健康状态', 'Memory health of GPU / CPU compute nodes') },
+  disk: { label: tx('硬盘', 'Disks'), title: tx('硬盘', 'Disks'), desc: tx('GPU / CPU 算力节点的硬盘健康状态', 'Disk health of GPU / CPU compute nodes') },
+  data: { label: tx('数据采集', 'Data Collection'), title: tx('数据采集', 'Data Collection'), desc: tx('监控采集、资产对账与数据问题', 'Telemetry coverage, asset reconciliation and data issues') },
+  settings: { label: tx('设置', 'Settings'), title: tx('设置', 'Settings'), desc: tx('平台、资产源与监控源', 'Platform, asset and monitoring sources') },
 });
 const subPages = (page: PageId, tx: Tx): SubPage[] => ({
   overview: [],
-  hardware: [],
-  gpus: [{ id: 'health', label: tx('GPU 健康', 'GPU Health') }, { id: 'inventory', label: tx('资产清单', 'Inventory') }, { id: 'audit', label: tx('资产核查', 'Asset Audit') }],
-  issues: [{ id: 'ledger', label: tx('问题台账', 'Issue Ledger') }, { id: 'assets', label: tx('资产统计', 'Asset Statistics') }],
-  incidents: [{ id: 'hardware', label: tx('硬件事件', 'Hardware Events') }, { id: 'ingestion', label: tx('接收记录', 'Ingestion Records') }, { id: 'workflow', label: tx('处理流程', 'Workflow') }],
-  validations: [{ id: 'degradation', label: tx('衰减检测', 'Degradation') }, { id: 'records', label: tx('验证记录', 'Records') }],
-  quality: [{ id: 'targets', label: tx('采集覆盖', 'Target Coverage') }, { id: 'continuity', label: tx('指标连续性', 'Metric Continuity') }, { id: 'issues', label: tx('问题统计', 'Issue Statistics') }, { id: 'node-access', label: tx('节点访问', 'Node Access') }, { id: 'identity', label: tx('身份与带外', 'Identity & BMC') }, { id: 'audit', label: tx('同步审计', 'Sync Audit') }],
-  models: [{ id: 'gpu-risk', label: tx('GPU 风险优先级', 'GPU Risk Priority') }, { id: 'stack', label: tx('决策分层', 'Decision Stack') }, { id: 'prediction', label: tx('故障预警', 'Failure Early Warning') }, { id: 'algorithms', label: tx('算法与约束', 'Algorithms & Gates') }],
-  about: [{ id: 'definition', label: tx('能力与里程碑', 'Capabilities & Milestones') }, { id: 'architecture', label: tx('架构与边界', 'Architecture & Boundaries') }, { id: 'settings', label: tx('平台配置', 'Platform Settings') }],
+  gpu: [{ id: 'health', label: tx('健康', 'Health') }, { id: 'ranking', label: tx('风险排名', 'Risk Ranking') }, { id: 'events', label: tx('硬件事件', 'Hardware Events') }, { id: 'degradation', label: tx('性能衰减', 'Degradation') }, { id: 'inventory', label: tx('资产清单', 'Inventory') }],
+  memory: [{ id: 'hits', label: tx('规则命中', 'Rule Hits') }, { id: 'list', label: tx('全部节点', 'All Nodes') }],
+  disk: [{ id: 'hits', label: tx('规则命中', 'Rule Hits') }, { id: 'list', label: tx('全部磁盘', 'All Disks') }],
+  data: [{ id: 'targets', label: tx('采集覆盖', 'Coverage') }, { id: 'continuity', label: tx('指标连续性', 'Continuity') }, { id: 'hardware', label: tx('硬件采集', 'Hardware Collection') }, { id: 'assets', label: tx('资产对账', 'Asset Reconciliation') }, { id: 'issues', label: tx('问题台账', 'Issue Ledger') }],
+  settings: [{ id: 'platform', label: tx('平台配置', 'Platform') }, { id: 'audit', label: tx('资产核查', 'Asset Audit') }, { id: 'sync', label: tx('同步审计', 'Sync Audit') }],
 }[page]);
+const defaultSubPage: Record<PageId, string> = { overview: '', gpu: 'health', memory: 'hits', disk: 'hits', data: 'targets', settings: 'platform' };
 
 function time(value?: string, lang = 'zh-CN') {
   if (!value) return '—';
@@ -264,26 +128,25 @@ class PageErrorBoundary extends Component<{ children: ReactNode; title: string }
   }
 }
 
+// Polls only while the tab is visible; refreshes once when it becomes visible again.
+function visibleInterval(run: () => void, ms: number) {
+  let last = Date.now();
+  const tick = () => { if (document.visibilityState === 'visible') { last = Date.now(); run(); } };
+  const onVisible = () => { if (document.visibilityState === 'visible' && Date.now() - last >= ms) tick(); };
+  const id = window.setInterval(tick, ms);
+  document.addEventListener('visibilitychange', onVisible);
+  return () => { window.clearInterval(id); document.removeEventListener('visibilitychange', onVisible); };
+}
 export default function App() {
   const { i18n } = useTranslation();
   const zh = i18n.language.startsWith('zh');
   const tx: Tx = useCallback((cn, en) => zh ? cn : en, [zh]);
   const copy = pageCopy(tx);
-  const initial = window.location.hash.replace('#/', '') as PageId;
-  const [page, setPage] = useState<PageId>(pages.includes(initial) ? initial : 'overview');
+  const [initialPage, initialView] = parseRoute(window.location.hash);
+  const [page, setPage] = useState<PageId>(initialPage);
   const [sidebar, setSidebar] = useState(false);
-  const [hardwareVisited, setHardwareVisited] = useState(initial === 'hardware');
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [ingestions, setIngestions] = useState<Ingestion[]>([]);
-  const [ingestionMeta, setIngestionMeta] = useState<IngestionMeta>({ total: 0, all_total: 0, limit: 100, has_more: false, next_before_id: 0, received_5m: 0, received_1h: 0, source_mode: 'unknown', stream_status: 'empty' });
-  const [ingestionBeforeID, setIngestionBeforeID] = useState(0);
-  const [ingestionCursorHistory, setIngestionCursorHistory] = useState<number[]>([]);
-  const [ingestionQuery, setIngestionQuery] = useState('');
-  const [ingestionLevel, setIngestionLevel] = useState('');
-  const [ingestionLoading, setIngestionLoading] = useState(false);
-  const [ingestionRefresh, setIngestionRefresh] = useState(0);
-  const [failures, setFailures] = useState<Failure[]>([]);
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [platformConfig, setPlatformConfig] = useState<PlatformConfig>(() => readPlatformBrand({ instance_name: 'Atlas Cluster', product_name: 'ATLAS', product_tagline: 'GPU RELIABILITY', environment: 'LOCAL' }));
   const [freshness, setFreshness] = useState<DataFreshness | null>(null);
@@ -303,8 +166,6 @@ export default function App() {
   const [inventoryError, setInventoryError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [selected, setSelected] = useState<number | null>(null);
-  const [report, setReport] = useState<Report | null>(null);
   const [level, setLevel] = useState('');
   const [issueSummary, setIssueSummary] = useState<IssueSummary | null>(null);
   const [issues, setIssues] = useState<PlatformIssue[]>([]);
@@ -326,10 +187,14 @@ export default function App() {
   const [telemetryQualitySummary, setTelemetryQualitySummary] = useState<TelemetryQualitySummary | null>(null);
   const [degradationSummary, setDegradationSummary] = useState<DegradationSummary | null>(null);
   const [degradationCandidates, setDegradationCandidates] = useState<DegradationCandidate[]>([]);
-  const [nodeAccess, setNodeAccess] = useState<NodeAccessOverview | null>(null);
-  const [subPage, setSubPage] = useState<Record<PageId, string>>({ overview: '', gpus: 'health', hardware: '', issues: 'ledger', incidents: 'hardware', validations: 'degradation', quality: 'targets', models: 'prediction', about: 'definition' });
+  const [subPage, setSubPage] = useState<Record<PageId, string>>(() => initialView && subPages(initialPage, (zh2, en2) => zh2 || en2).some(item => item.id === initialView) ? { ...defaultSubPage, [initialPage]: initialView } : defaultSubPage);
 
-  const navigate = (id: PageId, view?: string) => { if (id === 'hardware') setHardwareVisited(true); if (view) setSubPage(current => ({ ...current, [id]: view })); setPage(id); setSidebar(false); window.location.hash = `/${id}`; window.scrollTo(0, 0); };
+  const navigate = (id: PageId, view?: string) => { const next = view || subPage[id]; if (view) setSubPage(current => ({ ...current, [id]: view })); setPage(id); setSidebar(false); window.location.hash = next ? `/${id}/${next}` : `/${id}`; window.scrollTo(0, 0); };
+  const selectSubPage = (id: string) => { setSubPage(current => ({ ...current, [page]: id })); window.location.hash = `/${page}/${id}`; };
+  useEffect(() => {
+    const onHash = () => { const [p, v] = parseRoute(window.location.hash); setPage(p); if (v) setSubPage(current => ({ ...current, [p]: v })); };
+    window.addEventListener('hashchange', onHash); return () => window.removeEventListener('hashchange', onHash);
+  }, []);
   const load = useCallback(async (signal?: AbortSignal) => {
     setRefreshing(true);
     const jobs: Promise<void>[] = [];
@@ -342,84 +207,48 @@ export default function App() {
     };
     read('/api/v1/status', setStatus);
     read('/api/v1/data-freshness', setFreshness);
-    if (page === 'overview' || page === 'gpus' || page === 'quality' || page === 'models') {
+    if (page === 'overview' || page === 'gpu' || page === 'data') {
       read('/api/v1/fleet/summary', data => { setSummary(data.data || null); setInventoryError(false); setLoading(false); }, () => { setInventoryError(true); setLoading(false); });
-      readAll<GPUAsset>('/api/v1/gpus', setGPUAssets);
+      if (page === 'overview' || subPage.gpu === 'health' || subPage.gpu === 'inventory') readAll<GPUAsset>('/api/v1/gpus', setGPUAssets);
     }
-    if (page === 'overview' || page === 'incidents') {
+    if (page === 'overview' || page === 'gpu') {
       read('/api/v1/fault-events/summary', data => setFaultSummary(data.data || null));
-      read('/api/v1/alerts/failures?limit=8', data => setFailures(data.items || []));
     }
-    if (page === 'gpus') {
-      read('/api/v1/health/summary', data => setHealthSummary(data.data || null));
-      readAll('/api/v1/health/gpus', setHealthScores, 1000);
-    }
-    if (page === 'quality') {
+    if (page === 'gpu' || page === 'overview') read('/api/v1/health/summary', data => setHealthSummary(data.data || null));
+    if (page === 'gpu' && subPage.gpu === 'health') readAll('/api/v1/health/gpus', setHealthScores, 1000);
+    if (page === 'data' || page === 'settings') {
       readAll('/api/v1/targets', setTargets);
       read('/api/v1/sync-runs?limit=20', data => setSyncRuns(data.data || []));
       read('/api/v1/inventory/changes?limit=50', data => setAssetChanges(data.data || []));
       read('/api/v1/health/telemetry-quality', data => { setTelemetryQuality(data.data || []); setTelemetryQualitySummary(data.summary || null); });
     }
-    if (page === 'quality') read('/api/v1/node-access/overview', data => setNodeAccess(data.data || null));
-    if (page === 'issues' || page === 'quality') read('/api/v1/issues/summary', data => setIssueSummary(data.data || null));
-    if (page === 'validations') {
+    if (page === 'data') read('/api/v1/issues/summary', data => setIssueSummary(data.data || null));
+    if (page === 'gpu' && subPage.gpu === 'degradation') {
       read('/api/v1/degradation/summary', data => setDegradationSummary(data.data || null));
       read('/api/v1/degradation/candidates', data => setDegradationCandidates(data.data || []));
     }
     await Promise.allSettled(jobs);
     if (!signal?.aborted) setRefreshing(false);
-  }, [page]);
+  }, [page, subPage.gpu]);
   useEffect(() => {
     const controller = new AbortController();
     let busy = false;
     const refreshPage = async () => { if (busy) return; busy = true; await load(controller.signal); busy = false; };
     void refreshPage();
-    const id = window.setInterval(refreshPage, 30000);
-    return () => { controller.abort(); window.clearInterval(id); };
+    const stop = visibleInterval(() => void refreshPage(), 60000);
+    return () => { controller.abort(); stop(); };
   }, [load]);
   useEffect(() => {
     const controller = new AbortController();
     const update = () => { void fetchJSON('/api/v1/platform-config', controller.signal).then(payload => { if (!controller.signal.aborted && payload.data) setPlatformConfig(payload.data); }).catch(() => {}); };
-    update(); const timer = window.setInterval(update, 30000);
-    return () => { controller.abort(); window.clearInterval(timer); };
+    update(); const stop = visibleInterval(update, 300000);
+    return () => { controller.abort(); stop(); };
   }, []);
   useEffect(() => { writePlatformBrand(platformConfig); }, [platformConfig]);
   useEffect(() => { document.title = `${platformConfig.instance_name} · ${platformConfig.product_name}`; }, [platformConfig]);
   useEffect(() => {
     let cancelled = false;
-    if (page !== 'incidents' || subPage.incidents !== 'ingestion') return;
-    const loadPage = async () => {
-      setIngestionLoading(true);
-      try {
-        const params = new URLSearchParams({ limit: '100' });
-        if (ingestionBeforeID > 0) params.set('before_id', String(ingestionBeforeID));
-        if (ingestionQuery.trim()) params.set('query', ingestionQuery.trim());
-        if (ingestionLevel) params.set('level', ingestionLevel);
-        const response = await fetch(`/api/v1/alerts/ingestions?${params.toString()}`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
-        if (cancelled) return;
-        setIngestions(Array.isArray(data.items) ? data.items : []);
-        setIngestionMeta({
-          total: Number(data.total || 0), all_total: Number(data.all_total ?? data.total ?? 0), limit: Number(data.limit || 100),
-          has_more: Boolean(data.has_more), next_before_id: Number(data.next_before_id || 0),
-          latest_received_at: data.latest_received_at || undefined, received_5m: Number(data.received_5m || 0), received_1h: Number(data.received_1h || 0),
-          source_mode: String(data.source_mode || 'unknown'), stream_status: String(data.stream_status || 'unknown'), server_time: data.server_time || undefined,
-        });
-      } catch {
-        if (!cancelled) setIngestionMeta(current => ({ ...current, stream_status: 'error' }));
-      } finally {
-        if (!cancelled) setIngestionLoading(false);
-      }
-    };
-    const debounce = window.setTimeout(loadPage, ingestionQuery ? 250 : 0);
-    const interval = window.setInterval(loadPage, 30000);
-    return () => { cancelled = true; window.clearTimeout(debounce); window.clearInterval(interval); };
-  }, [page, subPage.incidents, ingestionBeforeID, ingestionQuery, ingestionLevel, ingestionRefresh]);
-  useEffect(() => { setIngestionBeforeID(0); setIngestionCursorHistory([]); }, [ingestionQuery, ingestionLevel]);
-  useEffect(() => {
-    let cancelled = false;
-    if (page !== 'overview' && page !== 'incidents') return;
+    if (page !== 'overview' && !(page === 'gpu' && subPage.gpu === 'events')) return;
     const loadFaultPage = async () => {
       setFaultLoading(true);
       try {
@@ -438,11 +267,11 @@ export default function App() {
     };
     const debounce = window.setTimeout(loadFaultPage, query ? 250 : 0);
     return () => { cancelled = true; window.clearTimeout(debounce); };
-  }, [page, faultBeforeID, query, level, ingestionRefresh, issueRefresh]);
+  }, [page, subPage.gpu, faultBeforeID, query, level, issueRefresh]);
   useEffect(() => { setFaultBeforeID(0); setFaultCursorHistory([]); }, [query, level]);
   useEffect(() => {
     let cancelled = false;
-    if (page !== 'issues' || subPage.issues !== 'ledger') return;
+    if (page !== 'data' || subPage.data !== 'issues') return;
     const loadIssues = async () => {
       setIssueLoading(true);
       try {
@@ -462,7 +291,7 @@ export default function App() {
     };
     const debounce = window.setTimeout(loadIssues, issueQuery ? 250 : 0);
     return () => { cancelled = true; window.clearTimeout(debounce); };
-  }, [page, subPage.issues, issueBeforeID, issueCategory, issueStatus, issueQuery, issueRefresh]);
+  }, [page, subPage.data, issueBeforeID, issueCategory, issueStatus, issueQuery, issueRefresh]);
   useEffect(() => { setIssueBeforeID(0); setIssueCursorHistory([]); }, [issueCategory, issueStatus, issueQuery]);
   useEffect(() => {
     if (!selectedIssueID) { setIssueDetail(null); return; }
@@ -489,18 +318,12 @@ export default function App() {
     const key = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setSearchOpen(true); } if (e.key === '/' && !['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) { e.preventDefault(); setSearchOpen(true); } };
     window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key);
   }, []);
-  useEffect(() => {
-    if (!selected) { setReport(null); return; }
-    fetch(`/api/v1/alerts/ingestions/${selected}/analysis`).then(r => r.ok ? r.json() : null).then(setReport).catch(() => setReport(null));
-  }, [selected]);
 
-  const selectedItem = ingestions.find(x => x.id === selected) || null;
   const fleetModels = useMemo(() => {
     const counts = new Map<string, number>();
     gpuAssets.forEach(x => { const name = x.model_name || x.model || 'UNKNOWN'; counts.set(name, (counts.get(name) || 0) + 1); });
     return [...counts.entries()].map(([model, count]) => ({ model, short: model.replace(/^NVIDIA\s+/i, '').replace('GeForce ', ''), count })).sort((a, b) => b.count - a.count);
   }, [gpuAssets]);
-  const filtered = ingestions;
   const openFaults = faultEvents.filter(x => x.state === 'open');
   const hosts = new Set(openFaults.map(x => x.node_ip).filter(Boolean)).size;
   const lang = zh ? 'zh-CN' : 'en-US';
@@ -513,28 +336,17 @@ export default function App() {
   const collectionSources = Object.entries(freshness?.sources || {}).filter(([, source]) => source.collection_status === 'running' || source.collection_status === 'overdue');
   const overdueSources = collectionSources.filter(([, source]) => source.collection_status === 'overdue');
   const currentSubPages = subPages(page, tx);
-  const nextIngestionPage = () => {
-    if (!ingestionMeta.has_more || !ingestionMeta.next_before_id) return;
-    setIngestionCursorHistory(current => [...current, ingestionBeforeID]);
-    setIngestionBeforeID(ingestionMeta.next_before_id);
-  };
-  const previousIngestionPage = () => {
-    if (ingestionCursorHistory.length === 0) return;
-    const previous = ingestionCursorHistory[ingestionCursorHistory.length - 1];
-    setIngestionCursorHistory(current => current.slice(0, -1));
-    setIngestionBeforeID(previous);
-  };
   const nextFaultPage = () => { if (faultMeta.has_more && faultMeta.next_before_id) { setFaultCursorHistory(current => [...current, faultBeforeID]); setFaultBeforeID(faultMeta.next_before_id); } };
   const previousFaultPage = () => { if (faultCursorHistory.length) { const previous = faultCursorHistory[faultCursorHistory.length - 1]; setFaultCursorHistory(current => current.slice(0, -1)); setFaultBeforeID(previous); } };
   const nextIssuePage = () => { if (issueMeta.has_more && issueMeta.next_before_id) { setIssueCursorHistory(current => [...current, issueBeforeID]); setIssueBeforeID(issueMeta.next_before_id); } };
   const previousIssuePage = () => { if (issueCursorHistory.length) { const previous = issueCursorHistory[issueCursorHistory.length - 1]; setIssueCursorHistory(current => current.slice(0, -1)); setIssueBeforeID(previous); } };
-  const refresh = () => { void load(); setIngestionRefresh(value => value + 1); setIssueRefresh(value => value + 1); };
+  const refresh = () => { void load(); setIssueRefresh(value => value + 1); };
 
   return <div className="app">
     <aside className={`sidebar ${sidebar ? 'open' : ''}`}>
       <div className="brand"><span className="brand-icon"><Layers3 size={19} /></span><div><b>{platformConfig.instance_name}</b><small>{platformConfig.product_name}</small></div><button className="mobile-only icon-btn" onClick={() => setSidebar(false)}><X size={17} /></button></div>
-      <button className="cluster-switch" onClick={() => { navigate('about'); setSubPage(current => ({ ...current, about: 'settings' })); }}><span><i /> {platformConfig.environment}</span><small>{platformConfig.product_tagline}</small><ChevronRight size={14} /></button>
-      <nav>{['运行', '系统'].map(group => <div className="nav-group" key={group}><label>{tx(group, group === '运行' ? 'OPERATIONS' : 'SYSTEM')}</label>{pages.filter(id => copy[id].group === tx(group, group === '运行' ? 'OPERATIONS' : 'SYSTEM')).map(id => { const Icon = pageIcons[id]; const count = id === 'issues' ? issueSummary?.remaining : id === 'incidents' ? faultSummary?.open : id === 'quality' ? issueSummary?.remaining_by_category?.data_quality : 0; return <button key={id} className={page === id ? 'active' : ''} onClick={() => navigate(id)}><Icon size={16} /><span>{copy[id].label}</span>{(count || 0) > 0 && <em>{count}</em>}</button>; })}</div>)}</nav>
+      <button className="cluster-switch" onClick={() => navigate('settings', 'platform')}><span><i /> {platformConfig.environment}</span><small>{platformConfig.product_tagline}</small><ChevronRight size={14} /></button>
+      <nav>{pageGroups.map(group => <div className="nav-group" key={group.id}><label>{tx(group.zh, group.en)}</label>{group.pages.map(id => { const Icon = pageIcons[id]; const count = id === 'gpu' ? faultSummary?.open_by_severity?.critical : id === 'data' ? issueSummary?.remaining : 0; return <button key={id} className={page === id ? 'active' : ''} onClick={() => navigate(id)}><Icon size={16} /><span>{copy[id].label}</span>{(count || 0) > 0 && <em>{count}</em>}</button>; })}</div>)}</nav>
       <div className="sidebar-footer"><span><i className={status?.status === 'ok' ? 'online' : ''} />API {status?.status === 'ok' ? 'ONLINE' : 'WAITING'}</span><small>{status?.version || 'dev'} · {status?.commit || 'local'}</small></div>
     </aside>
     {sidebar && <button className="scrim" onClick={() => setSidebar(false)} />}
@@ -543,29 +355,31 @@ export default function App() {
         <button className="mobile-only icon-btn" onClick={() => setSidebar(true)}><Menu size={18} /></button>
         <div className="crumb"><span>{platformConfig.instance_name}</span><ChevronRight size={13} /><b>{copy[page].label}</b></div>
         <button className="global-search" onClick={() => setSearchOpen(true)}><Search size={15} /><span>{tx('搜索资源', 'Search resources')}</span><kbd>⌘ K</kbd></button>
-        <div className="top-actions"><LanguageButton i18n={i18n} zh={zh} /><ThemeButton tx={tx} /><button className="icon-btn" onClick={refresh} title={tx('刷新', 'Refresh')}><RefreshCw size={16} className={refreshing || ingestionLoading ? 'spin' : ''} /></button></div>
+        <div className="top-actions"><LanguageButton i18n={i18n} zh={zh} /><ThemeButton tx={tx} /><button className="icon-btn" onClick={refresh} title={tx('刷新', 'Refresh')}><RefreshCw size={16} className={refreshing ? 'spin' : ''} /></button></div>
       </header>
       <div className="content">
-        <div className="page-head"><div><h1>{copy[page].title}</h1>{copy[page].desc && <p>{copy[page].desc}</p>}</div><div className="page-meta">{page === 'hardware' ? <Badge value={tx('每日只读采集', 'DAILY READ-ONLY')} kind="info" /> : <><Badge value={platformConfig.environment} kind="info" /><Badge value={`DATA ${freshnessStatus}`} kind={freshnessTone} />{collectionSources.length > 0 && <Badge value={overdueSources.length > 0 ? tx('采集超时', 'COLLECTION OVERDUE') : tx('采集中', 'COLLECTING')} kind={overdueSources.length > 0 ? 'warning' : 'info'} />}<span title={tx('源数据最新观测时间；不是页面刷新时间', 'Latest source observation; not the page refresh time')}>{freshnessLatest ? time(freshnessLatest, lang) : '—'}</span></>}</div></div>
-        {page !== 'hardware' && overdueSources.length > 0 && <div className="collection-alert"><AlertTriangle size={17} /><div><b>{tx('监控数据超过 10 分钟仍未获取完成', 'Monitoring collection has not completed within 10 minutes')}</b><span>{overdueSources.map(([name, source]) => `${name.toUpperCase()} ${Math.floor((source.collection_age_seconds || 0) / 60)}m`).join(' · ')}</span></div></div>}
-        {currentSubPages.length > 0 && <nav className="subnav" aria-label={tx('页面分区', 'Page sections')}>{currentSubPages.map(item => <button key={item.id} className={subPage[page] === item.id ? 'active' : ''} onClick={() => setSubPage(current => ({ ...current, [page]: item.id }))}>{item.label}</button>)}</nav>}
+        <div className="page-head"><div><h1>{copy[page].title}</h1>{copy[page].desc && <p>{copy[page].desc}</p>}</div><div className="page-meta">{page === 'memory' || page === 'disk' ? <Badge value={tx('日更', 'DAILY')} kind="info" /> : <><Badge value={platformConfig.environment} kind="info" /><Badge value={`DATA ${freshnessStatus}`} kind={freshnessTone} />{collectionSources.length > 0 && <Badge value={overdueSources.length > 0 ? tx('采集超时', 'COLLECTION OVERDUE') : tx('采集中', 'COLLECTING')} kind={overdueSources.length > 0 ? 'warning' : 'info'} />}<span title={tx('源数据最新观测时间', 'Latest source observation')}>{freshnessLatest ? time(freshnessLatest, lang) : '—'}</span></>}</div></div>
+        {page !== 'memory' && page !== 'disk' && overdueSources.length > 0 && <div className="collection-alert"><AlertTriangle size={17} /><div><b>{tx('监控采集超过 10 分钟未完成', 'Collection overdue > 10 min')}</b><span>{overdueSources.map(([name, source]) => `${name.toUpperCase()} ${Math.floor((source.collection_age_seconds || 0) / 60)}m`).join(' · ')}</span></div></div>}
+        {currentSubPages.length > 0 && <nav className="subnav" aria-label={tx('页面分区', 'Page sections')}>{currentSubPages.map(item => <button key={item.id} className={subPage[page] === item.id ? 'active' : ''} onClick={() => selectSubPage(item.id)}>{item.label}</button>)}</nav>}
         <AnimatePresence mode="wait"><motion.div key={page} className={page === 'overview' ? 'overview-page' : 'secondary-page'} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: .12 }}>
-          {page === 'overview' && <Overview tx={tx} faults={openFaults} faultSummary={faultSummary} hosts={hosts} loading={loading} summary={summary} models={fleetModels} inventoryError={inventoryError} navigate={navigate} />}
-          {page === 'gpus' && subPage.gpus !== 'audit' && <Gpus tx={tx} view={subPage.gpus} assets={gpuAssets} models={fleetModels} loading={loading} inventoryError={inventoryError} healthScores={healthScores} healthSummary={healthSummary} lang={lang} />}
-          {page === 'gpus' && subPage.gpus === 'audit' && <PageErrorBoundary title={tx('资产核查页面异常', 'Asset audit page error')}><AssetAuditCheck tx={tx} lang={lang} /></PageErrorBoundary>}
-          {page === 'issues' && <Issues tx={tx} view={subPage.issues} summary={issueSummary} rows={issues} meta={issueMeta} page={issueCursorHistory.length + 1} loading={issueLoading} category={issueCategory} setCategory={setIssueCategory} status={issueStatus} setStatus={setIssueStatus} query={issueQuery} setQuery={setIssueQuery} previousPage={previousIssuePage} nextPage={nextIssuePage} select={setSelectedIssueID} lang={lang} />}
-          {page === 'incidents' && <Incidents tx={tx} view={subPage.incidents} rows={filtered} ingestionMeta={ingestionMeta} ingestionPage={ingestionCursorHistory.length + 1} ingestionLoading={ingestionLoading} previousIngestionPage={previousIngestionPage} nextIngestionPage={nextIngestionPage} faultRows={faultEvents} faultMeta={faultMeta} faultPage={faultCursorHistory.length + 1} faultLoading={faultLoading} previousFaultPage={previousFaultPage} nextFaultPage={nextFaultPage} query={subPage.incidents === 'ingestion' ? ingestionQuery : query} setQuery={subPage.incidents === 'ingestion' ? setIngestionQuery : setQuery} level={subPage.incidents === 'ingestion' ? ingestionLevel : level} setLevel={subPage.incidents === 'ingestion' ? setIngestionLevel : setLevel} failures={failures} select={setSelected} selectIssue={setSelectedIssueID} selectReport={setSelectedFaultReportID} lang={lang} />}
-          {page === 'validations' && <Validations tx={tx} view={subPage.validations} summary={degradationSummary} candidates={degradationCandidates} lang={lang} />}
-          {page === 'quality' && <Quality tx={tx} view={subPage.quality} targets={targets} summary={summary} issueSummary={issueSummary} inventoryError={inventoryError} syncRuns={syncRuns} assetChanges={assetChanges} telemetry={telemetryQuality} telemetrySummary={telemetryQualitySummary} nodeAccess={nodeAccess} reloadNodeAccess={() => void load()} openIssues={() => { setIssueCategory('data_quality'); setIssueStatus(''); setIssueQuery(''); setIssueBeforeID(0); setIssueCursorHistory([]); navigate('issues'); }} lang={lang} />}
-          {page === 'models' && subPage.models === 'gpu-risk' && <Suspense fallback={<p>{tx('加载中…', 'Loading…')}</p>}><PageErrorBoundary title={tx('GPU 排名读取失败', 'GPU ranking error')}><GPURisk tx={tx} feedback={() => setSubPage(current => ({ ...current, models: 'prediction' }))} /></PageErrorBoundary></Suspense>}
-          {page === 'models' && subPage.models !== 'gpu-risk' && <PageErrorBoundary key={subPage.models} title={tx('故障预警页面数据异常', 'Failure early-warning page data error')}><Models tx={tx} view={subPage.models} lang={lang} assets={gpuAssets} /></PageErrorBoundary>}
-          {page === 'about' && <About tx={tx} view={subPage.about} platformConfig={platformConfig} onPlatformConfig={setPlatformConfig} />}
+          {page === 'overview' && <Overview tx={tx} faults={openFaults} faultSummary={faultSummary} hosts={hosts} loading={loading} summary={summary} models={fleetModels} healthSummary={healthSummary} inventoryError={inventoryError} navigate={navigate} />}
+          {page === 'gpu' && (subPage.gpu === 'health' || subPage.gpu === 'inventory') && <Gpus tx={tx} view={subPage.gpu} assets={gpuAssets} models={fleetModels} loading={loading} inventoryError={inventoryError} healthScores={healthScores} healthSummary={healthSummary} lang={lang} />}
+          {page === 'gpu' && subPage.gpu === 'ranking' && <Suspense fallback={<p>{tx('加载中…', 'Loading…')}</p>}><PageErrorBoundary title={tx('GPU 风险排名读取失败', 'GPU ranking error')}><GPURisk tx={tx} /></PageErrorBoundary></Suspense>}
+          {page === 'gpu' && subPage.gpu === 'events' && <HardwareEvents tx={tx} faultRows={faultEvents} faultMeta={faultMeta} faultPage={faultCursorHistory.length + 1} faultLoading={faultLoading} previousFaultPage={previousFaultPage} nextFaultPage={nextFaultPage} query={query} setQuery={setQuery} level={level} setLevel={setLevel} selectIssue={setSelectedIssueID} selectReport={setSelectedFaultReportID} lang={lang} />}
+          {page === 'gpu' && subPage.gpu === 'degradation' && <Validations tx={tx} summary={degradationSummary} candidates={degradationCandidates} lang={lang} />}
+          {page === 'memory' && <Suspense fallback={<div aria-busy="true">{tx('加载中…', 'Loading…')}</div>}><PageErrorBoundary title={tx('硬件快照读取失败', 'Hardware snapshot error')}><HardwareHealth tx={tx} lang={lang} kind="memory" view={subPage.memory} /></PageErrorBoundary></Suspense>}
+          {page === 'disk' && <Suspense fallback={<div aria-busy="true">{tx('加载中…', 'Loading…')}</div>}><PageErrorBoundary title={tx('硬件快照读取失败', 'Hardware snapshot error')}><HardwareHealth tx={tx} lang={lang} kind="disk" view={subPage.disk} /></PageErrorBoundary></Suspense>}
+          {page === 'data' && subPage.data === 'hardware' && <Suspense fallback={<div aria-busy="true">{tx('加载中…', 'Loading…')}</div>}><PageErrorBoundary title={tx('硬件快照读取失败', 'Hardware snapshot error')}><HardwareHealth tx={tx} lang={lang} kind="coverage" view={subPage.data} /></PageErrorBoundary></Suspense>}
+          {page === 'data' && subPage.data === 'assets' && <AssetStatistics tx={tx} lang={lang} />}
+          {page === 'data' && subPage.data === 'issues' && <Issues tx={tx} view="ledger" summary={issueSummary} rows={issues} meta={issueMeta} page={issueCursorHistory.length + 1} loading={issueLoading} category={issueCategory} setCategory={setIssueCategory} status={issueStatus} setStatus={setIssueStatus} query={issueQuery} setQuery={setIssueQuery} previousPage={previousIssuePage} nextPage={nextIssuePage} select={setSelectedIssueID} lang={lang} />}
+          {page === 'data' && (subPage.data === 'targets' || subPage.data === 'continuity') && <Quality tx={tx} view={subPage.data} targets={targets} summary={summary} inventoryError={inventoryError} syncRuns={syncRuns} assetChanges={assetChanges} telemetry={telemetryQuality} telemetrySummary={telemetryQualitySummary} lang={lang} />}
+          {page === 'settings' && subPage.settings === 'platform' && <PlatformSettings tx={tx} value={platformConfig} onSaved={setPlatformConfig} />}
+          {page === 'settings' && subPage.settings === 'audit' && <PageErrorBoundary title={tx('资产核查页面异常', 'Asset audit page error')}><AssetAuditCheck tx={tx} lang={lang} /></PageErrorBoundary>}
+          {page === 'settings' && subPage.settings === 'sync' && <Quality tx={tx} view="audit" targets={targets} summary={summary} inventoryError={inventoryError} syncRuns={syncRuns} assetChanges={assetChanges} telemetry={telemetryQuality} telemetrySummary={telemetryQualitySummary} lang={lang} />}
         </motion.div></AnimatePresence>
-        {hardwareVisited && <div hidden={page !== 'hardware'}><Suspense fallback={<div aria-busy="true">{tx('加载中…', 'Loading…')}</div>}><PageErrorBoundary title={tx('硬件健康报告异常', 'Hardware health report error')}><HardwareHealth tx={tx} lang={lang} /></PageErrorBoundary></Suspense></div>}
       </div>
     </main>
-    <AnimatePresence>{searchOpen && <GlobalSearch tx={tx} query={query} setQuery={setQuery} pagesCopy={copy} items={ingestions} assets={gpuAssets} close={() => setSearchOpen(false)} navigate={navigate} select={id => { setSelected(id); navigate('incidents'); setSearchOpen(false); }} />}</AnimatePresence>
-    <AnimatePresence>{selectedItem && <Drawer tx={tx} item={selectedItem} report={report} lang={lang} close={() => setSelected(null)} />}</AnimatePresence>
+    <AnimatePresence>{searchOpen && <GlobalSearch tx={tx} query={query} setQuery={setQuery} pagesCopy={copy} assets={gpuAssets} close={() => setSearchOpen(false)} navigate={navigate} />}</AnimatePresence>
     <AnimatePresence>{selectedIssueID && issueDetail && <IssueDrawer tx={tx} detail={issueDetail} lang={lang} close={() => setSelectedIssueID(null)} saved={() => { setIssueRefresh(value => value + 1); void load(); }} />}</AnimatePresence>
     <AnimatePresence>{selectedFaultReportID && <FaultReportDrawer tx={tx} report={faultReport} loading={faultReportLoading} error={faultReportError} lang={lang} close={() => setSelectedFaultReportID(null)} />}</AnimatePresence>
   </div>;
@@ -581,54 +395,48 @@ function ThemeButton({ tx }: { tx: Tx }) {
   return <div className="theme-menu"><button className="icon-btn" onClick={() => setOpen(!open)} title={tx('外观', 'Appearance')}><Palette size={16} /></button>{open && <div className="popover">{themes.map(x => <button key={x.id} className={theme === x.id ? 'active' : ''} onClick={() => { setTheme(x.id); setOpen(false); }}><x.icon size={15} />{x.label}{theme === x.id && <CheckCircle2 size={14} />}</button>)}</div>}</div>;
 }
 
-function Overview({ tx, faults, faultSummary, hosts, loading, summary, models, inventoryError, navigate }: { tx: Tx; faults: FaultEvent[]; faultSummary: FaultEventSummary | null; hosts: number; loading: boolean; summary: FleetSummary | null; models: { model: string; short: string; count: number }[]; inventoryError: boolean; navigate: (p: PageId, view?: string) => void }) {
+type HardwareFleetHead = { day: string; collected_at: string | null; coverage: { nodes_total: number; collected: number }; summary: { disk: { total: number; by_level: Record<string, number> }; memory: { nodes: number; dimms: number; by_level: Record<string, number> } } };
+function useHardwareHead() {
+  const [head, setHead] = useState<HardwareFleetHead | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchJSON('/api/v1/hardware/fleet?summary=1', controller.signal).then(payload => { if (!controller.signal.aborted) setHead(payload.data || null); }).catch(() => { if (!controller.signal.aborted) setFailed(true); });
+    return () => controller.abort();
+  }, []);
+  return { head, failed };
+}
+function StatusCard({ icon, label, value, unit, parts, note, onOpen }: { icon: ReactNode; label: string; value: string; unit?: string; parts: { label: string; value: number; tone: string }[]; note: string; onOpen: () => void }) {
+  return <button type="button" className="card status-card" onClick={onOpen}>
+    <header>{icon}<span>{label}</span><ChevronRight size={14} /></header>
+    <strong>{value}{unit && <em>{unit}</em>}</strong>
+    <div className="status-parts">{parts.map(part => <span key={part.label} className={part.value ? `tone-${part.tone}` : 'tone-zero'}><b>{part.value.toLocaleString()}</b>{part.label}</span>)}</div>
+    <small>{note}</small>
+  </button>;
+}
+function Overview({ tx, faults, faultSummary, loading, summary, models, healthSummary, inventoryError, navigate }: { tx: Tx; faults: FaultEvent[]; faultSummary: FaultEventSummary | null; hosts: number; loading: boolean; summary: FleetSummary | null; models: { model: string; short: string; count: number }[]; healthSummary: HealthSummary | null; inventoryError: boolean; navigate: (p: PageId, view?: string) => void }) {
+  const { head, failed } = useHardwareHead();
   const gpuTotal = summary?.gpus.total;
-  const nodeTotal = summary?.nodes.total;
+  const level = (counts: Record<string, number> | undefined) => [
+    { label: tx('严重', 'critical'), value: counts?.critical || 0, tone: 'danger' },
+    { label: tx('警告', 'warning'), value: counts?.warning || 0, tone: 'warning' },
+    { label: tx('关注', 'attention'), value: counts?.attention || 0, tone: 'info' },
+  ];
+  const healthyShare = healthSummary && healthSummary.scored ? ((healthSummary.by_level.healthy || 0) / healthSummary.scored * 100).toFixed(1) : '—';
+  const coverage = head ? (head.coverage.collected / Math.max(1, head.coverage.nodes_total) * 100).toFixed(1) : '—';
+  const hwNote = failed ? tx('硬件快照不可用', 'Hardware snapshot unavailable') : head ? tx(`${head.day} 采集`, `Collected ${head.day}`) : tx('加载中', 'Loading');
   return <div className="grid">
-    <IntegrationStatus tx={tx} summary={summary} inventoryError={inventoryError} navigate={navigate} />
-    {[['GPU', loading ? '—' : (gpuTotal == null ? '—' : String(gpuTotal)), inventoryError ? tx('资产 API 不可用', 'Inventory API unavailable') : tx(`${nodeTotal ?? '—'} 节点 · ${summary?.gpus.known_uuid ?? '—'} UUID`, `${nodeTotal ?? '—'} nodes · ${summary?.gpus.known_uuid ?? '—'} UUIDs`), Cpu], [tx('未恢复事件', 'Open events'), loading ? '—' : String(faultSummary?.open ?? 0), `${faultSummary?.open_by_severity.critical || 0} CRITICAL`, Bell], [tx('涉及主机', 'Affected hosts'), loading ? '—' : String(hosts), tx('未恢复事件范围', 'Open event scope'), Server], [tx('已恢复事件', 'Recovered events'), loading ? '—' : String(faultSummary?.by_state.recovered || 0), `${faultSummary?.total || 0} TOTAL EPISODES`, CheckCircle2]].map(([label, value, note, Icon]) => { const I = Icon as typeof Cpu; return <Card className="metric" key={String(label)}><I size={18} /><span>{String(label)}</span><strong>{String(value)}</strong><small>{String(note)}</small></Card>; })}
-    <Card className="span-8 fleet-card"><CardHead code="FLEET" title={tx('GPU 型号', 'GPU Models')} action={<Badge value={summary?.latest_sync ? tx('已同步', 'SYNCED') : tx('等待同步', 'WAITING')} kind={summary?.latest_sync ? 'healthy' : 'warning'} />} /><div className="fleet-list">{models.map(x => <div key={x.model}><span><b>{x.short}</b><small>{x.model}</small></span><div><i style={{ width: `${gpuTotal ? x.count / gpuTotal * 100 : 0}%` }} /></div><strong>{x.count}</strong></div>)}{models.length === 0 && <Empty tx={tx} title={tx('无资产数据', 'No inventory data')} />}</div></Card>
-    <Card className="span-4"><CardHead code="STATUS" title={tx('交付状态', 'Delivery')} /><div className="delivery">{[[tx('数据治理', 'Data governance'), 'P0', tx('基线完成', 'BASELINE')], [tx('健康评分', 'Health scoring'), 'P1', tx('基线完成', 'BASELINE')], [tx('故障闭环', 'Incident workflow'), 'P2', tx('进行中', 'ACTIVE')], [tx('性能验证', 'Performance validation'), 'P2.5', tx('规划', 'PLANNED')]].map(x => <div key={x[1]}><code>{x[1]}</code><b>{x[0]}</b><Badge value={x[2]} kind={x[1] === 'P2' ? 'healthy' : 'neutral'} /></div>)}</div></Card>
-    <Card className="span-8"><CardHead code="LIVE" title={tx('未恢复硬件事件', 'Open Hardware Events')} action={<button className="link" onClick={() => navigate('incidents')}>{tx('全部', 'View all')}<ChevronRight size={13} /></button>} /><FaultEventList tx={tx} items={faults.slice(0, 6)} /></Card>
-    <Card className="span-4"><CardHead code="SCOPE" title={tx('检测范围', 'Detection Scope')} /><div className="scope-list">{[[ShieldAlert, tx('硬故障', 'Hard failure'), 'XID · DBE · DROP'], [Gauge, tx('性能衰减', 'Degradation'), 'COMPUTE · MEMORY · LINK'], [Activity, tx('异常', 'Anomaly'), 'PEER · HISTORY · DRIFT'], [BrainCircuit, tx('预测', 'Prediction'), '1H · 6H · 24H']].map(([Icon, title, code]) => { const I = Icon as typeof Cpu; return <div key={String(code)}><I size={16} /><span><b>{String(title)}</b><small>{String(code)}</small></span></div>; })}</div></Card>
+    <div className="span-12 status-grid">
+      <StatusCard icon={<Cpu size={17} />} label={tx('GPU 健康', 'GPU health')} value={healthyShare} unit="%" parts={level(healthSummary?.by_level)} note={healthSummary ? tx(`${healthSummary.scored.toLocaleString()} 卡已评分 · ${healthSummary.unknown} 未知`, `${healthSummary.scored.toLocaleString()} scored · ${healthSummary.unknown} unknown`) : tx('加载中', 'Loading')} onOpen={() => navigate('gpu', 'health')} />
+      <StatusCard icon={<MemoryStick size={17} />} label={tx('内存', 'Memory')} value={head ? head.summary.memory.nodes.toLocaleString() : '—'} unit={tx('节点', 'nodes')} parts={level(head?.summary.memory.by_level)} note={head ? tx(`${head.summary.memory.dimms.toLocaleString()} 根内存条 · ${head.day}`, `${head.summary.memory.dimms.toLocaleString()} DIMMs · ${head.day}`) : hwNote} onOpen={() => navigate('memory')} />
+      <StatusCard icon={<HardDrive size={17} />} label={tx('硬盘', 'Disks')} value={head ? head.summary.disk.total.toLocaleString() : '—'} unit={tx('块', 'disks')} parts={level(head?.summary.disk.by_level)} note={hwNote} onOpen={() => navigate('disk')} />
+      <StatusCard icon={<Database size={17} />} label={tx('硬件采集覆盖', 'Hardware coverage')} value={coverage} unit="%" parts={head ? [{ label: tx('已采集', 'collected'), value: head.coverage.collected, tone: 'healthy' }, { label: tx('未采集', 'missing'), value: head.coverage.nodes_total - head.coverage.collected, tone: 'warning' }] : []} note={head ? tx(`范围 ${head.coverage.nodes_total} 个算力节点`, `${head.coverage.nodes_total} compute nodes in scope`) : hwNote} onOpen={() => navigate('data', 'hardware')} />
+    </div>
+    <Card className="span-8"><CardHead code="GPU EVENTS" title={tx('未恢复 GPU 事件', 'Open GPU Events')} action={<span className="card-head-actions"><Badge value={`${faultSummary?.open ?? '—'} OPEN · ${faultSummary?.open_by_severity.critical || 0} CRITICAL`} kind={faultSummary?.open_by_severity.critical ? 'danger' : 'neutral'} /><button className="link" onClick={() => navigate('gpu', 'events')}>{tx('全部', 'View all')}<ChevronRight size={13} /></button></span>} /><FaultEventList tx={tx} items={faults.slice(0, 8)} /></Card>
+    <Card className="span-4 fleet-card"><CardHead code="FLEET" title={tx('GPU 型号', 'GPU Models')} action={<Badge value={inventoryError ? tx('资产接口异常', 'INVENTORY ERROR') : loading ? tx('加载中', 'LOADING') : `${gpuTotal ?? '—'} GPU · ${summary?.nodes.total ?? '—'} ${tx('节点', 'NODES')}`} kind={inventoryError ? 'warning' : 'info'} />} /><div className="fleet-list">{models.map(x => <div key={x.model}><span><b>{x.short}</b><small>{x.model}</small></span><div><i style={{ width: `${gpuTotal ? x.count / gpuTotal * 100 : 0}%` }} /></div><strong>{x.count}</strong></div>)}{models.length === 0 && <Empty tx={tx} title={tx('无资产数据', 'No inventory data')} />}</div></Card>
   </div>;
 }
 
-function IntegrationStatus({ tx, summary, inventoryError, navigate }: { tx: Tx; summary: FleetSummary | null; inventoryError: boolean; navigate: (p: PageId, view?: string) => void }) {
-  const [assets, setAssets] = useState<{ total: number; syncedAt?: string; status: string } | null>(null);
-  const [disks, setDisks] = useState<{ total: number; observedAt?: string } | null>(null);
-  const [assetError, setAssetError] = useState(false);
-  const [diskError, setDiskError] = useState(false);
-  useEffect(() => {
-    const controller = new AbortController();
-    const read = async (url: string) => {
-      const response = await fetch(url, { signal: controller.signal });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return response.json();
-    };
-    const load = async () => {
-      const assetsJob = Promise.all([read('/api/v1/inventory/reconciliation?limit=1'), read('/api/v1/platform-config/assets')])
-        .then(([reconciliation, config]) => { if (!controller.signal.aborted) { setAssetError(false); setAssets({ total: reconciliation.summary.total, syncedAt: config.data.last_sync_at, status: config.data.last_sync_status }); } })
-        .catch(() => { if (!controller.signal.aborted) setAssetError(true); });
-      const disksJob = read('/api/v1/hardware/disks?limit=1&order=observed')
-        .then(payload => { if (!controller.signal.aborted) { setDiskError(false); setDisks({ total: payload.meta.total, observedAt: payload.data[0]?.observed_at }); } })
-        .catch(() => { if (!controller.signal.aborted) setDiskError(true); });
-      await Promise.allSettled([assetsJob, disksJob]);
-    };
-    void load();
-    const timer = window.setInterval(() => void load(), 60000);
-    return () => { controller.abort(); window.clearInterval(timer); };
-  }, []);
-  const date = (value?: string) => value ? new Date(value).toLocaleString(tx('zh-CN', 'en-US')) : tx('尚无记录', 'No record');
-  return <section className="integration-status span-12" aria-label={tx('数据接入状态', 'Data integration status')}>
-    <h2>{tx('数据接入状态', 'Data integration status')}</h2>
-    <div className="integration-status-grid">
-      <div><Database size={18} /><h3>{tx('资产', 'Assets')}</h3><strong>{assetError ? tx('读取失败', 'Unavailable') : assets ? tx(`${assets.total} 台在用设备`, `${assets.total} in-use devices`) : tx('加载中', 'Loading')}</strong><small>{tx('最近同步：', 'Last sync: ')}{date(assets?.syncedAt)}</small><small>{assets?.status === 'success' ? tx('双源对账已完成', 'Dual-source reconciliation complete') : assets?.status || tx('等待同步', 'Awaiting sync')}</small><button className="link" onClick={() => navigate('issues', 'assets')}>{tx('资产对账', 'Asset reconciliation')}<ChevronRight size={13} /></button></div>
-      <div><Activity size={18} /><h3>{tx('监控', 'Monitoring')}</h3><strong>{inventoryError ? tx('读取失败', 'Unavailable') : summary ? tx(`${summary.nodes.total} 节点 · ${summary.gpus.known_uuid} 已识别 GPU`, `${summary.nodes.total} nodes · ${summary.gpus.known_uuid} identified GPUs`) : tx('加载中', 'Loading')}</strong><small>{tx('最近同步：', 'Last sync: ')}{date(summary?.latest_sync?.finished_at)}</small><small>{tx('按在用资产范围对齐', 'Matched to in-use asset scope')}</small><button className="link" onClick={() => navigate('quality')}>{tx('监控覆盖', 'Monitoring coverage')}<ChevronRight size={13} /></button></div>
-      <div><Layers3 size={18} /><h3>{tx('物理硬盘', 'Physical disks')}</h3><strong>{diskError ? tx('读取失败', 'Unavailable') : disks ? tx(`${disks.total} 块有快照`, `${disks.total} disks with snapshots`) : tx('加载中', 'Loading')}</strong><small>{tx('最新观测：', 'Latest observation: ')}{date(disks?.observedAt)}</small><small>{tx('按观测时间判断新鲜度 · 未来故障预测未验证', 'Check observation time for freshness · failure prediction unvalidated')}</small><button className="link" onClick={() => navigate('hardware')}>{tx('硬盘证据与历史', 'Disk evidence and history')}<ChevronRight size={13} /></button></div>
-    </div>
-  </section>;
-}
 
 function Issues({ tx, view, summary, rows, meta, page, loading, category, setCategory, status, setStatus, query, setQuery, previousPage, nextPage, select, lang }: { tx: Tx; view: string; summary: IssueSummary | null; rows: PlatformIssue[]; meta: CursorMeta; page: number; loading: boolean; category: string; setCategory: (value: string) => void; status: string; setStatus: (value: string) => void; query: string; setQuery: (value: string) => void; previousPage: () => void; nextPage: () => void; select: (id: number) => void; lang: string }) {
   if (view === 'assets') return <AssetStatistics tx={tx} lang={lang} />;
@@ -683,8 +491,8 @@ function AssetStatistics({ tx, lang }: { tx: Tx; lang: string }) {
       }
     };
     void loadAssets();
-    const timer = window.setInterval(loadAssets, 60000);
-    return () => { cancelled = true; window.clearInterval(timer); };
+    const stop = visibleInterval(() => void loadAssets(), 300000);
+    return () => { cancelled = true; stop(); };
   }, []);
   const categoryLabels: Record<string, string> = {
     gpu: tx('GPU 设备', 'GPU Devices'), cpu: tx('CPU / 通用服务器', 'CPU / General Servers'), network: tx('交换机', 'Switches'), firewall: tx('UFM / 防火墙', 'UFM / Firewall'),
@@ -699,7 +507,7 @@ function AssetStatistics({ tx, lang }: { tx: Tx; lang: string }) {
   const pageRows = visible.slice(currentPage * 50, (currentPage + 1) * 50);
   const sourceLabel = (value: string) => value === 'both' ? tx('双边共有', 'In both') : value === 'ops_only' ? tx('仅运维主机', 'Ops only') : tx('仅资产设备', 'Asset only');
   return <div className="grid asset-statistics">
-    <Card className="span-12 capability-note"><Layers3 size={19} /><div><CardHead code="LXOP CROSS VALIDATION" title={tx('实时在用资产分类与双接口交叉验证', 'Live In-use Asset Classification & Cross-validation')} /><p>{tx('先对当前双接口源记录按同数据中心内 SN 优先、IP 补充关联，再以资产设备侧状态判断在用范围；无设备记录时使用运维侧状态。仅纳入 on、已上架使用中或运行；运维状态为空不代表接口不存在。GPU 型号按明确型号或主机名识别，排除机柜与 U 位。点击图形可下钻。', 'Current sources are matched within a data center by serial first and IP second before lifecycle filtering. Machine state defines in-use membership, with ops state used only for unmatched hosts. Only on, 已上架使用中 or 运行 qualifies; an empty ops state does not mean source absence. GPU models use explicit types or hostnames, excluding rack and U positions. Click a chart to drill down.')}</p></div><Badge value={loading ? 'SYNCING' : `${summary?.total || 0} IN USE`} kind={error ? 'warning' : 'info'} /></Card>
+    <Card className="span-12 capability-note"><Layers3 size={19} /><div><CardHead code="LXOP CROSS VALIDATION" title={tx('实时在用资产分类与双接口交叉验证', 'Live In-use Asset Classification & Cross-validation')} /><p>{tx('SN 优先、IP 补充关联 · 仅统计在用资产', 'Matched by SN, then IP · in-use assets only')}</p></div><Badge value={loading ? 'SYNCING' : `${summary?.total || 0} IN USE`} kind={error ? 'warning' : 'info'} /></Card>
     <Card className="span-7 asset-category-chart">
       <CardHead code="DEVICE TYPES" title={tx('设备类型分布', 'Device Type Distribution')} action={category ? <button className="link" onClick={() => setCategory('')}>{tx('显示全部', 'Show all')}<X size={12} /></button> : undefined} />
       <div className="asset-bars">{(summary?.by_category || []).map(item => <button key={item.name} className={category === item.name ? 'active' : ''} onClick={() => setCategory(current => current === item.name ? '' : item.name)}><span><b>{categoryLabels[item.name] || item.name}</b><strong>{item.count}</strong></span><i><em style={{ width: `${Math.max(4, item.count / maxCategory * 100)}%` }} /></i></button>)}</div>
@@ -826,7 +634,7 @@ function AssetAuditSettings({ tx }: { tx: Tx }) {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error?.message || `HTTP ${response.status}`);
-      setMessage(tx('已触发，正在后台执行…结果见 GPU 资产的资产核查子页', 'Triggered; running in the background. Results appear under GPU Assets → Asset Audit.'));
+      setMessage(tx('已触发，结果见“资产核查”', 'Triggered; see Asset Audit'));
     } catch (reason) {
       setBusy(''); setError(reason instanceof Error ? reason.message : tx('触发失败', 'Trigger failed'));
     } finally { setBusy(''); }
@@ -921,7 +729,7 @@ function MonitoringSettings({ tx }: { tx: Tx }) {
   return <>
     <Card className="span-8 lxop-settings">
       <CardHead code="MONITORING SOURCE" title={tx('监控数据源', 'Monitoring Data Source')} action={<Badge value={config.configured ? 'CONFIGURED' : 'UNSET'} kind={config.configured ? 'healthy' : 'warning'} />} />
-      <p className="settings-intro">{tx('Prometheus 或 VictoriaMetrics 集群查询地址。保存后立即生效、无需重启，地址持久化在数据库中。', 'Prometheus or VictoriaMetrics cluster query address. Changes take effect immediately without a restart, and the address is persisted in the database.')}</p>
+      <p className="settings-intro">{tx('Prometheus / VictoriaMetrics 查询地址，保存即生效', 'Prometheus / VictoriaMetrics query URL; applies on save')}</p>
       <form className="settings-form" onSubmit={event => { event.preventDefault(); void save(); }}>
         <label><span>{tx('监控地址', 'Monitoring base URL')}<small>{tx('例如 VictoriaMetrics 集群 select 地址', 'e.g. VictoriaMetrics cluster select endpoint')}</small></span><input value={config.base_url} onChange={event => setConfig(current => ({ ...current, base_url: event.target.value }))} placeholder="http://10.80.192.233:28481/select/0/prometheus" /></label>
         <label><span>{tx('请求超时', 'Request timeout')}<small>{tx('Go 时长，如 15s', 'Go duration, e.g. 15s')}</small></span><input value={config.request_timeout} onChange={event => setConfig(current => ({ ...current, request_timeout: event.target.value }))} placeholder="15s" /></label>
@@ -1184,263 +992,37 @@ function Gpus({ tx, view, assets, models, loading, inventoryError, healthScores,
   return <div className="grid"><Card className="span-12"><CardHead code="INVENTORY" title={tx('资产基线', 'Inventory Baseline')} /><div className="inventory inventory-models">{models.map(x => <div key={x.model}><i /><span><b>{x.short}</b><small>{x.model}</small></span><strong>{x.count}</strong></div>)}{models.length === 0 && <Empty tx={tx} title={tx('等待资产同步', 'Waiting for inventory sync')} />}</div></Card><Card className="span-12"><CardHead code="GPU NODES" title={tx('GPU 资产清单', 'GPU Inventory')} action={<div className="table-actions"><Badge value={inventoryError ? tx('接口异常', 'API ERROR') : tx(`总卡数 ${assets.length}`, `${assets.length} TOTAL GPUS`)} kind={inventoryError ? 'warning' : 'info'} /><Badge value={tx(`异常卡数 ${abnormalCards}`, `${abnormalCards} NON-ACTIVE`)} kind={abnormalCards ? 'warning' : 'healthy'} /><button disabled={safeNodePage === 0} onClick={() => setNodePage(page => page - 1)} aria-label={tx('上一页', 'Previous page')}><ChevronLeft size={15} /></button><span>{safeNodePage + 1} / {nodePageCount}</span><button disabled={safeNodePage + 1 >= nodePageCount} onClick={() => setNodePage(page => page + 1)} aria-label={tx('下一页', 'Next page')}><ChevronRight size={15} /></button></div>} /><div className="table-wrap"><table className="node-inventory-table"><thead><tr><th>{tx('节点 IP', 'Node IP')}</th><th>{tx('GPU 型号', 'GPU Models')}</th><th>{tx('卡状态', 'GPU State')}</th><th>{tx('主机状态', 'Node State')}</th><th>{tx('数据时间', 'Data Time')}</th></tr></thead><tbody>{visibleNodes.map(node => <Fragment key={node.nodeIP}><tr className={node.abnormal ? 'node-abnormal' : ''}><td><button className="node-expand" onClick={() => toggleNode(node.nodeIP)}><ChevronRight className={expandedNodes.has(node.nodeIP) ? 'expanded' : ''} size={15} /><b>{node.nodeIP}</b></button><small>{node.cards.length} GPU</small></td><td>{node.models.map(model => <small key={model}>{model}</small>)}</td><td><b>{node.active} ACTIVE</b>{node.abnormal > 0 && <small className="state-warning">{node.abnormal} NON-ACTIVE</small>}</td><td><Badge value={node.abnormal ? `${node.active} ACTIVE · ${node.abnormal} NON-ACTIVE` : `${node.active} ACTIVE`} kind={node.abnormal ? 'warning' : 'healthy'} /></td><td>{time(node.lastSynced, lang)}</td></tr>{expandedNodes.has(node.nodeIP) && <tr className="gpu-detail-row"><td colSpan={5}><div className="table-wrap"><table className="gpu-detail-table"><thead><tr><th>GPU</th><th>GPU UUID</th><th>{tx('型号', 'Model')}</th><th>PCI BUS ID</th><th>{tx('状态', 'State')}</th><th>{tx('数据时间', 'Data Time')}</th></tr></thead><tbody>{node.cards.map(card => <tr key={card.asset_key}><td><b>GPU {card.gpu_index}</b><small>{card.device || '—'}</small></td><td><code>{card.gpu_uuid || 'UUID UNKNOWN'}</code></td><td>{card.model_name || card.model || 'UNKNOWN'}</td><td><code>{card.pci_bus_id || '—'}</code></td><td><Badge value={card.state.toUpperCase()} kind={card.state === 'active' ? 'healthy' : 'warning'} /></td><td>{time(card.last_synced_at, lang)}</td></tr>)}</tbody></table></div></td></tr>}</Fragment>)}</tbody></table>{!loading && assets.length === 0 && <Empty tx={tx} title={inventoryError ? tx('资产 API 不可用', 'Inventory API unavailable') : tx('等待首次同步', 'Waiting for first sync')} />}</div></Card></div>;
 }
 
-function Incidents({ tx, view, rows, ingestionMeta, ingestionPage, ingestionLoading, previousIngestionPage, nextIngestionPage, faultRows, faultMeta, faultPage, faultLoading, previousFaultPage, nextFaultPage, query, setQuery, level, setLevel, failures, select, selectIssue, selectReport, lang }: { tx: Tx; view: string; rows: Ingestion[]; ingestionMeta: IngestionMeta; ingestionPage: number; ingestionLoading: boolean; previousIngestionPage: () => void; nextIngestionPage: () => void; faultRows: FaultEvent[]; faultMeta: CursorMeta; faultPage: number; faultLoading: boolean; previousFaultPage: () => void; nextFaultPage: () => void; query: string; setQuery: (v: string) => void; level: string; setLevel: (v: string) => void; failures: Failure[]; select: (id: number) => void; selectIssue: (id: number) => void; selectReport: (id: number) => void; lang: string }) {
-  if (view === 'workflow') return <div className="grid"><Card className="span-12"><CardHead code="WORKFLOW" title={tx('处理状态', 'Workflow State')} action={failures.length ? <Badge value={`${failures.length} INGEST FAILED`} kind="warning" /> : undefined} /><div className="workflow">{[tx('发现', 'DETECTED'), tx('分诊', 'TRIAGED'), tx('待维护', 'PENDING'), tx('已隔离', 'ISOLATED'), tx('诊断', 'DIAGNOSIS'), tx('修复', 'REPAIRED'), tx('复测', 'VALIDATED'), tx('关闭', 'CLOSED')].map((x, i) => <div key={x}><small>{String(i + 1).padStart(2, '0')}</small><b>{x}</b>{i < 7 && <ChevronRight size={13} />}</div>)}</div></Card></div>;
-  if (view === 'ingestion') {
-    const status = ingestionMeta.stream_status.toUpperCase();
-    const statusTone = status === 'LIVE' ? 'healthy' : status === 'SNAPSHOT' ? 'info' : status === 'ERROR' ? 'danger' : status === 'STALE' ? 'warning' : 'neutral';
-    const start = ingestionMeta.total > 0 ? (ingestionPage - 1) * ingestionMeta.limit + 1 : 0;
-    const end = start > 0 ? start + rows.length - 1 : 0;
-    return <div className="grid">
-      <Card className="span-12 ingestion-stream"><div><CardHead code="INGESTION STREAM" title={tx('告警接收链路', 'Alert Ingestion Stream')} /><p>{tx('原始监控告警接收与持久化审计；不等同于 Atlas 硬件事件。', 'Raw monitoring alert ingestion and persistence audit; separate from Atlas hardware events.')}</p></div><div className="ingestion-stream-metrics"><span><small>{tx('状态', 'Status')}</small><Badge value={ingestionLoading ? 'SYNCING' : status} kind={ingestionLoading ? 'info' : statusTone} /></span><span><small>{tx('数据模式', 'Data mode')}</small><b>{ingestionMeta.source_mode.toUpperCase()}</b></span><span><small>{tx('最新接收', 'Latest received')}</small><b>{ingestionMeta.latest_received_at ? time(ingestionMeta.latest_received_at, lang) : '—'}</b></span><span><small>{tx('近 5 分钟', 'Last 5m')}</small><b>{ingestionMeta.received_5m}</b></span><span><small>{tx('近 1 小时', 'Last 1h')}</small><b>{ingestionMeta.received_1h}</b></span><span><small>{tx('全部记录', 'All records')}</small><b>{ingestionMeta.all_total}</b></span></div></Card>
-      <Card className="span-12"><div className="toolbar"><label><Search size={15} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder={tx('主机 / UUID / XID / 消息', 'Host / UUID / XID / message')} /></label><label className="select"><Filter size={15} /><select value={level} onChange={e => setLevel(e.target.value)}><option value="">{tx('全部级别', 'All levels')}</option>{['critical', 'error', 'warning', 'info'].map(x => <option key={x}>{x}</option>)}</select></label><span>{start}–{end} / {ingestionMeta.total}</span></div><div className="table-wrap"><table className="incident-table"><thead><tr><th>{tx('级别', 'Level')}</th><th>{tx('事件', 'Incident')}</th><th>{tx('主机 / GPU', 'Host / GPU')}</th><th>{tx('来源', 'Source')}</th><th>{tx('处理', 'State')}</th><th>{tx('告警时间', 'Alert Time')}</th><th /></tr></thead><tbody>{rows.map(x => <tr key={x.id}><td><Badge value={x.level || 'unknown'} kind={tone(x.level)} /></td><td><b>{x.message}</b><small>#{x.id} · {x.labels?.err_msg || x.event_id}</small></td><td>{x.host || '—'}<small><code>{x.labels?.UUID || x.labels?.uuid || x.labels?.pci_bus_id || 'UNMAPPED'}</code></small></td><td>{x.source}</td><td><Badge value={x.process_status} kind={x.process_status === 'success' ? 'healthy' : 'warning'} /></td><td>{time(x.event_timestamp || x.created_at, lang)}<small>{x.event_timestamp ? tx('源事件时间', 'source event') : tx('接收时间', 'received')}</small></td><td><button className="link" onClick={() => select(x.id)}>{tx('详情', 'Details')}<Eye size={13} /></button></td></tr>)}</tbody></table>{rows.length === 0 && <Empty tx={tx} title={tx('无匹配接收记录', 'No matching ingestion records')} />}</div><div className="ingestion-pagination"><span>{tx(`第 ${ingestionPage} 页`, `Page ${ingestionPage}`)}</span><div><button onClick={previousIngestionPage} disabled={ingestionPage <= 1} title={tx('上一页', 'Previous page')}><ChevronLeft size={15} /></button><button onClick={nextIngestionPage} disabled={!ingestionMeta.has_more} title={tx('下一页', 'Next page')}><ChevronRight size={15} /></button></div></div></Card>
-    </div>;
-  }
+function HardwareEvents({ tx, faultRows, faultMeta, faultPage, faultLoading, previousFaultPage, nextFaultPage, query, setQuery, level, setLevel, selectIssue, selectReport, lang }: { tx: Tx; faultRows: FaultEvent[]; faultMeta: CursorMeta; faultPage: number; faultLoading: boolean; previousFaultPage: () => void; nextFaultPage: () => void; query: string; setQuery: (v: string) => void; level: string; setLevel: (v: string) => void; selectIssue: (id: number) => void; selectReport: (id: number) => void; lang: string }) {
   const faultStart = faultMeta.total > 0 ? (faultPage - 1) * faultMeta.limit + 1 : 0;
   const faultEnd = faultStart > 0 ? faultStart + faultRows.length - 1 : 0;
   return <div className="grid"><Card className="span-12"><div className="toolbar"><label><Search size={15} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder={tx('节点 / UUID / 规则 / 详情', 'Node / UUID / rule / details')} /></label><label className="select"><Filter size={15} /><select value={level} onChange={e => setLevel(e.target.value)}><option value="">{tx('全部级别', 'All levels')}</option>{['critical', 'warning', 'attention'].map(x => <option key={x}>{x}</option>)}</select></label><span>{faultLoading ? tx('加载中', 'Loading') : `${faultStart}–${faultEnd} / ${faultMeta.total}`}</span></div><div className="table-wrap"><table className="incident-table"><thead><tr><th>{tx('级别', 'Level')}</th><th>{tx('规则 / 详情', 'Rule / Details')}</th><th>{tx('节点 / GPU', 'Node / GPU')}</th><th>{tx('维度', 'Domain')}</th><th>{tx('告警状态', 'Alert')}</th><th>{tx('处置状态', 'Workflow')}</th><th>{tx('次数', 'Count')}</th><th>{tx('首次 / 最近', 'First / Last')}</th><th /></tr></thead><tbody>{faultRows.map(x => <tr key={x.id}><td><Badge value={x.severity.toUpperCase()} kind={tone(x.severity)} /></td><td><b>{x.rule_code}</b><small>{x.evidence} · {tx('阈值', 'threshold')} {x.threshold}</small></td><td><b>{x.node_ip} · GPU {x.gpu_index}</b><small><code>{x.gpu_uuid}</code></small></td><td><code>{x.domain.toUpperCase()}</code></td><td><Badge value={x.state.toUpperCase()} kind={tone(x.state)} /></td><td><Badge value={(x.workflow_status || 'syncing').toUpperCase()} kind={x.workflow_status ? issueTone(x.workflow_status) : 'neutral'} /></td><td>{x.occurrence_count}</td><td>{time(x.first_observed_at, lang)}<small>{time(x.last_observed_at, lang)}</small></td><td><div className="event-actions"><button className="link" onClick={() => selectReport(x.id)}>{tx('分析报告', 'Report')}<BookOpen size={13} /></button>{x.issue_id ? <button className="link" onClick={() => selectIssue(x.issue_id!)}>{tx('详情与处置', 'Resolve')}<ChevronRight size={13} /></button> : <small>{tx('台账同步中', 'Syncing')}</small>}</div></td></tr>)}</tbody></table>{faultRows.length === 0 && <Empty tx={tx} title={tx('无匹配硬件告警', 'No matching hardware alerts')} />}</div><div className="ingestion-pagination"><span>{tx(`第 ${faultPage} 页`, `Page ${faultPage}`)}</span><div><button onClick={previousFaultPage} disabled={faultPage <= 1} title={tx('上一页', 'Previous page')}><ChevronLeft size={15} /></button><button onClick={nextFaultPage} disabled={!faultMeta.has_more} title={tx('下一页', 'Next page')}><ChevronRight size={15} /></button></div></div></Card></div>;
 }
 
-function Validations({ tx, view, summary, candidates, lang }: { tx: Tx; view: string; summary: DegradationSummary | null; candidates: DegradationCandidate[]; lang: string }) {
-  if (view === 'records') return <div className="grid">
-    <Card className="span-12 safety"><ShieldAlert size={21} /><div><CardHead code="SAFETY" title={tx('主动测试前置条件', 'Active Test Gates')} /><p>{tx('人工确认维护窗口 · 无 GPU 计算进程 · 操作确认 · 超时与温控保护', 'Maintenance confirmed · no GPU compute process · operator confirmation · timeout and thermal guard')}</p></div><Badge value="NO AUTO STRESS" kind="warning" /></Card>
-    <Card className="span-12"><CardHead code="QUEUE" title={tx('验证记录', 'Validation Records')} /><Empty tx={tx} title={tx('主动验证接口尚未启用', 'Active validation API is not enabled')} /></Card>
-  </div>;
+function Validations({ tx, summary, candidates, lang }: { tx: Tx; summary: DegradationSummary | null; candidates: DegradationCandidate[]; lang: string }) {
   const scope = (value: string) => value === 'same_model_high_load_7d' ? tx('同型号高负载 7 天', 'Same-model high-load 7d') : value === 'same_node_model' ? tx('同节点同型号', 'Same node/model') : tx('同型号集群', 'Same-model fleet');
   return <div className="grid">
-    <Card className="span-12 degradation-guard"><div><Eye size={21} /><div><CardHead code="SHADOW MODE" title={tx('被动衰减候选', 'Passive Degradation Candidates')} /><p>{tx('只读观察：不扣减健康分、不输出故障概率、不自动隔离或压测。候选必须先确认负载可比性，再进入维护窗口复测。', 'Read-only observation: no health deduction, failure probability, automatic isolation or stress. Confirm workload comparability before maintenance validation.')}</p></div></div><Badge value={(summary?.mode || 'shadow').toUpperCase()} kind="info" /></Card>
+    <Card className="span-12 degradation-guard"><div><Eye size={21} /><div><CardHead code="SHADOW MODE" title={tx('被动衰减候选', 'Passive Degradation Candidates')} /><p>{tx('影子模式 · 不影响健康分 · 维护窗口复测确认', 'Shadow mode · no health impact · confirm in maintenance window')}</p></div></div><Badge value={(summary?.mode || 'shadow').toUpperCase()} kind="info" /></Card>
     <Card className="span-3 degradation-stat"><small>{tx('已评估', 'EVALUATED')}</small><strong>{summary?.evaluated_gpus ?? '—'}</strong><span>{tx('当前健康快照', 'current health snapshots')}</span></Card>
     <Card className="span-3 degradation-stat"><small>{tx('高负载可评估', 'LOAD ELIGIBLE')}</small><strong>{summary?.eligible_gpus ?? '—'}</strong><span>{tx(`利用率 ≥ ${summary?.minimum_utilization ?? 80}%`, `utilization ≥ ${summary?.minimum_utilization ?? 80}%`)}</span></Card>
     <Card className="span-3 degradation-stat"><small>{tx('基线就绪', 'BASELINE READY')}</small><strong>{summary?.baseline_ready_gpus ?? '—'}</strong><span>{tx(`历史基线 ${summary?.historical_baseline_gpus ?? 0}`, `${summary?.historical_baseline_gpus ?? 0} historical`)}</span></Card>
     <Card className="span-3 degradation-stat candidate"><small>{tx('衰减候选', 'CANDIDATES')}</small><strong>{summary?.candidate_gpus ?? '—'}</strong><span>{tx(`性能比 < ${Math.round((summary?.ratio_threshold ?? .85) * 100)}%`, `performance ratio < ${Math.round((summary?.ratio_threshold ?? .85) * 100)}%`)}</span></Card>
     <Card className="span-12 degradation-table-card"><CardHead code={summary?.version || 'degradation-v0.2.0'} title={tx('候选明细', 'Candidate Details')} action={<span className="table-observed">{tx('最近观测', 'LATEST OBSERVED')} {time(summary?.latest_observed_at, lang)}</span>} />
-      {candidates.length > 0 ? <div className="table-wrap"><table><thead><tr><th>{tx('节点 / GPU', 'Node / GPU')}</th><th>{tx('型号', 'Model')}</th><th>{tx('负载', 'Load')}</th><th>{tx('时钟观测 / 基线', 'Clock observed / baseline')}</th><th>{tx('性能比', 'Ratio')}</th><th>{tx('基线', 'Baseline')}</th><th>{tx('置信度', 'Confidence')}</th><th>{tx('建议', 'Recommendation')}</th></tr></thead><tbody>{candidates.map(item => <tr key={item.gpu_asset_id}><td><b>{item.node_ip}</b><small>GPU {item.gpu_index} · {item.gpu_uuid || 'UUID UNKNOWN'}</small></td><td>{item.model_name || 'UNKNOWN'}</td><td>{item.gpu_utilization.toFixed(1)}%</td><td><b>{item.observed_value.toFixed(0)} MHz</b><small>{item.baseline_value.toFixed(0)} MHz</small></td><td><Badge value={`${(item.performance_ratio * 100).toFixed(1)}%`} kind="warning" /></td><td><b>{scope(item.baseline_scope)}</b><small>{item.peer_count} {tx('个对照 GPU', 'peer GPUs')}</small></td><td><Badge value={item.data_confidence} kind={item.data_confidence === 'A' ? 'healthy' : 'info'} /></td><td><span className="recommendation">{tx('确认工作负载可比性后，在维护窗口执行 DCGM / SuperBench 复测。', 'Confirm workload comparability, then run DCGM / SuperBench in a maintenance window.')}</span><small>{tx('源时间', 'source time')} {time(item.observed_at, lang)}</small></td></tr>)}</tbody></table></div> : <Empty tx={tx} title={tx('当前没有被动衰减候选', 'No passive degradation candidates')} />}
+      {candidates.length > 0 ? <div className="table-wrap"><table><thead><tr><th>{tx('节点 / GPU', 'Node / GPU')}</th><th>{tx('型号', 'Model')}</th><th>{tx('负载', 'Load')}</th><th>{tx('时钟观测 / 基线', 'Clock observed / baseline')}</th><th>{tx('性能比', 'Ratio')}</th><th>{tx('基线', 'Baseline')}</th><th>{tx('置信度', 'Confidence')}</th><th>{tx('建议', 'Recommendation')}</th></tr></thead><tbody>{candidates.map(item => <tr key={item.gpu_asset_id}><td><b>{item.node_ip}</b><small>GPU {item.gpu_index} · {item.gpu_uuid || 'UUID UNKNOWN'}</small></td><td>{item.model_name || 'UNKNOWN'}</td><td>{item.gpu_utilization.toFixed(1)}%</td><td><b>{item.observed_value.toFixed(0)} MHz</b><small>{item.baseline_value.toFixed(0)} MHz</small></td><td><Badge value={`${(item.performance_ratio * 100).toFixed(1)}%`} kind="warning" /></td><td><b>{scope(item.baseline_scope)}</b><small>{item.peer_count} {tx('个对照 GPU', 'peer GPUs')}</small></td><td><Badge value={item.data_confidence} kind={item.data_confidence === 'A' ? 'healthy' : 'info'} /></td><td><span className="recommendation">{tx('维护窗口 DCGM / SuperBench 复测', 'Retest with DCGM / SuperBench in maintenance window')}</span><small>{tx('源时间', 'source time')} {time(item.observed_at, lang)}</small></td></tr>)}</tbody></table></div> : <Empty tx={tx} title={tx('当前没有被动衰减候选', 'No passive degradation candidates')} />}
     </Card>
-    <Card className="span-12 degradation-method"><CardHead code="METHOD" title={tx('当前判定口径', 'Current Decision Contract')} /><div className="stages"><div><b>01 / ELIGIBILITY</b><h3>{tx('高负载新鲜观测', 'Fresh High-load Observation')}</h3><p>gpu_util_avg_15m ≥ {summary?.minimum_utilization ?? 80}% · confidence A/B · freshness ≤ {Math.round((summary?.freshness_sla_seconds ?? 3600) / 60)}m</p><Badge value="NON-INTRUSIVE" kind="healthy" /></div><ChevronRight /><div><b>02 / BASELINE</b><h3>{tx('稳健历史与同类基线', 'Robust Historical & Peer Baseline')}</h3><p>{tx('成熟的同型号高负载 7 天基线优先 · 同节点/集群实时中位数兜底', 'mature same-model high-load 7d first · live node/fleet median fallback')}</p><Badge value="FEATURE BASELINE v1" kind="info" /></div><ChevronRight /><div><b>03 / VALIDATE</b><h3>{tx('人工维护复测', 'Human-gated Validation')}</h3><p>DCGM · SuperBench · workload context</p><Badge value="NOT AUTOMATED" kind="warning" /></div></div></Card>
   </div>;
 }
-function Quality({ tx, view, targets, summary, issueSummary, inventoryError, syncRuns, assetChanges, telemetry, telemetrySummary, nodeAccess, reloadNodeAccess, openIssues, lang }: { tx: Tx; view: string; targets: CollectorTarget[]; summary: FleetSummary | null; issueSummary: IssueSummary | null; inventoryError: boolean; syncRuns: SyncRun[]; assetChanges: AssetChange[]; telemetry: TelemetryQualityItem[]; telemetrySummary: TelemetryQualitySummary | null; nodeAccess: NodeAccessOverview | null; reloadNodeAccess: () => void; openIssues: () => void; lang: string }) {
+function Quality({ tx, view, targets, summary, inventoryError, syncRuns, assetChanges, telemetry, telemetrySummary, lang }: { tx: Tx; view: string; targets: CollectorTarget[]; summary: FleetSummary | null; inventoryError: boolean; syncRuns: SyncRun[]; assetChanges: AssetChange[]; telemetry: TelemetryQualityItem[]; telemetrySummary: TelemetryQualitySummary | null; lang: string }) {
   const [coverageJob, setCoverageJob] = useState('node_exporter');
   const [expandedRunID, setExpandedRunID] = useState<number | null>(null);
-  const [credentialDraft, setCredentialDraft] = useState({ profile_id: '', priority: 10, username: '', password: '', enabled: true });
-  const [credentialSaving, setCredentialSaving] = useState(false);
-  const [credentialMessage, setCredentialMessage] = useState('');
-  const [credentialError, setCredentialError] = useState('');
-  const [checkNodeIP, setCheckNodeIP] = useState('');
-  const [connectivityChecks, setConnectivityChecks] = useState<NodeAccessCheck[]>([]);
-  const [connectivityLimit, setConnectivityLimit] = useState(5);
-  const [connectivityHasMore, setConnectivityHasMore] = useState(false);
-  const [connectivityLoadingMore, setConnectivityLoadingMore] = useState(false);
-  const [connectivityChecking, setConnectivityChecking] = useState(false);
-  const [connectivityError, setConnectivityError] = useState('');
-  const [evidenceCollections, setEvidenceCollections] = useState<NodeEvidenceCollection[]>([]);
-  const [collectionLimit, setCollectionLimit] = useState(5);
-  const [collectionHasMore, setCollectionHasMore] = useState(false);
-  const [collectionHistory, setCollectionHistory] = useState(false);
-  const [collectionLoadingMore, setCollectionLoadingMore] = useState(false);
-  const [retryingCollectionID, setRetryingCollectionID] = useState<number | null>(null);
-  const [collectionError, setCollectionError] = useState('');
-  const [collectionMessage, setCollectionMessage] = useState('');
-  const loadConnectivityChecks = useCallback(async (limit: number) => {
-    try {
-      const response = await fetch(`/api/v1/node-access/checks?limit=${limit}`);
-      if (!response.ok) return;
-      const payload = await response.json();
-      setConnectivityChecks(payload.data || []);
-      setConnectivityHasMore(Boolean(payload.meta?.has_more));
-    } catch { /* overview remains usable when the check ledger is unavailable */ }
-  }, []);
-  const loadEvidenceCollections = useCallback(async (limit: number, history: boolean) => {
-    try {
-      const response = await fetch(`/api/v1/node-access/collections?limit=${limit}&history=${history ? 1 : 0}`);
-      if (!response.ok) return;
-      const payload = await response.json();
-      setEvidenceCollections(payload.data || []);
-      setCollectionHasMore(Boolean(payload.meta?.has_more));
-    } catch { /* node access remains usable when the collection ledger is unavailable */ }
-  }, []);
-  useEffect(() => {
-    if (view !== 'node-access') return;
-    setConnectivityLimit(5);
-    setCollectionLimit(5);
-    setCollectionHistory(false);
-    void loadConnectivityChecks(5);
-    void loadEvidenceCollections(5, false);
-  }, [view, loadConnectivityChecks, loadEvidenceCollections]);
-  const loadMoreConnectivityChecks = async () => {
-    const nextLimit = Math.min(connectivityLimit + 25, 100);
-    setConnectivityLoadingMore(true);
-    await loadConnectivityChecks(nextLimit);
-    setConnectivityLimit(nextLimit);
-    setConnectivityLoadingMore(false);
-  };
-  const loadMoreEvidenceCollections = async () => {
-    const nextLimit = Math.min(collectionLimit + 25, 100);
-    setCollectionLoadingMore(true);
-    await loadEvidenceCollections(nextLimit, collectionHistory);
-    setCollectionLimit(nextLimit);
-    setCollectionLoadingMore(false);
-  };
-  const toggleCollectionHistory = async () => {
-    const next = !collectionHistory;
-    setCollectionLoadingMore(true);
-    setCollectionHistory(next);
-    setCollectionLimit(5);
-    await loadEvidenceCollections(5, next);
-    setCollectionLoadingMore(false);
-  };
-  const runConnectivityCheck = async () => {
-    setConnectivityChecking(true); setConnectivityError('');
-    try {
-      const response = await fetch('/api/v1/node-access/checks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ node_ip: checkNodeIP }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error?.message || `HTTP ${response.status}`);
-      setCheckNodeIP('');
-      await loadConnectivityChecks(connectivityLimit);
-      reloadNodeAccess();
-    } catch (reason) {
-      setConnectivityError(reason instanceof Error ? reason.message : tx('检查失败', 'Check failed'));
-    } finally { setConnectivityChecking(false); }
-  };
-  const retryEvidenceCollection = async (collectionID: number) => {
-    setRetryingCollectionID(collectionID); setCollectionError(''); setCollectionMessage('');
-    try {
-      const response = await fetch('/api/v1/node-access/collections', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ retry_collection_id: collectionID }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error?.message || `HTTP ${response.status}`);
-      setCollectionMessage(tx(`采集任务 #${collectionID} 已重试并保留原审计记录`, `Collection #${collectionID} retried with the original audit record preserved`));
-      await loadEvidenceCollections(collectionLimit, collectionHistory);
-      reloadNodeAccess();
-    } catch (reason) {
-      setCollectionError(reason instanceof Error ? reason.message : tx('重试失败', 'Retry failed'));
-    } finally { setRetryingCollectionID(null); }
-  };
-  const saveCredential = async () => {
-    setCredentialSaving(true); setCredentialMessage(''); setCredentialError('');
-    try {
-      const response = await fetch('/api/v1/node-access/credentials', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(credentialDraft),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error?.message || `HTTP ${response.status}`);
-      setCredentialDraft({ profile_id: '', priority: credentialDraft.priority + 10, username: '', password: '', enabled: true });
-      setCredentialMessage(tx('凭据已加密保存；页面不会再次显示账号或密码', 'Credential encrypted and saved; the account and password will not be shown again'));
-      reloadNodeAccess();
-    } catch (reason) {
-      setCredentialError(reason instanceof Error ? reason.message : tx('保存失败', 'Save failed'));
-    } finally { setCredentialSaving(false); }
-  };
-  const deleteCredential = async (profileID: string) => {
-    if (!window.confirm(tx(`确认从全局密码字典删除 ${profileID}？它可能仍用于其他节点，删除后无法恢复。`, `Delete ${profileID} from the global credential dictionary? Other nodes may still depend on it, and deletion cannot be undone.`))) return;
-    setCredentialError(''); setCredentialMessage('');
-    try {
-      const response = await fetch(`/api/v1/node-access/credentials/${encodeURIComponent(profileID)}`, { method: 'DELETE' });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error?.message || `HTTP ${response.status}`);
-      setCredentialMessage(tx('凭据配置已删除', 'Credential profile deleted'));
-      reloadNodeAccess();
-    } catch (reason) { setCredentialError(reason instanceof Error ? reason.message : tx('删除失败', 'Delete failed')); }
-  };
   const definitions = [['dcgm_exporter', 'DCGM Exporter', 'GPU Telemetry'], ['gpu_exporter', 'GPU Exporter', 'NVML Extension'], ['node_exporter', 'Node Exporter', 'Host OS'], ['ipmi_exporter', 'IPMI Exporter', 'BMC / Hardware']] as const;
-  const qualityLedger = <Card className="span-12 quality-ledger-card"><CardHead code="DATA QUALITY LEDGER" title={tx('数据质量问题统计', 'Data Quality Issue Statistics')} action={<div className="table-actions"><Badge value={`${issueSummary?.remaining_by_category?.data_quality || 0} REMAINING`} kind={(issueSummary?.remaining_by_category?.data_quality || 0) > 0 ? 'warning' : 'healthy'} /><button className="link quality-ledger-link" onClick={openIssues}>{tx('查看问题列表', 'View issues')}<ChevronRight size={13} /></button></div>} /><div className="issue-categories quality-ledger"><div><b>{tx('历史发现', 'Discovered')}</b><strong>{issueSummary?.by_category?.data_quality || 0}</strong><small>DATA QUALITY</small></div><div><b>{tx('已解决', 'Resolved')}</b><strong>{issueSummary?.resolved_by_category?.data_quality || 0}</strong><small>AUTO + MANUAL</small></div><div><b>{tx('遗留问题', 'Remaining')}</b><strong>{issueSummary?.remaining_by_category?.data_quality || 0}</strong><small>OPEN + IN PROGRESS</small></div><div><b>{tx('当前检测', 'Actively Detected')}</b><strong>{issueSummary?.active_by_category?.data_quality || 0}</strong><small>SOURCE ACTIVE</small></div></div></Card>;
-  if (view === 'issues') return <div className="grid">
-    <Card className="span-12 capability-note"><ClipboardList size={19} /><div><CardHead code="QUALITY WORKFLOW" title={tx('数据质量问题台账', 'Data Quality Issue Ledger')} /><p>{tx('集中展示数据质量问题的累计发现、已解决、遗留和当前检测数量。查看问题列表会进入数据统计，并自动应用数据质量分类筛选。', 'Review discovered, resolved, remaining and actively detected data-quality findings in one place. View issues opens Data Statistics with the data-quality category applied automatically.')}</p></div><Badge value="CLASSIFIED" kind="info" /></Card>
-    {qualityLedger}
-  </div>;
   if (view === 'continuity') {
     const problems = telemetry.filter(item => item.status !== 'fresh');
     return <div className="grid">
-      <Card className="span-12 capability-note"><Activity size={19} /><div><CardHead code={telemetrySummary?.feature_catalog_version || 'FEATURE CATALOG'} title={tx('GPU 指标连续性', 'GPU Metric Continuity')} /><p>{tx('以现场 15 秒采样周期为基线，联合检查每卡 1 小时样本存在率、最大间隔、UUID 波动，以及 DCGM Target 的五分钟抓取成功率、样本量和耗时变化。该结果只判断遥测可信度，不作为硬件故障或性能异常。', 'Using the observed 15-second cadence, Atlas checks per-GPU one-hour presence, maximum gap and UUID flaps together with five-minute DCGM target success, sample-volume and duration ratios. This evaluates telemetry trustworthiness, not hardware faults or performance anomalies.')}</p></div><Badge value="READ-ONLY" kind="info" /></Card>
+      <Card className="span-12 capability-note"><Activity size={19} /><div><CardHead code={telemetrySummary?.feature_catalog_version || 'FEATURE CATALOG'} title={tx('GPU 指标连续性', 'GPU Metric Continuity')} /><p>{tx('15 s 采样基线 · 每卡 1 h 存在率 / 最大间隔 / UUID 波动', '15 s sampling baseline · per-GPU 1 h presence / max gap / UUID churn')}</p></div><Badge value="READ-ONLY" kind="info" /></Card>
       {[[tx('GPU 总数', 'Total GPUs'), telemetrySummary?.total ?? '—', 'LATEST RUN'], [tx('连续正常', 'Fresh'), telemetrySummary?.by_status.fresh ?? 0, '≥95% · AGE≤60s'], [tx('连续性异常', 'Degraded / Stale'), (telemetrySummary?.by_status.degraded || 0) + (telemetrySummary?.by_status.stale || 0), '<95% OR AGE>60s'], [tx('平均存在率', 'Average Presence'), telemetrySummary ? `${telemetrySummary.average_presence_ratio_1h.toFixed(2)}%` : '—', `MAX GAP ${telemetrySummary?.max_metric_gap_seconds_1h?.toFixed(1) || '—'}s · FLAP ${telemetrySummary?.max_uuid_flap_count_1h?.toFixed(0) || '0'}`]].map(([label, value, note]) => <Card className="metric quality compact-quality-metric" key={String(label)}><Activity size={17} /><strong>{String(value)}</strong><b>{String(label)}</b><small>{String(note)}</small></Card>)}
       <Card className="span-12"><CardHead code="CONTINUITY ISSUES" title={tx('异常与未知 GPU', 'Degraded and Unknown GPUs')} action={<div className="table-actions"><Badge value={`SCRAPE ${telemetrySummary?.min_target_scrape_success_ratio_5m?.toFixed(1) || '—'}%`} kind={(telemetrySummary?.min_target_scrape_success_ratio_5m ?? 100) < 95 ? 'warning' : 'healthy'} /><Badge value={`${problems.length} ITEMS`} kind={problems.length ? 'warning' : 'healthy'} /></div>} /><div className="table-wrap"><table className="target-table"><thead><tr><th>{tx('节点 / GPU', 'Node / GPU')}</th><th>UUID</th><th>{tx('状态', 'Status')}</th><th>{tx('1h 样本 / 存在率', '1h Samples / Presence')}</th><th>{tx('年龄 / 最大间隔', 'Age / Max Gap')}</th><th>{tx('UUID 波动', 'UUID Flaps')}</th><th>{tx('Target 抓取', 'Target Scrape')}</th><th>{tx('观测时间', 'Observed')}</th></tr></thead><tbody>{problems.map(item => <tr key={item.gpu_asset_id}><td><b>{item.node_ip} · GPU {item.gpu_index}</b><small>{item.model_name}</small></td><td><code>{item.gpu_uuid}</code></td><td><Badge value={item.status.toUpperCase()} kind={item.status === 'stale' ? 'danger' : 'warning'} /></td><td>{item.sample_count_1h?.toFixed(0) ?? '—'} / 240<small>{item.presence_ratio_1h != null ? `${item.presence_ratio_1h.toFixed(1)}%` : '—'}</small></td><td>{item.sample_age_seconds != null ? `${item.sample_age_seconds.toFixed(1)}s` : '—'}<small>{tx('最大', 'max')} {item.metric_gap_max_seconds_1h != null ? `${item.metric_gap_max_seconds_1h.toFixed(1)}s` : '—'}</small></td><td>{item.uuid_presence_flap_count_1h?.toFixed(0) ?? '—'}</td><td>{item.target_scrape_success_ratio_5m != null ? `${item.target_scrape_success_ratio_5m.toFixed(1)}%` : '—'}<small>{tx('样本', 'samples')} {item.target_scrape_samples_ratio_5m?.toFixed(1) ?? '—'}% · {tx('耗时比', 'duration')} {item.target_scrape_duration_ratio_5m?.toFixed(1) ?? '—'}%</small></td><td>{time(item.observed_at, lang)}</td></tr>)}</tbody></table>{problems.length === 0 && <Empty tx={tx} title={tx('GPU 指标连续性正常', 'GPU metric continuity is healthy')} />}</div></Card>
     </div>;
   }
-  if (view === 'node-access') {
-    const local = (value: LocalizedText) => lang.startsWith('zh') ? value.zh : value.en;
-    const readOnly = nodeAccess?.commands.filter(command => command.approval_class === 'read_only') || [];
-    const approvalRequired = nodeAccess?.commands.filter(command => command.approval_class === 'approval_required') || [];
-    const statusKind = nodeAccess?.status === 'connectivity_ready' ? 'healthy' : nodeAccess?.status === 'credentials_missing' || nodeAccess?.status === 'known_hosts_missing' ? 'warning' : 'neutral';
-    return <div className="grid node-access-page">
-      <Card className="span-12 node-access-guard">
-        <div><ShieldCheck size={21} /><div><CardHead code={`${nodeAccess?.skill_id || 'atlas-node-evidence'} / ${nodeAccess?.skill_version || 'v0.6.3'}`} title={tx('节点只读证据 Skill', 'Node Read-only Evidence Skill')} /><p>{tx('低负载只读信息按注册命令和固定资源预算自动采集；节点失联时等待恢复，恢复为 up 后使用全局密码字典补采，失败任务可保留历史并人工重试。', 'Low-impact read-only evidence is collected through registered commands and fixed budgets; offline nodes wait until recovery, then use the global credential dictionary for collection, while failed tasks preserve history and support manual retry.')}</p></div></div>
-        <div className="node-access-badges"><Badge value={(nodeAccess?.status || 'unavailable').toUpperCase()} kind={statusKind} /><Badge value="HANDSHAKE ONLY" kind="info" /><Badge value="NO COMMAND EXECUTED" kind="healthy" /></div>
-      </Card>
-      {[
-        [tx('连接超时', 'Connect timeout'), `${nodeAccess?.budget.connect_timeout_seconds ?? '—'}s`, 'PER ATTEMPT'],
-        [tx('命令超时', 'Command timeout'), `${nodeAccess?.budget.command_timeout_seconds ?? '—'}s`, 'PER COMMAND'],
-        [tx('输出上限', 'Output limit'), nodeAccess ? `${Math.round(nodeAccess.budget.max_output_bytes / 1024)} KiB` : '—', 'PER COMMAND'],
-        [tx('并发节点', 'Concurrent nodes'), nodeAccess?.budget.max_concurrent_nodes ?? '—', `MAX ${nodeAccess?.budget.max_commands_per_node ?? '—'} COMMANDS / NODE`],
-      ].map(([label, value, note]) => <Card className="metric quality node-access-stat" key={String(label)}><ShieldCheck size={17} /><strong>{String(value)}</strong><b>{String(label)}</b><small>{String(note)}</small></Card>)}
-      <Card className="span-12">
-        <CardHead code="FOUNDATIONAL SKILLS" title={tx('基础 Skill 目录', 'Foundational Skill Catalog')} action={<Badge value={`${(nodeAccess?.skills || []).length} SKILLS`} kind="info" />} />
-        <p className="node-access-note">{tx('先建立证据采集、故障分析和案例学习三项基础契约。当前不提供维护、重启、节点变更或任务操作 Skill。', 'The first foundation covers evidence collection, fault analysis, and case learning. No maintenance, restart, node-change, or workload-operation Skill is provided.')}</p>
-        <div className="node-skill-grid">{(nodeAccess?.skills || []).map(skill => <article key={skill.id}><header><code>{skill.id}</code><Badge value={skill.status.toUpperCase()} kind={skill.status.endsWith('_baseline') ? 'healthy' : 'info'} /></header><b>{local(skill.purpose)}</b><small>{skill.class.toUpperCase()} · {skill.version}</small></article>)}</div>
-      </Card>
-      <Card className="span-12">
-        <CardHead code="EVENT / CONDITION POLICY" title={tx('告警与证据触发分层', 'Alert and Evidence Trigger Layers')} action={<div className="table-actions"><Badge value={`${nodeAccess?.collection_summary?.waiting_recovery || 0} WAITING RECOVERY`} kind={(nodeAccess?.collection_summary?.waiting_recovery || 0) > 0 ? 'warning' : 'healthy'} /><Badge value={`${(nodeAccess?.alert_evidence_policies || []).length} POLICIES`} kind="info" /></div>} />
-        <p className="node-access-note">{tx('借鉴 Node Problem Detector：瞬时硬件事件立即留证；持续状态按恢复条件决定是否补采；数据质量和访问链路异常暂不递归登录节点。', 'Following Node Problem Detector semantics: transient hardware events collect immediately, persistent conditions may defer collection until recovery, and data-quality or access-path failures do not recursively log into nodes.')}</p>
-        <div className="node-skill-grid">{(nodeAccess?.alert_evidence_policies || []).map(policy => <article key={`${policy.category}-${policy.collection_trigger}`}><header><code>{policy.category}</code><Badge value={policy.collection_trigger.toUpperCase()} kind={policy.collection_trigger === 'immediate' ? 'healthy' : policy.collection_trigger === 'after_recovery' ? 'warning' : 'neutral'} /></header><b>{local(policy.purpose)}</b><small>{policy.semantics.toUpperCase()} · {policy.issue_types.join(' · ')}</small></article>)}</div>
-      </Card>
-      <Card className="span-12">
-        <CardHead code="CREDENTIAL ROTATION" title={tx('加密凭据字典与尝试顺序', 'Encrypted Credential Dictionary & Attempt Order')} action={<div className="table-actions"><Badge value={nodeAccess?.encryption_ready ? 'AES-256-GCM' : 'ENCRYPTION OFFLINE'} kind={nodeAccess?.encryption_ready ? 'healthy' : 'warning'} /><Badge value={`${nodeAccess?.credential_profiles.length || 0} PROFILES`} kind={nodeAccess?.credential_profiles.some(profile => profile.secret_available) ? 'healthy' : 'neutral'} /></div>} />
-        <p className="node-access-note">{tx('这是面向全部受管节点的全局密码字典，不应根据单个节点的失败结果删除条目。账号和密码使用服务端主密钥加密保存；认证拒绝时按优先级继续下一项，只有全部可用条目耗尽后才产生节点访问问题。网络不可达或主机指纹异常会提前停止。', 'This is a global credential dictionary for all managed nodes; do not delete an entry based on one node rejection. Accounts and passwords are encrypted with the server master key. Rejection advances to the next priority, and an access issue is created only after every available entry is exhausted. Network or host-identity failures stop earlier.')}</p>
-        <div className="credential-layout">
-          <form className="credential-form" onSubmit={event => { event.preventDefault(); void saveCredential(); }}>
-            <div className="credential-form-head"><div><b>{tx('新增密码字典项', 'Add credential dictionary entry')}</b><small>{tx('每项可对应不同节点或节点组；系统按优先级逐项尝试。账号和密码仍使用服务端主密钥加密保存。', 'Each entry may serve a different node or node group, and Atlas tries entries in priority order. Accounts and passwords remain encrypted with the server-side master key.')}</small></div><Badge value="GLOBAL DICTIONARY" kind="warning" /></div>
-            <div className="credential-form-row"><label>Profile ID<input value={credentialDraft.profile_id} onChange={event => setCredentialDraft(current => ({ ...current, profile_id: event.target.value.toLowerCase() }))} placeholder="node-password-a" /></label><label>{tx('优先级', 'Priority')}<input type="number" min={1} max={10000} value={credentialDraft.priority} onChange={event => setCredentialDraft(current => ({ ...current, priority: Number(event.target.value) }))} /></label></div>
-            <label>{tx('节点账号', 'Node username')}<input autoComplete="off" value={credentialDraft.username} onChange={event => { const username = event.target.value; const slug = username.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); setCredentialDraft(current => ({ ...current, username, profile_id: current.profile_id || (slug ? `${slug}-primary` : '') })); }} /></label>
-            <label>{tx('节点密码', 'Node password')}<input type="password" autoComplete="new-password" value={credentialDraft.password} onChange={event => setCredentialDraft(current => ({ ...current, password: event.target.value }))} /></label>
-            <label className="training-check"><input type="checkbox" checked={credentialDraft.enabled} onChange={event => setCredentialDraft(current => ({ ...current, enabled: event.target.checked }))} /><span>{tx('启用并加入认证尝试顺序', 'Enable and include in authentication order')}</span></label>
-            {credentialError && <p className="form-error">{credentialError}</p>}{credentialMessage && <p className="form-success">{credentialMessage}</p>}
-            <button className="primary-action" type="submit" disabled={credentialSaving || !nodeAccess?.management_ready || !credentialDraft.profile_id || !credentialDraft.username || !credentialDraft.password}><Save size={15} />{credentialSaving ? tx('加密保存中', 'Encrypting') : tx('加密保存', 'Encrypt & Save')}</button>
-          </form>
-          <div className="table-wrap credential-table-wrap"><table className="node-access-table"><thead><tr><th>{tx('顺序', 'Order')}</th><th>PROFILE</th><th>{tx('账号', 'Username')}</th><th>{tx('认证方式', 'Auth type')}</th><th>{tx('密钥来源', 'Secret provider')}</th><th>{tx('状态', 'Status')}</th><th>{tx('操作', 'Action')}</th></tr></thead><tbody>{nodeAccess?.credential_profiles.map(profile => <tr key={profile.id}><td><code>{profile.priority}</code></td><td><b>{profile.id}</b></td><td><code>{profile.username_masked}</code></td><td>{profile.auth_type}</td><td><Badge value={profile.secret_provider.toUpperCase()} kind="info" /></td><td><Badge value={profile.status.toUpperCase()} kind={profile.status === 'ready' ? 'healthy' : profile.status === 'secret_unavailable' ? 'warning' : 'neutral'} /></td><td><button className="danger-icon" type="button" onClick={() => void deleteCredential(profile.id)} title={tx('删除凭据配置', 'Delete credential profile')}><Trash2 size={14} /></button></td></tr>)}</tbody></table>{!nodeAccess?.credential_profiles.length && <Empty tx={tx} title={tx('尚未配置加密凭据', 'No encrypted credentials configured')} />}</div>
-        </div>
-      </Card>
-      <Card className="span-12 connectivity-card">
-        <CardHead code="KNOWN-HOST SSH" title={tx('节点认证连通性检查', 'Node Authentication Connectivity Check')} action={<div className="table-actions"><Badge value={nodeAccess?.known_hosts_ready ? 'KNOWN HOSTS READY' : 'KNOWN HOSTS MISSING'} kind={nodeAccess?.known_hosts_ready ? 'healthy' : 'warning'} /><Badge value={`${connectivityChecks.length} RECENT`} kind="info" /></div>} />
-        <p className="node-access-note">{tx('仅检查目标是否属于 Atlas 当前资产、SSH 主机指纹是否匹配以及凭据能否认证。不会执行 hostname、日志查询或任何其他命令；失败会进入 access 分类问题台账，后续成功会自动恢复。', 'Checks only whether the target is a current Atlas asset, its SSH host key matches, and a credential authenticates. It runs no hostname, log, or other command; failures enter the access issue ledger and a later success clears them automatically.')}</p>
-        <div className="connectivity-runner">
-          <label>{tx('节点 IP', 'Node IP')}<input value={checkNodeIP} onChange={event => setCheckNodeIP(event.target.value)} placeholder="10.114.4.25" /></label>
-          <button className="primary-action" type="button" onClick={() => void runConnectivityCheck()} disabled={connectivityChecking || !nodeAccess?.connectivity_check_enabled || !nodeAccess?.known_hosts_ready || !nodeAccess?.credential_profiles.some(profile => profile.secret_available) || !checkNodeIP}><Network size={15} />{connectivityChecking ? tx('检查中', 'Checking') : tx('只检查认证', 'Check Authentication')}</button>
-        </div>
-        {connectivityError && <p className="form-error">{connectivityError}</p>}
-        <div className="table-wrap connectivity-table-wrap"><table className="node-access-table"><thead><tr><th>{tx('节点', 'Node')}</th><th>{tx('结果', 'Result')}</th><th>PROFILE</th><th>{tx('尝试', 'Attempts')}</th><th>{tx('提醒', 'Alert')}</th><th>{tx('完成时间', 'Finished')}</th></tr></thead><tbody>{connectivityChecks.map(check => <tr key={check.id}><td><b>{check.node_ip}</b><small>#{check.id}</small></td><td><Badge value={check.status.toUpperCase()} kind={check.status === 'authenticated' ? 'healthy' : check.status === 'host_identity_failed' ? 'danger' : 'warning'} /></td><td><code>{check.credential_profile_id || '—'}</code></td><td><small>{(check.attempts || []).join(' · ') || '—'}</small></td><td><Badge value={check.alert_required ? 'REQUIRED' : 'NO'} kind={check.alert_required ? 'warning' : 'neutral'} /></td><td>{time(check.finished_at, lang)}</td></tr>)}</tbody></table>{connectivityChecks.length === 0 && <Empty tx={tx} title={tx('尚无节点认证检查记录', 'No node authentication checks yet')} />}</div>
-        {connectivityHasMore && <button className="module-history-more connectivity-more" type="button" onClick={() => void loadMoreConnectivityChecks()} disabled={connectivityLoadingMore}>{connectivityLoadingMore ? tx('查询中…', 'Loading…') : tx('更多记录', 'Load more')}<ChevronRight size={13} /></button>}
-      </Card>
-      <Card className="span-12 evidence-collection-card">
-        <CardHead code="EVIDENCE COLLECTION AUDIT" title={tx('节点证据采集任务', 'Node Evidence Collection Tasks')} action={<div className="table-actions"><Badge value={`${nodeAccess?.collection_summary?.completed || 0} CURRENT COMPLETED`} kind="healthy" /><Badge value={`${nodeAccess?.collection_summary?.failed || 0} CURRENT FAILED`} kind={(nodeAccess?.collection_summary?.failed || 0) > 0 ? 'warning' : 'neutral'} /><button className="collection-history-toggle" type="button" onClick={() => void toggleCollectionHistory()} disabled={collectionLoadingMore}>{collectionHistory ? tx('仅看当前结果', 'Current results only') : tx('查看历史尝试', 'View attempt history')}</button></div>} />
-        <p className="node-access-note">{collectionHistory ? tx('正在展示完整审计历史，包括已被成功重试覆盖的旧失败和 partial 尝试；这些记录不会计入当前失败。', 'Showing the complete audit history, including old failed and partial attempts superseded by successful retries. These records do not count as current failures.') : tx('默认只展示每个事件或持续状态的最新采集结果。旧失败和 partial 尝试仍保留在审计历史，需要时可单独查看。', 'By default, only the latest collection result for each event or persistent condition is shown. Old failed and partial attempts remain in audit history and can be viewed separately when needed.')}</p>
-        {collectionError && <p className="form-error">{collectionError}</p>}{collectionMessage && <p className="form-success">{collectionMessage}</p>}
-        <div className="table-wrap evidence-collection-wrap"><table className="node-access-table evidence-collection-table"><thead><tr><th>ID</th><th>{tx('节点 / 来源', 'Node / Source')}</th><th>{tx('触发', 'Trigger')}</th><th>{tx('结果', 'Result')}</th><th>{tx('注册命令', 'Registered Commands')}</th><th>{tx('输出', 'Output')}</th><th>{tx('完成时间', 'Finished')}</th><th>{tx('操作', 'Action')}</th></tr></thead><tbody>{evidenceCollections.map(collection => { const retryable = collection.status === 'failed' || collection.status === 'partial'; const source = collection.fault_event_id ? `EVENT #${collection.fault_event_id}` : collection.platform_issue_id ? `ISSUE #${collection.platform_issue_id}` : 'UNKNOWN'; return <tr key={collection.id}><td><code>#{collection.id}</code>{collection.retry_of_collection_id ? <small>RETRY OF #{collection.retry_of_collection_id}</small> : null}</td><td><b>{collection.node_ip}</b><small>{source}</small></td><td><Badge value={(collection.trigger || 'legacy').toUpperCase()} kind={collection.trigger === 'manual_retry' ? 'info' : collection.trigger === 'after_recovery' ? 'warning' : 'neutral'} /></td><td><Badge value={collection.status.toUpperCase()} kind={collection.status === 'completed' ? 'healthy' : collection.status === 'failed' ? 'danger' : 'warning'} /><small>{collection.failure_code || collection.credential_profile_id || '—'}</small></td><td><div className="collection-command-meta">{(collection.records || []).map(record => <span key={record.id}><code>{record.command_id}</code><Badge value={record.status.toUpperCase()} kind={record.status === 'completed' ? 'healthy' : 'warning'} /></span>)}{!(collection.records || []).length && <small>{collection.command_count || 0} COMMANDS</small>}</div></td><td>{collection.output_bytes ? `${(collection.output_bytes / 1024).toFixed(1)} KiB` : '—'}<small>{collection.output_truncated ? 'TRUNCATED' : 'BOUNDED'}</small></td><td>{time(collection.finished_at, lang)}</td><td><button className="collection-retry" type="button" onClick={() => void retryEvidenceCollection(collection.id)} disabled={!retryable || retryingCollectionID !== null} title={retryable ? tx('使用当前密码字典重试只读采集', 'Retry read-only collection with the current credential dictionary') : tx('只有失败或部分成功任务可重试', 'Only failed or partial tasks can be retried')}><RefreshCw size={13} />{retryingCollectionID === collection.id ? tx('重试中', 'Retrying') : tx('重试', 'Retry')}</button></td></tr>; })}</tbody></table>{evidenceCollections.length === 0 && <Empty tx={tx} title={collectionHistory ? tx('尚无历史采集任务', 'No historical collection attempts') : tx('尚无当前采集结果', 'No current collection results')} />}</div>
-        {collectionHasMore && <button className="module-history-more connectivity-more" type="button" onClick={() => void loadMoreEvidenceCollections()} disabled={collectionLoadingMore}>{collectionLoadingMore ? tx('查询中…', 'Loading…') : tx('更多记录', 'Load more')}<ChevronRight size={13} /></button>}
-      </Card>
-      <Card className="span-7 node-command-card">
-        <CardHead code="DEFAULT / READ-ONLY" title={tx('默认自动采集', 'Default Automatic Collection')} action={<Badge value={`${readOnly.length} COMMANDS`} kind="healthy" />} />
-        <p className="node-access-note">{tx('系统状态、系统参数、GPU、PCIe、注册服务状态、限定时间窗日志与 BMC 只读信息均无需逐次计划或人工授权；采集器必须遵守固定超时、输出和并发预算。', 'System state, parameters, GPU, PCIe, registered service state, bounded logs, and read-only BMC evidence require no per-run plan or human authorization. The runner must enforce fixed timeout, output, and concurrency budgets.')}</p>
-        <div className="node-command-list">{readOnly.map(command => <article key={command.id}><header><code>{command.id}</code><Badge value="DEFAULT" kind="healthy" /></header><b>{local(command.purpose)}</b><small>{command.preview}</small></article>)}</div>
-      </Card>
-      <Card className="span-5 node-command-card approval">
-        <CardHead code="HUMAN CONFIRMATION" title={tx('必须指定节点和操作并确认', 'Exact Node and Action Confirmation')} action={<Badge value={`${approvalRequired.length} COMMANDS`} kind="warning" />} />
-        <div className="node-command-list">{approvalRequired.map(command => <article key={command.id}><header><code>{command.id}</code><Badge value="APPROVAL" kind="warning" /></header><b>{local(command.purpose)}</b><small>{command.preview}</small></article>)}</div>
-      </Card>
-      <Card className="span-12">
-        <CardHead code="ENFORCED BOUNDARIES" title={tx('当前强制边界', 'Current Enforced Boundaries')} />
-        <div className="rules">{(nodeAccess?.boundaries || []).map(item => <span key={item.en}><ShieldAlert size={15} />{local(item)}</span>)}</div>
-      </Card>
-    </div>;
-  }
-  if (view === 'identity') return <div className="grid"><Card className="span-12"><CardHead code="IDENTITY" title={tx('资产身份映射', 'Asset Identity')} /><div className="identity">{['HOST', 'BMC', 'CHASSIS', 'PCIE SLOT', 'BUS ID', 'GPU UUID'].map((x, i) => <span key={x}>{x}{i < 5 && <ChevronRight size={13} />}</span>)}</div></Card><Card className="span-12"><CardHead code="BMC / IPMI" title={tx('带外数据', 'Out-of-band Data')} /><div className="check-grid">{['SEL', 'PSU / VOLTAGE', 'FAN / THERMAL', 'POWER', 'PCIE SLOT', 'MEMORY CE / UE'].map(x => <span key={x}><CheckCircle2 size={14} />{x}</span>)}</div></Card></div>;
   if (view === 'audit') return <div className="grid">
     <Card className="span-12"><CardHead code="SYNC RUNS" title={tx('同步批次', 'Reconciliation Runs')} action={<Badge value={`${syncRuns.length} RUNS`} kind="info" />} /><div className="table-wrap"><table className="audit-table"><thead><tr><th>ID</th><th>{tx('任务', 'Task')}</th><th>{tx('状态', 'Status')}</th><th>{tx('节点 / GPU / UUID', 'Nodes / GPUs / UUIDs')}</th><th>TARGETS</th><th>{tx('变化', 'Changes')}</th><th>{tx('开始时间', 'Started')}</th><th>{tx('耗时', 'Duration')}</th></tr></thead><tbody>{syncRuns.map(run => { const failed = run.status === 'failed'; const expanded = failed && expandedRunID === run.id; return <Fragment key={run.id}><tr className={failed ? 'audit-run-row clickable' : undefined} aria-expanded={failed ? expanded : undefined} onClick={failed ? () => setExpandedRunID(current => (current === run.id ? null : run.id)) : undefined}><td><code>#{run.id}</code></td><td><b>{run.task_type || 'legacy'}</b></td><td><Badge value={run.status.toUpperCase()} kind={run.status === 'success' ? 'healthy' : failed ? 'danger' : 'warning'} />{failed && <ChevronRight size={13} className={expanded ? 'audit-row-toggle open' : 'audit-row-toggle'} />}</td><td>{run.node_count} / {run.gpu_count} / {run.known_uuid_count}</td><td>{run.target_count}</td><td>{run.change_count}</td><td>{time(run.started_at, lang)}</td><td>{run.finished_at ? `${Math.max(0, (new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()) / 1000).toFixed(1)}s` : '—'}</td></tr>{expanded && <tr className="audit-error-row"><td colSpan={8}><AlertTriangle size={14} />{run.error_message || tx('未记录失败原因', 'No failure reason recorded')}</td></tr>}</Fragment>; })}</tbody></table>{syncRuns.length === 0 && <Empty tx={tx} title={tx('暂无同步批次', 'No sync runs')} />}</div></Card>
     <Card className="span-12"><CardHead code="CHANGE LOG" title={tx('资产变更', 'Asset Changes')} action={<Badge value={`${assetChanges.length} EVENTS`} kind={assetChanges.length ? 'warning' : 'healthy'} />} /><div className="table-wrap"><table className="audit-table"><thead><tr><th>ID</th><th>{tx('事件', 'Event')}</th><th>{tx('节点', 'Node')}</th><th>{tx('对象', 'Entity')}</th><th>{tx('原值', 'Before')}</th><th>{tx('新值', 'After')}</th><th>RUN</th><th>{tx('时间', 'Time')}</th></tr></thead><tbody>{assetChanges.map(change => <tr key={change.id}><td><code>#{change.id}</code></td><td><Badge value={change.event_type.toUpperCase()} kind={change.event_type.includes('retired') ? 'danger' : 'warning'} /></td><td><b>{change.node_ip}</b></td><td><code>{change.asset_key}</code></td><td><code>{change.old_value || '—'}</code></td><td><code>{change.new_value || '—'}</code></td><td>#{change.sync_run_id || '—'}</td><td>{time(change.created_at, lang)}</td></tr>)}</tbody></table>{assetChanges.length === 0 && <Empty tx={tx} title={tx('暂无资产变化', 'No asset changes')} />}</div></Card>
@@ -1478,1847 +1060,9 @@ function Quality({ tx, view, targets, summary, issueSummary, inventoryError, syn
   } as Record<string, string>)[code || ''];
   coverageRows.sort((left, right) => compareIP(left.node_ip, right.node_ip));
   const coverageName = definitions.find(([job]) => job === coverageJob)?.[1] || coverageJob;
-  return <div className="grid"><Card className="span-12 capability-note"><Database size={19} /><div><CardHead code="MONITORING-ONLY" title={tx('监控数据质量发现', 'Monitoring Data Quality Detection')} /><p>{tx('仅针对 LXOP 实时在用 GPU 资产，基于 Prometheus 指标、Target、时序连续性和资产对账识别缺失、失效、漂移与覆盖异常；停机、下架及已移除 IP 自动退出统计。平台不自动修改 exporter、监控配置或节点。', 'For live in-use LXOP GPU assets only, Atlas detects missing, stale, drifting, or uncovered telemetry from Prometheus metrics, targets, continuity, and reconciliation. Stopped, retired, and removed IPs automatically leave statistics. Atlas does not modify exporters, monitoring configuration, or nodes.')}</p></div><Badge value="READ-ONLY" kind="info" /></Card>{definitions.map(([job, name, use]) => { const rows = targets.filter(x => x.job === job); const up = rows.filter(x => x.health === 'up').length; const down = rows.length - up; return <button type="button" className={`card metric quality compact-quality-metric coverage-metric metric-selectable${coverageJob === job ? ' active' : ''}`} key={job} onClick={() => setCoverageJob(job)}><Server size={17} /><Badge value={inventoryError ? 'API ERROR' : down ? `${down} NOT UP` : rows.length ? 'ALL UP' : 'WAITING'} kind={inventoryError || down ? 'warning' : rows.length ? 'healthy' : 'neutral'} /><strong>{rows.length ? up : '—'}</strong><b>{name}</b><small>{use} · {rows.length || summary?.nodes.total || '—'} TARGETS</small></button>; })}
+  return <div className="grid"><Card className="span-12 capability-note"><Database size={19} /><div><CardHead code="MONITORING-ONLY" title={tx('监控数据质量发现', 'Monitoring Data Quality Detection')} /><p>{tx('在用 GPU 资产 · 缺失 / 失效 / 漂移 / 覆盖异常', 'In-use GPU assets · missing / stale / drift / coverage gaps')}</p></div><Badge value="READ-ONLY" kind="info" /></Card>{definitions.map(([job, name, use]) => { const rows = targets.filter(x => x.job === job); const up = rows.filter(x => x.health === 'up').length; const down = rows.length - up; return <button type="button" className={`card metric quality compact-quality-metric coverage-metric metric-selectable${coverageJob === job ? ' active' : ''}`} key={job} onClick={() => setCoverageJob(job)}><Server size={17} /><Badge value={inventoryError ? 'API ERROR' : down ? `${down} NOT UP` : rows.length ? 'ALL UP' : 'WAITING'} kind={inventoryError || down ? 'warning' : rows.length ? 'healthy' : 'neutral'} /><strong>{rows.length ? up : '—'}</strong><b>{name}</b><small>{use} · {rows.length || summary?.nodes.total || '—'} TARGETS</small></button>; })}
     <Card className="span-12"><CardHead code="TARGET ISSUES" title={coverageJob === 'node_exporter' ? tx('Node Exporter 未 UP 节点', 'Node Exporter NOT UP Nodes') : tx(`Node Exporter 正常但 ${coverageName} 未 UP 的节点`, `Node Exporter up but ${coverageName} not up`)} action={<div className="table-actions"><Badge value={coverageJob.toUpperCase()} kind="info" /><Badge value={`${coverageRows.length} NODES`} kind={coverageRows.length ? 'warning' : 'healthy'} /></div>} /><div className="table-wrap"><table className="target-table"><thead><tr><th>{tx('节点', 'Node')}</th><th>TARGET</th><th>{tx('状态', 'Health')}</th><th>{tx('原因', 'Reason')}</th><th>{tx('抑制', 'Suppression')}</th><th>{tx('原始错误', 'Last Error')}</th><th>{tx('同步时间', 'Synced')}</th></tr></thead><tbody>{coverageRows.map(row => <tr key={`${row.job}-${row.node_ip}`}><td><b>{row.node_ip}</b><small>{row.target_ip || '—'}</small></td><td><code>{row.job}</code></td><td><Badge value={row.health.toUpperCase()} kind={row.health === 'down' ? 'danger' : 'warning'} /></td><td><code>{row.reason_code || 'unclassified'}</code>{ipmiReasonHint(row.reason_code) && <small>{ipmiReasonHint(row.reason_code)}</small>}</td><td>{row.suppressed ? <Badge value={row.suppression_reason || 'SUPPRESSED'} kind="info" /> : <Badge value="ACTIONABLE" kind="warning" />}</td><td><small>{row.last_error || '—'}</small></td><td>{time(row.last_synced_at, lang)}</td></tr>)}</tbody></table>{coverageRows.length === 0 && <Empty tx={tx} title={coverageJob === 'node_exporter' ? tx('所有节点 Node Exporter 均正常', 'Every node has Node Exporter up') : tx(`Node Exporter 正常的节点 ${coverageName} 均正常`, `Every Node Exporter-up node has ${coverageName} up`)} />}</div></Card>
   </div>;
-}
-function Models({ tx, view, lang, assets }: { tx: Tx; view: string; lang: string; assets: GPUAsset[] }) {
-  const pct = (value?: number) => value === undefined ? '—' : `${(value * 100).toFixed(1)}%`;
-  const rankingRows = (rows?: RankingAtK[]) => (rows || []).filter(row => row.eligible > 0);
-  const RankingTable = ({ label, rows: inputRows }: { label: string; rows?: RankingAtK[] }) => {
-    const rows = rankingRows(inputRows);
-    return <div className="table-wrap prediction-ranking-wrap"><table className="prediction-ranking-table"><thead><tr><th>{label}</th><th>HITS</th><th>PRECISION</th><th>RECALL</th><th>NDCG</th><th>LIFT</th></tr></thead><tbody>{rows.map(row => <tr key={`${label}-${row.k}`}><td><b>@{row.k}</b><small>{row.positives} POS / {row.eligible} ELIGIBLE</small></td><td>{row.hits}</td><td>{pct(row.precision)}</td><td>{pct(row.recall)}</td><td>{row.ndcg === undefined ? '—' : row.ndcg.toFixed(3)}</td><td>{row.lift === undefined ? '—' : `${row.lift.toFixed(2)}x`}</td></tr>)}</tbody></table>{rows.length === 0 && <Empty tx={tx} title={tx('尚无可排序的成熟预测样本', 'No mature scored predictions for ranking metrics')} />}</div>;
-  };
-  const readinessPageSize = 50;
-  const [prediction, setPrediction] = useState<PredictionOverview | null>(null);
-  const [predictionAccuracy, setPredictionAccuracy] = useState<PredictionAccuracy | null>(null);
-  const [predictionOutcomeReport, setPredictionOutcomeReport] = useState<PredictionOutcomeReport | null>(null);
-  const [predictionModelGovernance, setPredictionModelGovernance] = useState<PredictionModelGovernance | null>(null);
-  const [labelManifest, setLabelManifest] = useState<LabelManifest | null>(null);
-  const [evidenceBundle, setEvidenceBundle] = useState<EvidenceBundleReport | null>(null);
-  const [humanFeedbackManifest, setHumanFeedbackManifest] = useState<HumanFeedbackManifest | null>(null);
-  const [faultFeedbackRequests, setFaultFeedbackRequests] = useState<HardwareFaultFeedbackRequest[]>([]);
-  const [dataDriftReport, setDataDriftReport] = useState<DataDriftReport | null>(null);
-  const [calibrationDriftReport, setCalibrationDriftReport] = useState<CalibrationDriftReport | null>(null);
-  const [featureDriftReport, setFeatureDriftReport] = useState<FeatureDriftReport | null>(null);
-  const [heaRankChallenger, setHeaRankChallenger] = useState<HeaRankChallengerReport | null>(null);
-  const [observabilityRanking, setObservabilityRanking] = useState<ObservabilityRankingValidationReport | null>(null);
-  const [riskRankingSnapshot, setRiskRankingSnapshot] = useState<RiskRankingSnapshotReport | null>(null);
-  const [dualTrackValidation, setDualTrackValidation] = useState<DualTrackValidationReport | null>(null);
-  const [promotionDecision, setPromotionDecision] = useState<PromotionDecisionReport | null>(null);
-  const [validationReadiness, setValidationReadiness] = useState<ValidationReadinessReport | null>(null);
-  const validationSliceComparability = validationReadiness as (ValidationReadinessReport & ValidationSliceComparability) | null;
-  const [predictionOutcomes, setPredictionOutcomes] = useState<PredictionOutcome[]>([]);
-  const [featureParityAudits, setFeatureParityAudits] = useState<PredictionFeatureParityAudit[]>([]);
-  const [featureReplayRuns, setFeatureReplayRuns] = useState<PredictionFeatureReplayRun[]>([]);
-  const [liveCoverageAudits, setLiveCoverageAudits] = useState<PredictionLiveCoverageAudit[]>([]);
-  const [featureDistributionSnapshots, setFeatureDistributionSnapshots] = useState<PredictionFeatureDistributionSnapshot[]>([]);
-  const [featureDistributionArchive, setFeatureDistributionArchive] = useState<PredictionFeatureDistributionArchiveMeta | null>(null);
-  const [shadowScoringRuns, setShadowScoringRuns] = useState<PredictionShadowScoringRun[]>([]);
-  const [riskPredictions, setRiskPredictions] = useState<HardwareRiskPrediction[]>([]);
-  const [readiness, setReadiness] = useState<PredictionReadinessItem[]>([]);
-  const [failureLabels, setFailureLabels] = useState<FailureLabel[]>([]);
-  const [historySources, setHistorySources] = useState<MonitoringHistorySource[]>([]);
-  const [historyBackfills, setHistoryBackfills] = useState<HistoryBackfillRun[]>([]);
-  const [identityBackfills, setIdentityBackfills] = useState<HistoryBackfillRun[]>([]);
-  const [identityIntervals, setIdentityIntervals] = useState<HistoricalGPUIdentityInterval[]>([]);
-  const [identitySummary, setIdentitySummary] = useState<HistoricalIdentitySummary | null>(null);
-  const [datasetBuilds, setDatasetBuilds] = useState<TrainingDatasetBuild[]>([]);
-  const [featureBuilds, setFeatureBuilds] = useState<TrainingFeatureBuild[]>([]);
-  const [feedbackFeatureRequests, setFeedbackFeatureRequests] = useState<ManualFeedbackFeatureRequestBuild[]>([]);
-  const [preparationBuilds, setPreparationBuilds] = useState<TrainingPreparationBuild[]>([]);
-  const [controlFeatureBuilds, setControlFeatureBuilds] = useState<TrainingControlFeatureBuild[]>([]);
-  const [trainingMatrixBuilds, setTrainingMatrixBuilds] = useState<TrainingMatrixBuild[]>([]);
-  const [matrixReadinessReport, setMatrixReadinessReport] = useState<MatrixReadinessReport | null>(null);
-  const [baselineModelBuilds, setBaselineModelBuilds] = useState<BaselineModelBuild[]>([]);
-  const [baselineEvaluationReport, setBaselineEvaluationReport] = useState<BaselineEvaluationReport | null>(null);
-  const [modelRaceComparison, setModelRaceComparison] = useState<ModelRaceComparison | null>(null);
-  const [historicalCandidates, setHistoricalCandidates] = useState<HistoricalFaultCandidate[]>([]);
-  const [historicalCandidateSummary, setHistoricalCandidateSummary] = useState<HistoricalCandidateSummary | null>(null);
-  const [trainingCohortPolicy, setTrainingCohortPolicy] = useState<TrainingCohortPolicy | null>(null);
-  const [historyAuditRunning, setHistoryAuditRunning] = useState(false);
-  const [historyBackfillRunning, setHistoryBackfillRunning] = useState(false);
-  const [identityBackfillRunning, setIdentityBackfillRunning] = useState(false);
-  const [datasetBuildRunning, setDatasetBuildRunning] = useState(false);
-  const [featureBuildStarting, setFeatureBuildStarting] = useState(false);
-  const [feedbackFeatureRequestStarting, setFeedbackFeatureRequestStarting] = useState(false);
-  const [feedbackFeatureRequestRunning, setFeedbackFeatureRequestRunning] = useState(false);
-  const [feedbackFeatureRequestNotice, setFeedbackFeatureRequestNotice] = useState('');
-  const [preparationBuilding, setPreparationBuilding] = useState(false);
-  const [controlFeatureStarting, setControlFeatureStarting] = useState(false);
-  const [trainingMatrixStarting, setTrainingMatrixStarting] = useState(false);
-  const [baselineModelStarting, setBaselineModelStarting] = useState(false);
-  const [featureReplayStarting, setFeatureReplayStarting] = useState(false);
-  const [liveCoverageStarting, setLiveCoverageStarting] = useState(false);
-  const [featureDistributionStarting, setFeatureDistributionStarting] = useState(false);
-  const [shadowScoringStarting, setShadowScoringStarting] = useState(false);
-  const [reviewingCandidateID, setReviewingCandidateID] = useState<number | null>(null);
-  const [readinessPage, setReadinessPage] = useState(0);
-  const [predictionError, setPredictionError] = useState('');
-  const [predictionReportError, setPredictionReportError] = useState('');
-  const [warningTab, setWarningTabState] = useState(() => {
-    try {
-      return localStorage.getItem('atlas.prediction.warningTab') || 'human-feedback';
-    } catch {
-      return 'human-feedback';
-    }
-  });
-  const setWarningTab = (tab: string) => {
-    setWarningTabState(tab);
-    try {
-      localStorage.setItem('atlas.prediction.warningTab', tab);
-    } catch {
-      // Ignore storage errors; the selected tab still updates in memory.
-    }
-  };
-  const [feedbackForm, setFeedbackForm] = useState({ target_scope: 'gpu', node_ip: '', gpu_asset_id: '', affected_gpu_indexes: '', fault_type: 'gpu_hardware_failure', fault_time_precision: 'exact', fault_occurred_at: '', fault_window_start_at: '', fault_window_end_at: '', pre_window_hours: '72', post_window_hours: '24', operator: '', description: '', repair_action: 'pending', hardware_replaced: false, evidence_note: '', training_eligible: false });
-  const [feedbackAssetQuery, setFeedbackAssetQuery] = useState('');
-  const [feedbackSaving, setFeedbackSaving] = useState(false);
-  const [feedbackImportRaw, setFeedbackImportRaw] = useState('');
-  const [feedbackImportOperator, setFeedbackImportOperator] = useState('');
-  const [feedbackImportReport, setFeedbackImportReport] = useState<HardwareFaultFeedbackImportReport | null>(null);
-  const [feedbackImporting, setFeedbackImporting] = useState(false);
-	const [faultEpisodeReport, setFaultEpisodeReport] = useState<HardwareFaultEpisodeReport | null>(null);
-	const [faultValueReport, setFaultValueReport] = useState<HardwareFaultValueReport | null>(null);
-	const [faultReviewingID, setFaultReviewingID] = useState<number | null>(null);
-  const [preparingFeedbackID, setPreparingFeedbackID] = useState<number | null>(null);
-  const [reviewingFeedbackID, setReviewingFeedbackID] = useState<number | null>(null);
-  const isPredictionView = view === 'prediction';
-  const loadFaultFeedbackRequests = useCallback(async () => {
-    const response = await fetch('/api/v1/prediction/hardware-fault-feedback?limit=200');
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-    setFaultFeedbackRequests(Array.isArray(payload.data) ? payload.data : []);
-    return Array.isArray(payload.data) ? payload.data as HardwareFaultFeedbackRequest[] : [];
-  }, []);
-  const loadFeedbackFeatureRequests = useCallback(async () => {
-    const response = await fetch('/api/v1/prediction/history/feedback-feature-requests');
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-    const rows = Array.isArray(payload.data) ? payload.data as ManualFeedbackFeatureRequestBuild[] : [];
-    setFeedbackFeatureRequests(rows);
-    return rows;
-  }, []);
-	const loadFaultReviewReports = useCallback(async () => {
-		const [episodesResponse, valueResponse] = await Promise.all([
-			fetch('/api/v1/prediction/hardware-fault-feedback/episodes'),
-			fetch('/api/v1/prediction/hardware-fault-feedback/value-report'),
-		]);
-		const episodesPayload = await episodesResponse.json().catch(() => ({}));
-		const valuePayload = await valueResponse.json().catch(() => ({}));
-		if (!episodesResponse.ok) throw new Error(episodesPayload.error || `HTTP ${episodesResponse.status}`);
-		if (!valueResponse.ok) throw new Error(valuePayload.error || `HTTP ${valueResponse.status}`);
-		setFaultEpisodeReport(episodesPayload.data || null);
-		setFaultValueReport(valuePayload.data || null);
-	}, []);
-  useEffect(() => {
-    if (!isPredictionView) return;
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const rows = await loadFaultFeedbackRequests();
-        if (!cancelled) setFaultFeedbackRequests(rows);
-      } catch (reason) {
-        if (!cancelled) setPredictionError(reason instanceof Error ? reason.message : String(reason));
-      }
-    };
-    void load();
-    return () => { cancelled = true; };
-  }, [isPredictionView, loadFaultFeedbackRequests]);
-	useEffect(() => {
-		if (!isPredictionView || warningTab !== 'feedback-pack') return;
-		void loadFaultReviewReports().catch(reason => setPredictionError(reason instanceof Error ? reason.message : String(reason)));
-	}, [isPredictionView, warningTab, loadFaultReviewReports]);
-  useEffect(() => {
-    if (!isPredictionView) return;
-    const latest = feedbackFeatureRequests[0];
-    if (!latest || !isFeedbackFeatureActive(latest.status)) return;
-    let cancelled = false;
-    const timer = window.setInterval(() => {
-      void (async () => {
-        try {
-          const rows = await loadFeedbackFeatureRequests();
-          const current = rows.find(item => item.id === latest.id) || rows[0];
-          if (!cancelled && current) {
-            setFeedbackFeatureRequestNotice(tx(
-              `离线聚合状态：${compactWorkflowStatus(current.status)} · ${current.completed_windows || 0}/${current.failed_windows || 0} 窗口 · ${current.feature_sha256 ? shortHash(current.feature_sha256) : current.error_message || '等待特征 SHA'}`,
-              `Offline aggregation status: ${compactWorkflowStatus(current.status)} · ${current.completed_windows || 0}/${current.failed_windows || 0} windows · ${current.feature_sha256 ? shortHash(current.feature_sha256) : current.error_message || 'waiting for feature SHA'}`,
-            ));
-          }
-        } catch (reason) {
-          if (!cancelled) setPredictionError(reason instanceof Error ? reason.message : String(reason));
-        }
-      })();
-    }, 3000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [isPredictionView, feedbackFeatureRequests, loadFeedbackFeatureRequests, tx]);
-  useEffect(() => {
-    if (!isPredictionView) return;
-    let cancelled = false;
-    const loadPrediction = async () => {
-      try {
-        const [overviewResponse, readinessResponse, labelsResponse, accuracyResponse, outcomeReportResponse, governanceResponse, labelManifestResponse, evidenceBundleResponse, humanFeedbackResponse, feedbackRequestsResponse, dataDriftResponse, calibrationDriftResponse, featureDriftResponse, riskRankingResponse, outcomesResponse, resultsResponse, parityResponse, replayResponse, coverageResponse, distributionsResponse, shadowResponse, historyResponse, backfillResponse, candidatesResponse] = await Promise.all([fetch('/api/v1/prediction/overview'), fetch('/api/v1/prediction/readiness'), fetch('/api/v1/prediction/labels'), fetch('/api/v1/prediction/accuracy'), fetch('/api/v1/prediction/outcome-report'), fetch('/api/v1/prediction/model-governance'), fetch('/api/v1/prediction/label-manifest'), fetch('/api/v1/prediction/evidence-bundle'), fetch('/api/v1/prediction/human-feedback-manifest'), fetch('/api/v1/prediction/hardware-fault-feedback?limit=200'), fetch('/api/v1/prediction/data-drift-report'), fetch('/api/v1/prediction/calibration-drift-report'), fetch('/api/v1/prediction/feature-drift-report'), fetch('/api/v1/prediction/risk-ranking-snapshot'), fetch('/api/v1/prediction/outcomes'), fetch('/api/v1/prediction/results'), fetch('/api/v1/prediction/feature-parity'), fetch('/api/v1/prediction/history/feature-replays'), fetch('/api/v1/prediction/history/live-coverage'), fetch('/api/v1/prediction/history/feature-distributions?scope=validation'), fetch('/api/v1/prediction/history/shadow-scoring'), fetch('/api/v1/prediction/history/sources'), fetch('/api/v1/prediction/history/backfills'), fetch('/api/v1/prediction/history/candidates')]);
-        if (!overviewResponse.ok || !readinessResponse.ok || !labelsResponse.ok || !accuracyResponse.ok || !outcomeReportResponse.ok || !governanceResponse.ok || !labelManifestResponse.ok || !evidenceBundleResponse.ok || !humanFeedbackResponse.ok || !feedbackRequestsResponse.ok || !dataDriftResponse.ok || !calibrationDriftResponse.ok || !featureDriftResponse.ok || !riskRankingResponse.ok || !outcomesResponse.ok || !resultsResponse.ok || !parityResponse.ok || !replayResponse.ok || !coverageResponse.ok || !distributionsResponse.ok || !shadowResponse.ok || !historyResponse.ok || !backfillResponse.ok || !candidatesResponse.ok) throw new Error(`HTTP ${overviewResponse.status}/${readinessResponse.status}/${labelsResponse.status}/${accuracyResponse.status}/${outcomeReportResponse.status}/${governanceResponse.status}/${labelManifestResponse.status}/${evidenceBundleResponse.status}/${humanFeedbackResponse.status}/${feedbackRequestsResponse.status}/${dataDriftResponse.status}/${calibrationDriftResponse.status}/${featureDriftResponse.status}/${riskRankingResponse.status}/${outcomesResponse.status}/${resultsResponse.status}/${parityResponse.status}/${replayResponse.status}/${coverageResponse.status}/${distributionsResponse.status}/${shadowResponse.status}/${historyResponse.status}/${backfillResponse.status}/${candidatesResponse.status}`);
-        const [overviewPayload, readinessPayload, labelsPayload, accuracyPayload, outcomeReportPayload, governancePayload, labelManifestPayload, evidenceBundlePayload, humanFeedbackPayload, feedbackRequestsPayload, dataDriftPayload, calibrationDriftPayload, featureDriftPayload, riskRankingPayload, outcomesPayload, resultsPayload, parityPayload, replayPayload, coveragePayload, distributionsPayload, shadowPayload, historyPayload, backfillPayload, candidatesPayload] = await Promise.all([overviewResponse.json(), readinessResponse.json(), labelsResponse.json(), accuracyResponse.json(), outcomeReportResponse.json(), governanceResponse.json(), labelManifestResponse.json(), evidenceBundleResponse.json(), humanFeedbackResponse.json(), feedbackRequestsResponse.json(), dataDriftResponse.json(), calibrationDriftResponse.json(), featureDriftResponse.json(), riskRankingResponse.json(), outcomesResponse.json(), resultsResponse.json(), parityResponse.json(), replayResponse.json(), coverageResponse.json(), distributionsResponse.json(), shadowResponse.json(), historyResponse.json(), backfillResponse.json(), candidatesResponse.json()]);
-        if (!cancelled) {
-          setPrediction(overviewPayload.data || null);
-          setReadiness(Array.isArray(readinessPayload.data) ? readinessPayload.data : []);
-          setFailureLabels(Array.isArray(labelsPayload.data) ? labelsPayload.data : []);
-          setPredictionAccuracy(accuracyPayload.data || null);
-          setPredictionOutcomeReport(outcomeReportPayload.data || null);
-          setPredictionModelGovernance(governancePayload.data || null);
-          setLabelManifest(labelManifestPayload.data || null);
-          setEvidenceBundle(evidenceBundlePayload.data || null);
-          setHumanFeedbackManifest(humanFeedbackPayload.data || null);
-          setFaultFeedbackRequests(Array.isArray(feedbackRequestsPayload.data) ? feedbackRequestsPayload.data : []);
-          setDataDriftReport(dataDriftPayload.data || null);
-          setCalibrationDriftReport(calibrationDriftPayload.data || null);
-          setFeatureDriftReport(featureDriftPayload.data || null);
-          setRiskRankingSnapshot(riskRankingPayload.data || null);
-          setPredictionOutcomes(Array.isArray(outcomesPayload.data) ? outcomesPayload.data : []);
-          setRiskPredictions(Array.isArray(resultsPayload.data) ? resultsPayload.data : []);
-          setFeatureParityAudits(Array.isArray(parityPayload.data) ? parityPayload.data : []);
-          setFeatureReplayRuns(Array.isArray(replayPayload.data) ? replayPayload.data : []);
-          setLiveCoverageAudits(Array.isArray(coveragePayload.data) ? coveragePayload.data : []);
-          setFeatureDistributionSnapshots(Array.isArray(distributionsPayload.data) ? distributionsPayload.data : []);
-          setFeatureDistributionArchive(distributionsPayload.meta || null);
-          setShadowScoringRuns(Array.isArray(shadowPayload.data) ? shadowPayload.data : []);
-          setHistorySources(Array.isArray(historyPayload.data) ? historyPayload.data : []);
-          setHistoryBackfills(Array.isArray(backfillPayload.data) ? backfillPayload.data : []);
-          setHistoricalCandidates(Array.isArray(candidatesPayload.data) ? candidatesPayload.data : []);
-          setHistoricalCandidateSummary(candidatesPayload.summary || null);
-          setTrainingCohortPolicy(candidatesPayload.training_policy || null);
-          setPredictionError('');
-        }
-      } catch (reason) {
-        if (!cancelled) setPredictionError(reason instanceof Error ? reason.message : String(reason));
-      }
-    };
-    void loadPrediction();
-    return () => { cancelled = true; };
-  }, [isPredictionView]);
-  useEffect(() => {
-    if (!isPredictionView || warningTab === 'human-feedback' || warningTab === 'feedback-pack') return;
-    let cancelled = false;
-    const loadReport = async <T,>(url: string, apply: (data: T | null) => void) => {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
-      const payload = await response.json();
-      if (!cancelled) apply(payload.data || null);
-    };
-    const loadValidationReports = async () => {
-      setPredictionReportError('');
-      const results = await Promise.allSettled([
-        loadReport<HeaRankChallengerReport>('/api/v1/prediction/hearank-challenger', setHeaRankChallenger),
-        loadReport<ObservabilityRankingValidationReport>('/api/v1/prediction/observability-ranking-validation', setObservabilityRanking),
-        loadReport<DualTrackValidationReport>('/api/v1/prediction/dual-track-validation', data => {
-          setDualTrackValidation(data);
-          setValidationReadiness(data?.readiness || null);
-        }),
-        loadReport<PromotionDecisionReport>('/api/v1/prediction/promotion-decision', setPromotionDecision),
-      ]);
-      if (!cancelled) {
-        const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
-        if (failures.length > 0) setPredictionReportError(failures.map(result => result.reason instanceof Error ? result.reason.message : String(result.reason)).join(' · '));
-      }
-    };
-    void loadValidationReports();
-    return () => { cancelled = true; };
-  }, [isPredictionView, warningTab]);
-  useEffect(() => {
-    if (!isPredictionView) return;
-    let cancelled = false;
-    const loadIdentityHistory = async () => {
-      try {
-        const [runsResponse, identitiesResponse, datasetsResponse, featuresResponse, feedbackFeatureRequestsResponse, preparationsResponse, controlsResponse, matricesResponse, baselinesResponse] = await Promise.all([
-          fetch('/api/v1/prediction/history/identity-backfills'),
-          fetch('/api/v1/prediction/history/identities'),
-          fetch('/api/v1/prediction/history/datasets'),
-          fetch('/api/v1/prediction/history/feature-datasets'),
-          fetch('/api/v1/prediction/history/feedback-feature-requests'),
-          fetch('/api/v1/prediction/history/training-preparations'),
-          fetch('/api/v1/prediction/history/control-feature-datasets'),
-          fetch('/api/v1/prediction/history/training-matrices'),
-          fetch('/api/v1/prediction/history/baseline-models'),
-        ]);
-        if (!runsResponse.ok || !identitiesResponse.ok || !datasetsResponse.ok || !featuresResponse.ok || !feedbackFeatureRequestsResponse.ok || !preparationsResponse.ok || !controlsResponse.ok || !matricesResponse.ok || !baselinesResponse.ok) throw new Error(`HTTP ${runsResponse.status}/${identitiesResponse.status}/${datasetsResponse.status}/${featuresResponse.status}/${feedbackFeatureRequestsResponse.status}/${preparationsResponse.status}/${controlsResponse.status}/${matricesResponse.status}/${baselinesResponse.status}`);
-        const [runsPayload, identitiesPayload, datasetsPayload, featuresPayload, feedbackFeatureRequestsPayload, preparationsPayload, controlsPayload, matricesPayload, baselinesPayload] = await Promise.all([runsResponse.json(), identitiesResponse.json(), datasetsResponse.json(), featuresResponse.json(), feedbackFeatureRequestsResponse.json(), preparationsResponse.json(), controlsResponse.json(), matricesResponse.json(), baselinesResponse.json()]);
-        if (!cancelled) {
-          setIdentityBackfills(Array.isArray(runsPayload.data) ? runsPayload.data : []);
-          setIdentityIntervals(Array.isArray(identitiesPayload.data) ? identitiesPayload.data : []);
-          setIdentitySummary(identitiesPayload.summary || null);
-          setDatasetBuilds(Array.isArray(datasetsPayload.data) ? datasetsPayload.data : []);
-          setFeatureBuilds(Array.isArray(featuresPayload.data) ? featuresPayload.data : []);
-          setFeedbackFeatureRequests(Array.isArray(feedbackFeatureRequestsPayload.data) ? feedbackFeatureRequestsPayload.data : []);
-          setPreparationBuilds(Array.isArray(preparationsPayload.data) ? preparationsPayload.data : []);
-          setControlFeatureBuilds(Array.isArray(controlsPayload.data) ? controlsPayload.data : []);
-          setTrainingMatrixBuilds(Array.isArray(matricesPayload.data) ? matricesPayload.data : []);
-          setBaselineModelBuilds(Array.isArray(baselinesPayload.data) ? baselinesPayload.data : []);
-        }
-      } catch (reason) {
-        if (!cancelled) setPredictionError(reason instanceof Error ? reason.message : String(reason));
-      }
-    };
-    void loadIdentityHistory();
-    return () => { cancelled = true; };
-  }, [isPredictionView]);
-  useEffect(() => {
-    if (!isPredictionView || view === 'prediction') return;
-    const timer = window.setTimeout(() => {
-      document.getElementById(view)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 80);
-    return () => window.clearTimeout(timer);
-  }, [isPredictionView, view, prediction, humanFeedbackManifest, validationReadiness, predictionAccuracy, shadowScoringRuns.length, trainingMatrixBuilds.length]);
-  useEffect(() => {
-    if (!featureBuilds.some(build => build.status === 'queued' || build.status === 'running')) return;
-    const timer = window.setInterval(() => {
-      void (async () => {
-        try {
-          const response = await fetch('/api/v1/prediction/history/feature-datasets');
-          if (!response.ok) return;
-          const payload = await response.json();
-          setFeatureBuilds(Array.isArray(payload.data) ? payload.data : []);
-        } catch {
-          // Keep polling while the durable extraction task is active.
-        }
-      })();
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [featureBuilds]);
-  useEffect(() => {
-    if (!controlFeatureBuilds.some(build => build.status === 'queued' || build.status === 'running')) return;
-    const timer = window.setInterval(() => {
-      void (async () => {
-        try {
-          const response = await fetch('/api/v1/prediction/history/control-feature-datasets');
-          if (!response.ok) return;
-          const payload = await response.json();
-          setControlFeatureBuilds(Array.isArray(payload.data) ? payload.data : []);
-        } catch {
-          // Keep the last durable progress while the deployment-node task runs.
-        }
-      })();
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [controlFeatureBuilds]);
-  useEffect(() => {
-    if (!trainingMatrixBuilds.some(build => build.status === 'queued' || build.status === 'running')) return;
-    const timer = window.setInterval(() => {
-      void (async () => {
-        try {
-          const response = await fetch('/api/v1/prediction/history/training-matrices');
-          if (!response.ok) return;
-          const payload = await response.json();
-          setTrainingMatrixBuilds(Array.isArray(payload.data) ? payload.data : []);
-        } catch {
-          // Keep the durable matrix state while assembly is active.
-        }
-      })();
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [trainingMatrixBuilds]);
-  useEffect(() => {
-    if (!baselineModelBuilds.some(build => build.status === 'queued' || build.status === 'running')) return;
-    const timer = window.setInterval(() => { void fetch('/api/v1/prediction/history/baseline-models').then(response => response.ok ? response.json() : null).then(payload => { if (payload) setBaselineModelBuilds(Array.isArray(payload.data) ? payload.data : []); }).catch(() => undefined); }, 3000);
-    return () => window.clearInterval(timer);
-  }, [baselineModelBuilds]);
-  useEffect(() => {
-    if (!featureReplayRuns.some(run => run.status === 'queued' || run.status === 'running')) return;
-    const timer = window.setInterval(() => {
-      void Promise.all([fetch('/api/v1/prediction/history/feature-replays'), fetch('/api/v1/prediction/feature-parity')]).then(async ([runsResponse, parityResponse]) => {
-        if (!runsResponse.ok || !parityResponse.ok) return;
-        const [runsPayload, parityPayload] = await Promise.all([runsResponse.json(), parityResponse.json()]);
-        setFeatureReplayRuns(Array.isArray(runsPayload.data) ? runsPayload.data : []);
-        setFeatureParityAudits(Array.isArray(parityPayload.data) ? parityPayload.data : []);
-      }).catch(() => undefined);
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [featureReplayRuns]);
-  useEffect(() => {
-    const status = featureReplayRuns[0]?.status;
-    if (status !== 'passed' && status !== 'failed') return;
-    void fetch('/api/v1/prediction/feature-parity').then(response => response.ok ? response.json() : null).then(payload => {
-      if (payload) setFeatureParityAudits(Array.isArray(payload.data) ? payload.data : []);
-    }).catch(() => undefined);
-  }, [featureReplayRuns]);
-  useEffect(() => {
-    if (!liveCoverageAudits.some(audit => audit.status === 'queued' || audit.status === 'running')) return;
-    const timer = window.setInterval(() => {
-      void Promise.all([fetch('/api/v1/prediction/history/live-coverage'), fetch('/api/v1/prediction/feature-parity')]).then(async ([auditsResponse, parityResponse]) => {
-        if (!auditsResponse.ok || !parityResponse.ok) return;
-        const [auditsPayload, parityPayload] = await Promise.all([auditsResponse.json(), parityResponse.json()]);
-        setLiveCoverageAudits(Array.isArray(auditsPayload.data) ? auditsPayload.data : []);
-        setFeatureParityAudits(Array.isArray(parityPayload.data) ? parityPayload.data : []);
-      }).catch(() => undefined);
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [liveCoverageAudits]);
-  useEffect(() => {
-    if (!shadowScoringRuns.some(run => run.status === 'queued' || run.status === 'running')) return;
-    const timer = window.setInterval(() => {
-      void Promise.all([fetch('/api/v1/prediction/history/shadow-scoring'), fetch('/api/v1/prediction/results'), fetch('/api/v1/prediction/overview')]).then(async ([runsResponse, resultsResponse, overviewResponse]) => {
-        if (!runsResponse.ok || !resultsResponse.ok || !overviewResponse.ok) return;
-        const [runsPayload, resultsPayload, overviewPayload] = await Promise.all([runsResponse.json(), resultsResponse.json(), overviewResponse.json()]);
-        setShadowScoringRuns(Array.isArray(runsPayload.data) ? runsPayload.data : []);
-        setRiskPredictions(Array.isArray(resultsPayload.data) ? resultsPayload.data : []);
-        setPrediction(overviewPayload.data || null);
-      }).catch(() => undefined);
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [shadowScoringRuns]);
-  useEffect(() => {
-    const latest = trainingMatrixBuilds[0];
-    if (!latest || latest.status !== 'completed') {
-      setMatrixReadinessReport(null);
-      return;
-    }
-    void fetch(`/api/v1/prediction/history/training-matrices/${latest.id}/readiness`)
-      .then(response => response.ok ? response.json() : null)
-      .then(payload => setMatrixReadinessReport(payload?.data || null))
-      .catch(() => setMatrixReadinessReport(null));
-  }, [trainingMatrixBuilds]);
-  useEffect(() => {
-    const latest = baselineModelBuilds[0];
-    if (!latest || latest.status !== 'completed') {
-      setBaselineEvaluationReport(null);
-      return;
-    }
-    void fetch(`/api/v1/prediction/history/baseline-models/${latest.id}/report`)
-      .then(response => response.ok ? response.json() : null)
-      .then(payload => setBaselineEvaluationReport(payload?.data || null))
-      .catch(() => setBaselineEvaluationReport(null));
-  }, [baselineModelBuilds]);
-  useEffect(() => {
-    const completed = baselineModelBuilds.filter(build => build.status === 'completed');
-    const matrixID = completed[0]?.source_matrix_build_id;
-    if (!matrixID) {
-      setModelRaceComparison(null);
-      return;
-    }
-    const sameMatrix = completed.filter(build => build.source_matrix_build_id === matrixID);
-    const policyOf = (build: BaselineModelBuild) => build.feature_window_policy || 'all_available_windows';
-    const planeOf = (build: BaselineModelBuild) => build.feature_plane_policy || 'all_features';
-    const reference = sameMatrix.find(build => build.algorithm === 'logistic_regression' && policyOf(build) === 'all_available_windows' && planeOf(build) === 'all_features');
-    const challengers = sameMatrix.filter(build => build.id !== reference?.id && !sameMatrix.some(earlier => earlier.id > build.id && `${earlier.algorithm}:${policyOf(earlier)}:${planeOf(earlier)}` === `${build.algorithm}:${policyOf(build)}:${planeOf(build)}`));
-    if (!reference || challengers.length === 0) {
-      setModelRaceComparison(null);
-      return;
-    }
-    const query = new URLSearchParams({ reference_build_id: String(reference.id), challenger_build_ids: challengers.slice(0, 7).map(build => build.id).join(',') });
-    void fetch(`/api/v1/prediction/history/model-race?${query.toString()}`)
-      .then(response => response.ok ? response.json() : null)
-      .then(payload => setModelRaceComparison(payload?.data || null))
-      .catch(() => setModelRaceComparison(null));
-  }, [baselineModelBuilds]);
-  useEffect(() => {
-    if (!identityBackfills.some(run => run.status === 'queued' || run.status === 'running')) return;
-    const timer = window.setInterval(() => {
-      void (async () => {
-        try {
-          const [runsResponse, identitiesResponse, candidatesResponse] = await Promise.all([
-            fetch('/api/v1/prediction/history/identity-backfills'),
-            fetch('/api/v1/prediction/history/identities'),
-            fetch('/api/v1/prediction/history/candidates'),
-          ]);
-          if (!runsResponse.ok || !identitiesResponse.ok || !candidatesResponse.ok) return;
-          const [runsPayload, identitiesPayload, candidatesPayload] = await Promise.all([
-            runsResponse.json(), identitiesResponse.json(), candidatesResponse.json(),
-          ]);
-          setIdentityBackfills(Array.isArray(runsPayload.data) ? runsPayload.data : []);
-          setIdentityIntervals(Array.isArray(identitiesPayload.data) ? identitiesPayload.data : []);
-          setIdentitySummary(identitiesPayload.summary || null);
-          setHistoricalCandidates(Array.isArray(candidatesPayload.data) ? candidatesPayload.data : []);
-          setHistoricalCandidateSummary(candidatesPayload.summary || null);
-        } catch {
-          // The primary page error state remains authoritative; retry on the next tick.
-        }
-      })();
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [identityBackfills]);
-  const runHistoryAudit = async () => {
-    setHistoryAuditRunning(true);
-    try {
-      const response = await fetch('/api/v1/prediction/history/audits', { method: 'POST' });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const sourcesResponse = await fetch('/api/v1/prediction/history/sources');
-      if (!sourcesResponse.ok) throw new Error(`HTTP ${sourcesResponse.status}`);
-      const payload = await sourcesResponse.json();
-      setHistorySources(Array.isArray(payload.data) ? payload.data : []);
-      setPredictionError('');
-    } catch (reason) {
-      setPredictionError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setHistoryAuditRunning(false);
-    }
-  };
-  const readinessPageCount = Math.max(1, Math.ceil(readiness.length / readinessPageSize));
-  const safeReadinessPage = Math.min(readinessPage, readinessPageCount - 1);
-  const visibleReadiness = readiness.slice(safeReadinessPage * readinessPageSize, (safeReadinessPage + 1) * readinessPageSize);
-  const runIdentityBackfill = async () => {
-    setIdentityBackfillRunning(true);
-    try {
-      const response = await fetch('/api/v1/prediction/history/identity-backfills', { method: 'POST' });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const [runsResponse, identitiesResponse] = await Promise.all([
-        fetch('/api/v1/prediction/history/identity-backfills'),
-        fetch('/api/v1/prediction/history/identities'),
-      ]);
-      if (!runsResponse.ok || !identitiesResponse.ok) throw new Error(`HTTP ${runsResponse.status}/${identitiesResponse.status}`);
-      const [runsPayload, identitiesPayload] = await Promise.all([runsResponse.json(), identitiesResponse.json()]);
-      setIdentityBackfills(Array.isArray(runsPayload.data) ? runsPayload.data : []);
-      setIdentityIntervals(Array.isArray(identitiesPayload.data) ? identitiesPayload.data : []);
-      setIdentitySummary(identitiesPayload.summary || null);
-      setPredictionError('');
-    } catch (reason) {
-      setPredictionError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setIdentityBackfillRunning(false);
-    }
-  };
-  const buildDatasetManifest = async (predictionTarget: 'gpu_hardware_failure' | 'high_priority_xid_event' = 'gpu_hardware_failure') => {
-    setDatasetBuildRunning(true);
-    try {
-      const response = await fetch('/api/v1/prediction/history/datasets', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_key: 'current-prometheus', prediction_target: predictionTarget }),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const buildsResponse = await fetch('/api/v1/prediction/history/datasets');
-      if (!buildsResponse.ok) throw new Error(`HTTP ${buildsResponse.status}`);
-      const payload = await buildsResponse.json();
-      setDatasetBuilds(Array.isArray(payload.data) ? payload.data : []);
-      setPredictionError('');
-    } catch (reason) {
-      setPredictionError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setDatasetBuildRunning(false);
-    }
-  };
-  const buildHistoricalFeatures = async () => {
-    if (!datasetBuilds[0]) return;
-    setFeatureBuildStarting(true);
-    try {
-      const response = await fetch('/api/v1/prediction/history/feature-datasets', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_dataset_build_id: datasetBuilds[0].id }),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const buildsResponse = await fetch('/api/v1/prediction/history/feature-datasets');
-      if (!buildsResponse.ok) throw new Error(`HTTP ${buildsResponse.status}`);
-      const payload = await buildsResponse.json();
-      setFeatureBuilds(Array.isArray(payload.data) ? payload.data : []);
-      setPredictionError('');
-    } catch (reason) {
-      setPredictionError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setFeatureBuildStarting(false);
-    }
-  };
-  const buildManualFeedbackFeatureRequestManifest = async () => {
-    setFeedbackFeatureRequestStarting(true);
-    try {
-      const response = await fetch('/api/v1/prediction/history/feedback-feature-requests', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const createdPayload = await response.json();
-      const rows = await loadFeedbackFeatureRequests();
-      const created = createdPayload?.data || rows[0];
-      setFeedbackFeatureRequestNotice(created ? tx(
-        `Manifest 已生成：${compactWorkflowStatus(created.status)} · ${created.window_count || 0} 窗口 · ${created.manifest_sha256 ? shortHash(created.manifest_sha256) : created.blocking_reasons?.[0] || '等待 SHA'}`,
-        `Manifest created: ${compactWorkflowStatus(created.status)} · ${created.window_count || 0} windows · ${created.manifest_sha256 ? shortHash(created.manifest_sha256) : created.blocking_reasons?.[0] || 'waiting for SHA'}`,
-      ) : tx('特征请求 Manifest 已提交，但列表尚未返回记录', 'Feature request manifest submitted, but the list returned no rows yet'));
-      setPredictionError('');
-    } catch (reason) {
-      setFeedbackFeatureRequestNotice('');
-      setPredictionError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setFeedbackFeatureRequestStarting(false);
-    }
-  };
-  const runManualFeedbackFeatureRequestWorker = async () => {
-    const request = feedbackFeatureRequests[0];
-    if (!request) return;
-    setFeedbackFeatureRequestRunning(true);
-    try {
-      const response = await fetch('/api/v1/prediction/history/feedback-feature-requests/run', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ build_id: request.id }),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const rows = await loadFeedbackFeatureRequests();
-      const current = rows.find((item: ManualFeedbackFeatureRequestBuild) => item.id === request.id) || rows[0];
-      setFeedbackFeatureRequestNotice(current ? tx(
-        `离线聚合已启动/更新：${compactWorkflowStatus(current.status)} · ${current.completed_windows || 0}/${current.failed_windows || 0} 窗口 · ${current.feature_sha256 ? shortHash(current.feature_sha256) : current.error_message || '等待特征 SHA'}`,
-        `Offline aggregation started/updated: ${compactWorkflowStatus(current.status)} · ${current.completed_windows || 0}/${current.failed_windows || 0} windows · ${current.feature_sha256 ? shortHash(current.feature_sha256) : current.error_message || 'waiting for feature SHA'}`,
-      ) : '');
-      setPredictionError('');
-    } catch (reason) {
-      setFeedbackFeatureRequestNotice('');
-      setPredictionError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setFeedbackFeatureRequestRunning(false);
-    }
-  };
-  const buildTrainingPreparation = async (source: 'historical' | 'manual-feedback' = 'historical') => {
-    const latestManualFeatureRequest = feedbackFeatureRequests[0];
-    if (source === 'historical' && !featureBuilds[0]) return;
-    if (source === 'manual-feedback' && !latestManualFeatureRequest) return;
-    setPreparationBuilding(true);
-    try {
-      const body = source === 'manual-feedback'
-        ? { source_manual_feedback_feature_request_build_id: latestManualFeatureRequest.id, minimum_coverage: 0.7, controls_per_positive: 3 }
-        : { source_feature_build_id: featureBuilds[0].id, minimum_coverage: 0.7, controls_per_positive: 3 };
-      const response = await fetch('/api/v1/prediction/history/training-preparations', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.error || `HTTP ${response.status}`);
-      }
-      const buildsResponse = await fetch('/api/v1/prediction/history/training-preparations');
-      if (!buildsResponse.ok) throw new Error(`HTTP ${buildsResponse.status}`);
-      const payload = await buildsResponse.json();
-      setPreparationBuilds(Array.isArray(payload.data) ? payload.data : []);
-      setPredictionError('');
-    } catch (reason) {
-      setPredictionError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setPreparationBuilding(false);
-    }
-  };
-  const buildControlFeatures = async (sourcePreparationBuildID?: number) => {
-    const sourceID = sourcePreparationBuildID || preparationBuilds[0]?.id;
-    if (!sourceID) return;
-    setControlFeatureStarting(true);
-    try {
-      const response = await fetch('/api/v1/prediction/history/control-feature-datasets', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_preparation_build_id: sourceID }),
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.error || `HTTP ${response.status}`);
-      }
-      const buildsResponse = await fetch('/api/v1/prediction/history/control-feature-datasets');
-      if (!buildsResponse.ok) throw new Error(`HTTP ${buildsResponse.status}`);
-      const payload = await buildsResponse.json();
-      setControlFeatureBuilds(Array.isArray(payload.data) ? payload.data : []);
-      setPredictionError('');
-    } catch (reason) {
-      setPredictionError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setControlFeatureStarting(false);
-    }
-  };
-  const buildTrainingMatrix = async (sourceControlBuildID?: number) => {
-    const sourceID = sourceControlBuildID || controlFeatureBuilds[0]?.id;
-    if (!sourceID) return;
-    setTrainingMatrixStarting(true);
-    try {
-      const response = await fetch('/api/v1/prediction/history/training-matrices', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_control_build_id: sourceID }),
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.error || `HTTP ${response.status}`);
-      }
-      const buildsResponse = await fetch('/api/v1/prediction/history/training-matrices');
-      if (!buildsResponse.ok) throw new Error(`HTTP ${buildsResponse.status}`);
-      const payload = await buildsResponse.json();
-      setTrainingMatrixBuilds(Array.isArray(payload.data) ? payload.data : []);
-      setPredictionError('');
-    } catch (reason) {
-      setPredictionError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setTrainingMatrixStarting(false);
-    }
-  };
-  const trainBaselineModels = async (algorithm: 'logistic_regression' | 'gradient_boosted_stumps' | 'anomaly_filtered_logistic' | 'anomaly_augmented_logistic' = 'logistic_regression', featureWindowPolicy: 'all_available_windows' | 'max_24h' | 'max_3d' | 'max_7d' = 'all_available_windows', featurePlanePolicy: 'all_features' | 'exclude_structural' = 'all_features') => {
-    if (!trainingMatrixBuilds[0]) return;
-    const readyScope = matrixReadinessReport?.strata.find(item => item.status === 'exploratory_ready');
-    if (!readyScope) {
-      setPredictionError(tx('没有通过数据充分性门的故障类型与 GPU 型号', 'No fault-type and GPU-model scope passed the data-sufficiency gate'));
-      return;
-    }
-    setBaselineModelStarting(true);
-    try {
-      const response = await fetch('/api/v1/prediction/history/baseline-models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_matrix_build_id: trainingMatrixBuilds[0].id, event_type: readyScope.event_type, model_name: readyScope.model_name, algorithm, feature_window_policy: featureWindowPolicy, feature_plane_policy: featurePlanePolicy }) });
-      if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload.error || `HTTP ${response.status}`); }
-      const buildsResponse = await fetch('/api/v1/prediction/history/baseline-models'); const payload = await buildsResponse.json(); setBaselineModelBuilds(Array.isArray(payload.data) ? payload.data : []); setPredictionError('');
-    } catch (reason) { setPredictionError(reason instanceof Error ? reason.message : String(reason)); } finally { setBaselineModelStarting(false); }
-  };
-  const runFeatureReplay = async () => {
-    const candidate = prediction?.models.find(model => model.status === 'shadow_candidate');
-    if (!candidate) return;
-    setFeatureReplayStarting(true);
-    try {
-      const response = await fetch('/api/v1/prediction/history/feature-replays', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_spec_id: candidate.id, sample_count: 12 }) });
-      if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload.error || `HTTP ${response.status}`); }
-      const runsResponse = await fetch('/api/v1/prediction/history/feature-replays');
-      const payload = await runsResponse.json();
-      setFeatureReplayRuns(Array.isArray(payload.data) ? payload.data : []);
-      setPredictionError('');
-    } catch (reason) { setPredictionError(reason instanceof Error ? reason.message : String(reason)); } finally { setFeatureReplayStarting(false); }
-  };
-  const runLiveCoverageAudit = async () => {
-    const candidate = prediction?.models.find(model => model.status === 'shadow_candidate');
-    if (!candidate) return;
-    setLiveCoverageStarting(true);
-    try {
-      const response = await fetch('/api/v1/prediction/history/live-coverage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_spec_id: candidate.id }) });
-      if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload.error || `HTTP ${response.status}`); }
-      const auditsResponse = await fetch('/api/v1/prediction/history/live-coverage');
-      const payload = await auditsResponse.json();
-      setLiveCoverageAudits(Array.isArray(payload.data) ? payload.data : []);
-      setPredictionError('');
-    } catch (reason) { setPredictionError(reason instanceof Error ? reason.message : String(reason)); } finally { setLiveCoverageStarting(false); }
-  };
-  const materializeTrainingFeatureDistributions = async () => {
-    const baseline = baselineModelBuilds[0];
-    if (!baseline) return;
-    setFeatureDistributionStarting(true);
-    try {
-      const response = await fetch('/api/v1/prediction/history/feature-distributions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_baseline_build_id: baseline.id }) });
-      if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload.error || `HTTP ${response.status}`); }
-      const [distributionsResponse, featureDriftResponse, dualTrackResponse] = await Promise.all([
-        fetch('/api/v1/prediction/history/feature-distributions?scope=validation'),
-        fetch('/api/v1/prediction/feature-drift-report'),
-        fetch('/api/v1/prediction/dual-track-validation?refresh=1'),
-      ]);
-      if (!distributionsResponse.ok || !featureDriftResponse.ok || !dualTrackResponse.ok) throw new Error(`HTTP ${distributionsResponse.status}/${featureDriftResponse.status}/${dualTrackResponse.status}`);
-      const [distributionsPayload, featureDriftPayload, dualTrackPayload] = await Promise.all([distributionsResponse.json(), featureDriftResponse.json(), dualTrackResponse.json()]);
-      const promotionResponse = await fetch('/api/v1/prediction/promotion-decision');
-      if (!promotionResponse.ok) throw new Error(`HTTP ${promotionResponse.status}`);
-      const promotionPayload = await promotionResponse.json();
-      setFeatureDistributionSnapshots(Array.isArray(distributionsPayload.data) ? distributionsPayload.data : []);
-      setFeatureDistributionArchive(distributionsPayload.meta || null);
-      setFeatureDriftReport(featureDriftPayload.data || null);
-      setDualTrackValidation(dualTrackPayload.data || null);
-      setPromotionDecision(promotionPayload.data || null);
-      setValidationReadiness(dualTrackPayload.data?.readiness || null);
-      setPredictionError('');
-    } catch (reason) { setPredictionError(reason instanceof Error ? reason.message : String(reason)); } finally { setFeatureDistributionStarting(false); }
-  };
-  const runShadowScoring = async () => {
-    const candidate = prediction?.models.find(model => model.status === 'shadow_candidate');
-    if (!candidate) return;
-    setShadowScoringStarting(true);
-    try {
-      const response = await fetch('/api/v1/prediction/history/shadow-scoring', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_spec_id: candidate.id }) });
-      if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload.error || `HTTP ${response.status}`); }
-      const runsResponse = await fetch('/api/v1/prediction/history/shadow-scoring');
-      const payload = await runsResponse.json();
-      setShadowScoringRuns(Array.isArray(payload.data) ? payload.data : []);
-      setPredictionError('');
-    } catch (reason) { setPredictionError(reason instanceof Error ? reason.message : String(reason)); } finally { setShadowScoringStarting(false); }
-  };
-  const refreshHistoricalCandidates = async () => {
-    const [runsResponse, candidatesResponse] = await Promise.all([fetch('/api/v1/prediction/history/backfills'), fetch('/api/v1/prediction/history/candidates')]);
-    if (!runsResponse.ok || !candidatesResponse.ok) throw new Error(`HTTP ${runsResponse.status}/${candidatesResponse.status}`);
-    const [runsPayload, candidatesPayload] = await Promise.all([runsResponse.json(), candidatesResponse.json()]);
-    const runs = Array.isArray(runsPayload.data) ? runsPayload.data : [];
-    setHistoryBackfills(runs);
-    setHistoricalCandidates(Array.isArray(candidatesPayload.data) ? candidatesPayload.data : []);
-    setHistoricalCandidateSummary(candidatesPayload.summary || null);
-    setTrainingCohortPolicy(candidatesPayload.training_policy || null);
-    return runs as HistoryBackfillRun[];
-  };
-  const runAlertBackfill = async () => {
-    setHistoryBackfillRunning(true);
-    try {
-      const response = await fetch('/api/v1/prediction/history/backfills', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      for (let attempt = 0; attempt < 60; attempt += 1) {
-        await new Promise(resolve => window.setTimeout(resolve, 1000));
-        const runs = await refreshHistoricalCandidates();
-        if (!runs.some(run => run.status === 'queued' || run.status === 'running')) break;
-      }
-      setPredictionError('');
-    } catch (reason) {
-      setPredictionError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setHistoryBackfillRunning(false);
-    }
-  };
-  const reviewHistoricalCandidate = async (candidate: HistoricalFaultCandidate, status: 'accepted_proxy' | 'context_only' | 'needs_evidence' | 'excluded') => {
-    const prompts: Record<string, string> = {
-      accepted_proxy: tx('填写接受该代理样本的证据说明', 'Describe the evidence for accepting this proxy'),
-      context_only: tx('填写仅作上下文、不作为正样本的原因', 'Explain why this should remain context-only'),
-      needs_evidence: tx('填写还需要补充的证据（可留空）', 'Describe the missing evidence (optional)'),
-      excluded: tx('填写排除原因', 'Describe why this candidate is excluded'),
-    };
-    const note = window.prompt(prompts[status], candidate.review_note || '');
-    if (note === null) return;
-    if (status !== 'needs_evidence' && !note.trim()) {
-      setPredictionError(tx('该审核结果必须填写备注', 'A review note is required for this outcome'));
-      return;
-    }
-    setReviewingCandidateID(candidate.id);
-    try {
-      const response = await fetch(`/api/v1/prediction/history/candidates/${candidate.id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status, note: note.trim(), reviewed_by: 'web-operator' }),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      await refreshHistoricalCandidates();
-      setPredictionError('');
-    } catch (reason) {
-      setPredictionError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setReviewingCandidateID(null);
-    }
-  };
-  const overridePredictionOutcome = async (outcome: PredictionOutcome, actualValue: 0 | 1) => {
-    const reason = window.prompt(actualValue === 1 ? tx('填写确认发生硬件故障的证据', 'Describe the evidence confirming a hardware failure') : tx('填写确认未发生硬件故障的证据', 'Describe the evidence confirming normal operation'), outcome.human_reason || '');
-    if (reason === null) return;
-    if (!reason.trim()) {
-      setPredictionError(tx('人工改判必须填写证据说明', 'A human override requires an evidence note'));
-      return;
-    }
-    try {
-      const response = await fetch(`/api/v1/prediction/outcomes/${outcome.id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ actual_value: actualValue, reason: reason.trim(), decided_by: 'web-operator' }),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const [accuracyResponse, outcomesResponse, feedbackResponse] = await Promise.all([fetch('/api/v1/prediction/accuracy'), fetch('/api/v1/prediction/outcomes'), fetch('/api/v1/prediction/human-feedback-manifest')]);
-      if (!accuracyResponse.ok || !outcomesResponse.ok || !feedbackResponse.ok) throw new Error(`HTTP ${accuracyResponse.status}/${outcomesResponse.status}/${feedbackResponse.status}`);
-      const [accuracyPayload, outcomesPayload, feedbackPayload] = await Promise.all([accuracyResponse.json(), outcomesResponse.json(), feedbackResponse.json()]);
-      setPredictionAccuracy(accuracyPayload.data || null);
-      setPredictionOutcomes(Array.isArray(outcomesPayload.data) ? outcomesPayload.data : []);
-      setHumanFeedbackManifest(feedbackPayload.data || null);
-      setPredictionError('');
-    } catch (reasonValue) {
-      setPredictionError(reasonValue instanceof Error ? reasonValue.message : String(reasonValue));
-    }
-  };
-  const layers = [
-    ['L1', tx('确定性规则', 'Deterministic rules'), 'health_score', tx('运行中', 'ACTIVE')],
-    ['L2', tx('无监督异常', 'Unsupervised anomaly'), 'anomaly_score', tx('待开发', 'PLANNED')],
-    ['L3', tx('监督预测', 'Supervised prediction'), 'failure_probability', tx('框架就绪', 'FRAMEWORK')],
-    ['L4', 'LLM + Skill', 'RCA / SOP', tx('待开发', 'PLANNED')],
-  ];
-  if (isPredictionView) {
-    const summary = prediction?.readiness;
-    const latestBackfill = historyBackfills[0];
-    const latestIdentityBackfill = identityBackfills[0];
-    const latestDatasetBuild = datasetBuilds[0];
-    const latestFeatureBuild = featureBuilds[0];
-    const latestFeedbackFeatureRequest = feedbackFeatureRequests[0];
-    const latestPreparationBuild = preparationBuilds[0];
-    const latestControlFeatureBuild = controlFeatureBuilds[0];
-    const latestTrainingMatrixBuild = trainingMatrixBuilds[0];
-    const latestBaselineModelBuild = baselineModelBuilds[0];
-    const latestMatrixIsGovernanceOnly = latestTrainingMatrixBuild?.status === 'manual_feedback_matrix_ready_pending_training_gate';
-    const matrixPendingTotals = (matrixReadinessReport?.strata || []).reduce((acc, item) => {
-      const pending = item.splits.pending_control_sampling;
-      if (pending) {
-        acc.positives += pending.positive_count || 0;
-        acc.controls += pending.control_count || 0;
-        acc.positiveGPUs += pending.positive_gpus || 0;
-        acc.controlGPUs += pending.control_gpus || 0;
-      }
-      return acc;
-    }, { positives: 0, controls: 0, positiveGPUs: 0, controlGPUs: 0 });
-    const matrixDeficits = (matrixReadinessReport?.deficits || []).slice().sort((left, right) => right.shortfall - left.shortfall || left.split.localeCompare(right.split) || left.metric.localeCompare(right.metric));
-    const deficitCode = (deficit: CohortReadinessDeficit) => `${deficit.split.replace('validation', 'val').replace('pending_control_sampling', 'pending').toUpperCase()} ${deficit.metric.replace('positive_count', 'POS').replace('control_count', 'CTRL').replace('positive_gpus', 'GPU').replace(/_/g, ' ').toUpperCase()} +${deficit.shortfall}`;
-    const matrixTopDeficits = matrixDeficits.slice(0, 6);
-    const matrixGate = matrixReadinessReport?.training_candidate_gate;
-    const matrixTargets = (matrixReadinessReport?.accumulation_targets || []).slice(0, 6);
-    const matrixNeeds = (matrixReadinessReport?.accumulation_targets || []).reduce((acc, target) => {
-      acc.faults += target.needed_train_positives + target.needed_evaluation_positives;
-      acc.controls += target.needed_train_controls + target.needed_evaluation_controls;
-      acc.gpus += target.needed_positive_gpus;
-      return acc;
-    }, { faults: 0, controls: 0, gpus: 0 });
-    const priorityLabel = (priority?: string) => ({
-      ready_for_baseline_candidate: tx('可作为训练候选', 'Baseline candidate'),
-      collect_confirmed_faults: tx('补真实故障', 'Collect faults'),
-      collect_healthy_controls: tx('补健康对照', 'Collect controls'),
-      review_readiness_blockers: tx('复核阻断', 'Review blockers'),
-    }[priority || ''] || compactWorkflowStatus(priority));
-    const splitCell = (item: CohortStratumReadiness, split: string) => {
-      const value = item.splits[split];
-      return <td key={split}>{value ? `${value.positive_count} / ${value.control_count}` : '—'}<small>{value ? `${value.positive_gpus} POS GPU · ${value.control_gpus} CTRL GPU` : ''}</small></td>;
-    };
-    const compactBlockers = (reasons: string[]) => reasons.map(reason => reason
-      .replace(/^train_/, 'TRAIN ')
-      .replace(/^validation_/, 'VAL ')
-      .replace(/^test_/, 'TEST ')
-      .replace(/positive_count_(\d+)_lt_(\d+)/, 'POS $1<$2')
-      .replace(/control_count_(\d+)_lt_(\d+)/, 'CTRL $1<$2')
-      .replace(/positive_gpus_(\d+)_lt_(\d+)/, 'GPU $1<$2')
-      .replace(/_/g, ' ')
-      .toUpperCase());
-    const compactDeficits = (deficits?: CohortReadinessDeficit[]) => (deficits || []).slice(0, 4).map(deficitCode);
-    const baselineTrainingEnabled = matrixGate?.baseline_training_enabled || matrixReadinessReport?.strata.some(item => item.status === 'exploratory_ready');
-    const shadowModelCandidates = (prediction?.models || []).filter(model => model.status === 'shadow_candidate');
-    const featureParityByModel = new Map(featureParityAudits.map(audit => [audit.model_spec_id, audit]));
-    const latestFeatureReplay = featureReplayRuns[0];
-    const latestLiveCoverage = liveCoverageAudits[0];
-    const distributionTrainingCount = featureDistributionSnapshots.filter(item => item.distribution_role === 'training').length;
-    const distributionLiveCount = featureDistributionSnapshots.filter(item => item.distribution_role === 'live_shadow').length;
-    const distributionFeatureCount = new Set(featureDistributionSnapshots.map(item => item.feature_name)).size;
-    const latestShadowScoring = shadowScoringRuns[0];
-    const highestRiskPredictions = [...riskPredictions].filter(row => row.probability !== undefined).sort((left, right) => (right.probability || 0) - (left.probability || 0)).slice(0, 20);
-    const visibleFeatureDriftComparisons = [...(featureDriftReport?.feature_comparisons || [])].sort((left, right) => {
-      const severity = (item: FeatureDriftComparison) => item.status === 'review_required' ? 3 : item.status === 'passed' ? 1 : 2;
-      const severityDelta = severity(right) - severity(left);
-      if (severityDelta !== 0) return severityDelta;
-      const psiDelta = right.psi - left.psi;
-      if (Math.abs(psiDelta) > 1e-12) return psiDelta;
-      return right.ks - left.ks;
-    }).slice(0, 12);
-    const coverageParity = featureParityByModel.get(shadowModelCandidates[0]?.id);
-    const activeAssets = assets.filter(asset => asset.state === 'active' || asset.state === '').sort((left, right) => `${left.node_ip}-${left.gpu_index}`.localeCompare(`${right.node_ip}-${right.gpu_index}`));
-    const normalizedAssetQuery = feedbackAssetQuery.trim().toLowerCase();
-    const filteredFeedbackAssets = activeAssets.filter(asset => {
-      if (!normalizedAssetQuery) return true;
-      return [asset.node_ip, `gpu ${asset.gpu_index}`, `gpu${asset.gpu_index}`, asset.gpu_uuid, asset.model_name, asset.model, asset.asset_key, asset.host_serial]
-        .filter(Boolean)
-        .some(value => String(value).toLowerCase().includes(normalizedAssetQuery));
-    }).slice(0, 80);
-    const selectedFeedbackAsset = assets.find(asset => String(asset.id) === feedbackForm.gpu_asset_id) || null;
-    const feedbackAssetOptions = selectedFeedbackAsset && !filteredFeedbackAssets.some(asset => asset.id === selectedFeedbackAsset.id) ? [selectedFeedbackAsset, ...filteredFeedbackAssets] : filteredFeedbackAssets;
-    const normalizedFeedbackNodeIP = (feedbackForm.node_ip || selectedFeedbackAsset?.node_ip || feedbackAssetQuery).trim();
-    const affectedGPUIndexes = feedbackForm.affected_gpu_indexes.split(/[,\s，、]+/).map(value => value.trim().replace(/^gpu/i, '')).filter(Boolean);
-    const replacementFeedback = feedbackForm.hardware_replaced || feedbackForm.repair_action === 'replace_gpu' || feedbackForm.repair_action === 'replace_node' || feedbackForm.repair_action === 'board_replacement' || feedbackForm.repair_action === 'replace_gpu_baseboard';
-    const gpuScopedFeedback = feedbackForm.target_scope === 'gpu';
-    const warningTabs = [
-      { id: 'human-feedback', label: tx('硬件故障人工反馈', 'Human fault feedback'), note: tx('录入机器、卡、故障与窗口', 'Node/GPU/fault/window intake') },
-      { id: 'feedback-pack', label: tx('故障前后数据反馈包', 'Pre/Post-fault data pack'), note: tx(`${faultFeedbackRequests.length} 个采集请求`, `${faultFeedbackRequests.length} collection requests`) },
-      { id: 'readiness', label: tx('验证就绪', 'Validation readiness'), note: validationReadiness?.status?.toUpperCase() || 'LOADING' },
-      { id: 'outcomes', label: tx('准确率改判', 'Accuracy overrides'), note: tx(`${predictionAccuracy?.human_overrides || 0} 次改判`, `${predictionAccuracy?.human_overrides || 0} overrides`) },
-      { id: 'shadow', label: tx('影子运行', 'Shadow runtime'), note: latestShadowScoring?.status?.toUpperCase() || tx('未运行', 'Not run') },
-      { id: 'training', label: tx('历史训练链路', 'Training history'), note: latestTrainingMatrixBuild?.status?.toUpperCase() || tx('构建链路', 'Build pipeline') },
-    ];
-    const submitHardwareFeedback = async () => {
-      setFeedbackSaving(true);
-      setPredictionError('');
-      try {
-        if (!normalizedFeedbackNodeIP) throw new Error(tx('请填写故障节点 IP', 'Node IP is required'));
-        if (gpuScopedFeedback && !selectedFeedbackAsset) throw new Error(tx('单 GPU 故障必须选择发生故障的 GPU；底板/节点级故障请先把故障对象范围改为非单 GPU', 'GPU-scoped feedback must select a failed GPU; use a non-GPU scope for baseboard/node faults'));
-        if (feedbackForm.fault_time_precision === 'window') {
-          if (!feedbackForm.fault_window_start_at.trim() || !feedbackForm.fault_window_end_at.trim()) throw new Error(tx('请填写故障时间范围', 'Fault time window is required'));
-        } else if (!feedbackForm.fault_occurred_at.trim()) throw new Error(tx('请填写故障发生日期或时间', 'Fault date or time is required'));
-        if (!feedbackForm.operator.trim()) throw new Error(tx('请填写反馈人', 'Operator is required'));
-        const response = await fetch('/api/v1/prediction/hardware-fault-feedback', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            target_scope: feedbackForm.target_scope,
-            node_ip: normalizedFeedbackNodeIP,
-            gpu_asset_id: selectedFeedbackAsset?.id || 0,
-            gpu_uuid: !gpuScopedFeedback || replacementFeedback ? '' : selectedFeedbackAsset?.gpu_uuid || '',
-            reported_gpu_uuid: selectedFeedbackAsset?.gpu_uuid || '',
-            gpu_index: selectedFeedbackAsset?.gpu_index ?? -1,
-            affected_gpu_indexes: affectedGPUIndexes,
-            model_name: selectedFeedbackAsset?.model_name || selectedFeedbackAsset?.model,
-            fault_type: feedbackForm.fault_type,
-            fault_occurred_at: feedbackForm.fault_occurred_at,
-            fault_time_precision: feedbackForm.fault_time_precision,
-            fault_window_start_at: feedbackForm.fault_window_start_at,
-            fault_window_end_at: feedbackForm.fault_window_end_at,
-            pre_window_hours: Number(feedbackForm.pre_window_hours || 72),
-            post_window_hours: Number(feedbackForm.post_window_hours || 24),
-            operator: feedbackForm.operator,
-            description: feedbackForm.description,
-            repair_action: feedbackForm.repair_action,
-            hardware_replaced: replacementFeedback,
-            evidence_note: feedbackForm.evidence_note,
-            training_eligible: feedbackForm.training_eligible,
-          }),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-        const row = payload.data as HardwareFaultFeedbackRequest;
-        setFaultFeedbackRequests(current => [row, ...current.filter(item => item.id !== row.id)]);
-        await loadFaultFeedbackRequests();
-        setFeedbackForm(current => ({ ...current, fault_occurred_at: '', fault_window_start_at: '', fault_window_end_at: '', description: '', evidence_note: '' }));
-        setWarningTab('feedback-pack');
-      } catch (error) {
-        setPredictionError(error instanceof Error ? error.message : String(error));
-      } finally {
-        setFeedbackSaving(false);
-      }
-    };
-    const importHardwareFeedback = async (commit: boolean) => {
-      setFeedbackImporting(true);
-      setPredictionError('');
-      try {
-        if (!feedbackImportRaw.trim()) throw new Error(tx('请粘贴飞书硬件故障台账', 'Paste the Feishu hardware-fault ledger'));
-        if (!feedbackImportOperator.trim()) throw new Error(tx('请填写批量导入操作人', 'Batch import operator is required'));
-        const response = await fetch('/api/v1/prediction/hardware-fault-feedback/import', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ source_system: 'feishu-hardware-fault-ledger', operator: feedbackImportOperator, raw_text: feedbackImportRaw, commit }),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-        setFeedbackImportReport(payload.data as HardwareFaultFeedbackImportReport);
-        if (commit) await loadFaultFeedbackRequests();
-      } catch (error) {
-        setPredictionError(error instanceof Error ? error.message : String(error));
-      } finally {
-        setFeedbackImporting(false);
-      }
-    };
-    const prepareFeedbackPack = async (id: number) => {
-      setPreparingFeedbackID(id);
-      setPredictionError('');
-      try {
-        const response = await fetch(`/api/v1/prediction/hardware-fault-feedback/${id}/prepare`, { method: 'POST' });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-        const row = payload.data as HardwareFaultFeedbackRequest;
-        setFaultFeedbackRequests(current => current.map(item => item.id === row.id ? row : item));
-        await loadFaultFeedbackRequests();
-      } catch (error) {
-        setPredictionError(error instanceof Error ? error.message : String(error));
-      } finally {
-        setPreparingFeedbackID(null);
-      }
-    };
-    const reviewFeedbackWarning = async (id: number) => {
-      setReviewingFeedbackID(id);
-      setPredictionError('');
-      try {
-        const response = await fetch(`/api/v1/prediction/hardware-fault-feedback/${id}/review-warning`, { method: 'POST' });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-        const row = payload.data as HardwareFaultFeedbackRequest;
-        setFaultFeedbackRequests(current => current.map(item => item.id === row.id ? row : item));
-        await loadFaultFeedbackRequests();
-      } catch (error) {
-        setPredictionError(error instanceof Error ? error.message : String(error));
-      } finally {
-        setReviewingFeedbackID(null);
-      }
-    };
-		const reviewFaultRecord = async (row: HardwareFaultFeedbackRequest, decision: 'confirmed_hardware' | 'context_only' | 'excluded_no_hardware' | 'needs_evidence') => {
-			setFaultReviewingID(row.id);
-			setPredictionError('');
-			try {
-				const reviewer = window.prompt(tx('复核人（必填）', 'Reviewer (required)'), feedbackImportOperator || row.operator || '')?.trim();
-				if (!reviewer) return;
-				const note = window.prompt(tx('复核结论与依据（必填）', 'Review conclusion and rationale (required)'), '')?.trim();
-				if (!note) return;
-				const matchResponse = await fetch(`/api/v1/prediction/hardware-fault-feedback/${row.id}/match-candidates`);
-				const matchPayload = await matchResponse.json().catch(() => ({}));
-				if (!matchResponse.ok) throw new Error(matchPayload.error || `HTTP ${matchResponse.status}`);
-				const candidates = (matchPayload.data?.candidates || []) as Array<{ candidate_key: string; onset_at: string; distance_seconds: number }>;
-				const nearestCandidate = [...candidates].sort((left, right) => Math.abs(left.distance_seconds) - Math.abs(right.distance_seconds))[0];
-				const candidateKeys = nearestCandidate ? [`candidate:${nearestCandidate.candidate_key}`] : [];
-				let evidenceKeys = candidateKeys;
-				let confirmedOnsetAt = '';
-				if (decision === 'confirmed_hardware') {
-					confirmedOnsetAt = window.prompt(tx('确认故障起点（监控候选仅供参考，可修改）', 'Confirmed fault onset (monitoring candidate is only a reference)'), nearestCandidate?.onset_at || row.fault_occurred_at)?.trim() || '';
-					if (!confirmedOnsetAt) return;
-				}
-				if (decision === 'confirmed_hardware' && evidenceKeys.length === 0) {
-					const evidence = window.prompt(tx('没有自动匹配到监控候选，请填写维修工单或监控证据键', 'No monitoring candidate matched; enter a repair-ticket or monitoring evidence key'), row.source_record_id ? `ticket:${row.source_record_id}` : '')?.trim();
-					if (!evidence) return;
-					evidenceKeys = evidence.split(/[，,\s]+/).filter(Boolean);
-				}
-				const response = await fetch(`/api/v1/prediction/hardware-fault-feedback/${row.id}/review`, {
-					method: 'POST', headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ decision, reviewer, review_note: note, confirmed_onset_at: confirmedOnsetAt, evidence_keys: evidenceKeys, episode_key: row.source_record_id || row.request_key }),
-				});
-				const payload = await response.json().catch(() => ({}));
-				if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-				await Promise.all([loadFaultFeedbackRequests(), loadFaultReviewReports()]);
-			} catch (error) {
-				setPredictionError(error instanceof Error ? error.message : String(error));
-			} finally {
-				setFaultReviewingID(null);
-			}
-		};
-    const latestFeatureStatus = latestFeedbackFeatureRequest?.status || '';
-    const latestManualPreparation = preparationBuilds.find(build => build.source_manual_feedback_feature_request_build_id === latestFeedbackFeatureRequest?.id);
-    const manualPreparationNeedsControlRefresh = latestManualPreparation?.status === 'manual_feedback_ready_pending_control_sampling';
-    const latestManualControlFeatureBuild = controlFeatureBuilds.find(build => build.source_preparation_build_id === latestManualPreparation?.id);
-    const latestManualMatrixBuild = trainingMatrixBuilds.find(build => build.source_control_build_id === latestManualControlFeatureBuild?.id);
-    const nextPrepareFeedback = faultFeedbackRequests.find(row => row.training_eligible && row.history_pack_status !== feedbackPackReadyStatus && !row.history_pack_status.includes('blocked'));
-    const nextReviewFeedback = faultFeedbackRequests.find(row => row.training_eligible && row.history_pack_status === feedbackPackReadyStatus && !isFeedbackWarningReviewed(row.warning_review_status));
-    const manifestEligibleCount = faultFeedbackRequests.filter(row => row.training_eligible && row.history_pack_status === feedbackPackReadyStatus && isFeedbackWarningReviewed(row.warning_review_status)).length;
-    const refreshFeedbackWorkflow = async () => {
-      await Promise.all([loadFaultFeedbackRequests(), loadFeedbackFeatureRequests(), loadFaultReviewReports()]);
-    };
-    const feedbackWorkflowSteps = [
-      { key: 'refresh', label: tx('刷新', 'Refresh'), meta: tx(`${faultFeedbackRequests.length} 条反馈`, `${faultFeedbackRequests.length} feedback`), state: 'ready', disabled: false, onClick: () => void refreshFeedbackWorkflow() },
-      { key: 'prepare', label: tx('准备离线数据', 'Prepare offline data'), meta: nextPrepareFeedback ? `${nextPrepareFeedback.node_ip} · #${nextPrepareFeedback.id}` : tx('数据包已准备', 'Packs ready'), state: nextPrepareFeedback ? 'current' : faultFeedbackRequests.length ? 'done' : 'locked', disabled: !nextPrepareFeedback || preparingFeedbackID !== null, onClick: () => nextPrepareFeedback && void prepareFeedbackPack(nextPrepareFeedback.id) },
-      { key: 'review', label: tx('复核预警', 'Review warning'), meta: nextReviewFeedback ? `${nextReviewFeedback.node_ip} · #${nextReviewFeedback.id}` : manifestEligibleCount ? tx('已复核', 'Reviewed') : tx('等待数据包', 'Wait pack'), state: nextPrepareFeedback ? 'locked' : nextReviewFeedback ? 'current' : manifestEligibleCount ? 'done' : 'locked', disabled: !nextReviewFeedback || Boolean(nextPrepareFeedback) || reviewingFeedbackID !== null, onClick: () => nextReviewFeedback && void reviewFeedbackWarning(nextReviewFeedback.id) },
-      { key: 'manifest', label: tx('生成 Manifest', 'Build Manifest'), meta: latestFeedbackFeatureRequest ? compactWorkflowStatus(latestFeatureStatus) : `${manifestEligibleCount} READY`, state: latestFeedbackFeatureRequest ? latestFeatureStatus === 'blocked' || latestFeatureStatus === 'failed' ? 'blocked' : 'done' : manifestEligibleCount ? 'current' : 'locked', disabled: feedbackFeatureRequestStarting || manifestEligibleCount === 0 || Boolean(nextPrepareFeedback || nextReviewFeedback), onClick: () => void buildManualFeedbackFeatureRequestManifest() },
-      { key: 'aggregate', label: tx('运行离线聚合', 'Run offline aggregation'), meta: latestFeedbackFeatureRequest ? isFeedbackFeatureDone(latestFeatureStatus) ? `${latestFeedbackFeatureRequest.completed_windows || 0}/${latestFeedbackFeatureRequest.failed_windows || 0} · ${shortHash(latestFeedbackFeatureRequest.feature_sha256)}` : compactWorkflowStatus(latestFeatureStatus) : tx('等待 Manifest', 'Wait Manifest'), state: isFeedbackFeatureDone(latestFeatureStatus) ? 'done' : isFeedbackFeatureActive(latestFeatureStatus) || latestFeatureStatus === feedbackFeatureManifestReadyStatus ? 'current' : 'locked', disabled: feedbackFeatureRequestRunning || latestFeatureStatus !== feedbackFeatureManifestReadyStatus, onClick: () => void runManualFeedbackFeatureRequestWorker() },
-      { key: 'prepare-training', label: tx('准备训练样本', 'Prepare samples'), meta: latestManualPreparation ? manualPreparationNeedsControlRefresh ? tx('需补对照请求', 'Refresh controls') : compactWorkflowStatus(latestManualPreparation.status) : isFeedbackFeatureDone(latestFeatureStatus) ? tx('等待准备', 'Ready') : tx('等待特征', 'Wait features'), state: latestManualPreparation ? latestManualPreparation.status.includes('blocked') ? 'blocked' : manualPreparationNeedsControlRefresh ? 'current' : 'done' : isFeedbackFeatureDone(latestFeatureStatus) ? 'current' : 'locked', disabled: preparationBuilding || !isFeedbackFeatureDone(latestFeatureStatus) || (Boolean(latestManualPreparation) && !manualPreparationNeedsControlRefresh), onClick: () => void buildTrainingPreparation('manual-feedback') },
-      { key: 'extract-controls', label: tx('提取健康对照', 'Extract controls'), meta: latestManualControlFeatureBuild ? compactWorkflowStatus(latestManualControlFeatureBuild.status) : latestManualPreparation ? `${latestManualPreparation.control_request_count || 0} REQUESTS` : tx('等待样本', 'Wait samples'), state: latestManualControlFeatureBuild ? latestManualControlFeatureBuild.status === 'failed' ? 'blocked' : latestManualControlFeatureBuild.status === 'completed' ? 'done' : 'current' : latestManualPreparation?.status === 'manual_feedback_ready_pending_control_extraction' ? 'current' : 'locked', disabled: controlFeatureStarting || latestManualPreparation?.status !== 'manual_feedback_ready_pending_control_extraction' || latestManualControlFeatureBuild?.status === 'queued' || latestManualControlFeatureBuild?.status === 'running' || latestManualControlFeatureBuild?.status === 'completed', onClick: () => latestManualPreparation && void buildControlFeatures(latestManualPreparation.id) },
-      { key: 'matrix-governance', label: tx('构建矩阵治理', 'Build matrix gate'), meta: latestManualMatrixBuild ? compactWorkflowStatus(latestManualMatrixBuild.status) : latestManualControlFeatureBuild?.status === 'completed' ? tx('等待构建', 'Ready') : tx('等待对照', 'Wait controls'), state: latestManualMatrixBuild ? latestManualMatrixBuild.status === 'failed' ? 'blocked' : 'done' : latestManualControlFeatureBuild?.status === 'completed' ? 'current' : 'locked', disabled: trainingMatrixStarting || latestManualControlFeatureBuild?.status !== 'completed' || Boolean(latestManualMatrixBuild), onClick: () => latestManualControlFeatureBuild && void buildTrainingMatrix(latestManualControlFeatureBuild.id) },
-    ];
-    const overviewFallback = predictionError ? 'ERR' : 'WAIT';
-    const predictionOverviewItems = [
-      { key: 'gpu', label: tx('当前 GPU', 'Current GPUs'), value: summary ? summary.total : overviewFallback, note: summary ? `${summary.blocked || 0} ${tx('质量门阻断', 'blocked')}` : tx('加载 overview', 'loading overview'), tone: summary?.blocked ? 'warning' : summary ? 'healthy' : 'neutral' },
-      { key: 'dataset', label: tx('数据集就绪', 'Dataset Ready'), value: summary ? summary.ready_for_dataset : overviewFallback, note: tx('可构建样本', 'eligible samples'), tone: summary ? 'healthy' : 'neutral' },
-      { key: 'confirmed', label: tx('确认硬件标签', 'Confirmed Labels'), value: prediction ? prediction.labels.confirmed : overviewFallback, note: tx('人工/维修确认', 'manual confirmed'), tone: prediction?.labels.confirmed ? 'healthy' : prediction ? 'neutral' : 'neutral' },
-      { key: 'proxy', label: tx('代理标签', 'Proxy Labels'), value: prediction ? prediction.labels.strong_proxy + prediction.labels.weak_proxy : overviewFallback, note: tx('规则事件', 'rule events'), tone: prediction ? 'info' : 'neutral' },
-      { key: 'retention', label: tx('在线历史', 'Online Retention'), value: prediction ? `${prediction.retention.online_retention_days}d` : overviewFallback, note: prediction?.retention.training_history_safe ? tx('训练历史安全', 'history safe') : tx('保留期不足', 'retention short'), tone: prediction?.retention.training_history_safe ? 'healthy' : prediction ? 'warning' : 'neutral' },
-      { key: 'probability', label: tx('预警概率', 'Warning Probability'), value: prediction ? prediction.probability_emitted ? 'SHADOW' : 'OFF' : overviewFallback, note: prediction?.results ? `${prediction.results.current || 0}/${prediction.results.total || 0} ${tx('影子结果', 'shadow results')}` : tx('不发告警', 'no alert'), tone: prediction?.probability_emitted ? 'info' : prediction ? 'neutral' : 'neutral' },
-    ];
-    return <div className="grid prediction-page">
-      <Card className="span-12 capability-note"><BrainCircuit size={19} /><div><CardHead code={prediction?.framework_version || 'EARLY WARNING FRAMEWORK'} title={tx('GPU 故障预警框架', 'GPU Failure Early-warning Framework')} /><p>{shadowModelCandidates.length > 0 ? tx('首个通过完整性、跨时间稳定性和概率校准门的模型已进入影子候选注册表。当前仍不执行在线评分、不发送告警、不触发隔离、重启或任务操作；下一阶段先补齐在线特征等价性并记录前瞻验证结果。', 'The first model passing integrity, cross-time stability, and calibration gates is now registered as a shadow candidate. Online scoring, alerts, isolation, restarts, and workload actions remain disabled; the next stage is online feature parity followed by prospective validation records.') : tx('当前已完成预警契约、标签质量、数据就绪门和模型注册骨架。尚未注册合格概率模型，不输出伪概率，不触发隔离、重启或任务操作。', 'Early-warning contracts, label quality, readiness gates, and the model registry foundation are available. No qualified probability model is registered, no fake probability is emitted, and no isolation, restart, or workload action is triggered.')}</p></div><Badge value={predictionError ? 'API ERROR' : prediction?.phase?.toUpperCase() || 'LOADING'} kind={predictionError ? 'warning' : 'info'} /></Card>
-      <Card className="span-12 prediction-overview-card"><div className="prediction-overview-strip">{predictionOverviewItems.map(item => <div key={item.key} className={`prediction-overview-item ${item.tone}`}><span><BrainCircuit size={13} />{item.label}</span><strong>{item.value}</strong><small>{item.note}</small></div>)}</div></Card>
-      <Card className="span-12">
-        <CardHead code="FAULT EARLY WARNING" title={tx('故障预警', 'Failure Early Warning')} action={<Badge value="三级功能选项" kind="info" />} />
-        <div className="issue-categories quality-ledger">{warningTabs.map(item => <button key={item.id} type="button" className={warningTab === item.id ? 'active' : ''} onClick={() => setWarningTab(item.id)}><span className="issue-category-icon"><BrainCircuit size={20} /></span><b>{item.label}</b><strong>{warningTab === item.id ? tx('当前', 'ACTIVE') : 'OPEN'}</strong><small>{item.note}</small></button>)}</div>
-      </Card>
-      {warningTab !== 'human-feedback' && warningTab !== 'feedback-pack' && predictionReportError && <Card className="span-12"><p className="form-error">{tx('部分验证报告暂不可用，核心故障预警数据仍可继续使用：', 'Some validation reports are temporarily unavailable; core early-warning data remains usable: ')}{predictionReportError}</p></Card>}
-      {warningTab === 'human-feedback' ? <Card id="prediction-human-feedback" className="span-12">
-        <CardHead code="HARDWARE FAULT INTAKE" title={tx('硬件故障人工反馈', 'Human Hardware-fault Feedback')} action={<Badge value="CREATE HISTORY PACK REQUEST" kind="info" />} />
-        <p className="node-access-note">{tx('这里录入“哪台机器、故障对象范围、什么硬件故障、什么时候发生”。单 GPU 故障需要选卡；GPU 底板、槽位组、多卡或整节点故障只要求节点 IP，可选填写受影响 GPU。提交后只创建离线前后监控历史数据包采集请求；不会自动维修、隔离、调度或发线上告警。', 'Record the failed node, target scope, hardware fault type, and timing. Single-GPU faults require a GPU selection; GPU baseboard, slot-group, multi-GPU, or node faults require only the node IP with optional affected GPU indexes. Submitting only creates an offline pre/post monitoring-history pack request; it performs no repair, isolation, scheduling, or operational alerting.')}</p>
-        <form className="settings-form fault-feedback-form" onSubmit={event => { event.preventDefault(); void submitHardwareFeedback(); }}>
-          <label><span>{tx('故障对象范围', 'Fault target scope')}<small>REQUIRED · SCOPE</small></span><select value={feedbackForm.target_scope} onChange={event => setFeedbackForm(current => ({ ...current, target_scope: event.target.value, gpu_asset_id: event.target.value === 'gpu' ? current.gpu_asset_id : '' }))}><option value="gpu">{tx('单 GPU', 'Single GPU')}</option><option value="multi_gpu">{tx('多 GPU / 槽位组', 'Multi-GPU / slot group')}</option><option value="baseboard">{tx('GPU 底板 / 互连板', 'GPU baseboard / interconnect board')}</option><option value="node">{tx('整节点 / 系统级', 'Whole node / system-level')}</option></select></label>
-          <label><span>{tx('故障节点 IP', 'Failed node IP')}<small>REQUIRED · NODE</small></span><input value={feedbackForm.node_ip} onChange={event => setFeedbackForm(current => ({ ...current, node_ip: event.target.value }))} placeholder="10.114.4.36" /></label>
-          <label><span>{tx('搜索故障 GPU', 'Search failed GPU')}<small>{gpuScopedFeedback ? 'REQUIRED FOR SINGLE GPU' : 'OPTIONAL · IP / UUID / GPU INDEX / MODEL'}</small></span><input value={feedbackAssetQuery} onChange={event => setFeedbackAssetQuery(event.target.value)} placeholder={tx('输入节点 IP、GPU3、UUID 或型号过滤', 'Filter by node IP, GPU3, UUID or model')} /></label>
-          <label><span>{tx('故障机器 / GPU', 'Failed node / GPU')}<small>{gpuScopedFeedback ? tx(`REQUIRED · ${filteredFeedbackAssets.length}/${activeAssets.length} GPU`, `REQUIRED · ${filteredFeedbackAssets.length}/${activeAssets.length} GPU`) : tx('OPTIONAL · 代表卡/参考卡', 'OPTIONAL · representative/reference GPU')}</small></span><select value={feedbackForm.gpu_asset_id} onChange={event => { const asset = assets.find(item => String(item.id) === event.target.value); setFeedbackForm(current => ({ ...current, gpu_asset_id: event.target.value, node_ip: asset?.node_ip || current.node_ip, affected_gpu_indexes: asset && current.target_scope !== 'gpu' && !current.affected_gpu_indexes ? String(asset.gpu_index) : current.affected_gpu_indexes })); }}><option value="">{gpuScopedFeedback ? tx('选择发生故障的 GPU', 'Select failed GPU') : tx('不指定单卡', 'Do not bind to a single GPU')}</option>{feedbackAssetOptions.map(asset => <option key={asset.id} value={asset.id}>{asset.node_ip} · GPU {asset.gpu_index} · {asset.gpu_uuid || 'UUID UNKNOWN'} · {asset.model_name || asset.model || 'MODEL UNKNOWN'}</option>)}</select></label>
-          <label><span>{tx('受影响 GPU', 'Affected GPUs')}<small>OPTIONAL · GPU INDEX LIST</small></span><input value={feedbackForm.affected_gpu_indexes} onChange={event => setFeedbackForm(current => ({ ...current, affected_gpu_indexes: event.target.value }))} placeholder={tx('例如：0,1,2,3；不确定可留空', 'Example: 0,1,2,3; leave empty if unknown')} /></label>
-          <label><span>{tx('硬件故障类型', 'Hardware fault type')}<small>REQUIRED · LABEL</small></span><select value={feedbackForm.fault_type} onChange={event => setFeedbackForm(current => ({ ...current, fault_type: event.target.value }))}><option value="gpu_hardware_failure">{tx('GPU 本体硬件故障', 'GPU hardware failure')}</option><option value="gpu_memory_failure">{tx('GPU 显存故障', 'GPU memory failure')}</option><option value="gpu_baseboard_fault">{tx('GPU 底板 / 载板故障', 'GPU baseboard / carrier-board fault')}</option><option value="pcie_switch_or_retimer_fault">{tx('PCIe Switch / Retimer / 槽位路径故障', 'PCIe switch / retimer / slot-path fault')}</option><option value="pcie_link_failure">{tx('PCIe / 掉卡故障', 'PCIe / dropout failure')}</option><option value="thermal_power_failure">{tx('温度 / 供电相关故障', 'Thermal / power fault')}</option><option value="node_hardware_fault">{tx('整节点硬件故障', 'Node hardware fault')}</option><option value="board_replacement">{tx('板卡更换确认（旧标签）', 'Board replacement confirmed (legacy label)')}</option></select></label>
-          <label><span>{tx('故障时间精度', 'Fault time precision')}<small>REQUIRED · EXACT / DATE / WINDOW</small></span><select value={feedbackForm.fault_time_precision} onChange={event => setFeedbackForm(current => ({ ...current, fault_time_precision: event.target.value, fault_occurred_at: '', fault_window_start_at: '', fault_window_end_at: '' }))}><option value="exact">{tx('精确到时间', 'Exact time')}</option><option value="date">{tx('只知道日期', 'Date only')}</option><option value="window">{tx('只知道时间范围', 'Time window')}</option></select></label>
-          {feedbackForm.fault_time_precision === 'window' ? <label><span>{tx('故障时间范围', 'Fault time window')}<small>REQUIRED · LOCAL TIME</small></span><span className="feedback-window-inputs"><input type="datetime-local" value={feedbackForm.fault_window_start_at} onChange={event => setFeedbackForm(current => ({ ...current, fault_window_start_at: event.target.value }))} /><input type="datetime-local" value={feedbackForm.fault_window_end_at} onChange={event => setFeedbackForm(current => ({ ...current, fault_window_end_at: event.target.value }))} /></span></label> : <label><span>{tx('故障发生时间', 'Fault occurred at')}<small>{feedbackForm.fault_time_precision === 'date' ? 'REQUIRED · DATE ONLY' : 'REQUIRED · LOCAL TIME'}</small></span><input type={feedbackForm.fault_time_precision === 'date' ? 'date' : 'datetime-local'} value={feedbackForm.fault_occurred_at} onChange={event => setFeedbackForm(current => ({ ...current, fault_occurred_at: event.target.value }))} /></label>}
-          <label><span>{tx('前后数据窗口', 'Pre/post data window')}<small>HOURS · MAX 720</small></span><span className="feedback-window-inputs"><input type="number" min="1" max="720" value={feedbackForm.pre_window_hours} onChange={event => setFeedbackForm(current => ({ ...current, pre_window_hours: event.target.value }))} /><input type="number" min="1" max="720" value={feedbackForm.post_window_hours} onChange={event => setFeedbackForm(current => ({ ...current, post_window_hours: event.target.value }))} /></span></label>
-          <label><span>{tx('维修/更换结论', 'Repair/replacement result')}<small>OPTIONAL · DISPOSITION</small></span><select value={feedbackForm.repair_action} onChange={event => setFeedbackForm(current => ({ ...current, repair_action: event.target.value, hardware_replaced: event.target.value === 'replace_gpu' || event.target.value === 'replace_node' || event.target.value === 'board_replacement' || event.target.value === 'replace_gpu_baseboard' ? true : current.hardware_replaced }))}><option value="pending">{tx('待确认', 'Pending')}</option><option value="reseat">{tx('重新插拔 / 复位', 'Reseat / reset')}</option><option value="replace_gpu">{tx('更换 GPU', 'Replace GPU')}</option><option value="replace_gpu_baseboard">{tx('更换 GPU 底板 / 载板', 'Replace GPU baseboard / carrier board')}</option><option value="board_replacement">{tx('板卡更换确认', 'Board replacement confirmed')}</option><option value="replace_node">{tx('整机维修 / 更换', 'Node repair / replacement')}</option><option value="no_hardware_fault">{tx('排除硬件故障', 'No hardware fault')}</option></select></label>
-          <label><span>{tx('反馈人', 'Operator')}<small>REQUIRED · AUDIT</small></span><input value={feedbackForm.operator} onChange={event => setFeedbackForm(current => ({ ...current, operator: event.target.value }))} placeholder={tx('姓名或工号', 'Name or operator ID')} /></label>
-          <label><span>{tx('故障现象', 'Fault description')}<small>OPTIONAL · OBSERVED</small></span><textarea value={feedbackForm.description} onChange={event => setFeedbackForm(current => ({ ...current, description: event.target.value }))} placeholder={tx('例如：GPU 2 掉卡，重启后仍不可见，现场更换板卡恢复。', 'Example: GPU 2 dropped out, remained missing after reboot, recovered after board replacement.')} /></label>
-          <label><span>{tx('证据备注', 'Evidence note')}<small>OPTIONAL · TICKET / CASE</small></span><textarea value={feedbackForm.evidence_note} onChange={event => setFeedbackForm(current => ({ ...current, evidence_note: event.target.value }))} placeholder={tx('工单号、维修记录、供应商结论等', 'Ticket ID, repair notes, vendor conclusion, etc.')} /></label>
-          <label className="settings-check"><span>{tx('训练用途', 'Training use')}<small>LABEL POLICY</small></span><span className="check-options"><input type="checkbox" checked={feedbackForm.hardware_replaced} onChange={event => setFeedbackForm(current => ({ ...current, hardware_replaced: event.target.checked }))} />{tx('已确认更换/维修硬件', 'Hardware repaired/replaced')}<input type="checkbox" checked={feedbackForm.training_eligible} onChange={event => setFeedbackForm(current => ({ ...current, training_eligible: event.target.checked }))} />{tx('可进入离线训练样本', 'Eligible for offline training')}</span></label>
-          {normalizedFeedbackNodeIP ? <p className="node-access-note">{tx('将请求离线获取：', 'Will request offline collection:')} {normalizedFeedbackNodeIP} · {feedbackForm.target_scope.toUpperCase()} {affectedGPUIndexes.length ? `· GPU ${affectedGPUIndexes.join(',')}` : ''} {selectedFeedbackAsset && gpuScopedFeedback ? `· GPU ${selectedFeedbackAsset.gpu_index} · ${replacementFeedback ? tx('按故障时间回查历史 UUID，当前 UUID 仅作参考', 'resolve historical UUID at fault time; current UUID is reference only') : (selectedFeedbackAsset.gpu_uuid || 'UUID UNKNOWN')}` : ''} · T-{feedbackForm.pre_window_hours}h / T+{feedbackForm.post_window_hours}h</p> : null}
-          {replacementFeedback ? <p className="form-success">{tx('换卡/维修反馈不会直接把当前槽位的新 UUID 作为故障卡训练样本；离线训练前必须先解析故障发生时刻的历史 GPU 身份。', 'Replacement/repair feedback will not use the current slot UUID as the failed-GPU training identity; offline training must resolve the historical GPU identity at the fault time first.')}</p> : null}
-          {predictionError && <p className="form-error">{predictionError}</p>}
-          <button className="primary-action" type="submit" disabled={feedbackSaving}>{feedbackSaving ? tx('提交中…', 'Submitting…') : tx('创建前后监控历史数据包请求', 'Create pre/post monitoring-history pack request')}</button>
-        </form>
-      </Card> : null}
-      {warningTab === 'human-feedback' ? <Card id="prediction-feedback-import" className="span-12">
-        <CardHead code="FEISHU LEDGER / TWO-PHASE" title={tx('飞书故障台账批量导入', 'Feishu Fault-ledger Batch Import')} action={<Badge value="PREVIEW BEFORE COMMIT" kind="warning" />} />
-        <p className="node-access-note">{tx('先预检解析、工单去重和 SN/主机名资产映射，预检不会写库。显式确认导入后，记录仍统一保持“待监控确认、不可训练”；上报时间只生成前后 6 小时检索窗，不会被当作真实故障起点。', 'Preview parsing, ticket deduplication, and serial/hostname asset mapping without database writes. Explicit commit keeps every record pending monitoring confirmation and training-ineligible; reported time only creates a ±6h search window and is not treated as confirmed onset.')}</p>
-        <form className="settings-form fault-feedback-form" onSubmit={event => { event.preventDefault(); void importHardwareFeedback(false); }}>
-          <label><span>{tx('批量导入操作人', 'Batch import operator')}<small>REQUIRED · AUDIT</small></span><input value={feedbackImportOperator} onChange={event => setFeedbackImportOperator(event.target.value)} placeholder={tx('姓名或工号', 'Name or operator ID')} /></label>
-          <label><span>{tx('飞书复制内容', 'Feishu pasted rows')}<small>TSV · MULTILINE SAFE</small></span><textarea className="feedback-import-textarea" value={feedbackImportRaw} onChange={event => { setFeedbackImportRaw(event.target.value); setFeedbackImportReport(null); }} placeholder={tx('从飞书多维表格复制故障记录后粘贴到这里', 'Copy fault rows from Feishu Base and paste them here')} /></label>
-          <span className="feedback-import-actions"><button className="primary-action" type="submit" disabled={feedbackImporting}>{feedbackImporting ? tx('处理中…', 'Processing…') : tx('只读预检', 'Read-only preview')}</button><button className="link" type="button" disabled={feedbackImporting || !feedbackImportReport || feedbackImportReport.mode !== 'preview' || feedbackImportReport.importable_rows === 0} onClick={() => void importHardwareFeedback(true)}>{tx(`确认导入 ${feedbackImportReport?.importable_rows || 0} 条`, `Commit ${feedbackImportReport?.importable_rows || 0} rows`)}</button></span>
-        </form>
-        {feedbackImportReport ? <><div className="issue-categories quality-ledger compact-ledger">
-          <div><b>{tx('解析 / 唯一工单', 'Parsed / unique')}</b><strong>{feedbackImportReport.parsed_rows} / {feedbackImportReport.unique_source_records}</strong><small>{feedbackImportReport.version}</small></div>
-          <div><b>{tx('资产已映射 / 未解析', 'Mapped / unresolved')}</b><strong>{feedbackImportReport.mapped_rows} / {feedbackImportReport.unresolved_rows}</strong><small>{feedbackImportReport.duplicate_rows} DUPLICATE</small></div>
-          <div><b>{tx('可导入 / 已存在', 'Importable / existing')}</b><strong>{feedbackImportReport.importable_rows} / {feedbackImportReport.existing_rows}</strong><small>{feedbackImportReport.mode.toUpperCase()}</small></div>
-          <div><b>{tx('已导入 / 可训练', 'Imported / trainable')}</b><strong>{feedbackImportReport.imported_rows} / {feedbackImportReport.training_eligible_rows}</strong><small>{tx('全部等待监控确认', 'ALL PENDING MONITORING')}</small></div>
-        </div><div className="table-wrap"><table><thead><tr><th># / {tx('工单', 'Ticket')}</th><th>{tx('原始资产', 'Source asset')}</th><th>{tx('映射节点', 'Mapped node')}</th><th>{tx('分类', 'Classification')}</th><th>{tx('预检决策', 'Decision')}</th></tr></thead><tbody>{feedbackImportReport.records.map(row => <tr key={`${row.row_number}-${row.source_record_id || 'missing'}`}><td><b>#{row.row_number} · {row.source_record_id || 'NO TICKET'}</b><small>{row.reported_at || 'NO TIME'}{row.resolved_at ? ` → ${row.resolved_at}` : ''} · {row.source_status}</small></td><td><b>{row.source_host_serial || 'NO SN'}</b><small>{row.source_hostname || 'NO HOSTNAME'} · {row.raw_category}</small></td><td><Badge value={row.asset_resolution_status.toUpperCase()} kind={row.asset_resolution_status === 'resolved' ? 'healthy' : 'warning'} /><small>{row.node_ip || row.asset_resolution_note}</small></td><td><b>{row.fault_type || 'UNCLASSIFIED'}</b><small>{row.target_scope?.toUpperCase()} · {row.raw_phenomenon}</small></td><td><Badge value={compactWorkflowStatus(row.decision)} kind={row.decision.includes('imported') ? 'healthy' : row.decision === 'ready_to_import' ? 'info' : 'warning'} /><small>{(row.blocking_reasons || []).join(' · ') || row.imported_request_id && `REQUEST #${row.imported_request_id}` || row.existing_request_id && `EXISTING #${row.existing_request_id}` || 'SAFE TO COMMIT'}</small></td></tr>)}</tbody></table></div></> : null}
-      </Card> : null}
-      {warningTab === 'feedback-pack' ? <Card id="prediction-feedback-package" className="span-12">
-        <CardHead code="PRE/POST HISTORY PACKS" title={tx('故障前后数据反馈包', 'Pre/Post-fault Data Feedback Pack')} action={<div className="table-actions feedback-pack-actions"><Badge value={`${faultFeedbackRequests.length} REQUESTS`} kind="info" /><Badge value="OFFLINE COLLECTION" kind="warning" /><button className="link" type="button" onClick={() => void refreshFeedbackWorkflow()}>{tx('刷新', 'Refresh')}</button></div>} />
-        <p className="node-access-note">{tx('这里显示人工反馈产生的前后监控历史数据包请求。当前状态只表示已排队等待离线抓取；后续 worker 会按节点、GPU、故障时间和窗口固化统计特征、标签和可追溯路径，不把原始多年遥测复制进在线库。', 'This shows pre/post monitoring-history pack requests created from human feedback. The current status means queued for offline collection; a later worker will materialize aggregate features, labels, and traceable paths by node, GPU, fault time, and window without copying raw multi-year telemetry into the online database.')}</p>
-        {feedbackFeatureRequestNotice ? <p className="form-success">{feedbackFeatureRequestNotice}</p> : null}
-        <div className="feedback-workflow">{feedbackWorkflowSteps.map((step, index) => <button key={step.key} type="button" className={`feedback-workflow-step ${step.state}`} disabled={step.disabled} onClick={step.onClick}><span>{index + 1}</span><b>{step.label}</b><small>{step.meta}</small></button>)}</div>
-        <div className="issue-categories quality-ledger compact-ledger">
-          <div><b>{tx('最新特征请求', 'Latest feature request')}</b><strong>{compactWorkflowStatus(latestFeatureStatus)}</strong><small>{latestFeedbackFeatureRequest?.version || 'manual-feedback-feature-request-v6'}</small></div>
-          <div><b>{tx('训练窗口 / 反馈', 'Training windows / feedback')}</b><strong>{latestFeedbackFeatureRequest ? `${latestFeedbackFeatureRequest.window_count}/${latestFeedbackFeatureRequest.hardware_feedback_requests}` : '—'}</strong><small>{latestFeedbackFeatureRequest?.training_eligible_requests || 0} TRAINING · {latestFeedbackFeatureRequest?.blocked_requests || 0} BLOCKED</small></div>
-          <div><b>{tx('Manifest 指纹', 'Manifest SHA')}</b><strong>{shortHash(latestFeedbackFeatureRequest?.manifest_sha256)}</strong><small>{latestFeedbackFeatureRequest?.blocking_reasons?.[0] || latestFeedbackFeatureRequest?.error_message || tx('生成后立即更新', 'Updates after creation')}</small></div>
-          <div><b>{tx('离线聚合', 'Offline aggregation')}</b><strong>{latestFeedbackFeatureRequest ? `${latestFeedbackFeatureRequest.completed_windows || 0}/${latestFeedbackFeatureRequest.failed_windows || 0}` : '—'}</strong><small>{latestFeedbackFeatureRequest?.feature_sha256 ? shortHash(latestFeedbackFeatureRequest.feature_sha256) : tx('等待 Manifest', 'Wait Manifest')}</small></div>
-        </div>
-				<div className="issue-categories quality-ledger compact-ledger">
-					<div><b>{tx('已复核 / 待复核', 'Reviewed / pending')}</b><strong>{faultEpisodeReport ? `${faultEpisodeReport.reviewed_count} / ${faultEpisodeReport.pending_count}` : '—'}</strong><small>IMMUTABLE SHA CHAIN</small></div>
-					<div><b>{tx('故障 episode / 可训练', 'Episodes / trainable')}</b><strong>{faultEpisodeReport ? `${faultEpisodeReport.episode_count} / ${faultEpisodeReport.training_episodes}` : '—'}</strong><small>{shortHash(faultEpisodeReport?.report_sha256)}</small></div>
-					<div><b>{tx('确认 / 排除 / 上下文', 'Confirmed / excluded / context')}</b><strong>{faultValueReport ? `${faultValueReport.confirmed_count} / ${faultValueReport.excluded_count} / ${faultValueReport.context_only_count}` : '—'}</strong><small>{faultValueReport?.pending_evidence_count || 0} NEED EVIDENCE</small></div>
-					<div><b>{tx('预测窗命中 / Ranking@K', 'Horizon hits / Ranking@K')}</b><strong>{faultValueReport?.horizons.map(item => `${item.warning_hits}/${item.eligible_faults}`).join(' · ') || '—'}</strong><small>{faultValueReport?.ranking_at_k?.map(item => `@${item.k} ${item.hits}/${item.eligible_faults}`).join(' · ') || tx('描述性召回，不是校准概率', 'DESCRIPTIVE RECALL, NOT CALIBRATED')}</small></div>
-				</div>
-        <div className="table-wrap"><table><thead><tr><th>{tx('故障对象', 'Fault target')}</th><th>{tx('故障类型 / 时间', 'Fault type / time')}</th><th>{tx('窗口', 'Window')}</th><th>{tx('采集状态', 'Collection status')}</th><th>{tx('身份解析', 'Identity resolution')}</th><th>{tx('预警复核', 'Warning review')}</th><th>{tx('维修结论', 'Repair result')}</th><th>{tx('反馈人', 'Operator')}</th><th>{tx('证据复核', 'Evidence review')}</th></tr></thead><tbody>{faultFeedbackRequests.map(row => <tr key={row.id}><td><b>{row.node_ip} · {(row.target_scope || 'gpu').toUpperCase()}{(row.target_scope || 'gpu') === 'gpu' ? ` · GPU ${row.gpu_index}` : ''}</b><small>{(row.affected_gpu_indexes || []).length ? `GPU ${(row.affected_gpu_indexes || []).join(',')}` : (row.gpu_uuid || tx('节点/底板级，无需单卡 UUID', 'Node/baseboard scope; no single GPU UUID required'))} · {row.reported_gpu_uuid ? `${tx('当前/上报', 'reported')} ${row.reported_gpu_uuid}` : (row.model_name || 'MODEL UNKNOWN')}</small></td><td><b>{row.fault_type}</b><small>{(row.fault_time_precision || 'exact').toUpperCase()} · {row.fault_time_precision === 'window' && row.fault_window_start_at && row.fault_window_end_at ? `${time(row.fault_window_start_at, lang)} ~ ${time(row.fault_window_end_at, lang)}` : time(row.fault_occurred_at, lang)}</small></td><td><strong>T-{row.pre_window_hours}h / T+{row.post_window_hours}h</strong><small>{row.history_pack_scope}</small></td><td><Badge value={compactWorkflowStatus(row.history_pack_status)} kind={row.history_pack_status.includes('blocked') ? 'warning' : row.history_pack_status.includes('ready') ? 'healthy' : row.history_pack_status.includes('queued') ? 'warning' : 'info'} /><small>{(row.blocking_reasons || []).join(' · ') || shortHash(row.history_pack_sha256) || row.status}</small></td><td><Badge value={compactWorkflowStatus(row.identity_resolution_status || 'current_identity_selected')} kind={row.identity_resolution_status === 'requires_historical_identity_at_fault_time' || row.identity_resolution_status?.startsWith('blocked') ? 'warning' : 'healthy'} /><small>{row.identity_resolution_note || tx('当前身份可用于故障窗口', 'Current identity usable for fault window')}</small></td><td><Badge value={compactWorkflowStatus(row.warning_review_status || 'pending_warning_review')} kind={row.warning_review_status?.includes('no_prior') || row.warning_review_status?.includes('below_threshold') || row.warning_review_status?.startsWith('blocked') ? 'warning' : row.warning_review_status?.includes('candidate_found') ? 'healthy' : 'info'} /><small>{row.matched_warning_count ?? 0} {tx('条 shadow 记录', 'shadow records')} · {row.warning_review_window_hours || row.pre_window_hours}h</small><small>{row.warning_review_note || tx('等待复核故障前影子预警覆盖', 'Waiting to review prior shadow-warning coverage')}</small></td><td><b>{row.repair_action || '—'}</b><small>{row.hardware_replaced ? tx('硬件已更换/维修', 'Hardware repaired/replaced') : tx('未确认更换硬件', 'No replacement confirmed')}</small></td><td><b>{row.operator}</b><small>{time(row.created_at, lang)} · {row.training_eligible ? 'TRAINING' : 'NO TRAINING'}</small></td><td><Badge value={compactWorkflowStatus(row.triage_status || 'pending_monitoring_confirmation')} kind={row.triage_status === 'confirmed_hardware' ? 'healthy' : 'warning'} /><span className="feedback-import-actions"><button className="link" type="button" disabled={faultReviewingID !== null} onClick={() => void reviewFaultRecord(row, 'confirmed_hardware')}>{tx('确认硬件故障', 'Confirm')}</button><button className="link" type="button" disabled={faultReviewingID !== null} onClick={() => void reviewFaultRecord(row, 'context_only')}>{tx('仅上下文', 'Context')}</button><button className="link" type="button" disabled={faultReviewingID !== null} onClick={() => void reviewFaultRecord(row, 'excluded_no_hardware')}>{tx('排除', 'Exclude')}</button></span><small>{row.episode_key || row.source_record_id || row.request_key}</small></td></tr>)}</tbody></table>{faultFeedbackRequests.length === 0 && <Empty tx={tx} title={tx('还没有人工反馈产生的数据包请求', 'No data-pack requests from human feedback yet')} />}</div>
-      </Card> : null}
-      {warningTab !== 'human-feedback' && warningTab !== 'feedback-pack' ? <>
-      {shadowModelCandidates.length > 0 ? <Card className="span-12"><CardHead code="SHADOW MODEL REGISTRY" title={tx('影子候选模型', 'Shadow Model Candidates')} action={<div className="table-actions"><Badge value="SCORING DISABLED" kind="info" /><button className="link" type="button" disabled={featureReplayStarting || latestFeatureReplay?.status === 'queued' || latestFeatureReplay?.status === 'running'} onClick={() => void runFeatureReplay()}>{featureReplayStarting ? tx('启动中…', 'Starting…') : tx('运行历史逐值回放', 'Run value replay')}</button></div>} /><p className="node-access-note">{tx('候选注册只确认模型产物可追溯且离线门禁通过，不等同于线上发布。第一层逐列契约审计通过后仍必须完成历史数值回放和实时 24 小时覆盖审计，才允许生成只读影子预警记录。', 'Candidate registration confirms artifact provenance and offline gates only; it is not an online release. Even after column-level contract parity passes, historical value replay and live 24-hour coverage audits are required before read-only shadow early-warning records may be generated.')}</p>{latestFeatureReplay ? <div className="issue-categories quality-ledger"><div><b>{tx('回放状态', 'Replay status')}</b><strong>{latestFeatureReplay.status.toUpperCase()}</strong><small>{latestFeatureReplay.version}</small></div><div><b>{tx('样本完成 / 失败', 'Samples complete / failed')}</b><strong>{latestFeatureReplay.completed_sample_count} / {latestFeatureReplay.failed_sample_count}</strong><small>{latestFeatureReplay.selected_sample_count} SELECTED</small></div><div><b>{tx('验证列 / 训练列', 'Verified / trained columns')}</b><strong>{latestFeatureReplay.verified_column_count} / {latestFeatureReplay.training_feature_count}</strong><small>{latestFeatureReplay.compared_value_count} VALUE COMPARISONS</small></div><div><b>{tx('不匹配 / 回放缺失', 'Mismatch / replay missing')}</b><strong>{latestFeatureReplay.mismatch_count} / {latestFeatureReplay.missing_replay_value_count}</strong><small>MAX ABS {latestFeatureReplay.maximum_absolute_error.toExponential(2)} · REL {latestFeatureReplay.maximum_relative_error.toExponential(2)}</small></div></div> : null}<div className="table-wrap"><table><thead><tr><th>{tx('故障 / 型号', 'Fault / Model')}</th><th>{tx('窗口', 'Horizon')}</th><th>{tx('状态', 'Status')}</th><th>{tx('特征等价性', 'Feature Parity')}</th><th>{tx('阈值', 'Threshold')}</th><th>{tx('模型来源', 'Model Provenance')}</th><th>{tx('注册门', 'Registry Gate')}</th></tr></thead><tbody>{shadowModelCandidates.map(model => { const parity = featureParityByModel.get(model.id); return <tr key={`${model.model_key}-${model.version}`}><td><b>{model.scope_event_type || model.task}</b><small>{model.scope_model_name || 'ALL MODELS'}</small></td><td>{model.horizon_minutes}m</td><td><Badge value={model.status.toUpperCase()} kind="healthy" /><small>{model.mode.toUpperCase()} · NO ACTION</small></td><td><Badge value={(parity?.status || 'pending').toUpperCase()} kind={parity?.status === 'passed' ? 'healthy' : 'warning'} /><small>{parity ? `${parity.contract_matched_count}/${parity.training_feature_count} COLUMNS · ${parity.replay_verified_count} REPLAYED` : 'AUDIT PENDING'}</small><small>{(parity?.blocking_reasons || []).join(' · ')}</small></td><td>{model.decision_threshold?.toFixed(3) || '—'}</td><td><b>BUILD #{model.source_baseline_build_id || '—'}</b><small>{model.version}</small><small>{model.artifact_sha256?.slice(0, 16) || 'SHA256 MISSING'}</small></td><td><code>{model.registry_gate_version || '—'}</code><small>{parity?.transformation_contract_version || model.feature_contract_version}</small></td></tr>; })}</tbody></table></div></Card> : null}
-      {shadowModelCandidates.length > 0 ? <Card className="span-12">
-        <CardHead code="LIVE 24H FEATURE COVERAGE" title={tx('实时特征覆盖审计', 'Live Feature Coverage Audit')} action={<div className="table-actions"><Badge value="READ-ONLY / NO SCORING" kind="info" /><button className="link" type="button" disabled={liveCoverageStarting || liveCoverageAudits.some(audit => audit.status === 'queued' || audit.status === 'running') || !coverageParity || coverageParity.replay_verified_count !== coverageParity.training_feature_count} onClick={() => void runLiveCoverageAudit()}>{liveCoverageStarting ? tx('启动中…', 'Starting…') : tx('审计当前 24 小时', 'Audit current 24h')}</button></div>} />
-        <p className="node-access-note">{tx('按当前 H100 GPU 逐卡检查模型所需的 10 个源指标：每项至少覆盖 24 小时期望样本的 70%，且最新样本不超过 15 分钟。全体通过后仍只解锁下一步影子运行时建设。', 'Checks the 10 model source metrics for every current H100 GPU. Each metric needs at least 70% of the expected trailing-24h samples and a latest sample no older than 15 minutes. A pass only unlocks construction of the next read-only shadow runtime stage.')}</p>
-        {latestLiveCoverage ? <div className="issue-categories quality-ledger"><div><b>{tx('审计状态', 'Audit status')}</b><strong>{latestLiveCoverage.status.toUpperCase()}</strong><small>{latestLiveCoverage.version}</small></div><div><b>{tx('可用 / 目标 GPU', 'Eligible / target GPUs')}</b><strong>{latestLiveCoverage.eligible_gpu_count} / {latestLiveCoverage.target_gpu_count}</strong><small>{(latestLiveCoverage.eligible_ratio * 100).toFixed(1)}% ELIGIBLE</small></div><div><b>{tx('指标通过 / 总数', 'Passing / total metrics')}</b><strong>{latestLiveCoverage.passing_metric_pair_count} / {latestLiveCoverage.metric_pair_count}</strong><small>{latestLiveCoverage.source_metric_count} METRICS PER GPU</small></div><div><b>{tx('缺失 / 稀疏 / 过期', 'Missing / sparse / stale')}</b><strong>{latestLiveCoverage.missing_metric_pair_count} / {latestLiveCoverage.sparse_metric_pair_count} / {latestLiveCoverage.stale_metric_pair_count}</strong><small>{latestLiveCoverage.error_message || (latestLiveCoverage.blocking_reasons || []).join(' · ') || latestLiveCoverage.report_sha256?.slice(0, 16) || 'AUDIT IN PROGRESS'}</small></div></div> : <Empty tx={tx} title={tx('历史逐值回放通过后可运行覆盖审计', 'Run coverage audit after value replay passes')} />}
-      </Card> : null}
-      {shadowModelCandidates.length > 0 ? <Card id="prediction-shadow-runtime" className="span-12">
-        <CardHead code="READ-ONLY SHADOW SCORING" title={tx('影子预警运行时', 'Shadow Early-warning Runtime')} action={<div className="table-actions"><Badge value="NO ALERT / NO ACTION" kind="info" /><button className="link" type="button" disabled={shadowScoringStarting || shadowScoringRuns.some(run => run.status === 'queued' || run.status === 'running') || coverageParity?.status !== 'shadow_runtime_required'} onClick={() => void runShadowScoring()}>{shadowScoringStarting ? tx('启动中…', 'Starting…') : tx('运行一次影子评分', 'Run shadow scoring')}</button></div>} />
-        <p className="node-access-note">{tx('人工触发的只读前瞻评分：每批重新验证模型 SHA256、当前 24 小时数据覆盖和模型声明的全部多尺度特征列，并为已评分 GPU 生成 live-shadow 逐特征聚合分布快照。超阈值只是待验证影子候选，不是硬件高危判定；超阈值比例、中位数或节点聚集异常会阻断周期调度。', 'Manually triggered read-only prospective scoring. Every run rechecks model SHA256, current trailing-24h coverage, and every declared multi-scale feature column, then materializes live-shadow aggregate per-feature distribution snapshots for scored GPUs. Above-threshold means an unvalidated shadow candidate, not confirmed hardware risk; abnormal hit ratio, median, or node clustering blocks periodic scheduling.')}</p>
-        {latestShadowScoring ? <div className="issue-categories quality-ledger"><div><b>{tx('批次 / 分布状态', 'Run / distribution status')}</b><strong>{latestShadowScoring.status.toUpperCase()}</strong><small>{(latestShadowScoring.distribution_status || 'LEGACY_UNAUDITED').toUpperCase()} · {latestShadowScoring.version}</small></div><div><b>{tx('超阈值候选', 'Above-threshold candidates')}</b><strong>{latestShadowScoring.positive_gpu_count} / {latestShadowScoring.scored_gpu_count}</strong><small>{(latestShadowScoring.positive_ratio * 100).toFixed(1)}% · NOT A HARDWARE ALERT</small></div><div><b>{tx('中位数 / P90 / P99', 'Median / P90 / P99')}</b><strong>{latestShadowScoring.median_probability === undefined ? '—' : `${(latestShadowScoring.median_probability * 100).toFixed(1)}% / ${((latestShadowScoring.p90_probability || 0) * 100).toFixed(1)}% / ${((latestShadowScoring.p99_probability || 0) * 100).toFixed(1)}%`}</strong><small>THRESHOLD {shadowModelCandidates[0]?.decision_threshold?.toFixed(3) || '—'} · P95 {latestShadowScoring.p95_probability === undefined ? '—' : `${(latestShadowScoring.p95_probability * 100).toFixed(1)}%`}</small></div><div><b>{tx('整节点超阈值 / 阻断', 'Whole-node hits / blockers')}</b><strong>{latestShadowScoring.all_above_threshold_nodes || 0}</strong><small>{latestShadowScoring.error_message || (latestShadowScoring.blocking_reasons || []).join(' · ') || latestShadowScoring.report_sha256?.slice(0, 16) || 'RUNNING'}</small></div></div> : <Empty tx={tx} title={tx('覆盖门通过，等待首次人工触发影子评分', 'Coverage gate passed; waiting for the first manual shadow run')} />}
-        {highestRiskPredictions.length > 0 ? <div className="table-wrap"><table><thead><tr><th>{tx('节点 / GPU', 'Node / GPU')}</th><th>{tx('影子概率', 'Shadow probability')}</th><th>{tx('风险级别', 'Risk level')}</th><th>{tx('模型 / 窗口', 'Model / horizon')}</th><th>{tx('特征指纹', 'Feature fingerprint')}</th></tr></thead><tbody>{highestRiskPredictions.map(row => <tr key={row.id}><td><b>{row.node_ip}</b><small>{row.gpu_uuid}</small></td><td><strong>{((row.probability || 0) * 100).toFixed(3)}%</strong></td><td><Badge value="UNVALIDATED" kind="info" /><small>{row.status.toUpperCase()}</small></td><td><b>{row.model_version}</b><small>{row.horizon_minutes}m</small></td><td><code>{row.feature_vector_sha256?.slice(0, 16) || '—'}</code><small>{row.transformation_contract_version}</small></td></tr>)}</tbody></table></div> : null}
-      </Card> : null}
-      {dataDriftReport ? <Card className="span-12">
-        <CardHead code={dataDriftReport.version} title={tx('影子分布漂移报告', 'Shadow Distribution Drift Report')} action={<div className="table-actions"><Badge value={dataDriftReport.status.toUpperCase()} kind={dataDriftReport.status === 'passed' ? 'healthy' : dataDriftReport.status === 'review_required' || dataDriftReport.status.startsWith('blocked') ? 'warning' : 'info'} /><a className="link" href="/api/v1/prediction/data-drift-report?download=1" download><Download size={13} />{tx('下载漂移报告', 'Download drift')}</a></div>} />
-        <p className="node-access-note">{tx('基于最近两次只读 shadow scoring 的持久化概率分布统计计算 PSI/KS proxy，并对最近两次 live coverage audit 对比 eligible、metric pass、missing、sparse 和 stale 比例。当前仍不替代后续逐特征 PSI/KS；不会调阈值、不会触发告警或动作。', 'Computes PSI/KS proxies from persisted probability-distribution statistics of the two latest read-only shadow scoring runs, and compares eligible, metric-pass, missing, sparse, and stale ratios across the two latest live coverage audits. This still does not replace future per-feature PSI/KS; it changes no threshold and triggers no alert or action.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('PSI / KS proxy', 'PSI / KS proxy')}</b><strong>{dataDriftReport.psi_proxy.toFixed(3)} / {dataDriftReport.ks_proxy.toFixed(3)}</strong><small>LIMIT {dataDriftReport.psi_proxy_threshold.toFixed(2)} / {dataDriftReport.ks_proxy_threshold.toFixed(2)}</small></div>
-          <div><b>{tx('超阈值比例漂移', 'Positive-ratio drift')}</b><strong>{pct(dataDriftReport.positive_ratio_delta)}</strong><small>LIMIT {pct(dataDriftReport.positive_ratio_delta_threshold)}</small></div>
-          <div><b>{tx('覆盖质量漂移', 'Coverage-quality drift')}</b><strong>{dataDriftReport.coverage_quality_status.toUpperCase()}</strong><small>ELIGIBLE {pct(dataDriftReport.eligible_ratio_delta)} · PASS {pct(dataDriftReport.metric_pass_ratio_delta)}</small></div>
-          <div><b>{tx('P95 / P99 漂移', 'P95 / P99 drift')}</b><strong>{pct(dataDriftReport.p95_delta)} / {pct(dataDriftReport.p99_delta)}</strong><small>MEDIAN {pct(dataDriftReport.median_delta)}</small></div>
-          <div><b>{tx('报告指纹', 'Report SHA')}</b><strong>{dataDriftReport.report_sha256.slice(0, 16) || '—'}</strong><small>{dataDriftReport.blocking_reasons[0] || dataDriftReport.recommended_next_run[0] || time(dataDriftReport.generated_at, lang)}</small></div>
-        </div>
-        <div className="prediction-contract">
-          <span><b>{tx('最近批次', 'Latest run')}</b>{dataDriftReport.latest?.run_key || '—'}<small>{dataDriftReport.latest ? `${dataDriftReport.latest.scored_gpu_count} SCORED · ${pct(dataDriftReport.latest.positive_ratio)} POS · ${dataDriftReport.latest.report_sha256?.slice(0, 12) || 'NO SHA'}` : tx('等待 shadow scoring', 'Waiting for shadow scoring')}</small></span>
-          <span><b>{tx('基准批次', 'Baseline run')}</b>{dataDriftReport.baseline?.run_key || '—'}<small>{dataDriftReport.baseline ? `${dataDriftReport.baseline.scored_gpu_count} SCORED · ${pct(dataDriftReport.baseline.positive_ratio)} POS · ${dataDriftReport.baseline.report_sha256?.slice(0, 12) || 'NO SHA'}` : tx('至少需要两次完成批次', 'At least two completed runs required')}</small></span>
-          <span><b>{tx('覆盖审计', 'Coverage audits')}</b>{dataDriftReport.latest_coverage?.audit_key || '—'}<small>{dataDriftReport.latest_coverage ? `PASS ${pct(dataDriftReport.latest_coverage.metric_pass_ratio)} · MISS ${pct(dataDriftReport.latest_coverage.missing_ratio)} · ${dataDriftReport.latest_coverage.report_sha256?.slice(0, 12) || 'NO SHA'}` : tx('至少需要两次覆盖审计', 'At least two coverage audits required')}</small></span>
-          <span><b>{tx('方法边界', 'Method boundary')}</b>{dataDriftReport.method}<small>{dataDriftReport.mode.toUpperCase()}</small></span>
-        </div>
-      </Card> : null}
-      {calibrationDriftReport ? <Card className="span-12">
-        <CardHead code={calibrationDriftReport.version} title={tx('校准漂移报告', 'Calibration Drift Report')} action={<div className="table-actions"><Badge value={calibrationDriftReport.status.toUpperCase()} kind={calibrationDriftReport.status === 'passed' ? 'healthy' : calibrationDriftReport.status === 'review_required' || calibrationDriftReport.status.startsWith('blocked') ? 'warning' : 'info'} /><a className="link" href="/api/v1/prediction/calibration-drift-report?download=1" download><Download size={13} />{tx('下载校准报告', 'Download calibration')}</a></div>} />
-        <p className="node-access-note">{tx('读取最近两份已完成 baseline evaluation report，比较 held-out test calibration 的 ECE、Brier 和 Brier Skill Score。该报告只用于治理和验证归档，不重训模型、不改变阈值、不发布概率。', 'Reads the two latest completed baseline evaluation reports and compares held-out test calibration ECE, Brier, and Brier Skill Score. This report is for governance and validation archive only: it does not retrain models, change thresholds, or release probabilities.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>ECE Δ</b><strong>{calibrationDriftReport.ece_delta.toFixed(3)}</strong><small>LIMIT ±{calibrationDriftReport.ece_delta_threshold.toFixed(2)}</small></div>
-          <div><b>Brier Δ</b><strong>{calibrationDriftReport.model_brier_delta.toFixed(3)}</strong><small>LIMIT +{calibrationDriftReport.brier_delta_threshold.toFixed(2)}</small></div>
-          <div><b>BSS Δ</b><strong>{calibrationDriftReport.brier_skill_score_delta.toFixed(3)}</strong><small>DROP LIMIT -{calibrationDriftReport.brier_skill_drop_threshold.toFixed(2)}</small></div>
-          <div><b>{tx('报告指纹', 'Report SHA')}</b><strong>{calibrationDriftReport.report_sha256.slice(0, 16) || '—'}</strong><small>{calibrationDriftReport.blocking_reasons[0] || calibrationDriftReport.recommended_next_run[0] || time(calibrationDriftReport.generated_at, lang)}</small></div>
-        </div>
-        <div className="prediction-contract">
-          <span><b>{tx('最新校准', 'Latest calibration')}</b>{calibrationDriftReport.latest?.baseline_model_key || '—'}<small>{calibrationDriftReport.latest ? `ECE ${calibrationDriftReport.latest.mean_ece.toFixed(3)} · BSS ${calibrationDriftReport.latest.mean_brier_skill_score.toFixed(3)} · ${calibrationDriftReport.latest.calibration_passed}/${calibrationDriftReport.latest.horizon_count} PASSED` : tx('等待 baseline report', 'Waiting for baseline report')}</small></span>
-          <span><b>{tx('基准校准', 'Baseline calibration')}</b>{calibrationDriftReport.baseline?.baseline_model_key || '—'}<small>{calibrationDriftReport.baseline ? `ECE ${calibrationDriftReport.baseline.mean_ece.toFixed(3)} · BSS ${calibrationDriftReport.baseline.mean_brier_skill_score.toFixed(3)} · ${calibrationDriftReport.baseline.report_sha256.slice(0, 12)}` : tx('至少需要两份报告', 'At least two reports required')}</small></span>
-          <span><b>{tx('方法边界', 'Method boundary')}</b>{calibrationDriftReport.method}<small>{calibrationDriftReport.mode.toUpperCase()}</small></span>
-        </div>
-      </Card> : null}
-      {featureDriftReport ? <Card className="span-12">
-        <CardHead code={featureDriftReport.version} title={tx('特征漂移就绪报告', 'Feature Drift Readiness Report')} action={<div className="table-actions"><Badge value={featureDriftReport.status.toUpperCase()} kind={featureDriftReport.status.startsWith('blocked') ? 'warning' : featureDriftReport.status === 'passed' ? 'healthy' : 'info'} /><a className="link" href="/api/v1/prediction/feature-drift-report?download=1" download><Download size={13} />{tx('下载特征漂移报告', 'Download feature drift')}</a></div>} />
-        <p className="node-access-note">{tx('读取 baseline artifact、最近 feature replay、训练分布快照和 live-shadow 分布快照；同一 baseline 下训练/线上分布齐全且分箱兼容时计算逐特征 PSI/KS，否则明确列出缺失 training、缺失 live 或分箱不兼容原因，不伪造漂移结论。', 'Reads the baseline artifact, latest feature replay, training distribution snapshots, and live-shadow distribution snapshots. It computes per-feature PSI/KS only when training/live distributions exist for the same baseline with compatible bins; otherwise it explicitly lists missing training, missing live, or incompatible-bin reasons instead of fabricating drift conclusions.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('特征列 / 分布', 'Feature columns / distributions')}</b><strong>{featureDriftReport.feature_column_count} / {featureDriftReport.feature_distribution_count}</strong><small>{featureDriftReport.compared_feature_count} COMPARED · {featureDriftReport.feature_contract_version || 'NO CONTRACT'}</small></div>
-          <div><b>PSI / KS</b><strong>{featureDriftReport.maximum_psi.toFixed(3)} / {featureDriftReport.maximum_ks.toFixed(3)}</strong><small>{featureDriftReport.psi_status.toUpperCase()} · LIMIT {featureDriftReport.psi_threshold.toFixed(2)} / {featureDriftReport.ks_threshold.toFixed(2)}</small></div>
-          <div><b>{tx('特征门结果', 'Feature gate result')}</b><strong>{featureDriftReport.passed_feature_count} / {featureDriftReport.compared_feature_count}</strong><small>{featureDriftReport.review_required_feature_count} REVIEW · {featureDriftReport.blocking_reasons[0] || featureDriftReport.recommended_next_run[0]}</small></div>
-          <div><b>{tx('最近回放', 'Latest replay')}</b><strong>{featureDriftReport.latest_replay?.status?.toUpperCase() || '—'}</strong><small>{featureDriftReport.latest_replay ? `${featureDriftReport.latest_replay.verified_column_count}/${featureDriftReport.latest_replay.training_feature_count} COLUMNS · ${featureDriftReport.latest_replay.report_sha256?.slice(0, 12) || 'NO SHA'}` : tx('等待 feature replay', 'Waiting for feature replay')}</small></div>
-          <div><b>{tx('报告指纹', 'Report SHA')}</b><strong>{featureDriftReport.report_sha256.slice(0, 16) || '—'}</strong><small>{featureDriftReport.baseline_model_key || featureDriftReport.baseline_version || time(featureDriftReport.generated_at, lang)}</small></div>
-        </div>
-        <div className="prediction-contract">
-          <span><b>{tx('Baseline artifact', 'Baseline artifact')}</b>{featureDriftReport.baseline_model_key || '—'}<small>{featureDriftReport.artifact_local_sha256?.slice(0, 12) || featureDriftReport.artifact_sha256?.slice(0, 12) || 'NO ARTIFACT SHA'}</small></span>
-          <span><b>{tx('样例特征', 'Sample features')}</b>{featureDriftReport.sample_features.slice(0, 3).map(item => item.name).join(' · ') || '—'}<small>{featureDriftReport.method}</small></span>
-          <span><b>{tx('样例分布', 'Sample distributions')}</b>{featureDriftReport.sample_distributions.slice(0, 3).map(item => `${item.distribution_role}:${item.feature_name}`).join(' · ') || '—'}<small>{featureDriftReport.feature_comparisons.slice(0, 2).map(item => `${item.feature_name} PSI ${item.psi.toFixed(3)}`).join(' · ') || tx('等待分布快照', 'Waiting for distribution snapshots')}</small></span>
-        </div>
-        {visibleFeatureDriftComparisons.length > 0 ? <div className="table-wrap"><table><thead><tr><th>{tx('特征', 'Feature')}</th><th>{tx('状态', 'Status')}</th><th>PSI / KS</th><th>{tx('样本', 'Samples')}</th><th>{tx('均值 / P50 / P95 Δ', 'Mean / P50 / P95 Δ')}</th><th>{tx('阻断 / 复核原因', 'Block / review reasons')}</th></tr></thead><tbody>{visibleFeatureDriftComparisons.map(item => <tr key={item.feature_name}><td><b>{item.feature_name}</b><small>TRAIN #{item.training_snapshot_id || '—'} · LIVE #{item.live_snapshot_id || '—'}</small></td><td><Badge value={item.status.toUpperCase()} kind={item.status === 'passed' ? 'healthy' : item.status === 'review_required' ? 'warning' : 'info'} /></td><td><strong>{item.psi.toFixed(3)} / {item.ks.toFixed(3)}</strong><small>LIMIT {featureDriftReport.psi_threshold.toFixed(2)} / {featureDriftReport.ks_threshold.toFixed(2)}</small></td><td>{item.training_samples} / {item.live_samples}<small>TRAIN / LIVE</small></td><td>{item.mean_delta.toFixed(3)} / {item.p50_delta.toFixed(3)} / {item.p95_delta.toFixed(3)}</td><td><small>{item.blocking_reasons.join(' · ') || tx('无阻断', 'No blockers')}</small></td></tr>)}</tbody></table></div> : null}
-      </Card> : null}
-      <Card className="span-12">
-        <CardHead code="FEATURE DISTRIBUTION SNAPSHOTS" title={tx('逐特征分布快照', 'Feature Distribution Snapshots')} action={<div className="table-actions"><Badge value={(featureDistributionArchive?.scope?.status || 'VALIDATION SCOPE').toUpperCase()} kind={featureDistributionArchive?.blocking_reasons?.length ? 'warning' : 'info'} /><Badge value={`${featureDistributionArchive?.snapshot_count ?? featureDistributionSnapshots.length} SNAPSHOTS`} kind={featureDistributionSnapshots.length ? 'healthy' : 'warning'} /><a className="link" href="/api/v1/prediction/history/feature-distributions?scope=validation&download=1" download><Download size={13} />{tx('下载验证归档', 'Download validation archive')}</a><button className="link" type="button" disabled={featureDistributionStarting || latestBaselineModelBuild?.status !== 'completed'} onClick={() => void materializeTrainingFeatureDistributions()}>{featureDistributionStarting ? tx('生成中…', 'Materializing…') : tx('生成训练分布', 'Materialize training')}</button></div>} />
-        <p className="node-access-note">{tx('展示当前 validation scope 绑定的训练分布与 live shadow 分布压缩快照；scope 会绑定 shadow candidate、baseline、model spec、feature contract 和 role/filter，只保存统计量和 histogram proportions，不保存原始遥测样本。快照归档提供稳定 SHA256 和机器可读下载，用于固定特征漂移验证证据。', 'Shows compact training and live-shadow feature distribution snapshots bound to the current validation scope. The scope binds the shadow candidate, baseline, model spec, feature contract, and role/filter while storing only aggregate statistics and histogram proportions, never raw telemetry samples. The archive exposes a stable SHA256 and machine-readable download to freeze feature-drift validation evidence.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('训练 / 线上', 'Training / live')}</b><strong>{distributionTrainingCount} / {distributionLiveCount}</strong><small>{distributionFeatureCount} UNIQUE FEATURES</small></div>
-          <div><b>{tx('最近快照', 'Latest snapshot')}</b><strong>{featureDistributionSnapshots[0]?.feature_name || '—'}</strong><small>{featureDistributionSnapshots[0] ? `${featureDistributionSnapshots[0].distribution_role.toUpperCase()} · ${featureDistributionSnapshots[0].sample_count} SAMPLES` : tx('等待分布快照', 'Waiting for distribution snapshots')}</small></div>
-          <div><b>{tx('缺失率', 'Missing ratio')}</b><strong>{featureDistributionSnapshots[0] ? pct(featureDistributionSnapshots[0].missing_ratio) : '—'}</strong><small>{featureDistributionSnapshots[0]?.status?.toUpperCase() || 'NO SNAPSHOT'}</small></div>
-          <div><b>{tx('分箱', 'Bins')}</b><strong>{featureDistributionSnapshots[0]?.bin_proportions?.length || 0}</strong><small>{featureDistributionSnapshots[0]?.report_sha256?.slice(0, 12) || 'NO REPORT SHA'}</small></div>
-          <div><b>{tx('验证范围', 'Validation scope')}</b><strong>{featureDistributionArchive?.scope?.source_baseline_build_id ? `#${featureDistributionArchive.scope.source_baseline_build_id}` : '—'}</strong><small>{featureDistributionArchive?.scope?.model_key || featureDistributionArchive?.blocking_reasons?.[0] || 'NO MODEL SPEC'}</small></div>
-          <div><b>{tx('归档指纹', 'Archive SHA')}</b><strong>{featureDistributionArchive?.archive_sha256?.slice(0, 16) || '—'}</strong><small>{featureDistributionArchive ? `${featureDistributionArchive.baseline_count || 0} BASELINES · ${featureDistributionArchive.feature_count || 0} FEATURES` : 'NO ARCHIVE SHA'}</small></div>
-        </div>
-        {featureDistributionSnapshots.length > 0 ? <div className="table-wrap"><table><thead><tr><th>{tx('角色 / 特征', 'Role / feature')}</th><th>{tx('样本', 'Samples')}</th><th>{tx('均值 / P50 / P95', 'Mean / P50 / P95')}</th><th>{tx('缺失 / 分箱', 'Missing / bins')}</th><th>{tx('Baseline / 观测时间', 'Baseline / observed')}</th></tr></thead><tbody>{featureDistributionSnapshots.slice(0, 8).map(item => <tr key={item.id}><td><b>{item.distribution_role}</b><small>{item.feature_name}</small></td><td>{item.sample_count}</td><td>{item.mean.toFixed(3)} / {item.p50.toFixed(3)} / {item.p95.toFixed(3)}</td><td>{pct(item.missing_ratio)} · {item.bin_proportions.length} BINS</td><td><code>#{item.source_baseline_build_id}</code><small>{time(item.observed_at, lang)}</small></td></tr>)}</tbody></table></div> : null}
-      </Card>
-      {predictionModelGovernance ? <Card className="span-12">
-        <CardHead code={predictionModelGovernance.version} title={tx('模型与数据治理卡', 'Model & Dataset Governance Cards')} action={<div className="table-actions"><Badge value={predictionModelGovernance.mode.toUpperCase()} kind="info" /><Badge value={`${predictionModelGovernance.models.length} MODELS`} kind="healthy" /></div>} />
-        <p className="node-access-note">{tx('汇总当前训练数据、模型版本、影子门禁和 outcome 结果。该报告只读取 Atlas 已持久化元数据，不复制原始遥测；概率仍保持只读 shadow，不触发告警、调度或维修动作。', 'Summarizes current training data, model versions, shadow gates, and outcome evidence. This report reads persisted Atlas metadata only and does not copy raw telemetry. Probabilities remain read-only shadow signals and do not trigger alerts, scheduling, or repair actions.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('Dataset Card', 'Dataset Card')}</b><strong>{predictionModelGovernance.dataset.matrix_sample_count || predictionModelGovernance.dataset.window_count || 0}</strong><small>{predictionModelGovernance.dataset.matrix_positive_count || predictionModelGovernance.dataset.eligible_positive_count || 0} POS · {predictionModelGovernance.dataset.matrix_control_count || 0} CONTROL</small></div>
-          <div><b>{tx('数据排除 / 缺口', 'Exclusions / Gaps')}</b><strong>{(predictionModelGovernance.dataset.excluded_count || 0) + (predictionModelGovernance.dataset.identity_missing_count || 0) + (predictionModelGovernance.dataset.low_coverage_count || 0)}</strong><small>ID {predictionModelGovernance.dataset.identity_missing_count || 0} · LOW COVERAGE {predictionModelGovernance.dataset.low_coverage_count || 0} · EXCLUDED {predictionModelGovernance.dataset.excluded_count || 0}</small></div>
-          <div><b>{tx('Model Card', 'Model Card')}</b><strong>{predictionModelGovernance.models[0]?.algorithm || '—'}</strong><small>{predictionModelGovernance.models[0]?.baseline_version || predictionModelGovernance.models[0]?.model_version || 'NO MODEL'} · AUC {predictionModelGovernance.models[0]?.test_macro_roc_auc === undefined ? '—' : predictionModelGovernance.models[0].test_macro_roc_auc.toFixed(3)}</small></div>
-          <div><b>{tx('Shadow Gates', 'Shadow Gates')}</b><strong>{predictionModelGovernance.shadow_gates.shadow_distribution_status || predictionModelGovernance.shadow_gates.shadow_run_status || '—'}</strong><small>PARITY {predictionModelGovernance.shadow_gates.feature_parity_status || '—'} · REPLAY {predictionModelGovernance.shadow_gates.replay_status || '—'} · COVERAGE {predictionModelGovernance.shadow_gates.live_coverage_status || '—'}</small></div>
-        </div>
-        <div className="prediction-contract">
-          <span><b>{tx('特征矩阵', 'Feature matrix')}</b>{predictionModelGovernance.dataset.matrix_key || predictionModelGovernance.dataset.dataset_key || '—'}<small>{predictionModelGovernance.dataset.feature_column_count || 0} COLUMNS · {predictionModelGovernance.dataset.feature_contract_version || prediction?.feature_contract_version || '—'}</small></span>
-          <span><b>{tx('切分样本', 'Split samples')}</b>{predictionModelGovernance.dataset.train_count || 0} / {predictionModelGovernance.dataset.validation_count || 0} / {predictionModelGovernance.dataset.test_count || 0}<small>TRAIN / VALIDATION / TEST</small></span>
-          <span><b>{tx('影子覆盖', 'Shadow coverage')}</b>{predictionModelGovernance.shadow_gates.scored_gpu_count || 0} SCORED · {predictionModelGovernance.shadow_gates.positive_gpu_count || 0} ABOVE THRESHOLD<small>{predictionModelGovernance.shadow_gates.positive_ratio === undefined ? '—' : pct(predictionModelGovernance.shadow_gates.positive_ratio)} POSITIVE RATIO</small></span>
-          <span><b>{tx('下一步', 'Next run')}</b>{predictionModelGovernance.recommended_next_run[0] || '—'}<small>{time(predictionModelGovernance.generated_at, lang)}</small></span>
-        </div>
-      </Card> : null}
-      {labelManifest ? <Card className="span-12">
-        <CardHead code={labelManifest.version} title={tx('标签 Manifest', 'Label Manifest')} action={<div className="table-actions"><Badge value={(labelManifest.quality_gate_status || labelManifest.mode).toUpperCase()} kind={labelManifest.quality_gate_status === 'ready_for_offline_validation' ? 'healthy' : labelManifest.quality_gate_status === 'blocked' ? 'warning' : 'info'} /><Badge value={`${labelManifest.total} LABELS`} kind="healthy" /><a className="link" href="/api/v1/prediction/label-manifest?download=1" download><Download size={13} />{tx('下载 Manifest', 'Download manifest')}</a></div>} />
-        <p className="node-access-note">{tx('汇总正样本来源、质量层级、排除原因和人工确认依据；这是只读标签治理视图，不自动升级弱标签或修改训练集。', 'Summarizes positive-label sources, quality tiers, exclusion reasons, and human-confirmation evidence. This is a read-only label-governance view and does not promote weak labels or modify training data.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('正样本 / 总标签', 'Positive / Total')}</b><strong>{labelManifest.positive} / {labelManifest.total}</strong><small>{labelManifest.label_contract_version}</small></div>
-          <div><b>{tx('质量层级', 'Quality tiers')}</b><strong>{labelManifest.confirmed} / {labelManifest.strong_proxy} / {labelManifest.weak_proxy}</strong><small>CONFIRMED / STRONG / WEAK</small></div>
-          <div><b>{tx('人工确认 / 排除', 'Human confirmed / Excluded')}</b><strong>{labelManifest.human_confirmed} / {labelManifest.excluded}</strong><small>{Object.entries(labelManifest.exclusion_reasons || {}).slice(0, 2).map(([key, value]) => `${key} ${value}`).join(' · ') || 'NO EXCLUSIONS'}</small></div>
-          <div><b>{tx('质量门', 'Quality gate')}</b><strong>{(labelManifest.quality_gate_status || 'unknown').toUpperCase()}</strong><small>{(labelManifest.blocking_reasons || [])[0] || (labelManifest.recommended_next_run || [])[0] || labelManifest.negative_policy}</small></div>
-        </div>
-        <div className="prediction-contract">
-          <span><b>{tx('正样本策略', 'Positive policy')}</b>{labelManifest.positive_policy[0] || '—'}<small>{(labelManifest.positive_policy || []).slice(1).join(' · ')}</small></span>
-          <span><b>{tx('灰样本策略', 'Gray-sample policy')}</b>{labelManifest.gray_sample_policy[0] || '—'}<small>{(labelManifest.gray_sample_policy || []).slice(1).join(' · ')}</small></span>
-          <span><b>{tx('人工证据', 'Human evidence')}</b>{labelManifest.human_evidence_policy[0] || '—'}<small>{(labelManifest.human_evidence_policy || []).slice(1).join(' · ')}</small></span>
-          <span><b>{tx('证据指纹', 'Evidence fingerprint')}</b>{labelManifest.manifest_sha256?.slice(0, 16) || '—'}<small>{(labelManifest.evidence_scope || []).join(' · ') || time(labelManifest.generated_at, lang)}</small></span>
-          <span><b>{tx('样本标签', 'Sample labels')}</b>{(labelManifest.sample_label_keys || []).slice(0, 2).join(' · ') || '—'}<small>{Object.entries(labelManifest.by_event_type || {}).slice(0, 3).map(([key, value]) => `${key} ${value}`).join(' · ') || time(labelManifest.generated_at, lang)}</small></span>
-          <span><b>{tx('下一步', 'Next run')}</b>{(labelManifest.recommended_next_run || [])[0] || '—'}<small>{(labelManifest.blocking_reasons || []).join(' · ') || time(labelManifest.generated_at, lang)}</small></span>
-        </div>
-      </Card> : null}
-      {evidenceBundle ? <Card className="span-12">
-        <CardHead code={evidenceBundle.version} title={tx('训练样本 Evidence Bundle', 'Training Sample Evidence Bundle')} action={<div className="table-actions"><Badge value={evidenceBundle.mode.toUpperCase()} kind="info" /><Badge value={`${evidenceBundle.total_labels} LABELS`} kind="healthy" /><a className="link" href="/api/v1/prediction/evidence-bundle?download=1" download><Download size={13} />{tx('下载证据包', 'Download evidence')}</a></div>} />
-        <p className="node-access-note">{tx('按训练标签汇总样本级证据：label key、事件类型、来源记录、规则版本、人工确认引用和排除原因。该视图只读，不改变训练矩阵，不提升弱标签。', 'Summarizes sample-level evidence for training labels: label key, event type, source record, rule version, human-confirmation reference, and exclusion reason. This view is read-only and does not change the training matrix or promote weak labels.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('正样本 / 排除', 'Positive / Excluded')}</b><strong>{evidenceBundle.positive_labels} / {evidenceBundle.excluded_labels}</strong><small>{evidenceBundle.label_contract_version}</small></div>
-          <div><b>{tx('确认 / 强 / 弱', 'Confirmed / Strong / Weak')}</b><strong>{evidenceBundle.confirmed_labels} / {evidenceBundle.strong_proxy_labels} / {evidenceBundle.weak_proxy_labels}</strong><small>{evidenceBundle.human_confirmation_references} HUMAN REFERENCES</small></div>
-          <div><b>{tx('证据指纹', 'Evidence SHA')}</b><strong>{evidenceBundle.bundle_sha256.slice(0, 16) || '—'}</strong><small>{time(evidenceBundle.generated_at, lang)}</small></div>
-          <div><b>{tx('已知缺口', 'Known gaps')}</b><strong>{evidenceBundle.known_gaps.length}</strong><small>{evidenceBundle.known_gaps[0] || evidenceBundle.answerable_questions[0] || '—'}</small></div>
-        </div>
-        <div className="prediction-contract">
-          <span><b>{tx('正样本证据', 'Positive evidence')}</b>{evidenceBundle.positive_evidence[0]?.label_key || '—'}<small>{evidenceBundle.positive_evidence[0] ? `${evidenceBundle.positive_evidence[0].event_type} · ${evidenceBundle.positive_evidence[0].source_reference} · ${evidenceBundle.positive_evidence[0].human_confirmation_reference || evidenceBundle.positive_evidence[0].quality_tier}` : tx('暂无正样本证据', 'No positive evidence')}</small></span>
-          <span><b>{tx('排除证据', 'Excluded evidence')}</b>{evidenceBundle.excluded_evidence[0]?.label_key || '—'}<small>{evidenceBundle.excluded_evidence[0]?.exclusion_reason || tx('暂无排除样本', 'No excluded samples')}</small></span>
-          <span><b>{tx('事件分布', 'Event distribution')}</b>{Object.entries(evidenceBundle.by_event_type || {}).slice(0, 2).map(([key, value]) => `${key} ${value}`).join(' · ') || '—'}<small>{Object.entries(evidenceBundle.by_quality_tier || {}).slice(0, 3).map(([key, value]) => `${key} ${value}`).join(' · ') || evidenceBundle.mode}</small></span>
-        </div>
-      </Card> : null}
-      {promotionDecision ? <Card className="span-12">
-        <CardHead code={promotionDecision.version} title={tx('只读候选晋级决策', 'Read-only Candidate Promotion Decision')} action={<div className="table-actions"><a className="link" href="/api/v1/prediction/promotion-decision?download=1" download><Download size={13} />{tx('下载决策报告', 'Download decision')}</a><Badge value={promotionDecision.status.toUpperCase()} kind={promotionDecision.status === 'eligible_for_shadow_observation' ? 'healthy' : promotionDecision.status === 'blocked' ? 'warning' : 'info'} /></div>} />
-        <p className="node-access-note">{tx('该报告把同一缓存快照中的双轨验证、Readiness、跨批一致性、切片可比性和安全边界收束成单一治理结论。通过仅代表可以继续受限的只读影子观测，不会开启告警、调度、隔离、重启或维修动作。', 'This report reduces dual-track validation, readiness, cross-cohort consistency, slice comparability, and safety from the same cached snapshot into one governance decision. Passing only permits bounded read-only shadow observation; it does not enable alerts, scheduling, isolation, restarts, or repair actions.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('决策指纹', 'Decision SHA')}</b><strong>{promotionDecision.decision_sha256.slice(0, 16) || '—'}</strong><small>{promotionDecision.dual_track_version} · {promotionDecision.dual_track_sha256.slice(0, 12)}</small></div>
-          <div><b>{tx('绑定模型', 'Bound model')}</b><strong>{promotionDecision.model_key || '—'}</strong><small>{promotionDecision.model_version || 'NO MODEL'} · {promotionDecision.horizon_minutes ? `${promotionDecision.horizon_minutes / 1440}D` : 'NO HORIZON'}</small></div>
-          <div><b>{tx('通过门 / 总门', 'Passed / Total gates')}</b><strong>{promotionDecision.gates.filter(gate => gate.status === 'passed').length} / {promotionDecision.gates.length}</strong><small>{promotionDecision.gates.filter(gate => gate.status !== 'passed').map(gate => `${gate.name}:${gate.status}`).join(' · ') || 'ALL PASSED'}</small></div>
-          <div><b>{tx('阻断项', 'Blockers')}</b><strong>{promotionDecision.blocking_reasons.length}</strong><small>{promotionDecision.blocking_reasons[0] || promotionDecision.recommended_next_run[0] || 'READY'}</small></div>
-        </div>
-        <div className="prediction-contract">
-          {promotionDecision.gates.map(gate => <span key={gate.name}><b>{gate.name.replaceAll('_', ' ').toUpperCase()}</b>{gate.status.toUpperCase()}<small>{gate.blocking_reasons[0] || gate.evidence_sha256?.slice(0, 12) || gate.evidence_version || 'BOUND'}</small></span>)}
-        </div>
-      </Card> : null}
-      {dualTrackValidation ? <Card className="span-12">
-        <CardHead code={dualTrackValidation.version} title={tx('风险排序 / 时间窗口预测双轨验证', 'Risk Ranking / Horizon Probability Dual-Track Validation')} action={<div className="table-actions"><a className="link" href="/api/v1/prediction/dual-track-validation?download=1" download><Download size={13} />{tx('下载双轨报告', 'Download dual-track report')}</a><Badge value={dualTrackValidation.status.toUpperCase()} kind={dualTrackValidation.status === 'comparable' ? 'healthy' : dualTrackValidation.status === 'blocked' ? 'warning' : 'info'} /><Badge value={dualTrackValidation.alignment.status.toUpperCase()} kind={dualTrackValidation.alignment.status === 'aligned' ? 'healthy' : 'warning'} /></div>} />
-        <p className="node-access-note">{tx('两条轨道严格绑定同一 model spec、horizon 和预测截点，但分别判定：排名轨回答“先看谁”，概率轨回答“固定窗口内发生事件的概率质量”。报告不生成单一成功率，也不触发告警或自动动作。', 'Both tracks are bound to the same model spec, horizon, and prediction cutoff but judged independently: ranking answers who to review first, while probability evaluates event-risk quality within a fixed horizon. The report produces no combined success rate and triggers no alert or automated action.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('双轨指纹', 'Dual-track SHA')}</b><strong>{dualTrackValidation.report_sha256?.slice(0, 16) || '—'}</strong><small>{dualTrackValidation.evidence.readiness_sha256?.slice(0, 12) || 'NO READINESS SHA'}</small></div>
-          <div><b>{tx('对齐批次', 'Aligned cohort')}</b><strong>{dualTrackValidation.alignment.aligned_outcome_rows}</strong><small>{dualTrackValidation.alignment.horizon_minutes / 1440}D · {dualTrackValidation.alignment.snapshot_cutoff_at ? time(dualTrackValidation.alignment.snapshot_cutoff_at, lang) : 'NO CUTOFF'}</small></div>
-          <div><b>{tx('风险排名轨', 'Ranking track')}</b><strong>{dualTrackValidation.ranking_track.status.toUpperCase()}</strong><small>{dualTrackValidation.ranking_track.nodes} NODES · {dualTrackValidation.ranking_track.matured_rows} MATURED · {dualTrackValidation.ranking_track.positive_rows} POS</small></div>
-          <div><b>{tx('概率预测轨', 'Probability track')}</b><strong>{dualTrackValidation.probability_track.status.toUpperCase()}</strong><small>{dualTrackValidation.probability_track.maturity.matured}/{dualTrackValidation.probability_track.maturity.total} MATURED · {dualTrackValidation.probability_track.positive_rows} POS · COVERAGE {pct(dualTrackValidation.probability_track.probability_coverage)}</small></div>
-          <div><b>{tx('概率质量', 'Probability quality')}</b><strong>ROC {pct(dualTrackValidation.probability_track.quality.roc_auc)} · AP {pct(dualTrackValidation.probability_track.quality.pr_auc_average_precision)}</strong><small>F1 {pct(dualTrackValidation.probability_track.quality.f1_score)} · ECE {pct(dualTrackValidation.probability_track.quality.expected_calibration_error)} · BSS {pct(dualTrackValidation.probability_track.quality.brier_skill_score)}</small><Badge value={(dualTrackValidation.probability_track.quality.status || 'UNKNOWN').toUpperCase()} kind={dualTrackValidation.probability_track.quality.status === 'comparable' ? 'healthy' : dualTrackValidation.probability_track.quality.status?.startsWith('blocked') ? 'warning' : 'info'} /></div>
-          <div><b>{tx('漂移 / 校准', 'Drift / calibration')}</b><strong>{dualTrackValidation.evidence.data_drift_status.toUpperCase()}</strong><small>{dualTrackValidation.evidence.calibration_drift_status.toUpperCase()} · FEATURE {dualTrackValidation.evidence.feature_drift_status.toUpperCase()}</small></div>
-          <div><b>{tx('时间批次', 'Time cohorts')}</b><strong>{dualTrackValidation.temporal_summary.independent_cohort_count} / {dualTrackValidation.temporal_summary.cohort_count}</strong><small>{dualTrackValidation.temporal_summary.matured_cohort_count} MATURED · RANK {dualTrackValidation.temporal_summary.comparable_ranking_cohort_count} / PROB {dualTrackValidation.temporal_summary.comparable_probability_cohort_count} COMPARABLE</small></div>
-          <div><b>{tx('排名方向一致性', 'Ranking direction')}</b><strong>{dualTrackValidation.temporal_consistency.ranking_track.status.toUpperCase()}</strong><small>{dualTrackValidation.temporal_consistency.ranking_track.positive_direction_cohorts}/{dualTrackValidation.temporal_consistency.ranking_track.evaluable_independent_cohorts} POSITIVE · {pct(dualTrackValidation.temporal_consistency.ranking_track.direction_consistency_ratio)}</small></div>
-          <div><b>{tx('概率方向一致性', 'Probability direction')}</b><strong>{dualTrackValidation.temporal_consistency.probability_track.status.toUpperCase()}</strong><small>{dualTrackValidation.temporal_consistency.probability_track.positive_direction_cohorts}/{dualTrackValidation.temporal_consistency.probability_track.evaluable_independent_cohorts} POSITIVE · {pct(dualTrackValidation.temporal_consistency.probability_track.direction_consistency_ratio)}</small></div>
-          <div><b>{tx('切片维度快照', 'Slice dimension snapshot')}</b><strong>{dualTrackValidation.slice_audit?.status?.toUpperCase() || 'UNKNOWN'}</strong><small>{dualTrackValidation.slice_audit?.contract_version || 'NO CONTRACT'} · {dualTrackValidation.slice_audit?.total_rows || 0} ROWS</small></div>
-          <div><b>{tx('安全边界', 'Safety envelope')}</b><strong>{dualTrackValidation.safety.read_only_shadow && dualTrackValidation.safety.no_alert_emitted && dualTrackValidation.safety.no_action_executed ? 'READ-ONLY' : 'REVIEW'}</strong><small>NO ALERT · NO ACTION</small></div>
-        </div>
-        {(dualTrackValidation.slice_audit?.dimensions || []).length > 0 ? <div className="table-wrap"><table className="prediction-label-table"><thead><tr><th>{tx('切片维度', 'Slice dimension')}</th><th>{tx('冻结来源', 'Frozen source')}</th><th>{tx('状态', 'Status')}</th><th>{tx('覆盖', 'Coverage')}</th><th>{tx('取值', 'Values')}</th></tr></thead><tbody>{(dualTrackValidation.slice_audit?.dimensions || []).map(dimension => <tr key={dimension.dimension}><td><b>{dimension.dimension}</b></td><td><code>{dimension.source}</code></td><td><Badge value={dimension.status.toUpperCase()} kind={dimension.status === 'ready' ? 'healthy' : dimension.status.startsWith('blocked') ? 'warning' : 'info'} /></td><td>{dimension.frozen_rows}/{dimension.applicable_rows}<small>{dimension.missing_rows} MISSING · {dimension.distinct_values} DISTINCT</small></td><td>{(dimension.values || []).slice(0, 3).join(' · ') || '—'}<small>{dimension.blocking_reasons?.[0] || ''}</small></td></tr>)}</tbody></table></div> : null}
-        {(dualTrackValidation.validation_slices || []).length > 0 ? <div className="table-wrap"><table className="prediction-label-table"><thead><tr><th>{tx('维度 / 取值', 'Dimension / value')}</th><th>{tx('样本', 'Samples')}</th><th>{tx('排名轨', 'Ranking')}</th><th>TOP-5% CAPTURE / LIFT</th><th>{tx('概率轨', 'Probability')}</th><th>ROC / AP</th><th>F1 / BSS</th></tr></thead><tbody>{(dualTrackValidation.validation_slices || []).map(slice => { const top = (slice.node_ranking_at_percent || []).find(metric => metric.percent === 5); return <tr key={`${slice.dimension}:${slice.value}`}><td><b>{slice.dimension}</b><small>{slice.value}</small></td><td>{slice.matured_rows}/{slice.total_rows}<small>{slice.node_count} NODES · {slice.positive_rows} POS</small></td><td><Badge value={slice.ranking_status.toUpperCase()} kind={slice.ranking_status === 'comparable' ? 'healthy' : slice.ranking_status === 'blocked' ? 'warning' : 'info'} /></td><td>{pct(top?.recall)} / {pct(top?.lift)}</td><td><Badge value={slice.probability_status.toUpperCase()} kind={slice.probability_status === 'comparable' ? 'healthy' : slice.probability_status === 'blocked' ? 'warning' : 'info'} /></td><td>{pct(slice.probability_metrics?.roc_auc)} / {pct(slice.probability_metrics?.pr_auc_average_precision)}</td><td>{pct(slice.probability_metrics?.f1_score)} / {pct(slice.probability_metrics?.brier_skill_score)}</td></tr> })}</tbody></table></div> : null}
-        <div className="prediction-ranking-grid"><RankingTable label={tx('同批节点 Ranking@K', 'Aligned Node Ranking@K')} rows={dualTrackValidation.ranking_track.ranking_at_k} /><div className="metric-card"><b>TOP-5% CAPTURE</b><strong>{pct((dualTrackValidation.ranking_track.ranking_at_percent || []).find(metric => metric.percent === 5)?.recall)}</strong><small>LIFT {pct((dualTrackValidation.ranking_track.ranking_at_percent || []).find(metric => metric.percent === 5)?.lift)}</small></div></div>
-        {(dualTrackValidation.temporal_cohorts || []).length > 0 ? <div className="table-wrap"><table className="prediction-label-table"><thead><tr><th>{tx('预测截点', 'Prediction cutoff')}</th><th>{tx('时间独立性', 'Time independence')}</th><th>{tx('样本', 'Samples')}</th><th>{tx('排名轨', 'Ranking')}</th><th>{tx('概率轨', 'Probability')}</th><th>TOP-5% CAPTURE / LIFT</th><th>{tx('概率质量', 'Probability quality')}</th><th>{tx('准确率', 'Accuracy')}</th></tr></thead><tbody>{(dualTrackValidation.temporal_cohorts || []).map(row => { const top = (row.node_ranking_at_percent || []).find(metric => metric.percent === 5); return <tr key={row.prediction_cutoff_at}><td><b>{time(row.prediction_cutoff_at, lang)}</b></td><td><Badge value={row.independent_time_batch ? 'INDEPENDENT' : 'OVERLAPPING'} kind={row.independent_time_batch ? 'healthy' : 'info'} /></td><td>{row.matured_rows}/{row.total_rows}<small>{row.node_count} NODES · {row.positive_rows} POS · {row.pending_rows} PENDING</small></td><td><Badge value={row.ranking_status.toUpperCase()} kind={row.ranking_status === 'comparable' ? 'healthy' : row.ranking_status === 'blocked' ? 'warning' : 'info'} /></td><td><Badge value={row.probability_status.toUpperCase()} kind={row.probability_status === 'comparable' ? 'healthy' : row.probability_status === 'blocked' ? 'warning' : 'info'} /></td><td>{pct(top?.recall)} / {pct(top?.lift)}</td><td><b>ROC {pct(row.probability_metrics?.roc_auc)} · AP {pct(row.probability_metrics?.pr_auc_average_precision)}</b><small>F1 {pct(row.probability_metrics?.f1_score)} · ECE {pct(row.probability_metrics?.expected_calibration_error)} · BSS {pct(row.probability_metrics?.brier_skill_score)} · {(row.probability_metrics?.status || 'unknown').toUpperCase()}</small></td><td>{pct(row.probability_metrics?.accuracy)}</td></tr> })}</tbody></table></div> : null}
-        {(dualTrackValidation.ranking_track.blocking_reasons[0] || dualTrackValidation.probability_track.blocking_reasons[0]) ? <p className="node-access-note">{dualTrackValidation.ranking_track.blocking_reasons[0] || dualTrackValidation.probability_track.blocking_reasons[0]}</p> : null}
-      </Card> : null}
-      {validationReadiness ? <Card id="prediction-readiness" className="span-12">
-        <CardHead code={validationReadiness.version} title={tx('离线验证就绪门', 'Offline Validation Readiness Gate')} action={<div className="table-actions"><Badge value={validationReadiness.status.toUpperCase()} kind={validationReadiness.status === 'ready_for_offline_validation' ? 'healthy' : validationReadiness.status === 'blocked' ? 'warning' : 'info'} /><Badge value={`${validationReadiness.outcome_maturity.matured} MATURED`} kind="info" /><a className="link" href="/api/v1/prediction/validation-readiness?download=1" download><Download size={13} />{tx('下载就绪报告', 'Download readiness')}</a></div>} />
-        <p className="node-access-note">{tx('统一汇总标签质量门、成熟 shadow outcome 和 HeaRank 7d challenger 状态。该门禁只判断是否可以进入离线验证，不训练模型、不改阈值、不触发任何线上动作。', 'Combines the label quality gate, mature shadow outcomes, and HeaRank 7d challenger status. This gate only decides whether offline validation may proceed; it trains no model, changes no threshold, and triggers no online action.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('就绪指纹', 'Readiness SHA')}</b><strong>{validationReadiness.readiness_sha256?.slice(0, 16) || '—'}</strong><small>{validationReadiness.label_manifest_version} · {validationReadiness.label_manifest_sha256.slice(0, 12) || 'NO LABEL SHA'}</small></div>
-          <div><b>{tx('证据包', 'Evidence bundle')}</b><strong>{validationReadiness.evidence_bundle_sha256?.slice(0, 16) || '—'}</strong><small>{validationReadiness.evidence_positive_labels} POS · {validationReadiness.evidence_excluded_labels} EXCLUDED</small></div>
-          <div><b>{tx('人工反馈 Manifest', 'Human feedback manifest')}</b><strong>{validationReadiness.human_feedback_status?.toUpperCase() || 'UNKNOWN'}</strong><small>{validationReadiness.human_feedback_confirmed_labels} CONFIRMED · {validationReadiness.human_feedback_outcome_overrides} OVERRIDES · {validationReadiness.human_feedback_manifest_sha256?.slice(0, 12) || 'NO SHA'}</small></div>
-          <div><b>{tx('硬件反馈闭环', 'Hardware feedback loop')}</b><strong>{validationReadiness.human_feedback_hardware_pack_ready}/{validationReadiness.human_feedback_hardware_fault_requests}</strong><small>{validationReadiness.human_feedback_hardware_warning_reviewed} REVIEWED · {validationReadiness.human_feedback_hardware_warning_misses} MISSES · {validationReadiness.human_feedback_hardware_blocked} BLOCKED</small></div>
-          <div><b>{tx('Outcome 稳定性', 'Outcome stability')}</b><strong>{validationReadiness.outcome_stability_status.toUpperCase()}</strong><small>{validationReadiness.outcome_maturity.matured} / {validationReadiness.outcome_maturity.total} MATURED · {pct(validationReadiness.outcome_maturity.matured_ratio)}</small></div>
-          <div><b>{tx('7 天 Challenger', '7d challenger')}</b><strong>{(validationReadiness.challenger_confidence_status || validationReadiness.challenger_status).toUpperCase()}</strong><small>{validationReadiness.seven_day_rows} ROWS · {validationReadiness.seven_day_nodes} NODES · {validationReadiness.seven_day_positives} POS · HISTORY {validationReadiness.challenger_historical_signal_status?.toUpperCase() || 'NO SIGNAL'}</small></div>
-          <div><b>{tx('排名快照', 'Ranking snapshot')}</b><strong>{validationReadiness.risk_ranking_sha256?.slice(0, 16) || '—'}</strong><small>{validationReadiness.risk_ranking_node_count} NODES · {validationReadiness.risk_ranking_scored_gpu_count}/{validationReadiness.risk_ranking_target_gpu_count} GPUS · {validationReadiness.risk_ranking_status?.toUpperCase() || 'NO SNAPSHOT'}</small></div>
-          <div><b>{tx('跨批一致性门', 'Temporal consistency')}</b><strong>{validationReadiness.temporal_consistency.ranking_track.status.toUpperCase()}</strong><small>RANK {validationReadiness.temporal_consistency.ranking_track.positive_direction_cohorts}/{validationReadiness.temporal_consistency.ranking_track.evaluable_independent_cohorts} · PROB {validationReadiness.temporal_consistency.probability_track.status.toUpperCase()} {validationReadiness.temporal_consistency.probability_track.positive_direction_cohorts}/{validationReadiness.temporal_consistency.probability_track.evaluable_independent_cohorts}</small></div>
-          <div><b>{tx('切片比较门', 'Slice comparability')}</b><strong>{validationSliceComparability?.slice_comparability_status?.toUpperCase() || 'UNKNOWN'}</strong><small>{validationReadiness.slice_ready_dimensions}/4 FROZEN · JOINT {validationSliceComparability?.comparable_joint_dimensions || 0}/{validationSliceComparability?.slice_required_dimensions || 4} · RANK DIM {validationSliceComparability?.comparable_ranking_dimensions || 0} · PROB DIM {validationSliceComparability?.comparable_probability_dimensions || 0} · SHA {validationReadiness.validation_slices_sha256?.slice(0, 10) || '—'}</small></div>
-          <div><b>{tx('漂移门', 'Drift gate')}</b><strong>{validationReadiness.data_drift_status.toUpperCase()}</strong><small>{validationReadiness.data_drift_coverage_quality_status.toUpperCase()} · PSI {validationReadiness.data_drift_psi_proxy.toFixed(3)} · KS {validationReadiness.data_drift_ks_proxy.toFixed(3)}</small></div>
-          <div><b>{tx('校准漂移', 'Calibration drift')}</b><strong>{validationReadiness.calibration_drift_status.toUpperCase()}</strong><small>ECE Δ {validationReadiness.calibration_ece_delta.toFixed(3)} · BSS Δ {validationReadiness.calibration_brier_skill_score_delta.toFixed(3)}</small></div>
-          <div><b>{tx('特征漂移', 'Feature drift')}</b><strong>{validationReadiness.feature_drift_status.toUpperCase()}</strong><small>{(validationReadiness.feature_drift_blocking_reasons || [])[0] || (validationReadiness.feature_drift_recommended_next_run || [])[0] || `${validationReadiness.feature_drift_compared_features}/${validationReadiness.feature_drift_feature_columns} COMP · PSI ${validationReadiness.feature_drift_maximum_psi.toFixed(3)} · KS ${validationReadiness.feature_drift_maximum_ks.toFixed(3)} · REVIEW ${validationReadiness.feature_drift_review_required_features}`}</small></div>
-          <div><b>{tx('分布归档', 'Distribution archive')}</b><strong>{validationReadiness.feature_distribution_archive_sha256?.slice(0, 16) || '—'}</strong><small>{validationReadiness.feature_distribution_comparability_status?.toUpperCase() || 'NO GATE'} · {validationReadiness.feature_distribution_paired_feature_count} PAIRS · {validationReadiness.feature_distribution_training_snapshots} TRAIN · {validationReadiness.feature_distribution_live_shadow_snapshots} LIVE</small></div>
-          <div><b>{tx('阻断项', 'Blockers')}</b><strong>{validationReadiness.blocking_reasons.length}</strong><small>{validationReadiness.blocking_reasons[0] || validationReadiness.recommended_next_run[0] || 'READY'}</small></div>
-        </div>
-        <div className="prediction-contract">
-          <span><b>{tx('绑定报告', 'Bound reports')}</b>{validationReadiness.outcome_report_version}<small>{validationReadiness.challenger_version} · {validationReadiness.risk_ranking_version} · {validationReadiness.temporal_consistency_version} · {validationReadiness.slice_audit_version} · {validationReadiness.evidence_bundle_version} · {validationReadiness.human_feedback_manifest_version} · {validationReadiness.data_drift_version} · {validationReadiness.calibration_drift_version} · {validationReadiness.feature_drift_version} · {validationReadiness.feature_distribution_archive_version}</small></span>
-          <span><b>{tx('反馈窗口绑定', 'Feedback window binding')}</b>{validationReadiness.human_feedback_matched_prediction_windows} MATCHED<small>{validationReadiness.human_feedback_point_in_time_violations} POINT-IN-TIME VIOLATIONS · {validationReadiness.human_feedback_manifest_sha256?.slice(0, 12) || 'NO FEEDBACK SHA'}</small></span>
-          <span><b>{tx('硬件反馈状态', 'Hardware feedback status')}</b>{validationReadiness.human_feedback_hardware_fault_requests} REQUESTS<small>{validationReadiness.human_feedback_hardware_pack_ready} PACK READY · {validationReadiness.human_feedback_hardware_warning_reviewed} WARNING REVIEWED · {validationReadiness.human_feedback_hardware_blocked} BLOCKED</small></span>
-          <span><b>{tx('切片比较缺口', 'Slice comparison gaps')}</b>{validationSliceComparability?.slice_comparability_status?.toUpperCase() || 'UNKNOWN'}<small>RANK {(validationSliceComparability?.missing_ranking_dimensions || []).join(' · ') || 'NONE'} · PROB {(validationSliceComparability?.missing_probability_dimensions || []).join(' · ') || 'NONE'}</small></span>
-          <span><b>{tx('特征漂移下一步', 'Feature drift next')}</b>{(validationReadiness.feature_drift_recommended_next_run || [])[0] || (validationReadiness.feature_drift_blocking_reasons || [])[0] || '—'}<small>{(validationReadiness.feature_drift_blocking_reasons || []).slice(0, 2).join(' · ') || validationReadiness.feature_drift_sha256.slice(0, 12) || 'NO SHA'}</small></span>
-          <span><b>{tx('分布归档范围', 'Distribution scope')}</b>{validationReadiness.feature_distribution_archive_scope?.source_baseline_build_id ? `BASELINE #${validationReadiness.feature_distribution_archive_scope.source_baseline_build_id}` : '—'}<small>{validationReadiness.feature_distribution_blocking_reasons?.[0] || validationReadiness.feature_distribution_missing_training_features?.[0] || validationReadiness.feature_distribution_missing_live_shadow_features?.[0] || validationReadiness.feature_distribution_archive_scope?.model_key || validationReadiness.feature_distribution_archive_sha256?.slice(0, 12) || 'NO ARCHIVE'}</small></span>
-          <span><b>{tx('下一步', 'Next run')}</b>{validationReadiness.recommended_next_run[0] || '—'}<small>{validationReadiness.recommended_next_run.slice(1, 3).join(' · ')}</small></span>
-          <span><b>{tx('更新时间', 'Generated')}</b>{time(validationReadiness.generated_at, lang)}<small>{validationReadiness.mode.toUpperCase()}</small></span>
-        </div>
-      </Card> : null}
-      {riskRankingSnapshot ? <Card className="span-12">
-        <CardHead code={riskRankingSnapshot.version} title={tx('节点风险排名快照', 'Node Risk Ranking Snapshot')} action={<div className="table-actions"><a className="link" href="/api/v1/prediction/risk-ranking-snapshot?download=1" download><Download size={13} />{tx('下载排名快照', 'Download ranking')}</a><Badge value={riskRankingSnapshot.status.toUpperCase()} kind={riskRankingSnapshot.status === 'shadow_snapshot_available' ? 'healthy' : 'warning'} /><Badge value={`${riskRankingSnapshot.horizon_minutes / 1440}D SHADOW`} kind="info" /></div>} />
-        <p className="node-access-note">{tx('该快照回答“当前这一批节点应优先复核谁”。首版以同一 shadow run 中节点最高 GPU 校准概率作为相对优先级信号，冻结模型、窗口、截点、排名和 SHA；排名分数不等于已经验证的绝对故障概率。', 'This snapshot answers which nodes in the current cohort should be reviewed first. v1 uses each node’s maximum calibrated GPU probability from one shadow run as a relative-priority signal and freezes the model, horizon, cutoff, rank, and SHA. The ranking score is not a validated absolute failure probability.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('快照指纹', 'Snapshot SHA')}</b><strong>{riskRankingSnapshot.report_sha256?.slice(0, 16) || '—'}</strong><small>{riskRankingSnapshot.shadow_run_key || 'NO RUN'}</small></div>
-          <div><b>{tx('节点 / GPU', 'Nodes / GPUs')}</b><strong>{riskRankingSnapshot.node_count} / {riskRankingSnapshot.scored_gpu_count}</strong><small>{riskRankingSnapshot.target_gpu_count} TARGET GPUS</small></div>
-          <div><b>{tx('模型 / 窗口', 'Model / Horizon')}</b><strong>{riskRankingSnapshot.scope_model_name || '—'} · {riskRankingSnapshot.horizon_minutes / 1440}D</strong><small>{riskRankingSnapshot.model_version || riskRankingSnapshot.model_key || '—'}</small></div>
-          <div><b>{tx('冻结截点', 'Frozen cutoff')}</b><strong>{riskRankingSnapshot.snapshot_cutoff_at ? time(riskRankingSnapshot.snapshot_cutoff_at, lang) : '—'}</strong><small>{riskRankingSnapshot.score_semantics}</small></div>
-        </div>
-        {riskRankingSnapshot.items.length > 0 ? <div className="table-wrap"><table className="prediction-label-table"><thead><tr><th>RANK</th><th>{tx('节点', 'Node')}</th><th>{tx('优先级分数', 'Priority score')}</th><th>{tx('节点均值', 'Node mean')}</th><th>{tx('GPU / 超阈值', 'GPUs / Above threshold')}</th><th>{tx('最高风险 GPU', 'Top-risk GPU')}</th></tr></thead><tbody>{riskRankingSnapshot.items.slice(0, 20).map(row => <tr key={row.node_ip}><td><b>#{row.rank}</b><small>TOP {(row.top_percentile * 100).toFixed(1)}%</small></td><td><b>{row.node_ip}</b></td><td>{row.risk_score.toFixed(4)}</td><td>{row.mean_probability.toFixed(4)}</td><td>{row.gpu_count} / {row.above_threshold_gpu_count}</td><td><code>{row.top_gpu_uuid || '—'}</code></td></tr>)}</tbody></table></div> : <Empty tx={tx} title={riskRankingSnapshot.blocking_reasons[0] || tx('尚无可冻结的风险排名', 'No risk ranking available to freeze')} />}
-      </Card> : null}
-      {observabilityRanking ? <Card className="span-12">
-        <CardHead code={observabilityRanking.version} title={tx('健康批次前瞻信号排序验证', 'Prospective Health-run Signal Ranking Validation')} action={<div className="table-actions"><a className="link" href={`${observabilityRanking.replay_url}&download=1`} download><Download size={13} />{tx('下载定时复核报告', 'Download fixed-time replay')}</a><Badge value={observabilityRanking.status.toUpperCase()} kind={observabilityRanking.status === 'comparable' ? 'healthy' : observabilityRanking.status === 'exploratory' ? 'info' : 'warning'} /><Badge value="MODEL-INDEPENDENT" kind="info" /></div>} />
-        <p className="node-access-note">{tx('该报告完全绕开模型注册表：在相同健康 run、截点和未来标签上固定比较七种结构可观测性策略与七种持久化健康分/组件分策略。候选除了跨批方向一致，还必须覆盖至少三个唯一正例 GPU（身份缺失时才回退节点）；重复实体会单独计数，避免把同一张故障卡跨批复发误当独立证据。结果只表达相对复核优先级，不是故障概率。', 'This report bypasses the model registry and compares seven structural-observability policies with seven persisted overall/component health-score policies on identical health runs, cutoffs, and future labels. A candidate must be directionally consistent across cohorts and cover at least three unique positive GPUs, falling back to node identity only when GPU identity is absent. Recurrent entities are counted separately so repeat failures from one GPU cannot masquerade as independent evidence. Results are relative review priority, not failure probability.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('报告指纹', 'Report SHA')}</b><strong>{observabilityRanking.report_sha256.slice(0, 16)}</strong><small>{observabilityRanking.policy_summaries.length} FIXED POLICIES</small></div>
-          <div><b>{tx('独立成熟批次', 'Independent cohorts')}</b><strong>{observabilityRanking.cohort_count} / {observabilityRanking.cohort_limit}</strong><small>{observabilityRanking.evaluable_cohort_count} EVALUABLE · {observabilityRanking.positive_cohort_count} POSITIVE</small></div>
-          <div><b>{tx('评估时点', 'Evaluation time')}</b><strong>{time(observabilityRanking.evaluation_as_of, lang)}</strong><small>{observabilityRanking.cohort_selection_mode === 'fixed_as_of' ? tx('固定时点复核', 'FIXED-TIME REPLAY') : tx('随时间滚动选批', 'ROLLING COHORT SELECTION')}</small></div>
-          <div><b>{tx('正例实体独立性', 'Positive entity independence')}</b><strong>{observabilityRanking.unique_positive_entity_count} / {observabilityRanking.minimum_unique_positive_entities}</strong><small>{observabilityRanking.positive_episode_count} EPISODES · {observabilityRanking.recurrent_positive_entity_count} RECURRENT · {observabilityRanking.evidence_independence_status.toUpperCase()}</small></div>
-          <div><b>{tx('候选策略', 'Candidate policy')}</b><strong>{observabilityRanking.candidate_policy?.toUpperCase() || 'NONE'}</strong><small>PRIMARY {observabilityRanking.primary_policy.toUpperCase()}</small></div>
-          <div><b>{tx('主策略方向', 'Primary direction')}</b><strong>{observabilityRanking.temporal_consistency.status.toUpperCase()}</strong><small>{observabilityRanking.temporal_consistency.positive_direction_cohorts}/{observabilityRanking.temporal_consistency.evaluable_independent_cohorts} POSITIVE · {pct(observabilityRanking.temporal_consistency.direction_consistency_ratio)}</small></div>
-          <div><b>{tx('安全边界', 'Safety envelope')}</b><strong>{observabilityRanking.safety.read_only_shadow && observabilityRanking.safety.no_alert_emitted && observabilityRanking.safety.no_action_executed ? 'READ-ONLY' : 'REVIEW'}</strong><small>NO ALERT · NO ACTION · {observabilityRanking.negative_censor_hours}H CENSOR</small></div>
-          <div><b>{tx('当前阻断', 'Current blocker')}</b><strong>{observabilityRanking.blocking_reasons.length}</strong><small>{observabilityRanking.blocking_reasons[0] || 'NONE'}</small></div>
-        </div>
-        {observabilityRanking.policy_summaries.length > 0 ? <div className="table-wrap"><table className="prediction-label-table"><thead><tr><th>{tx('固定策略', 'Fixed policy')}</th><th>{tx('跨批状态', 'Cross-cohort status')}</th><th>{tx('正向批次', 'Positive direction')}</th><th>{tx('阻断正例批次', 'Blocked positive cohorts')}</th><th>{tx('说明', 'Description')}</th></tr></thead><tbody>{observabilityRanking.policy_summaries.map(summary => <tr key={summary.policy}><td><b>{summary.policy.toUpperCase()}</b><small>{summary.plane.toUpperCase()} · {summary.policy === observabilityRanking.primary_policy ? 'PRIMARY / V1 COMPATIBLE' : summary.policy === observabilityRanking.candidate_policy ? 'CANDIDATE' : 'CHALLENGER'}</small></td><td><Badge value={summary.temporal_consistency.status.toUpperCase()} kind={summary.temporal_consistency.status === 'consistent' ? 'healthy' : summary.temporal_consistency.status === 'review_mixed_direction' ? 'info' : 'warning'} /></td><td>{summary.temporal_consistency.positive_direction_cohorts}/{summary.temporal_consistency.evaluable_independent_cohorts}<small>{pct(summary.temporal_consistency.direction_consistency_ratio)}</small></td><td>{summary.blocked_positive_cohorts}</td><td><small>{summary.description}</small></td></tr>)}</tbody></table></div> : null}
-        <p className="node-access-note">{tx('当前页面按请求时间滚动选批；下载会固定页面评估时点，便于后续复核。固定报告有独立指纹；如历史记录后续被修订，结果仍可能变化，请保存下载文件。下表保留 max-gap 主策略，各策略明细见报告。', 'This page selects cohorts as request time advances. Downloads pin the displayed evaluation time for later review and have a separate fingerprint. Later revisions to historical records can still change results, so retain the downloaded file. The table shows the max-gap primary policy; the report contains all policy details.')}</p>
-        {observabilityRanking.cohorts.length > 0 ? <div className="table-wrap"><table className="prediction-label-table"><thead><tr><th>{tx('健康批次 / 截点', 'Health run / cutoff')}</th><th>{tx('状态', 'Status')}</th><th>{tx('覆盖', 'Coverage')}</th><th>{tx('正例节点', 'Positive nodes')}</th><th>TOP-5% HITS / CAPTURE / LIFT</th><th>{tx('阻断', 'Blocker')}</th></tr></thead><tbody>{observabilityRanking.cohorts.map(cohort => { const top = cohort.ranking_at_percent.find(metric => metric.percent === 5); return <tr key={cohort.health_evaluation_run_id}><td><b>#{cohort.health_evaluation_run_id}</b><small>{time(cohort.cutoff_at, lang)} → {time(cohort.window_end_at, lang)}</small></td><td><Badge value={cohort.status.toUpperCase()} kind={cohort.status === 'comparable' ? 'healthy' : cohort.status === 'no_positives' ? 'info' : 'warning'} /></td><td>{cohort.scored_node_count}/{cohort.node_count}<small>{pct(cohort.score_coverage)} · {cohort.scored_gpu_count}/{cohort.gpu_count} GPUS</small></td><td>{cohort.scored_positive_node_count}/{cohort.positive_node_count}<small>{cohort.unscored_positive_node_count} UNSCORED · {cohort.matched_label_count} LABELS</small></td><td>{top ? `${top.hits}/${top.limit} · ${pct(top.recall)} · ${top.lift === undefined ? '—' : `${top.lift.toFixed(2)}x`}` : '—'}</td><td><small>{cohort.blocking_reasons[0] || 'NONE'}</small></td></tr> })}</tbody></table></div> : <Empty tx={tx} title={observabilityRanking.blocking_reasons[0] || tx('尚无成熟健康评估批次', 'No mature health-evaluation cohort yet')} />}
-      </Card> : null}
-      {heaRankChallenger ? <Card className="span-12">
-        <CardHead code={heaRankChallenger.version} title={tx('HeaRank 离线 Challenger', 'HeaRank Offline Challenger')} action={<div className="table-actions"><a className="link" href="/api/v1/prediction/hearank-challenger?download=1" download><Download size={13} />{tx('下载 Challenger', 'Download challenger')}</a><Badge value={(heaRankChallenger.confidence_status || heaRankChallenger.status).toUpperCase()} kind={heaRankChallenger.confidence_status === 'comparable' ? 'healthy' : heaRankChallenger.confidence_status === 'insufficient_sample' ? 'warning' : 'info'} /><Badge value={`${heaRankChallenger.target_horizon_minutes / 1440}D NODE RISK`} kind="info" /></div>} />
-        <p className="node-access-note">{tx('这是 HeaRank 思路的离线验证入口，不是已发布模型。当前只用成熟 shadow outcome 对比五种节点级排序信号：Logistic 概率、历史故障次数、90 天半衰期新近度、严重度加权标签历史和阈值二值信号。历史基线严格限定在预测截点前已关闭或已可用的证据；每种策略同时展示非零信号覆盖，避免将大面积零分误读为有效排序。', 'This is the offline validation entry for the HeaRank idea, not a released model. It compares five node-level ranking signals on mature shadow outcomes only: Logistic probability, prior failure count, 90-day-half-life recency, severity-weighted label history, and threshold-binary score. Historical evidence is limited to records closed or available before each prediction cutoff, and each policy exposes its non-zero signal coverage so mostly-zero scores are not misread as effective ranking.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('报告指纹', 'Report SHA')}</b><strong>{heaRankChallenger.report_sha256?.slice(0, 16) || '—'}</strong><small>{time(heaRankChallenger.generated_at, lang)}</small></div>
-          <div><b>{tx('成熟样本', 'Matured samples')}</b><strong>{heaRankChallenger.sample_summary.matured} / {heaRankChallenger.sample_summary.total}</strong><small>{heaRankChallenger.sample_summary.node_eligible} NODE-ELIGIBLE · {pct(heaRankChallenger.sample_summary.matured_ratio)}</small></div>
-          <div><b>{tx('7 天策略数', '7d policies')}</b><strong>{heaRankChallenger.seven_day.length}</strong><small>{heaRankChallenger.seven_day[0]?.rows || 0} ROWS · {heaRankChallenger.seven_day[0]?.nodes || 0} NODES</small></div>
-          <div><b>{tx('样本门槛', 'Sample gates')}</b><strong>{heaRankChallenger.seven_day[0]?.positives || 0} / {heaRankChallenger.minimum_seven_day_positives}</strong><small>{(heaRankChallenger.seven_day[0]?.rows || 0)} / {heaRankChallenger.minimum_seven_day_rows} ROWS · {(heaRankChallenger.seven_day[0]?.nodes || 0)} / {heaRankChallenger.minimum_seven_day_nodes} NODES</small></div>
-          <div><b>{tx('下一步', 'Next run')}</b><strong>{heaRankChallenger.status === 'ready_for_offline_comparison' ? 'COMPARE' : 'WAIT'}</strong><small>{heaRankChallenger.recommended_next_run[0] || '—'}</small></div>
-        </div>
-        <div className="prediction-contract">{heaRankChallenger.seven_day.map(row => <span key={`${row.policy}-coverage`}><b>{row.policy.toUpperCase()}</b><Badge value={row.signal_coverage_status.toUpperCase()} kind={row.signal_coverage_status === 'covered' ? 'healthy' : row.signal_coverage_status === 'no_signal' ? 'danger' : 'warning'} /><small>{row.non_zero_score_rows} / {row.rows} {tx('有信号样本', 'SIGNAL ROWS')} · {row.non_zero_score_nodes} / {row.nodes} {tx('有信号节点', 'SIGNAL NODES')}</small></span>)}</div>
-        {(heaRankChallenger.policy_comparisons || []).length > 0 ? <div className="table-wrap"><table className="prediction-label-table"><thead><tr><th>{tx('参考策略', 'Reference')}</th><th>{tx('挑战策略', 'Challenger')}</th><th>{tx('比较状态', 'Comparison status')}</th><th>{tx('依据', 'Reason')}</th></tr></thead><tbody>{heaRankChallenger.policy_comparisons.map(row => <tr key={row.challenger_policy}><td>{row.reference_policy}</td><td><b>{row.challenger_policy}</b></td><td><Badge value={row.status.toUpperCase()} kind={row.status === 'comparable' ? 'healthy' : row.status === 'exploratory' ? 'info' : 'warning'} /></td><td><small>{row.reason}</small></td></tr>)}</tbody></table></div> : null}
-        <div className="prediction-ranking-grid">{heaRankChallenger.seven_day.map(row => <RankingTable key={row.policy} label={row.policy.toUpperCase()} rows={row.ranking_at_k} />)}</div>
-      </Card> : null}
-      <Card id="prediction-outcomes" className="span-12">
-        <CardHead code={predictionAccuracy?.rule_decision_version || 'PREDICTION OUTCOME'} title={tx('预警准确率闭环', 'Early-warning Accuracy Loop')} action={<div className="table-actions"><Badge value={`${predictionAccuracy?.pending || 0} PENDING`} kind="info" /><Badge value={`${predictionAccuracy?.human_overrides || 0} HUMAN OVERRIDES`} kind="warning" /></div>} />
-        <p className="node-access-note">{tx('预测窗口结束后由故障标签规则生成 TP / FP / FN / TN；无阈值、身份缺失的数据不进入准确率，正常结果还需经过 24 小时删失期。规则结果永久保留，人工可依据维修或换卡证据改判最终结果。', 'After each prediction horizon closes, failure-label rules derive TP / FP / FN / TN. Missing thresholds or identities are excluded, and negative outcomes require a 24-hour censoring period. Rule outcomes remain immutable evidence while operators may override the final outcome using repair or replacement evidence.')}</p>
-        {predictionOutcomeReport ? <div className="prediction-contract">
-          <span><b>{tx('报告版本 / 模式', 'Report version / mode')}</b>{predictionOutcomeReport.version} · {predictionOutcomeReport.mode.toUpperCase()}<small>{time(predictionOutcomeReport.generated_at, lang)}</small></span>
-          <span><b>{tx('成熟样本', 'Matured samples')}</b>{predictionOutcomeReport.sample_maturity.matured} / {predictionOutcomeReport.sample_maturity.total} · {pct(predictionOutcomeReport.sample_maturity.matured_ratio)}<small>{predictionOutcomeReport.sample_maturity.node_eligible} NODE-ELIGIBLE · {predictionOutcomeReport.sample_maturity.probability_scored} SCORED</small></span>
-          <span><b>{tx('稳定性门', 'Stability gate')}</b>{predictionOutcomeReport.stability.status.toUpperCase()} · {predictionOutcomeReport.stability.ranking_interpretation_status.toUpperCase()}<small>POS {predictionOutcomeReport.stability.positive_samples} / {predictionOutcomeReport.stability.minimum_positive_samples} · COVERAGE {pct(predictionOutcomeReport.stability.probability_coverage)}</small></span>
-          <span><b>{tx('安全边界', 'Safety envelope')}</b>{predictionOutcomeReport.safety.read_only_shadow && predictionOutcomeReport.safety.no_alert_emitted && predictionOutcomeReport.safety.no_action_taken ? 'READ-ONLY · NO ALERT · NO ACTION' : 'REVIEW REQUIRED'}<small>{predictionOutcomeReport.safety.probability_use}</small></span>
-          <span><b>{tx('下一步', 'Next run')}</b>{predictionOutcomeReport.recommended_next_run[0] || '—'}<small>{(predictionOutcomeReport.recommended_next_run || []).slice(1).join(' · ')}</small></span>
-        </div> : null}
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('规则评估样本', 'Rule evaluated')}</b><strong>{predictionAccuracy?.rule.evaluated || 0}</strong><small>TP {predictionAccuracy?.rule.tp || 0} · FP {predictionAccuracy?.rule.fp || 0} · FN {predictionAccuracy?.rule.fn || 0} · TN {predictionAccuracy?.rule.tn || 0}</small></div>
-          <div><b>{tx('规则准确率', 'Rule accuracy')}</b><strong>{predictionAccuracy?.rule.accuracy === undefined ? '—' : `${(predictionAccuracy.rule.accuracy * 100).toFixed(1)}%`}</strong><small>PRECISION {predictionAccuracy?.rule.precision === undefined ? '—' : `${(predictionAccuracy.rule.precision * 100).toFixed(1)}%`} · RECALL {predictionAccuracy?.rule.recall === undefined ? '—' : `${(predictionAccuracy.rule.recall * 100).toFixed(1)}%`}</small></div>
-          <div><b>{tx('人工最终准确率', 'Human-final accuracy')}</b><strong>{predictionAccuracy?.final.accuracy === undefined ? '—' : `${(predictionAccuracy.final.accuracy * 100).toFixed(1)}%`}</strong><small>{predictionAccuracy?.human_overrides || 0} OVERRIDES · {predictionAccuracy?.final.evaluated || 0} EVALUATED</small></div>
-          <div><b>{tx('稳定性阻断', 'Stability blockers')}</b><strong>{predictionOutcomeReport?.stability.blocking_reasons.length ?? '—'}</strong><small>{predictionOutcomeReport?.stability.blocking_reasons[0] || predictionOutcomeReport?.stability.recommended_review[0] || tx('不污染准确率分母', 'EXCLUDED FROM METRIC DENOMINATORS')}</small></div>
-        </div>
-        {(predictionOutcomeReport?.baseline_comparisons || []).length > 0 ? <div className="table-wrap"><table className="prediction-label-table"><thead><tr><th>{tx('Naive baseline', 'Naive baseline')}</th><th>{tx('策略', 'Policy')}</th><th>{tx('规则准确率', 'Rule accuracy')}</th><th>{tx('规则召回', 'Rule recall')}</th><th>{tx('最终准确率', 'Final accuracy')}</th><th>{tx('最终召回', 'Final recall')}</th></tr></thead><tbody>{(predictionOutcomeReport?.baseline_comparisons || []).map(row => <tr key={row.name}><td><b>{row.name.toUpperCase()}</b><small>{row.final.evaluated} MATURED SCORED</small></td><td>{row.prediction_policy}</td><td>{pct(row.rule.accuracy)}</td><td>{pct(row.rule.recall)}</td><td>{pct(row.final.accuracy)}</td><td>{pct(row.final.recall)}</td></tr>)}</tbody></table></div> : null}
-        <div className="prediction-ranking-grid">
-          <RankingTable label={tx('规则 GPU 排序', 'Rule GPU Ranking')} rows={predictionAccuracy?.rule.ranking_at_k} />
-          <RankingTable label={tx('规则节点排序', 'Rule Node Ranking')} rows={predictionAccuracy?.rule.node_ranking_at_k} />
-          <RankingTable label={tx('人工最终 GPU 排序', 'Human-final GPU Ranking')} rows={predictionAccuracy?.final.ranking_at_k} />
-          <RankingTable label={tx('人工最终节点排序', 'Human-final Node Ranking')} rows={predictionAccuracy?.final.node_ranking_at_k} />
-        </div>
-        <div className="table-wrap"><table className="prediction-label-table"><thead><tr><th>{tx('模型 / 窗口', 'Model / Horizon')}</th><th>{tx('节点 / GPU', 'Node / GPU')}</th><th>{tx('预警', 'Warning')}</th><th>{tx('规则结果', 'Rule Outcome')}</th><th>{tx('最终结果', 'Final Outcome')}</th><th>{tx('人工改判', 'Human Override')}</th></tr></thead><tbody>{predictionOutcomes.map(outcome => <tr key={outcome.id}><td><b>{outcome.model_key}</b><small>v{outcome.model_version} · {outcome.horizon_minutes}m</small></td><td><b>{outcome.node_ip || '—'}</b><small>{outcome.gpu_uuid || 'IDENTITY MISSING'}</small></td><td><Badge value={outcome.probability === undefined ? 'NOT SCORED' : `${(outcome.probability * 100).toFixed(1)}%`} kind={outcome.predicted_positive ? 'warning' : 'info'} /><small>THRESHOLD {outcome.decision_threshold === undefined ? '—' : outcome.decision_threshold}</small></td><td><Badge value={outcome.rule_outcome.toUpperCase()} kind={outcome.rule_outcome === 'fp' || outcome.rule_outcome === 'fn' ? 'danger' : outcome.rule_outcome === 'tp' || outcome.rule_outcome === 'tn' ? 'healthy' : 'info'} /><small>{outcome.maturity_reason || outcome.maturity_status}</small></td><td><Badge value={outcome.final_outcome.toUpperCase()} kind={outcome.final_outcome === 'fp' || outcome.final_outcome === 'fn' ? 'danger' : outcome.final_outcome === 'tp' || outcome.final_outcome === 'tn' ? 'healthy' : 'info'} /><small>{outcome.final_source.toUpperCase()}</small></td><td><div className="table-actions"><button className="link" type="button" disabled={outcome.maturity_status !== 'matured'} onClick={() => void overridePredictionOutcome(outcome, 1)}>{tx('确认故障', 'Fault')}</button><button className="link" type="button" disabled={outcome.maturity_status !== 'matured'} onClick={() => void overridePredictionOutcome(outcome, 0)}>{tx('确认正常', 'Normal')}</button></div>{outcome.human_decided_by ? <small>{outcome.human_decided_by} · {outcome.human_reason}</small> : null}</td></tr>)}</tbody></table>{predictionOutcomes.length === 0 && <Empty tx={tx} title={tx('尚无已发布模型的预警结果；准确率不会被伪造', 'No warnings from a released model; accuracy is not fabricated')} />}</div>
-      </Card>
-      <Card id="prediction-training-history" className="span-12">
-        <CardHead code="HEALTHY CONTROL FEATURES" title={tx('健康对照监控特征', 'Healthy-control Telemetry Features')} action={<div className="table-actions"><Badge value="DEDUPLICATED PROMETHEUS READ" kind="healthy" /><button className="link" type="button" disabled={controlFeatureStarting || !((latestPreparationBuild?.status === 'completed' && latestPreparationBuild?.version === 'gpu-training-preparation-v5') || (latestPreparationBuild?.status === 'manual_feedback_ready_pending_control_extraction' && latestPreparationBuild?.version === 'manual-feedback-training-preparation-v1')) || latestControlFeatureBuild?.status === 'queued' || latestControlFeatureBuild?.status === 'running'} onClick={() => void buildControlFeatures(latestPreparationBuild?.id)}>{controlFeatureStarting ? tx('启动中…', 'Starting…') : tx('提取健康对照', 'Extract controls')}</button></div>} />
-        <p className="node-access-note">{tx('按 GPU UUID 与对照截止时间去重读取 Prometheus/VM，复用 24 小时特征契约；核心温度、功耗和利用率遥测连续性必须达到 70%，并要求故障前正样本与健康对照处于相同负载档位。所有不合格对照均保留排除原因。', 'Deduplicate Prometheus/VM reads by GPU UUID and control cutoff while reusing the trailing-24h feature contract. Core temperature, power, and utilization continuity must reach 70%, and each pre-fault positive must share the same load bucket as its healthy control. Every rejected control retains an exclusion reason.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('请求 / 去重窗口', 'Requests / Unique windows')}</b><strong>{latestControlFeatureBuild ? `${latestControlFeatureBuild.request_count} / ${latestControlFeatureBuild.unique_window_count}` : '—'}</strong><small>PROCESSED {latestControlFeatureBuild?.processed_unique_windows || 0}</small></div>
-          <div><b>{tx('合格健康对照', 'Eligible controls')}</b><strong>{latestControlFeatureBuild?.eligible_request_count || 0}</strong><small>{latestControlFeatureBuild?.completed_request_count || 0} COMPLETED REQUESTS</small></div>
-          <div><b>{tx('遥测删失 / 不连续', 'Censored / Discontinuous')}</b><strong>{latestControlFeatureBuild ? `${latestControlFeatureBuild.telemetry_censored_count} / ${latestControlFeatureBuild.discontinuous_count}` : '—'}</strong><small>LOW COVERAGE {latestControlFeatureBuild?.low_coverage_count || 0} · FAILED {latestControlFeatureBuild?.extraction_failed_count || 0}</small></div>
-          <div><b>{tx('负载未知 / 不匹配', 'Load unknown / Mismatch')}</b><strong>{latestControlFeatureBuild ? `${latestControlFeatureBuild.load_unknown_count} / ${latestControlFeatureBuild.load_mismatch_count}` : '—'}</strong><small>IDLE &lt;10 · MODERATE 10–60 · HIGH ≥60</small></div>
-        </div>
-        {latestControlFeatureBuild ? <div className="prediction-contract"><span><b>STATUS / VERSION</b>{compactWorkflowStatus(latestControlFeatureBuild.status)} · {latestControlFeatureBuild.version}</span><span><b>SOURCE PREP</b>#{latestControlFeatureBuild.source_preparation_build_id} · {latestControlFeatureBuild.source_prepared_dataset_key}</span><span><b>FEATURE CONTRACT</b>{latestControlFeatureBuild.feature_contract_version}</span><span><b>OUTPUT</b>{latestControlFeatureBuild.output_dir}</span><span><b>SHA256</b>{latestControlFeatureBuild.feature_sha256 || latestControlFeatureBuild.error_message || 'PENDING'}</span></div> : <Empty tx={tx} title={tx('等待从训练准备清单提取健康对照', 'Waiting to extract healthy controls from a training preparation')} />}
-      </Card>
-      <Card className="span-12">
-        <CardHead code="SUPERVISED TRAINING MATRIX" title={tx('监督训练矩阵', 'Supervised Training Matrix')} action={<div className="table-actions"><Badge value="LEAKAGE AUDITED" kind="healthy" /><button className="link" type="button" disabled={trainingMatrixStarting || latestControlFeatureBuild?.status !== 'completed' || !((latestPreparationBuild?.version === 'gpu-training-preparation-v5') || (latestPreparationBuild?.version === 'manual-feedback-training-preparation-v1')) || latestControlFeatureBuild?.source_preparation_build_id !== latestPreparationBuild?.id || latestTrainingMatrixBuild?.status === 'queued' || latestTrainingMatrixBuild?.status === 'running'} onClick={() => void buildTrainingMatrix(latestControlFeatureBuild?.id)}>{trainingMatrixStarting ? tx('启动中…', 'Starting…') : latestPreparationBuild?.version === 'manual-feedback-training-preparation-v1' ? tx('构建矩阵治理', 'Build matrix gate') : tx('构建训练矩阵', 'Build matrix')}</button></div>} />
-        <p className="node-access-note">{tx('合并合格正样本与同卡健康对照，保留稀疏缺失值，并强制审计 GPU UUID 分区隔离、正样本时间截点、控制配对、重复行和特征契约。训练权重按分区和预测窗平衡类别，验证与测试指标保持无权重统计。', 'Merge eligible positives with same-GPU healthy controls while preserving sparse missing values. Enforce GPU UUID split isolation, positive point-in-time ordering, control pairing, duplicate, and feature-contract audits. Training weights balance classes per split and horizon; validation and test metrics remain unweighted.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('正样本 / 健康对照', 'Positives / Controls')}</b><strong>{latestTrainingMatrixBuild ? `${latestTrainingMatrixBuild.positive_count} / ${latestTrainingMatrixBuild.control_count}` : '—'}</strong><small>{latestTrainingMatrixBuild?.sample_count || 0} TOTAL ROWS</small></div>
-          <div><b>TRAIN</b><strong>{latestTrainingMatrixBuild ? `${latestTrainingMatrixBuild.train_positive_count} / ${latestTrainingMatrixBuild.train_control_count}` : '—'}</strong><small>POSITIVE / CONTROL</small></div>
-          <div><b>VALIDATION / TEST</b><strong>{latestTrainingMatrixBuild ? `${latestTrainingMatrixBuild.validation_positive_count + latestTrainingMatrixBuild.validation_control_count} / ${latestTrainingMatrixBuild.test_positive_count + latestTrainingMatrixBuild.test_control_count}` : '—'}</strong><small>ENTITY + TIME ISOLATED</small></div>
-          <div><b>{tx('审计违规', 'Audit violations')}</b><strong>{latestTrainingMatrixBuild ? latestTrainingMatrixBuild.duplicate_count + latestTrainingMatrixBuild.entity_split_conflict_count + latestTrainingMatrixBuild.point_in_time_violation_count + latestTrainingMatrixBuild.pairing_violation_count + latestTrainingMatrixBuild.contract_violation_count : 0}</strong><small>{latestTrainingMatrixBuild?.feature_column_count || 0} FEATURE COLUMNS</small></div>
-        </div>
-        {latestTrainingMatrixBuild ? <div className="prediction-contract"><span><b>STATUS / VERSION</b>{compactWorkflowStatus(latestTrainingMatrixBuild.status)} · {latestTrainingMatrixBuild.version}</span><span><b>SOURCES</b>PREP #{latestTrainingMatrixBuild.source_preparation_build_id} · CONTROL #{latestTrainingMatrixBuild.source_control_build_id}</span><span><b>OUTPUT</b>{latestTrainingMatrixBuild.output_dir}</span><span><b>SHA256</b>{latestTrainingMatrixBuild.matrix_sha256 || latestTrainingMatrixBuild.error_message || 'PENDING'}</span></div> : <Empty tx={tx} title={tx('等待合格健康对照以构建监督训练矩阵', 'Waiting for eligible healthy controls to build a supervised matrix')} />}
-        {matrixReadinessReport ? <><div className="issue-categories quality-ledger"><div><b>{tx('训练候选 Gate', 'Training candidate gate')}</b><strong>{matrixGate?.baseline_training_enabled ? tx('候选就绪', 'CANDIDATE') : tx('样本阻断', 'BLOCKED')}</strong><small>{matrixGate?.status?.toUpperCase() || 'READINESS PENDING'} · {matrixGate?.ready_strata || 0} READY</small></div><div><b>{tx('待切分正/负样本', 'Pending pos / ctrl')}</b><strong>{latestMatrixIsGovernanceOnly ? `${matrixPendingTotals.positives} / ${matrixPendingTotals.controls}` : '—'}</strong><small>{matrixPendingTotals.positiveGPUs} POS GPU · {matrixPendingTotals.controlGPUs} CTRL GPU</small></div><div><b>{tx('样本积累缺口', 'Sample target gap')}</b><strong>{matrixNeeds.faults} / {matrixNeeds.controls}</strong><small>FAULTS / CONTROLS · GPU +{matrixNeeds.gpus}</small></div><div><b>{tx('质量门粒度', 'Quality-gate grain')}</b><strong>{matrixReadinessReport.strata.length}</strong><small>{matrixReadinessReport.insufficient_strata} INSUFFICIENT · {matrixDeficits.length} DEFICITS</small></div></div><div className="matrix-readiness-hints">{matrixTopDeficits.map(deficit => <span key={`${deficit.event_type}-${deficit.model_name}-${deficit.horizon_minutes}-${deficit.split}-${deficit.metric}`}>{deficitCode(deficit)}<b>{deficit.actual}/{deficit.required}</b></span>)}{latestMatrixIsGovernanceOnly && <span>{tx('人工反馈矩阵只审计，不训练', 'Manual matrix audits only')}</span>}{(matrixReadinessReport.recommended_next_run || []).slice(0, 3).map(item => <span key={item} title={item}>{item}</span>)}</div><div className="table-wrap"><table className="matrix-target-table"><thead><tr><th>{tx('样本积累目标', 'Accumulation target')}</th><th>{tx('优先级', 'Priority')}</th><th>{tx('补故障', 'Faults')}</th><th>{tx('补对照', 'Controls')}</th><th>{tx('补 GPU 覆盖', 'GPU coverage')}</th><th>{tx('总缺口', 'Total gap')}</th></tr></thead><tbody>{matrixTargets.map(target => <tr key={`${target.event_type}-${target.model_name}-${target.horizon_minutes}`}><td><b>{target.event_type}</b><small>{target.model_name} · {target.horizon_minutes}m</small></td><td><Badge value={priorityLabel(target.recommended_priority).toUpperCase()} kind={target.recommended_priority === 'ready_for_baseline_candidate' ? 'healthy' : 'warning'} /></td><td>{target.needed_train_positives + target.needed_evaluation_positives}<small>TRAIN {target.needed_train_positives} · EVAL {target.needed_evaluation_positives}</small></td><td>{target.needed_train_controls + target.needed_evaluation_controls}<small>TRAIN {target.needed_train_controls} · EVAL {target.needed_evaluation_controls}</small></td><td>{target.needed_positive_gpus}</td><td>{target.total_shortfall}</td></tr>)}</tbody></table></div><div className="table-wrap"><table className="matrix-readiness-table"><thead><tr><th>{tx('故障类型 / 型号', 'Fault type / Model')}</th><th>{tx('预测窗口', 'Horizon')}</th><th>TRAIN</th><th>VALIDATION</th><th>TEST</th><th>{tx('待切分', 'Pending')}</th><th>{tx('数据状态', 'Data status')}</th></tr></thead><tbody>{matrixReadinessReport.strata.map(item => <tr key={`${item.event_type}-${item.model_name}-${item.horizon_minutes}`}><td><b>{item.event_type}</b><small>{item.model_name}</small></td><td>{item.horizon_minutes}m</td>{['train', 'validation', 'test', 'pending_control_sampling'].map(split => splitCell(item, split))}<td><Badge value={item.status === 'exploratory_ready' ? 'READY' : latestMatrixIsGovernanceOnly ? 'GATED' : 'INSUFFICIENT'} kind={item.status === 'exploratory_ready' ? 'healthy' : 'warning'} /><small title={(item.blocking_reasons || []).join(' · ')}>{compactDeficits(item.deficits).join(' · ') || compactBlockers(item.blocking_reasons || []).slice(0, 5).join(' · ') || tx('无阻断', 'none')}</small></td></tr>)}</tbody></table></div></> : null}
-      </Card>
-      <Card className="span-12">
-        <CardHead code="SCOPED MODEL RACE" title={tx('质量门类型专用模型赛马', 'Readiness-gated Scoped Model Race')} action={<div className="table-actions"><Badge value="NO ONLINE PROBABILITY" kind="info" /><button className="link" type="button" disabled={baselineModelStarting || latestTrainingMatrixBuild?.status !== 'completed' || latestTrainingMatrixBuild?.version !== 'gpu-supervised-training-matrix-v7' || !baselineTrainingEnabled || latestBaselineModelBuild?.status === 'queued' || latestBaselineModelBuild?.status === 'running'} onClick={() => void trainBaselineModels('logistic_regression')}>{baselineModelStarting ? tx('训练中…', 'Training…') : 'Logistic'}</button><button className="link" type="button" disabled={baselineModelStarting || latestTrainingMatrixBuild?.status !== 'completed' || latestTrainingMatrixBuild?.version !== 'gpu-supervised-training-matrix-v7' || !baselineTrainingEnabled || latestBaselineModelBuild?.status === 'queued' || latestBaselineModelBuild?.status === 'running'} onClick={() => void trainBaselineModels('gradient_boosted_stumps')}>Shallow GBDT</button><button className="link" type="button" disabled={baselineModelStarting || latestTrainingMatrixBuild?.status !== 'completed' || latestTrainingMatrixBuild?.version !== 'gpu-supervised-training-matrix-v7' || !baselineTrainingEnabled || latestBaselineModelBuild?.status === 'queued' || latestBaselineModelBuild?.status === 'running'} onClick={() => void trainBaselineModels('anomaly_filtered_logistic')}>Hard Gate</button><button className="link" type="button" disabled={baselineModelStarting || latestTrainingMatrixBuild?.status !== 'completed' || latestTrainingMatrixBuild?.version !== 'gpu-supervised-training-matrix-v7' || !baselineTrainingEnabled || latestBaselineModelBuild?.status === 'queued' || latestBaselineModelBuild?.status === 'running'} onClick={() => void trainBaselineModels('anomaly_augmented_logistic')}>Soft Anomaly + Logistic</button></div>} />
-        <p className="node-access-note">{tx('四个算法在同一不可变矩阵上赛马。硬门级联验证了 24h precision 信号但损失召回；新增软级联仍仅用训练健康对照拟合 robust 异常分，将连续异常分作为一个非线性特征加入全量 Logistic，不再丢弃样本。验证/测试只做校准、阈值和独立门禁；非 Logistic challenger 均无运行时。', 'Four algorithms race on the same immutable matrix. The hard gate found a 24h precision signal but lost recall; the soft cascade still fits a robust score from training controls only, then adds that continuous nonlinear feature to Logistic without discarding rows. Validation/test remain reserved for calibration, thresholding, and independent gates; non-Logistic challengers have no runtime.')}</p>
-        <div className="issue-categories quality-ledger"><div><b>{tx('模型 / 特征', 'Models / Features')}</b><strong>{latestBaselineModelBuild ? `${latestBaselineModelBuild.trained_model_count} / ${latestBaselineModelBuild.feature_column_count}` : '—'}</strong><small>HORIZONS / MAX SELECTED FEATURES</small></div><div><b>{tx('特征审计', 'Feature audit')}</b><strong>{latestBaselineModelBuild?.feature_audit_status?.toUpperCase() || 'PENDING'}</strong><small>{latestBaselineModelBuild?.excluded_feature_count || 0} EXCLUDED · {latestBaselineModelBuild?.prohibited_feature_count || 0} PROHIBITED SELECTED</small></div><div><b>{tx('统计稳定 / 影子候选', 'Stable / Shadow candidates')}</b><strong>{latestBaselineModelBuild ? `${latestBaselineModelBuild.statistically_stable_count || 0} / ${latestBaselineModelBuild.shadow_candidate_count || 0}` : '—'}</strong><small>STABILITY + CALIBRATION + PRECISION/RECALL GATES</small></div><div><b>TEST ROC-AUC / PR-AUC</b><strong>{latestBaselineModelBuild?.status === 'completed' ? `${latestBaselineModelBuild.test_macro_roc_auc.toFixed(3)} / ${latestBaselineModelBuild.test_macro_pr_auc.toFixed(3)}` : '—'}</strong><small>MACRO ACROSS HORIZONS</small></div><div><b>TEST PRECISION / RECALL</b><strong>{latestBaselineModelBuild?.status === 'completed' ? `${latestBaselineModelBuild.test_macro_precision.toFixed(3)} / ${latestBaselineModelBuild.test_macro_recall.toFixed(3)}` : '—'}</strong><small>VALIDATION-SELECTED THRESHOLDS</small></div><div><b>{tx('训练 / 验证 / 测试', 'Train / Validation / Test')}</b><strong>{latestBaselineModelBuild ? `${latestBaselineModelBuild.train_count} / ${latestBaselineModelBuild.validation_count} / ${latestBaselineModelBuild.test_count}` : '—'}</strong><small>OFFLINE ONLY</small></div></div>
-        {latestBaselineModelBuild ? <div className="prediction-contract"><span><b>STATUS / VERSION</b>{latestBaselineModelBuild.status.toUpperCase()} · {latestBaselineModelBuild.version}</span><span><b>SCOPE</b>{latestBaselineModelBuild.scope_event_type || 'GLOBAL'} · {latestBaselineModelBuild.scope_model_name || 'ALL MODELS'}</span><span><b>READINESS GATE</b>{latestBaselineModelBuild.readiness_gate_version || '—'}</span><span><b>ALGORITHM</b>{latestBaselineModelBuild.algorithm}</span><span><b>OUTPUT</b>{latestBaselineModelBuild.output_dir}</span><span><b>SHA256</b>{latestBaselineModelBuild.artifact_sha256 || latestBaselineModelBuild.error_message || 'PENDING'}</span></div> : <Empty tx={tx} title={tx('等待监督训练矩阵以训练首个离线基线', 'Waiting for a supervised matrix to train the first offline baseline')} />}
-        {modelRaceComparison ? <><div className="prediction-contract"><span><b>IMMUTABLE RACE</b>REF #{modelRaceComparison.reference_build_id} · {modelRaceComparison.build_ids.length} BUILDS · {modelRaceComparison.version}</span><span><b>MATRIX</b>#{modelRaceComparison.source_matrix_build_id} · {modelRaceComparison.matrix_sha256.slice(0, 12)}</span>{modelRaceComparison.builds.map(build => <span key={build.build_id}><b>#{build.build_id} · {build.algorithm}</b>ROC {build.macro_test.roc_auc.toFixed(3)} · PR {build.macro_test.pr_auc.toFixed(3)} · P/R {build.macro_test.precision.toFixed(3)}/{build.macro_test.recall.toFixed(3)} · {build.selected_source_metric_count} SIGNALS</span>)}<span><b>COMPARISON SHA</b>{modelRaceComparison.comparison_sha256}</span></div><div className="table-wrap"><table><thead><tr><th>{tx('算法', 'Algorithm')}</th><th>{tx('跨窗口入选信号族', 'Selected source families')}</th>{modelRaceComparison.horizons.map(horizon => <th key={horizon.horizon_minutes}>{horizon.horizon_minutes >= 1440 ? `${horizon.horizon_minutes / 1440}d` : `${horizon.horizon_minutes / 60}h`}</th>)}</tr></thead><tbody>{modelRaceComparison.builds.map(build => <tr key={`signals-${build.build_id}`}><td><b>#{build.build_id}</b><small>{build.algorithm}</small></td><td><small>{build.selected_source_metrics.join(' · ') || 'NONE'}</small></td>{modelRaceComparison.horizons.map(horizon => <td key={`${build.build_id}-${horizon.horizon_minutes}`}><b>{horizon.selected_feature_count_by_build_id[String(build.build_id)] || 0} FEATURES</b><small>{(horizon.selected_source_metrics_by_build_id[String(build.build_id)] || []).join(' · ') || 'NO SIGNAL'}</small></td>)}</tr>)}</tbody></table></div></> : null}
-        {baselineEvaluationReport && baselineEvaluationReport.horizons?.length > 0 ? <div className="table-wrap"><table><thead><tr><th>{tx('故障类型', 'Fault type')}</th><th>{tx('预测窗口', 'Horizon')}</th><th>{tx('测试样本', 'Test samples')}</th><th>ROC-AUC / 95% CI</th><th>PR-AUC / 95% CI</th><th>{tx('跨时间稳定性', 'Cross-time stability')}</th><th>{tx('校准 / 发布门', 'Calibration / Release')}</th><th>{tx('精确率', 'Precision')}</th><th>{tx('召回率', 'Recall')}</th></tr></thead><tbody>{baselineEvaluationReport.horizons.flatMap(horizon => Object.entries(horizon.test_by_event_type || {}).map(([eventType, metrics]) => ({ eventType, horizon: horizon.horizon_minutes, metrics, validationUncertainty: horizon.validation_uncertainty, testUncertainty: horizon.test_uncertainty, crossSplitStatus: horizon.cross_split_status, rawCalibration: horizon.raw_test_calibration, calibration: horizon.test_calibration, releaseReadiness: horizon.release_readiness }))).sort((left, right) => left.eventType.localeCompare(right.eventType) || left.horizon - right.horizon).map(({ eventType, horizon, metrics, validationUncertainty, testUncertainty, crossSplitStatus, rawCalibration, calibration, releaseReadiness }) => <tr key={`${eventType}-${horizon}`}><td><b>{eventType}</b></td><td>{horizon}m</td><td>{metrics.count}<small>{metrics.positive} POS / {metrics.control} CTRL</small></td><td>{metrics.roc_auc.toFixed(3)}<small>{testUncertainty ? `${testUncertainty.roc_auc_lower.toFixed(3)}–${testUncertainty.roc_auc_upper.toFixed(3)}` : 'CI PENDING'}</small></td><td>{metrics.pr_auc.toFixed(3)}<small>{testUncertainty ? `${testUncertainty.pr_auc_lower.toFixed(3)}–${testUncertainty.pr_auc_upper.toFixed(3)} · NULL ${testUncertainty.null_pr_auc.toFixed(3)}` : 'CI PENDING'}</small></td><td><Badge value={(crossSplitStatus || testUncertainty?.status || 'not_audited').toUpperCase()} kind={crossSplitStatus === 'robust_candidate' ? 'healthy' : crossSplitStatus === 'temporal_instability' || crossSplitStatus === 'consistent_inverse' ? 'danger' : 'warning'} /><small>{validationUncertainty ? `VAL ROC ${validationUncertainty.roc_auc_lower.toFixed(3)}–${validationUncertainty.roc_auc_upper.toFixed(3)}` : 'VALIDATION CI PENDING'}</small></td><td><Badge value={(releaseReadiness || 'not_audited').toUpperCase()} kind={releaseReadiness === 'shadow_candidate' ? 'healthy' : 'warning'} /><small>{calibration ? `ECE ${rawCalibration?.ece.toFixed(3) ?? '—'}→${calibration.ece.toFixed(3)} · BSS ${rawCalibration?.brier_skill_score.toFixed(3) ?? '—'}→${calibration.brier_skill_score.toFixed(3)}` : 'CALIBRATION PENDING'}</small></td><td>{metrics.precision.toFixed(3)}</td><td>{metrics.recall.toFixed(3)}</td></tr>)}</tbody></table></div> : null}
-      </Card>
-      <Card className="span-12"><CardHead code="HISTORICAL MONITORING" title={tx('历史监控数据源', 'Historical Monitoring Sources')} action={<div className="table-actions"><Badge value="REMOTE NODE / READ-ONLY" kind="healthy" /><button className="link" type="button" disabled={historyAuditRunning} onClick={() => void runHistoryAudit()}>{historyAuditRunning ? tx('审计中…', 'Auditing…') : tx('重新审计', 'Run audit')}</button></div>} /><p className="node-access-note">{tx('Atlas 在部署节点本地读取 Prometheus/VM，只保存审计元数据和版本化训练数据集，不把多年原始监控数据复制到开发机。', 'Atlas reads Prometheus/VM locally on the deployment node and stores only audit metadata and versioned training datasets; multi-year raw telemetry is not copied to the development machine.')}</p><div className="table-wrap"><table className="prediction-model-table"><thead><tr><th>{tx('数据源', 'Source')}</th><th>{tx('版本 / 保留期', 'Version / Retention')}</th><th>{tx('GPU 覆盖', 'GPU Coverage')}</th><th>{tx('历史范围', 'History Range')}</th><th>{tx('指标族', 'Metric Families')}</th><th>{tx('采样', 'Cadence')}</th><th>{tx('状态', 'Status')}</th></tr></thead><tbody>{historySources.map(source => { const audit = source.latest_audit; return <tr key={source.id}><td><b>{source.name}</b><small>{source.type} · {source.base_url}</small><small>{source.execution} · {source.dataset_dir}</small></td><td><code>{audit?.source_version || '—'}</code><small>{audit?.configured_retention || '—'}</small></td><td><b>{audit?.current_gpu_series || '—'} GPU</b><small>DCGM {audit?.dcgm_target_count ?? '—'} · GPU exporter {audit?.gpu_exporter_target_count ?? '—'}</small></td><td><small>{audit?.earliest_sample_at ? time(audit.earliest_sample_at, lang) : '—'}</small><small>→ {audit?.latest_sample_at ? time(audit.latest_sample_at, lang) : '—'}</small></td><td><b>{audit?.metric_families?.length ?? '—'}</b><small>{audit ? `${audit.missing_metric_families?.length || 0} ${tx('项研究指标待补', 'research metrics missing')}` : tx('等待首次审计', 'awaiting first audit')}</small></td><td>{audit?.scrape_interval_seconds ? `${audit.scrape_interval_seconds.toFixed(1)}s` : '—'}</td><td><Badge value={(audit?.status || (source.enabled ? 'waiting' : 'disabled')).toUpperCase()} kind={audit?.status === 'success' ? 'healthy' : audit?.status === 'failed' ? 'danger' : 'warning'} />{audit?.error_message ? <small title={audit.error_message}>{audit.error_message}</small> : null}</td></tr>; })}</tbody></table>{historySources.length === 0 && <Empty tx={tx} title={tx('尚未配置历史监控数据源', 'No historical monitoring source configured')} />}</div></Card>
-      <Card className="span-12">
-        <CardHead code="HISTORICAL GPU IDENTITY" title={tx('历史 GPU 身份区间', 'Historical GPU Identity Intervals')} action={<div className="table-actions"><Badge value={`${identitySummary?.by_transition_type?.gpu_uuid_changed || 0} GPU CHANGES`} kind={(identitySummary?.by_transition_type?.gpu_uuid_changed || 0) > 0 ? 'warning' : 'neutral'} /><button className="link" type="button" disabled={identityBackfillRunning || latestIdentityBackfill?.status === 'running' || latestIdentityBackfill?.status === 'queued'} onClick={() => void runIdentityBackfill()}>{identityBackfillRunning ? tx('重建中…', 'Backfilling…') : tx('重建身份历史', 'Backfill identity')}</button></div>} />
-        <p className="node-access-note">{tx('按 7 天分块、6 小时间隔读取 GPU UUID、节点身份、主机 SN 与 PCI Bus ID，压缩成身份区间；同槽位换 UUID 仅作为换卡候选证据，节点身份同时变化时标记为整机边界。', 'Read GPU UUID, node identity, host serial and PCI bus ID in seven-day chunks at six-hour intervals and compress them into identity intervals. A UUID change in the same slot is supporting replacement evidence only; simultaneous host identity changes mark a node boundary.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('身份区间', 'Identity intervals')}</b><strong>{identitySummary?.total || 0}</strong><small>COMPRESSED OBSERVATIONS</small></div>
-          <div><b>{tx('换卡候选', 'GPU changes')}</b><strong>{identitySummary?.by_transition_type?.gpu_uuid_changed || 0}</strong><small>SAME NODE / PCI SLOT</small></div>
-          <div><b>{tx('整机身份边界', 'Node boundaries')}</b><strong>{identitySummary?.by_transition_type?.node_identity_changed || 0}</strong><small>HOST ID / SERIAL CHANGED</small></div>
-          <div><b>{tx('候选已关联', 'Candidates annotated')}</b><strong>{latestIdentityBackfill?.records_annotated || 0}</strong><small>{latestIdentityBackfill?.status?.toUpperCase() || 'NOT STARTED'} · {latestIdentityBackfill ? `${latestIdentityBackfill.chunks_completed}/${latestIdentityBackfill.chunks_total}` : '0/0'}</small></div>
-        </div>
-        <div className="table-wrap"><table className="prediction-label-table"><thead><tr><th>{tx('首次 / 最后观测', 'First / Last Seen')}</th><th>{tx('节点 / 槽位', 'Node / Slot')}</th><th>GPU UUID</th><th>{tx('身份变化', 'Identity Change')}</th><th>{tx('主机身份', 'Host Identity')}</th></tr></thead><tbody>{identityIntervals.map(interval => <tr key={interval.id}><td><small>{time(interval.first_seen_at, lang)}</small><small>→ {time(interval.last_seen_at, lang)}</small></td><td><b>{interval.node_ip}</b><small>GPU {interval.gpu_index} · {interval.pci_bus_id || 'PCI UNKNOWN'}</small></td><td><code>{interval.gpu_uuid}</code><small>{interval.model_name || '—'}</small></td><td><Badge value={(interval.transition_type || 'initial_observation').toUpperCase()} kind={interval.transition_type === 'gpu_uuid_changed' || interval.transition_type === 'node_identity_changed' ? 'warning' : 'info'} /><small>{interval.predecessor_uuid || interval.evidence_strength}</small></td><td><small>{interval.host_id || 'HOST ID UNKNOWN'}</small><small>{interval.host_serial || interval.hostname || '—'}</small></td></tr>)}</tbody></table>{identityIntervals.length === 0 && <Empty tx={tx} title={tx('尚未重建 GPU 身份历史', 'GPU identity history has not been rebuilt')} />}</div>
-      </Card>
-      <Card className="span-12">
-        <CardHead code="HISTORICAL FAULT CANDIDATES" title={tx('历史 GPU 故障候选', 'Historical GPU Fault Candidates')} action={<div className="table-actions"><Badge value={`${historicalCandidateSummary?.pending_review || 0} PENDING REVIEW`} kind={(historicalCandidateSummary?.pending_review || 0) > 0 ? 'warning' : 'neutral'} /><button className="link" type="button" disabled={historyBackfillRunning || latestBackfill?.status === 'running' || latestBackfill?.status === 'queued'} onClick={() => void runAlertBackfill()}>{historyBackfillRunning ? tx('重建中…', 'Backfilling…') : tx('重建历史候选', 'Backfill candidates')}</button></div>} />
-        <p className="node-access-note">{tx('历史候选先由版本化规则自动裁决为正代理、仅上下文或需人工复核；规则结论不会升级为确认故障。人工只处理不确定项、重要故障和抽样质检，也可以接受、降级或排除规则结果，所有改判均保留审计记录。', 'Versioned rules first classify historical candidates as positive proxies, context-only evidence or requiring human review. Rule decisions never become confirmed failures. Humans handle uncertainty, important incidents and sampled quality checks, and may accept, downgrade or exclude rule results with a durable audit trail.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('候选总数', 'Candidates')}</b><strong>{historicalCandidateSummary?.total || 0}</strong><small>REVIEWABLE EPISODES</small></div>
-          <div><b>{tx('规则正代理', 'Rule positives')}</b><strong>{historicalCandidateSummary?.by_rule_decision?.positive_proxy || 0}</strong><small>VERSIONED RULE · OVERRIDABLE</small></div>
-          <div><b>{tx('仅作上下文', 'Context only')}</b><strong>{historicalCandidateSummary?.by_training_disposition?.context_only || 0}</strong><small>LOW-PRIORITY XID</small></div>
-          <div><b>{tx('回填进度', 'Backfill Progress')}</b><strong>{latestBackfill ? `${latestBackfill.chunks_completed}/${latestBackfill.chunks_total}` : '—'}</strong><small>{latestBackfill?.status?.toUpperCase() || 'NOT STARTED'} · {latestBackfill?.query_version || 'gpu-fault-signal-onset-v3'}</small></div>
-        </div>
-        <div className="table-wrap"><table className="prediction-label-table"><thead><tr><th>{tx('发生时间', 'Onset')}</th><th>{tx('节点 / GPU', 'Node / GPU')}</th><th>{tx('事件', 'Event')}</th><th>{tx('处置 / 硬件', 'Operations / Hardware')}</th><th>{tx('规则裁决 / 人工覆核', 'Rule / Human Override')}</th><th>{tx('历史来源', 'Historical Source')}</th></tr></thead><tbody>{historicalCandidates.map(candidate => <tr key={candidate.id}><td>{time(candidate.onset_at, lang)}</td><td><b>{candidate.node_ip || candidate.hostname || '—'}</b><small>{candidate.gpu_uuid || candidate.pci_bus_id || 'NODE-LEVEL'}</small></td><td><code>{candidate.event_type}</code><small>{candidate.event_message || candidate.event_code}</small></td><td><Badge value={(candidate.operational_priority || 'unknown').toUpperCase()} kind={candidate.operational_priority === 'critical' ? 'danger' : candidate.operational_priority === 'high' ? 'warning' : 'info'} /><small>{candidate.hardware_certainty || 'unclassified'}</small></td><td><Badge value={(candidate.rule_decision || 'not_decided').toUpperCase()} kind={candidate.rule_decision === 'positive_proxy' ? 'warning' : candidate.rule_decision === 'needs_human_review' ? 'danger' : 'info'} /><small>RULE · {candidate.rule_decision_version || 'NOT RUN'}{candidate.rule_confidence !== undefined ? ` · ${(candidate.rule_confidence * 100).toFixed(0)}%` : ''}</small><small title={candidate.rule_decision_reason || ''}>HUMAN · {candidate.review_status.toUpperCase()}{candidate.reviewed_by ? ` · ${candidate.reviewed_by}` : ''}</small><small>{candidate.identity_evidence_status ? `IDENTITY · ${candidate.identity_evidence_status.toUpperCase()}` : 'IDENTITY · NOT SCANNED'}</small>{candidate.review_note ? <small title={candidate.review_note}>{candidate.review_note}</small> : null}<div className="table-actions"><button className="link" type="button" disabled={reviewingCandidateID === candidate.id} onClick={() => void reviewHistoricalCandidate(candidate, 'accepted_proxy')}>{tx('人工接受', 'Accept')}</button><button className="link" type="button" disabled={reviewingCandidateID === candidate.id} onClick={() => void reviewHistoricalCandidate(candidate, 'context_only')}>{tx('改为上下文', 'Context')}</button><button className="link" type="button" disabled={reviewingCandidateID === candidate.id} onClick={() => void reviewHistoricalCandidate(candidate, 'needs_evidence')}>{tx('需补证据', 'Evidence')}</button><button className="link" type="button" disabled={reviewingCandidateID === candidate.id} onClick={() => void reviewHistoricalCandidate(candidate, 'excluded')}>{tx('人工排除', 'Exclude')}</button></div></td><td><small>{candidate.source_metric} · {candidate.source_alert_name || 'DIRECT METRIC'}</small><small>{candidate.signal_samples} ONSET SAMPLES{candidate.recovery_aware ? ' · RECOVERY-AWARE' : ''}</small></td></tr>)}</tbody></table>{historicalCandidates.length === 0 && <Empty tx={tx} title={tx('尚未执行历史候选重建', 'Historical candidate backfill has not run')} />}</div>
-      </Card>
-      <Card className="span-12">
-        <CardHead code="POINT-IN-TIME COHORT MANIFEST" title={tx('训练样本时间窗清单', 'Training Sample Window Manifest')} action={<div className="table-actions"><button className="link" type="button" disabled={datasetBuildRunning || latestIdentityBackfill?.status !== 'completed' || latestIdentityBackfill?.query_version !== 'gpu-identity-interval-v3'} onClick={() => void buildDatasetManifest('gpu_hardware_failure')}>{datasetBuildRunning ? tx('构建中…', 'Building…') : tx('构建硬件故障', 'Build hardware')}</button><button className="link" type="button" disabled={datasetBuildRunning || latestIdentityBackfill?.status !== 'completed' || latestIdentityBackfill?.query_version !== 'gpu-identity-interval-v3'} onClick={() => void buildDatasetManifest('high_priority_xid_event')}>{tx('构建高优先级 XID', 'Build high-priority XID')}</button></div>} />
-        <p className="node-access-note">{tx('将规则正代理或人工接受的候选合并为故障 episode，并生成严格早于故障时间的多预测窗口截止点；规则置信度随样本写入，后续人工改判可重新构建新版本。当前文件不包含特征值、不训练模型，也不会把代理标签升级为确认故障。', 'Merge rule-positive or human-accepted candidates into fault episodes and generate multi-horizon cutoffs strictly before failure time. Rule confidence is carried into each sample, and later human overrides produce a new dataset version. The artifact contains no feature values, trains no model and never upgrades proxy labels to confirmed faults.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('可提取候选', 'Extractable candidates')}</b><strong>{latestDatasetBuild?.eligible_candidate_count || 0}</strong><small>IDENTITY-SUPPORTED / ACCEPTED</small></div>
-          <div><b>{tx('故障 Episodes', 'Fault episodes')}</b><strong>{latestDatasetBuild?.episode_count || 0}</strong><small>DEDUPLICATED LABEL EVENTS</small></div>
-          <div><b>{tx('样本窗口', 'Sample windows')}</b><strong>{latestDatasetBuild?.window_count || 0}</strong><small>{latestDatasetBuild?.horizons?.join(' · ') || '1m → 7d'}</small></div>
-          <div><b>{tx('身份缺失隔离', 'Identity missing')}</b><strong>{latestDatasetBuild?.identity_missing_count || 0}</strong><small>EXCLUDED FROM POSITIVES</small></div>
-        </div>
-        {latestDatasetBuild ? <div className="prediction-contract"><span><b>TARGET</b>{latestDatasetBuild.prediction_target || 'gpu_hardware_failure'}</span><span><b>STATUS</b>{latestDatasetBuild.status.toUpperCase()}</span><span><b>VERSION</b>{latestDatasetBuild.version}</span><span><b>OUTPUT</b>{latestDatasetBuild.output_dir}</span><span><b>SHA256</b>{latestDatasetBuild.window_manifest_sha256 || '—'}</span></div> : <Empty tx={tx} title={tx('尚未构建训练样本时间窗清单', 'No training sample-window manifest has been built')} />}
-      </Card>
-      <Card className="span-12">
-        <CardHead code="HISTORICAL FEATURE DATASET" title={tx('故障前监控特征提取', 'Pre-fault Monitoring Feature Extraction')} action={<div className="table-actions"><Badge value="DEPLOYMENT NODE / READ-ONLY" kind="healthy" /><button className="link" type="button" disabled={featureBuildStarting || latestDatasetBuild?.version !== 'gpu-fault-cohort-manifest-v4' || latestFeatureBuild?.status === 'queued' || latestFeatureBuild?.status === 'running'} onClick={() => void buildHistoricalFeatures()}>{featureBuildStarting ? tx('启动中…', 'Starting…') : tx('提取历史特征', 'Extract features')}</button></div>} />
-        <p className="node-access-note">{tx('按 GPU episode 批量读取 Prometheus/VM：所有预测窗保留 24h@5m 细粒度统计，仅 7 天目标额外计算 3d/7d/30d@1h 长周期趋势；每个截止点再聚合 presence/gap/flap 与 exporter scrape 的 8 项结构特征。结构查询失败单独审计、不伪装为 0，也不拖垮核心遥测样本。所有样本时间必须早于 feature_cutoff_at。', 'Batch Prometheus/VM metrics by GPU episode: every horizon retains fine-grained 24h@5m statistics, while only the 7-day target adds 3d/7d/30d@1h trends; each cutoff also aggregates eight presence/gap/flap and exporter-scrape structural features. Structural query failures remain separately auditable, are never zero-imputed, and do not fail otherwise valid core telemetry rows. Every sample must precede feature_cutoff_at.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('任务状态', 'Build status')}</b><strong>{latestFeatureBuild?.status?.toUpperCase() || 'NOT STARTED'}</strong><small>{latestFeatureBuild?.version || 'gpu-historical-features-v6'}</small></div>
-          <div><b>{tx('Episode 进度', 'Episode progress')}</b><strong>{latestFeatureBuild ? `${latestFeatureBuild.processed_episodes}/${latestFeatureBuild.episode_count}` : '—'}</strong><small>MAX CONCURRENCY · BATCH QUERY</small></div>
-          <div><b>{tx('成功 / 失败窗口', 'Complete / Failed')}</b><strong>{latestFeatureBuild ? `${latestFeatureBuild.completed_windows} / ${latestFeatureBuild.failed_windows}` : '—'}</strong><small>{latestFeatureBuild?.window_count || 0} TOTAL WINDOWS</small></div>
-          <div><b>{tx('平均核心指标覆盖率', 'Average core metric coverage')}</b><strong>{latestFeatureBuild?.finished_at ? `${(latestFeatureBuild.average_metric_coverage * 100).toFixed(1)}%` : '—'}</strong><small>CORE MIN {latestFeatureBuild?.finished_at ? `${(latestFeatureBuild.minimum_metric_coverage * 100).toFixed(1)}%` : '—'} · {latestFeatureBuild?.feature_column_count || 0} COLUMNS</small></div>
-          <div><b>{tx('结构特征覆盖率', 'Structural feature coverage')}</b><strong>{latestFeatureBuild?.version === 'gpu-historical-features-v6' && latestFeatureBuild.finished_at ? `${(latestFeatureBuild.average_structural_feature_coverage * 100).toFixed(1)}%` : '—'}</strong><small>{latestFeatureBuild?.version === 'gpu-historical-features-v6' ? `${latestFeatureBuild.structural_complete_windows || 0} COMPLETE · ${latestFeatureBuild.structural_extraction_failed_windows || 0} QUERY FAILED · ${latestFeatureBuild.structural_feature_count || 8} FEATURES` : 'REBUILD WITH v6'}</small></div>
-        </div>
-        {latestFeatureBuild ? <div className="prediction-contract"><span><b>FEATURE CONTRACT</b>{latestFeatureBuild.feature_contract_version}</span><span><b>LOOKBACK / STEP</b>{latestFeatureBuild.lookback_minutes}m / {latestFeatureBuild.query_step_seconds}s</span><span><b>OUTPUT</b>{latestFeatureBuild.output_dir}</span><span><b>SHA256</b>{latestFeatureBuild.feature_sha256 || latestFeatureBuild.error_message || 'PENDING'}</span></div> : <Empty tx={tx} title={tx('等待从最新训练窗口清单提取特征', 'Waiting to extract features from the latest cohort manifest')} />}
-      </Card>
-      <Card className="span-12">
-        <CardHead code="MANUAL FEEDBACK FEATURE REQUESTS" title={tx('人工故障反馈特征请求', 'Manual Fault-feedback Feature Requests')} action={<div className="table-actions"><Badge value="MANIFEST + OFFLINE WORKER" kind="info" /><button className="link" type="button" disabled={feedbackFeatureRequestStarting} onClick={() => void buildManualFeedbackFeatureRequestManifest()}>{feedbackFeatureRequestStarting ? tx('生成中…', 'Building…') : tx('生成 Manifest', 'Build Manifest')}</button><button className="link" type="button" disabled={feedbackFeatureRequestRunning || latestFeedbackFeatureRequest?.status !== feedbackFeatureManifestReadyStatus} onClick={() => void runManualFeedbackFeatureRequestWorker()}>{feedbackFeatureRequestRunning ? tx('聚合中…', 'Aggregating…') : tx('离线聚合', 'Aggregate')}</button><button className="link" type="button" disabled={preparationBuilding || !isFeedbackFeatureDone(latestFeatureStatus)} onClick={() => void buildTrainingPreparation('manual-feedback')}>{preparationBuilding ? tx('准备中…', 'Preparing…') : tx('准备训练样本', 'Prepare samples')}</button></div>} />
-        <p className="node-access-note">{tx('把 pack-ready、身份已解析、预警已复核的人工硬件故障反馈固化为离线 worker 可消费的特征请求，并可继续执行只读聚合，输出 features.jsonl 与 quality_report.json。worker 只读监控源，只保存聚合特征，不复制原始历史遥测，不发告警也不执行动作。', 'Materializes pack-ready, identity-resolved, warning-reviewed manual hardware-fault feedback into an offline feature request and can run read-only aggregation to produce features.jsonl and quality_report.json. The worker reads the monitoring source only, stores aggregate features only, and does not copy raw historical telemetry, emit alerts, or execute actions.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('请求状态', 'Request status')}</b><strong>{compactWorkflowStatus(latestFeatureStatus)}</strong><small>{latestFeedbackFeatureRequest?.version || 'manual-feedback-feature-request-v6'}</small></div>
-          <div><b>{tx('窗口 / 反馈', 'Windows / feedback')}</b><strong>{latestFeedbackFeatureRequest ? `${latestFeedbackFeatureRequest.window_count}/${latestFeedbackFeatureRequest.hardware_feedback_requests}` : '—'}</strong><small>{latestFeedbackFeatureRequest?.training_eligible_requests || 0} TRAINING · {latestFeedbackFeatureRequest?.blocked_requests || 0} BLOCKED</small></div>
-          <div><b>{tx('聚合窗口', 'Aggregation windows')}</b><strong>{latestFeedbackFeatureRequest ? `${latestFeedbackFeatureRequest.completed_windows || 0} / ${latestFeedbackFeatureRequest.failed_windows || 0}` : '—'}</strong><small>{latestFeedbackFeatureRequest?.window_count || 0} TOTAL · {latestFeedbackFeatureRequest?.warning_miss_requests || 0} WARNING MISSES</small></div>
-          <div><b>{tx('平均核心指标覆盖率', 'Average core metric coverage')}</b><strong>{latestFeedbackFeatureRequest?.feature_sha256 ? `${((latestFeedbackFeatureRequest.average_metric_coverage || 0) * 100).toFixed(1)}%` : '—'}</strong><small>CORE MIN {latestFeedbackFeatureRequest?.feature_sha256 ? `${((latestFeedbackFeatureRequest.minimum_metric_coverage || 0) * 100).toFixed(1)}%` : '—'} · {latestFeedbackFeatureRequest?.feature_column_count || 0} COLUMNS</small></div>
-          <div><b>{tx('安全边界', 'Safety boundary')}</b><strong>{latestFeedbackFeatureRequest?.no_raw_telemetry_stored === false ? 'RAW UNKNOWN' : 'NO RAW'}</strong><small>{latestFeedbackFeatureRequest?.no_alert_emitted === false || latestFeedbackFeatureRequest?.no_action_executed === false ? 'CHECK SAFETY' : 'NO ALERT · NO ACTION'}</small></div>
-        </div>
-        {latestFeedbackFeatureRequest ? <div className="prediction-contract"><span><b>SOURCE MANIFEST</b>{latestFeedbackFeatureRequest.source_manifest_sha256?.slice(0, 16) || '—'}</span><span><b>FEATURE CONTRACT</b>{latestFeedbackFeatureRequest.feature_contract_version}</span><span><b>LOOKBACK / STEP</b>{latestFeedbackFeatureRequest.lookback_minutes}m / {latestFeedbackFeatureRequest.query_step_seconds}s</span><span><b>OUTPUT</b>{latestFeedbackFeatureRequest.output_dir}</span><span><b>MANIFEST SHA256</b>{latestFeedbackFeatureRequest.manifest_sha256 || 'PENDING'}</span><span><b>FEATURE SHA256</b>{latestFeedbackFeatureRequest.feature_sha256 || latestFeedbackFeatureRequest.error_message || latestFeedbackFeatureRequest.blocking_reasons?.[0] || 'PENDING'}</span></div> : <Empty tx={tx} title={tx('等待从人工故障反馈生成离线特征请求清单', 'Waiting to build an offline feature request manifest from manual fault feedback')} />}
-      </Card>
-      <Card className="span-12">
-        <CardHead code="TRAINING PREPARATION" title={tx('训练质量门与防泄漏切分', 'Training Quality Gate & Leakage-safe Split')} action={<div className="table-actions"><Badge value="MIN CORE COVERAGE 70%" kind="info" /><button className="link" type="button" disabled={preparationBuilding || latestFeatureBuild?.status !== 'completed' || latestFeatureBuild?.version !== 'gpu-historical-features-v6' || latestFeatureBuild?.episode_count !== latestDatasetBuild?.episode_count} onClick={() => void buildTrainingPreparation('historical')}>{preparationBuilding ? tx('构建中…', 'Building…') : tx('按当前规则重建', 'Rebuild with current rules')}</button></div>} />
-        <p className="node-access-note">{tx('零遥测窗口标记为 telemetry_censored，低覆盖率和提取失败样本从训练中排除且不以 0 填充；训练、验证和测试按时间顺序切分，并以 GPU UUID 严格隔离。系统同时生成同一 GPU 历史健康对照请求，后续仍需校验遥测连续性与负载可比性。', 'Zero-telemetry windows are marked telemetry_censored; low-coverage and failed extractions are excluded without zero imputation. Train, validation, and test follow time order with strict GPU UUID isolation. Same-GPU historical healthy-control requests are also generated, pending telemetry-continuity and workload comparability checks.')}</p>
-        <div className="issue-categories quality-ledger">
-          <div><b>{tx('合格正样本', 'Eligible positives')}</b><strong>{latestPreparationBuild?.eligible_positive_count || 0}</strong><small>{latestPreparationBuild?.source_window_count || 0} SOURCE WINDOWS</small></div>
-          <div><b>{tx('训练 / 验证 / 测试', 'Train / Validation / Test')}</b><strong>{latestPreparationBuild ? `${latestPreparationBuild.train_count} / ${latestPreparationBuild.validation_count} / ${latestPreparationBuild.test_count}` : '—'}</strong><small>TIME ORDER · GPU UUID ISOLATED</small></div>
-          <div><b>{tx('标签不合格 / 相关事件', 'Label ineligible / Correlated events')}</b><strong>{latestPreparationBuild ? `${latestPreparationBuild.label_ineligible_count || 0} / ${latestPreparationBuild.correlated_event_count || 0}` : '—'}</strong><small>TELEMETRY CENSORED {latestPreparationBuild?.telemetry_censored_count || 0} · ENTITY CONFLICT {latestPreparationBuild?.entity_time_conflict_count || 0}</small></div>
-          <div><b>{tx('健康对照请求 / 缺口', 'Control requests / Shortfall')}</b><strong>{latestPreparationBuild ? `${latestPreparationBuild.control_request_count} / ${latestPreparationBuild.control_shortfall_count}` : '—'}</strong><small>SAME GPU · FAULT-CENSORED</small></div>
-        </div>
-        {latestPreparationBuild ? <div className="prediction-contract"><span><b>STATUS / VERSION</b>{compactWorkflowStatus(latestPreparationBuild.status)} · {latestPreparationBuild.version}</span><span><b>SOURCE</b>{latestPreparationBuild.source_kind || 'historical_feature_build'} · {latestPreparationBuild.source_feature_dataset_key}</span><span><b>TIME BOUNDARIES</b>{latestPreparationBuild.train_end_at ? time(latestPreparationBuild.train_end_at, lang) : '—'} · {latestPreparationBuild.validation_end_at ? time(latestPreparationBuild.validation_end_at, lang) : '—'}</span><span><b>OUTPUT</b>{latestPreparationBuild.output_dir}</span><span><b>POSITIVE SHA256</b>{latestPreparationBuild.prepared_samples_sha256 || latestPreparationBuild.error_message || 'PENDING'}</span><span><b>CONTROL SHA256</b>{latestPreparationBuild.control_requests_sha256 || 'PENDING'}</span></div> : <Empty tx={tx} title={tx('等待对完整历史特征执行训练准备', 'Waiting to prepare the full historical feature dataset')} />}
-      </Card>
-      <Card className="span-12"><CardHead code={trainingCohortPolicy?.version || 'GPU TRAINING COHORT'} title={tx('故障前窗口与正常对照规则', 'Pre-fault Windows & Healthy Controls')} /><div className="prediction-contract"><span><b>{tx('预测窗口', 'Positive horizons')}</b>{(trainingCohortPolicy?.positive_horizons_minutes || []).map(value => value >= 1440 ? `${value / 1440}d` : value >= 60 ? `${value / 60}h` : `${value}m`).join(' · ') || '—'}</span><span><b>{tx('匹配正常对照', 'Matched healthy controls')}</b>{(trainingCohortPolicy?.control_match_dimensions || []).join(' · ') || '—'}</span><span><b>{tx('正常区间', 'Normal ranges')}</b>{(trainingCohortPolicy?.normal_range_statistics || []).join(' · ') || '—'}</span><span><b>{tx('排除污染窗口', 'Censor contaminated windows')}</b>{trainingCohortPolicy ? `${trainingCohortPolicy.healthy_censor_before_hours}h BEFORE · ${trainingCohortPolicy.healthy_censor_after_hours}h AFTER · telemetry/restart/maintenance/identity change excluded` : '—'}</span><span><b>{tx('换卡证据边界', 'Replacement evidence boundary')}</b>{trainingCohortPolicy?.replacement_evidence_policy || '—'}</span></div></Card>
-      <Card className="span-12"><CardHead code="MODEL REGISTRY" title={tx('预测时间窗与模型契约', 'Prediction Horizons & Model Contracts')} action={<Badge value={`${prediction?.models.length || 0} SPECS`} kind="info" />} /><div className="table-wrap"><table className="prediction-model-table"><thead><tr><th>MODEL KEY</th><th>{tx('对象', 'Entity')}</th><th>{tx('时间窗', 'Horizon')}</th><th>{tx('算法 / 运行时', 'Algorithm / Runtime')}</th><th>{tx('状态', 'Status')}</th><th>{tx('契约', 'Contracts')}</th></tr></thead><tbody>{(prediction?.models || []).map(model => <tr key={model.model_key}><td><b>{model.model_key}</b><small>v{model.version}</small></td><td>{model.hardware_class} / {model.entity_type}</td><td><b>{model.horizon_minutes >= 1440 ? `${model.horizon_minutes / 1440}d` : model.horizon_minutes >= 60 ? `${model.horizon_minutes / 60}h` : `${model.horizon_minutes}m`}</b></td><td><code>{model.algorithm} / {model.runtime}</code></td><td><Badge value={model.status.toUpperCase()} kind="info" /></td><td><small>{model.feature_contract_version}</small><small>{model.label_contract_version}</small></td></tr>)}</tbody></table></div></Card>
-      <Card className="span-12"><CardHead code="POINT-IN-TIME READINESS" title={tx('GPU 数据就绪队列', 'GPU Data Readiness Queue')} action={<div className="table-actions"><Badge value={`${readiness.length} GPUS`} kind="info" /><button disabled={safeReadinessPage === 0} onClick={() => setReadinessPage(page => Math.max(0, page - 1))} aria-label={tx('上一页', 'Previous page')}><ChevronLeft size={15} /></button><span>{safeReadinessPage + 1} / {readinessPageCount}</span><button disabled={safeReadinessPage + 1 >= readinessPageCount} onClick={() => setReadinessPage(page => Math.min(readinessPageCount - 1, page + 1))} aria-label={tx('下一页', 'Next page')}><ChevronRight size={15} /></button></div>} /><div className="table-wrap"><table className="prediction-readiness-table"><thead><tr><th>{tx('节点 / GPU', 'Node / GPU')}</th><th>{tx('型号', 'Model')}</th><th>{tx('状态', 'Status')}</th><th>{tx('数据置信度', 'Data Confidence')}</th><th>{tx('特征覆盖', 'Feature Coverage')}</th><th>{tx('阻断原因', 'Blocking Reasons')}</th><th>{tx('观测时间', 'Observed')}</th></tr></thead><tbody>{visibleReadiness.map(item => <tr key={`${item.gpu_asset_id}-${item.feature_snapshot_id}`}><td><b>{item.node_ip} · GPU {item.gpu_index}</b><small>{item.gpu_uuid || item.entity_key}</small></td><td>{item.model_name || '—'}</td><td><Badge value={item.status.toUpperCase()} kind={item.status === 'ready_for_dataset' ? 'healthy' : 'warning'} /></td><td><Badge value={item.data_confidence || 'UNKNOWN'} kind={item.data_confidence === 'A' ? 'healthy' : item.data_confidence === 'B' ? 'info' : 'warning'} /></td><td>{Math.round(item.feature_coverage * 100)}%</td><td><small>{item.blocking_reasons.length ? item.blocking_reasons.join(' · ') : tx('无；仅数据集就绪', 'none; dataset-ready only')}</small></td><td>{time(item.observed_at, lang)}</td></tr>)}</tbody></table>{readiness.length === 0 && <Empty tx={tx} title={predictionError ? tx('预警框架 API 不可用', 'Early-warning API unavailable') : tx('等待 GPU 特征快照', 'Waiting for GPU feature snapshots')} />}</div></Card>
-      <Card className="span-12"><CardHead code="LABEL LEDGER" title={tx('GPU 故障标签台账', 'GPU Failure Label Ledger')} action={<div className="table-actions"><Badge value={`${prediction?.labels.confirmed || 0} CONFIRMED`} kind={(prediction?.labels.confirmed || 0) > 0 ? 'healthy' : 'warning'} /><Badge value={`${(prediction?.labels.strong_proxy || 0) + (prediction?.labels.weak_proxy || 0)} PROXY`} kind="info" /></div>} /><div className="table-wrap"><table className="prediction-label-table"><thead><tr><th>LABEL</th><th>{tx('节点 / GPU', 'Node / GPU')}</th><th>{tx('型号', 'Model')}</th><th>{tx('事件类型', 'Event Type')}</th><th>{tx('质量层级', 'Quality Tier')}</th><th>{tx('来源', 'Provenance')}</th><th>{tx('发生时间', 'Occurred')}</th></tr></thead><tbody>{failureLabels.map(label => <tr key={label.id}><td><code>{label.label_key}</code></td><td><b>{label.node_ip || '—'}</b><small>{label.gpu_uuid || label.entity_key}</small></td><td>{label.model_name || '—'}</td><td><code>{label.event_type}</code><small>{label.rule_version || '—'}</small></td><td><Badge value={label.quality_tier.toUpperCase()} kind={label.quality_tier === 'confirmed' ? 'healthy' : label.quality_tier === 'strong_proxy' ? 'warning' : 'info'} /></td><td><small>{label.source_type} #{label.source_record_id}</small>{label.confirmation_resolution_id ? <small>resolution #{label.confirmation_resolution_id}</small> : null}</td><td>{time(label.occurred_at, lang)}</td></tr>)}</tbody></table>{failureLabels.length === 0 && <Empty tx={tx} title={tx('等待首次标签同步', 'Waiting for first label synchronization')} />}</div></Card>
-      <Card className="span-6"><CardHead code="LABEL CONTRACT" title={tx('标签质量分层', 'Label Quality Tiers')} /><div className="prediction-contract"><span><b>{tx('确认正例', 'Confirmed positives')}</b>{(prediction?.label_policy.confirmed_positive || []).join(' · ') || '—'}</span><span><b>{tx('弱标签', 'Weak labels')}</b>{(prediction?.label_policy.weak_positive || []).join(' · ') || '—'}</span><span><b>{tx('禁止作为正例', 'Excluded positives')}</b>{(prediction?.label_policy.excluded_as_positive || []).join(' · ') || '—'}</span></div></Card>
-      <Card className="span-6"><CardHead code="RELEASE GATES" title={tx('模型上线门槛', 'Model Release Gates')} /><div className="prediction-contract"><span><b>POINT-IN-TIME</b>{prediction?.label_policy.point_in_time_rule || '—'}</span><span><b>SPLIT</b>{prediction?.label_policy.entity_isolation || '—'}</span><span><b>SHADOW / NO AUTO ACTION</b>{prediction ? `precision ≥ ${prediction.release_gates.minimum_precision} · recall ≥ ${prediction.release_gates.minimum_recall} · calibration required` : '—'}</span></div></Card>
-      <Card className="span-12">
-        <CardHead code="TEMPORAL ABLATION" title={tx('长历史窗口消融', 'Long-history Window Ablation')} action={<Badge value="SAME MATRIX / SAME ALGORITHM" kind="info" />} />
-        <p className="node-access-note">{tx('依次训练四档 Logistic，只改变允许进入训练的最长历史窗口。数据库、评估报告和模型产物都会记录窗口策略，模型赛马会自动保留每档最新构建。', 'Train four Logistic variants that differ only in the longest admitted history window. The database, evaluation report, and artifact preserve the policy, and the model race keeps the latest build for each policy.')}</p>
-        <div className="table-actions">
-          <button className="link" type="button" disabled={baselineModelStarting || !baselineTrainingEnabled} onClick={() => void trainBaselineModels('logistic_regression', 'max_24h')}>Logistic ≤24h</button>
-          <button className="link" type="button" disabled={baselineModelStarting || !baselineTrainingEnabled} onClick={() => void trainBaselineModels('logistic_regression', 'max_3d')}>Logistic ≤3d</button>
-          <button className="link" type="button" disabled={baselineModelStarting || !baselineTrainingEnabled} onClick={() => void trainBaselineModels('logistic_regression', 'max_7d')}>Logistic ≤7d</button>
-          <button className="link" type="button" disabled={baselineModelStarting || !baselineTrainingEnabled} onClick={() => void trainBaselineModels('logistic_regression')}>Logistic ≤30d</button>
-          <button className="link" type="button" disabled={baselineModelStarting || !baselineTrainingEnabled} onClick={() => void trainBaselineModels('logistic_regression', 'all_available_windows', 'exclude_structural')}>{tx('Logistic 无结构平面', 'Logistic no structural plane')}</button>
-        </div>
-        <div className="prediction-contract">{baselineModelBuilds.filter(build => build.algorithm === 'logistic_regression' && build.source_matrix_build_id === latestTrainingMatrixBuild?.id).slice(0, 8).map(build => <span key={`ablation-${build.id}`}><b>#{build.id} · {build.feature_window_policy || 'all_available_windows'} · {build.feature_plane_policy || 'all_features'}</b>{build.status.toUpperCase()} · ROC {build.test_macro_roc_auc.toFixed(3)} · PR {build.test_macro_pr_auc.toFixed(3)}</span>)}</div>
-        {modelRaceComparison ? <div className="prediction-contract">{modelRaceComparison.builds.filter(build => build.algorithm === 'logistic_regression').map(build => <span key={`ablation-windows-${build.build_id}`}><b>#{build.build_id} · {build.feature_window_policy} · {build.feature_plane_policy}</b>{Object.entries(build.selected_window_counts || {}).map(([window, count]) => `${window}:${count}`).join(' · ') || 'NO SELECTED WINDOWS'}</span>)}</div> : null}
-      </Card>
-      </> : null}
-    </div>;
-  }
-  if (view === 'algorithms') return <div className="grid"><Card className="span-6"><CardHead code="CANDIDATES" title={tx('候选算法', 'Candidate Algorithms')} /><div className="chips">{['Logistic Regression', 'Shallow GBDT', 'Cascade Ensemble', 'Learning-to-Rank', 'ECOD / Isolation Forest', 'AFT / Survival Forest', 'Observability-aware'].map(x => <span key={x}>{x}</span>)}</div></Card><Card className="span-6"><CardHead code="GUARDRAILS" title={tx('上线约束', 'Release Gates')} /><div className="rules">{[tx('特征必须早于标签截点，防止未来信息泄漏', 'Features must precede the label cutoff to prevent future leakage'), tx('按时间与 GPU UUID 隔离训练、校准和测试', 'Split train, calibration, and test by time and GPU UUID'), tx('概率必须按时间窗分别校准', 'Calibrate probability independently for each horizon'), tx('未达门槛仅 shadow mode', 'Shadow mode until release gates pass'), tx('LLM 不修改模型概率', 'LLM cannot alter model probability')].map(x => <span key={x}><ShieldCheck size={15} />{x}</span>)}</div></Card></div>;
-  return <div className="grid"><Card className="span-12"><CardHead code="DECISION STACK" title={tx('决策分层', 'Decision Stack')} /><div className="model-grid">{layers.map(x => <div key={x[0]}><small>{x[0]}</small><b>{x[1]}</b><code>{x[2]}</code><Badge value={x[3]} kind={x[0] === 'L1' ? 'healthy' : x[0] === 'L3' ? 'info' : 'neutral'} /></div>)}</div></Card></div>;
-}
-function About({ tx, view, platformConfig, onPlatformConfig }: { tx: Tx; view: string; platformConfig: PlatformConfig; onPlatformConfig: (config: PlatformConfig) => void }) {
-  const [moduleDetailID, setModuleDetailID] = useState<string | null>(null);
-  if (view === 'settings') return <PlatformSettings tx={tx} value={platformConfig} onSaved={onPlatformConfig} />;
-  if (view === 'architecture') return <div className="grid">
-    <Card className="span-12 architecture-map-card"><CardHead code={tx('系统视图', 'SYSTEM MAP')} title={tx('平台模块架构', 'Platform Module Architecture')} action={<Badge value={tx('模块关系', 'MODULE RELATIONSHIPS')} kind="info" />} /><img src={tx('/atlas-platform-architecture.zh.svg?v=20261113.1', '/atlas-platform-architecture.en.svg?v=20261113.1')} alt={tx('ATLAS 平台模块架构图', 'ATLAS platform module architecture')} /></Card>
-    <Card className="span-7"><CardHead code={tx('架构', 'ARCHITECTURE')} title={tx('平台架构', 'Platform Architecture')} /><div className="architecture">{[['01', tx('采集', 'INGEST'), tx('DCGM · Prometheus · 日志 · BMC', 'DCGM · Prometheus · logs · BMC')], ['02', tx('治理', 'NORMALIZE'), tx('身份 · 事件 · 特征', 'identity · event · feature')], ['03', tx('决策', 'DECIDE'), tx('确定性规则 · 影子排名 · 受控研究', 'deterministic rules · shadow ranking · gated research')], ['04', tx('闭环', 'WORKFLOW'), tx('告警 · 人工处置 · 验证流程', 'alerts · human resolution · validation workflow')]].map(x => <div key={x[0]}><small>{x[0]}</small><b>{x[1]}</b><code>{x[2]}</code></div>)}</div></Card>
-    <Card className="span-5"><CardHead code={tx('边界', 'BOUNDARIES')} title={tx('工程边界', 'Engineering Boundaries')} /><div className="rules danger-list">{[tx('无节点登录权限时仍可使用监控数据模式', 'Monitoring-only mode does not require node access'), tx('节点信息收集只能通过版本化 Skill 和注册命令', 'Node evidence collection requires a versioned Skill and registered commands'), tx('平台发现数据问题，不自动修复监控配置', 'Detect data issues; do not auto-remediate monitoring'), tx('未确认维护窗口时禁止主动压测', 'No active stress before maintenance confirmation'), tx('LLM 不直接评分', 'LLM does not score hardware'), tx('异常分不等于故障概率', 'Anomaly score is not failure probability'), tx('缺失数据输出 unknown', 'Missing data returns unknown'), tx('重启、隔离、复测需审批', 'Restart, isolation and validation require approval')].map(x => <span key={x}><AlertTriangle size={15} />{x}</span>)}</div></Card>
-    <Card className="span-12"><CardHead code={tx('版本治理', 'VERSIONING')} title={tx('模块化版本治理', 'Modular Version Governance')} /><div className="version-policy"><span><b>MAJOR</b>{tx('模块契约或核心语义不兼容变更', 'Incompatible module contract or semantics')}</span><span><b>MINOR</b>{tx('新增向后兼容能力', 'Backward-compatible capability')}</span><span><b>PATCH</b>{tx('规则、阈值、缺陷与展示修正', 'Rules, thresholds, fixes and presentation')}</span></div></Card>
-  </div>;
-
-  const baseModules = [
-    { id: 'asset', name: tx('资产对账', 'Asset Reconciliation'), version: 'v0.4.0', status: tx('节点身份代次', 'NODE IDENTITY GENERATIONS'), desc: tx('以 LXOP 实时在用资产为监控边界；同 IP 的 SN 变化识别为节点换代，旧 GPU、评分和问题历史保留，新节点建立独立身份代次。', 'Live LXOP assets define monitoring scope. A serial-number change at the same IP creates a new node identity generation while preserving the old GPUs, scores, and issue history.'), history: [tx('v0.4.0 · 同 IP 新 SN 建立新身份代次；下架仅退出当前检查，不再删除历史；GPU 双接口差值独立统计', 'v0.4.0 · a new serial at the same IP creates a new identity generation; retirement leaves current checks without deleting history; cross-source differences are GPU-only'), tx('v0.3.1 · 节点列表默认只返回当前资产，退休节点仅通过显式 retired 审计筛选查询', 'v0.3.1 · node lists default to current assets; retired nodes require the explicit retired audit filter'), tx('v0.3.0 · 在线状态白名单成为统一监控边界，10 分钟内退休非在用或已移除节点并失效当前评分', 'v0.3.0 · in-use state allowlist became the monitoring boundary; non-in-use or removed nodes retire and current scores invalidate within 10 minutes')] },
-    { id: 'quality', name: tx('监控数据质量发现', 'Monitoring Data Quality Detection'), version: 'v0.8.2', status: tx('采集覆盖间距校准', 'COVERAGE SPACING TUNED'), desc: tx('联合识别每卡连续性和采集链路问题，并在独立问题统计子页面按历史、已解决、遗留和当前检测统一展示。', 'Detect per-GPU continuity and collection-path issues, with unified discovered, resolved, remaining and active counts on a dedicated Issue Statistics subpage.'), history: [tx('v0.8.2 · 采集覆盖状态徽标与数值间距增加约 1.4 倍，卡片高度不变', 'v0.8.2 · increased coverage badge-to-value spacing by about 1.4× without changing card height'), tx('v0.8.1 · 压缩采集覆盖和指标连续性数据卡高度与留白', 'v0.8.1 · reduced target-coverage and metric-continuity card height and whitespace'), tx('v0.8.0 · 数据质量台账迁入独立问题统计子页，问题列表跳转保持筛选与分页一致', 'v0.8.0 · moved the quality ledger to a dedicated subpage with consistent issue-list filtering and pagination'), tx('v0.7.0 · 连续性问题接入系统数据质量分类统计和侧边栏遗留数', 'v0.7.0 · continuity findings joined System Data Quality category statistics and sidebar remaining count'), tx('v0.6.1 · Target 相对耗时改为审计项，不再单独产生问题', 'v0.6.1 · relative target duration became audit-only and no longer creates findings alone'), tx('v0.6.0 · 新增最大间隔、UUID 波动和 Target 抓取质量判定', 'v0.6.0 · maximum gap, UUID flaps and target scrape-quality decisions'), tx('v0.5.0 · 新增每卡 1h 样本存在率、当前样本年龄、连续性页面与问题闭环', 'v0.5.0 · per-GPU 1h presence, current sample age, continuity UI and issue lifecycle')] },
-    { id: 'health', name: tx('硬件健康评分', 'Hardware Health Scoring'), version: 'v1.6.0', status: tx('持续高温主动告警', 'SUSTAINED THERMAL ALERTING'), desc: tx('Atlas 使用现有 GPU 温度数据判断连续高温：80°C 持续 15 分钟告警，85°C 持续 5 分钟升级 critical；同卡同规则恢复后再次触发时累计次数，并保留只读限频原因复核。', 'Atlas evaluates sustained high temperature from existing GPU telemetry: 80°C for 15 minutes alerts and 85°C for 5 minutes escalates to critical; recurrences after recovery accumulate on the same GPU/rule event and read-only throttle-reason review is retained.'), history: [tx('v1.6.0 · 持续 GPU 高温门禁：80°C/15m warning、85°C/5m critical；同卡同规则恢复后重开并累计次数', 'v1.6.0 · sustained GPU thermal gates: 80°C/15m warning and 85°C/5m critical; same-GPU/rule recurrences reopen and accumulate count'), tx('v1.5.0 · 修正累计不可恢复重映射行持续误报，旧规则标签自动排除出训练集', 'v1.5.0 · fixed persistent alerts from lifetime uncorrectable row totals and excludes legacy-rule labels from training'), tx('v1.4.1 · 相对抓取耗时退出异常判定，保留审计观测', 'v1.4.1 · relative scrape duration left anomaly decisions and remains audit evidence'), tx('v1.4.0 · 接入最大间隔、UUID 波动和 DCGM Target 抓取质量', 'v1.4.0 · maximum gap, UUID flaps and DCGM target scrape quality'), tx('v1.3.0 · 健康快照接入每卡结构性可观测性特征', 'v1.3.0 · health snapshots consume per-GPU structural observability features'), tx('v1.2.0 · Correctable Row Remap 改为 1h/24h 增长判定，稳定累计值只观察', 'v1.2.0 · correctable row remaps use 1h/24h growth; stable totals are observation-only')] },
-    { id: 'detection', name: tx('故障检测', 'Fault Detection'), version: 'v0.1.1', status: tx('规则与报告联动', 'RULE + REPORT LINKAGE'), desc: tx('识别已经发生或正在发生的 ECC、XID、掉卡、不可用、温度和 PCIe 等硬件故障，并将稳定事件身份交给只读证据与故障报告模块。', 'Detect ECC, XID, dropout, unavailable, thermal and PCIe hardware faults that have occurred or are occurring, then pass stable event identity to the read-only evidence and fault-report module.'), history: [tx('v0.1.1 · 硬件事件接入结构化证据与报告入口', 'v0.1.1 · hardware events linked to structured evidence and reports'), tx('v0.1.0 · Row Remap、温度、PCIe 与 XID 变化确定性规则', 'v0.1.0 · deterministic row-remap, thermal, PCIe and XID-change rules')] },
-    { id: 'analysis', name: tx('只读证据与故障报告', 'Read-only Evidence & Fault Reports'), version: 'v0.1.0', status: tx('确定性报告基线', 'DETERMINISTIC REPORT BASELINE'), desc: tx('按事件聚合健康快照、Feature Catalog、规则命中、问题台账和人工处置，生成双语结构化故障报告。v0.1 不执行节点命令、不调用 LLM、不修改任务、节点或配置。', 'Aggregate health snapshots, Feature Catalog data, rule hits, issue records and operator resolutions by event into bilingual structured fault reports. v0.1 runs no node commands or LLM and changes no workloads, nodes or configuration.'), history: [tx('v0.1.0 · Evidence Bundle、确定性报告 API、证据引用、缺口与安全边界', 'v0.1.0 · Evidence Bundle, deterministic report APIs, evidence references, gaps and safety boundaries'), tx('v0.1.0 · 告警中心增加报告入口与双语报告抽屉', 'v0.1.0 · report entry and bilingual report drawer added to Alert Center')] },
-    { id: 'node-access', name: tx('节点证据 Skill', 'Node Evidence Skill'), version: 'v0.5.0', status: tx('恢复感知只读采集', 'RECOVERY-AWARE COLLECTION'), desc: tx('硬件事件立即采集；节点失联作为持续状态等待恢复，恢复后补采启动历史、GPU 快照和故障时间窗内核日志。', 'Hardware events collect immediately; node outages are persistent conditions that wait for recovery, then collect boot history, GPU snapshots, and incident-window kernel logs.'), history: [tx('v0.5.0 · 告警 Event/Condition 分层，节点 offline 等待恢复后自动补采并展示等待任务', 'v0.5.0 · alert Event/Condition layering with automatic post-recovery collection and waiting-task visibility for offline nodes'), tx('v0.4.3 · 认证检查默认查询最近 5 条并支持按需加载更多历史', 'v0.4.3 · authentication checks query the five most recent records by default and load more history on demand'), tx('v0.4.2 · SSH 握手按 known_hosts 已信任的主机密钥算法安全重试，避免多算法节点误报身份失败', 'v0.4.2 · safely retry SSH handshakes with host-key algorithms already trusted by known_hosts to prevent false identity failures on multi-algorithm nodes'), tx('v0.4.1 · 节点凭据与认证检查改为页面开放配置，Profile ID 随账号自动建议', 'v0.4.1 · open page configuration for node credentials and authentication checks with automatic Profile ID suggestions'), tx('v0.4.0 · 受控 SSH 只读执行器、默认事件采集、脱敏审计和 Evidence Bundle 接入', 'v0.4.0 · controlled SSH read-only runner, default event collection, redacted audit, and Evidence Bundle integration'), tx('v0.3.2 · 移除逐次计划入口，明确低负载只读默认采集与高影响操作人工确认边界', 'v0.3.2 · removed per-run planning and clarified default low-impact read-only collection versus confirmation-gated high-impact operations'), tx('v0.3.1 · 建立受管节点、注册命令与资源预算约束，后由默认采集策略替代页面计划', 'v0.3.1 · established managed-node, registered-command, and resource-budget constraints, later superseded by the default collection policy'), tx('v0.3.0 · 受管资产限制、known-host 校验、仅认证 API、审计记录和 access 问题自动开闭', 'v0.3.0 · managed-asset restriction, known-host verification, authentication-only API, audit records, and automatic access issue lifecycle'), tx('v0.2.1 · 增加默认关闭的 HTTP 兼容开关、API 状态与页面风险提示', 'v0.2.1 · added a default-off HTTP compatibility switch, API status, and UI risk warning'), tx('v0.2.0 · 页面加密录入、密文落库、管理口令写保护、掩码列表与认证前解密', 'v0.2.0 · encrypted page entry, ciphertext persistence, management-token write protection, masked lists, and pre-authentication decryption'), tx('v0.1.0 · Skill 契约、只读/审批命令分级、凭据引用轮换状态机与状态页面', 'v0.1.0 · Skill contract, read-only/approval command classes, credential-reference rotation state machine, and status UI')] },
-    { id: 'skill-foundation', name: tx('基础 Skill 体系', 'Foundational Skill System'), version: 'v0.1.0', status: tx('契约就绪', 'CONTRACT READY'), desc: tx('建立节点只读证据、证据化故障分析和脱敏案例学习三项基础 Skill。当前只交付可审计契约，不提供维护、重启、节点变更或任务操作能力。', 'Establish three foundational Skills for read-only node evidence, evidence-linked fault analysis, and redacted case learning. This release delivers auditable contracts only and provides no maintenance, restart, node-change, or workload-operation capability.'), history: [tx('v0.1.0 · atlas-fault-analysis 定义证据引用、假设状态和结构化报告边界', 'v0.1.0 · atlas-fault-analysis defines evidence references, hypothesis states, and structured-report boundaries'), tx('v0.1.0 · atlas-case-learning 定义脱敏、质量门、episode 与实体隔离划分', 'v0.1.0 · atlas-case-learning defines redaction, quality gates, episodes, and entity-isolated splits'), tx('v0.1.0 · 与 atlas-node-evidence 组成采集→分析→学习基础链路', 'v0.1.0 · forms the evidence-to-analysis-to-learning foundation with atlas-node-evidence')] },
-    { id: 'feature', name: tx('统一特征目录', 'Unified Feature Catalog'), version: 'v1.9.0', status: tx('累计值与新增量分离', 'LIFETIME / DELTA SEPARATION'), desc: tx('在 38 个在线健康特征、58 个源查询和全量 metric-family 规则之上，同时读取 Volatile ECC、Aggregate 增量和重映射行增量，区分硬件生命周期累计值与观测期新增故障。', 'Uses 38 online health features, 58 source queries and fleet metric-family rules to combine volatile ECC, aggregate growth and remapped-row growth while separating lifetime totals from newly observed faults.'), history: [tx('v1.9.0 · 接入 Volatile 不可纠正 ECC；不可恢复重映射行累计值仅作观察，只有新增量进入故障规则', 'v1.9.0 · added volatile uncorrected ECC; lifetime uncorrectable remapped-row totals are observation-only and only growth enters fault rules'), tx('基线 v1.1.0 · 以正式 FeatureDefinition 注册时间建立数据 epoch，排除复用版本号的早期实验快照', 'Baseline v1.1.0 · establishes a data epoch from the production FeatureDefinition registration time and excludes earlier experimental snapshots that reused the version'), tx('v1.8.0 · 正式版本隔离、当前版本默认读取与刷新耗时审计', 'v1.8.0 · production version isolation, current-version reads and refresh-duration audit'), tx('v1.7.0 · 7 天稳健历史基线、成熟度、刷新任务与读取 API', 'v1.7.0 · seven-day robust baselines, maturity, refresh jobs and read API'), tx('v1.6.0 · metric-family 规则提升并发布为全量正式特征，保持不参与健康评分', 'v1.6.0 · promoted and published metric-family rule as a production fleet feature while keeping it out of health scoring'), tx('v1.5.0 · metric-family 单节点 canary 配置、shadow 契约与范围保护', 'v1.5.0 · single-node metric-family canary config, shadow contract, and scope guard')] },
-    { id: 'prediction', name: tx('硬件故障预警', 'Hardware Early Warning'), version: 'v0.0.1', status: tx('特征底座就绪，模型未交付', 'FEATURE FOUNDATION READY'), desc: tx('承载故障发生前的风险预警，覆盖 GPU，并按统一资产、特征和标签模型扩展至服务器、存储和网络硬件；当前仅完成统一特征底座，尚未交付 PyOD 或监督概率模型。', 'Provide pre-failure risk early warning for GPUs, extending through a common asset, feature and label model to server, storage and network hardware. The common feature foundation is ready; PyOD and supervised probability models are not yet delivered.'), history: [tx('v0.0.1 · Feature Catalog v1 可供异常检测、风险排序和监督训练消费', 'v0.0.1 · Feature Catalog v1 is consumable by anomaly detection, risk ranking and supervised training'), tx('v0.0.0 · 特征、标签、PyOD、监督模型与概率校准路线完成', 'v0.0.0 · feature, label, PyOD, supervised-model and probability-calibration roadmap')] },
-    { id: 'degradation', name: tx('性能衰减识别', 'Performance Degradation Detection'), version: 'v0.2.0', status: tx('历史基线影子检测', 'HISTORICAL SHADOW BASELINE'), desc: tx('高负载 SM 时钟检测优先消费成熟的同型号 7 天历史基线，未成熟时以同节点或同型号集群实时中位数兜底；结果不影响健康分，不输出故障概率。', 'High-load SM-clock detection prefers mature same-model seven-day historical baselines and falls back to live same-node or same-model fleet medians. Results do not affect health scores or emit failure probabilities.'), history: [tx('v0.2.0 · 接入型号/负载/版本历史基线，保留实时同类兜底', 'v0.2.0 · model/load/version historical baselines with live peer fallback'), tx('v0.1.0 · 被动候选 API、同类中位数基线、证据/置信度与影子模式页面', 'v0.1.0 · passive candidate APIs, peer-median baseline, evidence/confidence and shadow-mode UI'), tx('v0.0.1 · 性能特征、SuperBench/DCGM 验证和基线契约', 'v0.0.1 · performance features, SuperBench/DCGM validation and baseline contract'), tx('v0.0.0 · 被动检测与主动验证安全门设计', 'v0.0.0 · passive detection and active-validation safety gates')] },
-    { id: 'incident', name: tx('告警中心', 'Alert Center'), version: 'v0.3.2', status: tx('Atlas 持续热告警', 'ATLAS SUSTAINED THERMAL ALERTS'), desc: tx('分层管理原始接收记录与 Atlas 硬件告警；持续高温事件首次开启时发送精简、专业的飞书告警卡片。', 'Separate raw ingestion records and Atlas hardware alerts; newly opened sustained-thermal episodes send focused professional Feishu cards.'), history: [tx('v0.3.2 · Atlas 持续高温首次事件发送主题、主机/IP、GPU、温度、持续时间和只读复核命令', 'v0.3.2 · first Atlas sustained-thermal episodes send topic, host/IP, GPU, temperature, duration and read-only review command'), tx('v0.3.1 · 新版状态总览/定位标签/恢复卡片解析、历史 RAW 回退与完整通知', 'v0.3.1 · current status/locator/recovery card parsing, historical RAW fallback and complete notifications'), tx('v0.3.0 · 硬件告警关联处置台账并支持详情与人工处置', 'v0.3.0 · hardware alerts link to details and operator resolution workflows'), tx('v0.2.2 · 硬件事件稳定 ID 游标、服务端筛选与前端分页', 'v0.2.2 · stable hardware-event ID cursor, server-side filtering and UI pagination'), tx('v0.2.1 · 只读生产接收库、真实总数、游标分页与新鲜度', 'v0.2.1 · read-only production ingestion store, real totals, cursor pagination and freshness'), tx('v0.2.0 · 接收记录、硬件事件与故障案例分层', 'v0.2.0 · ingestion, hardware event and fault case layers'), tx('v0.1.0 · open / recovered 事件生命周期', 'v0.1.0 · open/recovered event lifecycle')] },
-    { id: 'issue', name: tx('数据统计', 'Data Statistics'), version: 'v0.6.2', status: tx('当前范围与历史分离', 'CURRENT / HISTORY SPLIT'), desc: tx('实时统计只覆盖在用资产；节点下架、删除或换代后自动问题退出当前检测，但既有问题、评分、事件和人工处置历史继续保留。', 'Live analytics cover in-use assets only. After retirement, removal, or replacement, automated findings leave current detection while existing issues, scores, events, and operator history remain preserved.'), history: [tx('v0.6.2 · 完成一次性误报清理后，后续退休节点改为清除当前检测并保留历史', 'v0.6.2 · after the one-time false-positive cleanup, future retired nodes clear current detection while preserving history'), tx('v0.6.1 · 资产分类和双边差值仅统计在用状态', 'v0.6.1 · asset categories and cross-source differences count in-use states only'), tx('v0.6.0 · 新增资产统计子页、type 分类、GPU 型号分布、SN/IP 双接口对账与差值明细', 'v0.6.0 · asset statistics subpage, type classification, GPU model distribution, SN/IP cross-source reconciliation, and difference details')] },
-    { id: 'platform', name: tx('平台实例与资产源配置', 'Platform & Asset Source Configuration'), version: 'v0.2.1', status: tx('LXOP 在线状态约束', 'LXOP LIVE-STATE POLICY'), desc: tx('支持加密维护 LXOP 双资产接口，并将 on / 已上架使用中作为唯一在用状态；停机、下架和接口移除均从实时监控域排除。', 'Supports encrypted LXOP dual-endpoint configuration and treats on / 已上架使用中 as the only in-use states; stopped, retired, and API-removed assets are excluded from the live monitoring domain.'), history: [tx('v0.2.1 · 在线状态白名单统一驱动资产、监控、健康与问题统计范围', 'v0.2.1 · the in-use allowlist now consistently scopes assets, monitoring, health, and issue analytics'), tx('v0.2.0 · LXOP 运维主机与资产设备双接口、API Key 加密、状态归一、通用资产快照与 GPU 域隔离', 'v0.2.0 · LXOP ops-host and asset-machine endpoints, encrypted API key, normalized lifecycle, general asset snapshots, and GPU-domain isolation'), tx('v0.1.0 · 数据库持久化、运行时读取、页面编辑与安全字段边界', 'v0.1.0 · database persistence, runtime reads, UI editing and public-field safety boundary')] },
-    { id: 'validation', name: tx('维修验证闭环', 'Repair Validation Workflow'), version: 'v0.0.0', status: tx('方案阶段', 'DESIGNED'), desc: tx('记录人工维修反馈、根因、修复或更换结果，并通过识别、遥测、错误计数和性能复测验证重新上线。', 'Capture repair feedback, root cause and replacement results, then validate return to service through identity, telemetry, counters and performance checks.'), history: [tx('v0.0.0 · 状态机、维护窗口和验证门设计', 'v0.0.0 · state machine, maintenance window and validation gates')] },
-  ];
-  const releaseModule = { id: 'release', name: tx('发布与产物同步', 'Release & Artifact Sync'), version: 'v0.2.0', status: tx('环境感知数据库备份', 'STAGE-AWARE DB BACKUP'), desc: tx('开发发布默认跳过 PostgreSQL 备份以缩短迭代时间；正式发布通过 production 阶段强制先备份，再执行原子切换和健康回滚。源码、前端和辅助脚本继续使用 rsync 校验同步。', 'Development releases skip PostgreSQL backup by default to shorten iteration time; production-stage releases require a successful backup before atomic switching and health rollback. Source, web, and helper scripts continue to use checksum-aware rsync.'), history: [tx('v0.2.0 · ATLAS_DEPLOYMENT_STAGE=development 默认跳过数据库备份，production 强制执行备份', 'v0.2.0 · ATLAS_DEPLOYMENT_STAGE=development skips database backup by default; production requires it'), tx('v0.1.0 · 默认远端源码发布和 legacy 二进制发布全部由 scp 切换为 rsync，并增加本机/远端依赖预检', 'v0.1.0 · Replaced scp with rsync in both remote-source and legacy-binary release paths, adding local and remote dependency preflight checks')] };
-  const componentHealthModule = { id: 'component-health', name: tx('硬件健康', 'Hardware Health'), version: 'v0.3.0', status: tx('离线证据回放', 'OFFLINE EVIDENCE'), desc: tx('本地回放 NVMe、有限型号 SATA HDD/SSD 与已有 EDAC 证据，展示健康维度、精确增量和适用性；受控 SMART 审计快照可离线转换。硬 RAID 成员映射、持续采集和概率模型尚未交付，不发送告警。', 'Locally replays NVMe, limited SATA HDD/SSD profiles and existing EDAC evidence with health dimensions, exact deltas and applicability. Controlled SMART audit snapshots convert offline. Hardware RAID member mapping, continuous collection and probability models are not delivered; no alerts.'), history: [tx('v0.3.0 · SATA 物理盘有限规则、健康维度与磨损语义分离、受控快照只读转换；未知型号不作健康', 'v0.3.0 · limited SATA physical-disk rules, health dimensions, distinct wear semantics and read-only snapshot conversion; unmatched models are not healthy'), tx('v0.2.0 · 增加 EDAC 原始快照与 CE/UE 精确增量，内存页复用筛选、分页和证据追溯；公共样例缺口不隐瞒', 'v0.2.0 · adds raw EDAC snapshots and exact CE/UE deltas; memory view reuses filters, pagination and traceable evidence without hiding public fixture gaps'), tx('v0.1.0 · 有界盘 CLI、SHA256 证据包与本地阅读页', 'v0.1.0 · bounded disk CLI, SHA256 bundles and local report reader')] };
-  const modules = [...baseModules, componentHealthModule, releaseModule].map(module => module.id === 'asset' || module.id === 'platform' ? {
-    ...module,
-    version: module.id === 'asset' ? 'v1.5.0' : 'v0.3.0',
-    status: tx('聚合平台资产源', 'AGGREGATED ASSET SOURCE'),
-    desc: tx('通过统一运维聚合平台的 OAuth 客户端凭证和数据中心范围读取完整双源资产快照；仅手动元数据同步，不触发设备采集、GPU 评分或通知。', 'Reads complete dual-source asset snapshots from the shared operations aggregation platform using OAuth client credentials and explicit data-center scope. Manual metadata sync does not trigger device collection, GPU scoring or notifications.'),
-    history: [tx('v0.120.115 · 数据集按query复用历史证据视图，保留时间与标签门禁；生产性能待验', 'v0.120.115 · dataset exports reuse query history views with unchanged time and label gates; production performance pending'), tx('v0.120.114 · 独立消融训练与固定对照，仅研究软件验收', 'v0.120.114 · isolated ablation training and fixed comparison, software only'), tx('v0.120.113 · B1独立特征消融策略与训练侧预处理首包', 'v0.120.114 · isolated feature ablation policies and train-only preprocessing first slice'), tx('v0.120.112 · 固定三目标研究候选同cohort比较，不训练或选择赢家', 'v0.120.112 · pinned same-cohort objective research comparison without fitting or winner selection'), tx('v0.120.111 · 独立研究训练入口与目标函数checkpoint，不改变生产注册', 'v0.120.111 · isolated objective research training and checkpoints preserve production admission'), tx('v0.120.110 · B3损失原语与梯度验证，未接真实训练或晋级', 'v0.120.110 · B3 loss primitives and gradient checks without real training or promotion'), tx('v0.120.109 · 固定周期冷启动分层报告，保留全分母与待评估边界', 'v0.120.109 · pinned period strata preserve full denominators and pending research boundaries'), tx('v0.120.108 · 历史健康与显式冻结权重离线对照，保留原分母与共同可比分母', 'v0.120.108 · file-attested historical health and explicit frozen weights with original and joint denominators'), tx('v0.120.107 · 固定数据集离线排序对照首包，保留全分母、同分期望与待数据边界', 'v0.120.107 · pinned offline ranking comparison preserves full denominators, tie expectations and data gates'), tx('v0.120.106 · 运营页补齐等待计划、等待任务和需人工处理状态，未知状态保持显式未知', 'v0.120.106 · operations view labels scheduled waits, pending work and manual attention while preserving unknown states'), tx('v0.120.105 · GPU风险页展示只读运营状态与覆盖缺口，执行完成不代表标签成熟', 'v0.120.105 · GPU risk view shows read-only operations and coverage gaps; execution is distinct from label maturity'), tx('v0.120.104 · 新增历史审计保存版本化配置绑定指纹，失败亦保留，不认证来源身份或覆盖', 'v0.120.104 · new history audits persist versioned configuration binding fingerprints even on failure, without certifying source identity or coverage'), tx('v0.120.103 · 前向积累持久运营编排与只读状态，复用日排名和结果日批，失败预算与来源门保持', 'v0.120.103 · durable forward-accumulation operations reuse ranking and outcome daily jobs with read-only status and unchanged source gates'), tx('v0.120.102 · 硬件事件只读审核准备，稳定候选键关联既有反馈、最新审核与身份线索，保留未签署及缺证状态', 'v0.120.102 · read-only event review preparation links stable candidates to existing feedback, latest reviews and identity leads without signing or confirming faults'), tx('v0.120.101 · 区分 exporter 抓取存活与 GPU 业务采集健康，失败和缺失证据接入既有问题中心，恢复须有新鲜成功样本', 'v0.120.101 · separates exporter scrape availability from GPU collection health; failures use the existing issue center and recovery requires fresh successful samples'), tx('v0.120.100 · 硬件事件只读增量盘点与检查点 v2，识别旧事件、关联证据和新鲜度变化，保留审查门禁', 'v0.120.100 · read-only event inventory checkpoints v2 detect existing-event, evidence and freshness changes while preserving review gates'), tx('v0.120.99 · GPU 风险新增系统上下文候选准备与独立生产特征 profile；静态缺失显式保留，身份、覆盖、标签和效果门继续阻断', 'v0.120.99 · GPU risk adds system context candidate preparation and a separate production feature profile; static missingness remains explicit while identity, coverage, label and efficacy gates stay enforced'), tx('v0.120.98 · GPU 风险 CLI 新增只读 core-source-plan：逐成员列出静态上下文与历史状态来源缺口、独立 episode 审核清单和待签署模板', 'v0.120.98 · GPU-risk CLI adds read-only core-source-plan with per-member context and historical-state source gaps, independent episode review items and unsigned worksheets'), tx('v0.120.97 · GPU 风险 CLI 新增只读 coverage-plan：核对显式批次的三源水位、成员覆盖缺口及责任人执行步骤，保留签署与模型门禁', 'v0.120.97 · GPU-risk CLI adds read-only coverage-plan for explicit-query source watermarks, member coverage gaps and operator steps; signing and model gates remain enforced'), tx('v0.120.96 · 数据质量「同步审计」的失败批次不再常驻展示错误详情，改为点击该批次行展开或收起查看；「平台设置 → 监控数据源」的当前生效地址改为自动换行，长地址不再溢出卡片', 'v0.120.96 · data-quality reconciliation failures no longer show their error detail inline; click the run row to expand or collapse it; the effective address under Platform Settings → Monitoring Data Source now wraps so a long address no longer overflows the card'), tx('v0.120.95 · 监控数据源地址（Prometheus / VictoriaMetrics）改为库内单例配置，可在「平台设置 → 监控数据源」在线修改，保存即生效、无需重启，并提供连接测试；资产核查与存活扫描的全部配置迁移到「平台设置 → 资产数据源」页，GPU 资产页只保留结果；存活 IP 标记改为勾选与全选后批量标记/取消标记，并新增独立的「已标记」列，管理口令在浏览器会话内共享', 'v0.120.95 · the monitoring data-source address (Prometheus / VictoriaMetrics) becomes a database-backed singleton editable under Platform Settings → Monitoring Data Source, applied on save without a restart with a built-in connection test; all asset-audit and live-IP scan configuration moves to Platform Settings → Asset Data Source, leaving only results under GPU Assets; live-IP marking becomes checkbox and select-all with bulk mark/unmark plus a dedicated Marked column, and the management token is shared across the browser session'), tx('v0.120.94 · 同步审计的失败批次现在在表格中直接显示失败原因，并在资产同步接口失败时推送飞书告警；存活 IP 扫描支持逐行与批量标记 IP，被标记的 IP 单独统计为一个类型，且不计入 ICMP 存活、22 端口不通与 SSH 登录失败', 'v0.120.94 · sync-audit failed runs now show the failure reason inline and push a Feishu alert when the asset sync interface fails; live-IP scan supports per-row and bulk IP marking, and marked IPs are counted as their own category outside the ICMP-alive, port-22-closed and SSH-login-failed funnels'), tx('v0.120.93 · 资产核查飞书卡片标题改用「平台配置-实例名称」作为集群名；数据质量的 DCGM/GPU/Node/IPMI Exporter 卡片支持点选，点选 Node Exporter 显示未 UP 节点，点选其它显示 Node Exporter 正常但该 Exporter 未 UP 的节点；问题分类默认只显示未解决问题，且节点非 UP 时其 GPU 状态、Target、健康分、遥测连续性与访问认证等问题自动收敛为单条节点 offline 问题', 'v0.120.93 · asset-audit Feishu card titles now use the live Platform Config instance name; the data-quality DCGM/GPU/Node/IPMI Exporter cards are selectable, showing NOT UP nodes for Node Exporter and, for the others, nodes whose Node Exporter is up but that exporter is not; issue categories default to unresolved only, and a node that is not up collapses its GPU-state, target, health-score, continuity and access findings into a single node-offline issue'), tx('v0.120.92 · 资产核查：SN 提示只在统计中计数，不再逐条推送飞书群；核查与存活扫描的 KPI 统一只显示一次时间，卡片可点选并在下方分页查看明细（默认「未录入资产」「存活未登记 IP」，无则显示全部一致）；移除存活扫描 OS 密码的默认口令占位；修复「立即核查/立即扫描」按钮竖排且不可点', 'v0.120.92 · asset audit: serial notices are counted only and no longer pushed row by row to the Feishu group; the check and live-IP scan KPIs show one shared timestamp and a clicked card pages its detail list below (defaulting to missing assets and unregistered live IPs, or a clean state); removed the default OS-password placeholder and fixed the vertical, unusable trigger buttons'), tx('v0.120.91 · TCP:22 与 SSH 登录探测采用独立 5s 超时下限，慢应答的可达节点不再被误判为登录失败', 'v0.120.91 · port-22 and SSH probes use an independent 5s timeout floor so slow but reachable nodes are no longer dropped as login failures'), tx('v0.120.90 · 存活扫描网段只取已录入资产台账的 OS IP，剔除位于 10G 管理网的运维主机清单，消除 10G 网段泄漏', 'v0.120.90 · live-IP sweep subnets come only from recorded asset OS addresses; the ops-host inventory on the 10G management network is excluded, removing the 10G leak'), tx('v0.120.89 · 已录入资产的 SN 文本差异降级为提示（统计但不计差异、不单独通知）；扫描范围收敛至交付表 OSIP 与已录入资产网段；新增 SSH 登录门与加密口令列表', 'v0.120.89 · recorded-asset serial text diffs become notices (counted, not a discrepancy, not notified); the sweep scope narrows to delivery OSIP and recorded-asset subnets; adds an SSH-login gate with an encrypted credential list'), tx('v0.120.88 · 资产核查只统计「交付设备信息表」子表的有效数据行（忽略飞书读取范围的补空行）；存活扫描排除交付表已列出的节点，并过滤 ICMP 存活但 22 端口不通的主机', 'v0.120.88 · asset audit counts only the real data rows of the delivery-device sheet (Feishu blank padding is ignored); the live-IP scan now excludes addresses listed in the delivery sheet and drops ICMP-alive hosts whose port 22 is closed'), tx('v0.120.87 · 资产核查按表头名解析列（列位移不敏感）；排除存储节点（系统主机名含 Gpfs/Obs）与类型为网络设备/ODF 的行，二者不计入核查与扫描网段；通知改为开关，默认仅异常时推送，可勾选无异常也发检查通知', 'v0.120.87 · asset audit resolves columns by header name (shift-tolerant) and excludes storage nodes (system hostname containing Gpfs/Obs) and network-device/ODF rows from both the check and the swept subnets; notification becomes a toggle that fires on anomalies by default with an opt-in to always confirm a clean run'), tx('v0.120.86 · GPU 资产新增「资产核查」子页：交付表已交付节点与资产 OSIP/SN 核对、集群网段存活未登记 IP 扫描、每日 05:00 自动执行、飞书表格与通知可配置', 'v0.120.86 · new Asset Audit subpage under GPU Assets: delivered-node versus asset OSIP/SN verification, cluster-subnet live-IP discovery, daily 05:00 schedule, and configurable Feishu sheet and notification'), tx('v0.120.80 · R4-B候选注册、冻结新query评分与独立只读榜单，原基线不改写', 'v0.120.80 · R4-B candidate admission, frozen new-query scores and separate read-only rankings'), tx('v0.120.79 · R4 CPU MLP离线训练、冻结预处理与文件评分校验；真实数据仍按门禁', 'v0.120.79 · R4 offline CPU MLP, frozen preprocessing and file score verification; real training remains gated'), tx('v0.120.78 · R3-B版本化历史上下文和故障状态来源；cutoff修订、撤销与冲突审计', 'v0.120.78 · R3-B versioned historical context and episode states; cutoff revisions, withdrawals and conflict audits'), tx('v0.120.77 · R3-A只读历史数据集导出、固定输入SHA与时间/实体隔离；核心来源缺口显式阻断', 'v0.120.77 · R3-A read-only history datasets, pinned fingerprints and time/entity isolation; explicit core source gaps'), tx('v0.120.76 · 节点故障身份、维修与来源证据修订；独立排名结果及只读回放', 'v0.120.76 · versioned node identity, repair and source evidence; independent ranking outcomes and read-only replay'), tx('v0.120.75 · GPU 全节点排名冻结、受控 CLI 与只读榜单；无概率、日批或通知', 'v0.120.75 · frozen full-node GPU rankings, controlled CLI and read-only view; no probabilities, daily jobs or notifications'), tx('v0.120.74 · 品牌独立加载与缓存、页面数据渐进加载、资产统计默认 GPU', 'v0.120.74 · independent cached branding, progressive page data and GPU-first asset statistics'), tx('v0.120.73 · 同数据中心同 IP 的重复源记录合并统计，保留源记录与冲突标记，避免误报仅资产设备', 'v0.120.73 · groups duplicate source endpoints within a data center, preserves records and flags conflicts instead of false asset-only nodes'), tx('v0.120.72 · 主分支纳入资产统计修复；发布支持 EXPECTED_COMMIT 校验，错误源码提交在访问远端前阻断', 'v0.120.72 · integrates asset statistics fixes into main; EXPECTED_COMMIT blocks the wrong source commit before remote access'), tx('v0.120.71 · GPU 型号排除机柜/U 位；先对账再按设备生命周期筛选，保留未知运维状态与源存在性', 'v0.120.71 · excludes rack/U positions from GPU models; matches sources before machine lifecycle filtering and preserves unknown ops state and source presence'), tx('v0.120.66 · 稳定翻译函数引用，避免总览刷新取消硬盘请求或清空详情选择', 'v0.120.66 · stabilizes translation callbacks so overview refreshes do not cancel disk requests or clear detail selection'), tx('v0.120.65 · 接通开发实例资产与 VM 监控；目标接口不支持时查询 up，多网段按 host_ip 对齐 BMC，总览显示资产、监控和硬盘快照时间', 'v0.120.65 · connects development assets and VM monitoring; unsupported targets use up, multi-subnet BMC mapping uses host_ip, and overview shows assets, monitoring and disk observation times'), tx('v0.120.63 · OAuth 服务端鉴权、Token 刷新、有界分页、CA/TLS 配置与独立手动同步；错误或部分响应保留上次快照', 'v0.120.63 · server-side OAuth, token refresh, bounded pagination, CA/TLS configuration and independent manual sync; failed or partial responses preserve the previous snapshot'), ...module.history],
-  } : module).map(module => module.id === 'component-health' ? {
-    ...module,
-    version: 'v0.9.0',
-    status: tx('安装范围与历史', 'INSTALLATIONS AND HISTORY'),
-    desc: tx('物理盘按已确认安装、历史安装和待确认记录分开展示；安装名册通过有证据的显式对账更新，历史重放不改变安装状态。精确历史窗口与当前新鲜度独立；持续采样、业务影响、通用硬RAID与未来预测仍待验收。', 'Physical disks separate confirmed installations, historical installations and unregistered evidence. Explicit evidence-bound reconciliation updates the roster; report replay does not change membership. Exact history and live freshness are separate; continuous sampling, business impact, general hardware RAID and prediction remain unvalidated.'),
-    history: [tx('v0.9.0 · 增加版本化安装名册与显式对账，默认只显示已确认安装；历史重放不复活旧盘，缺失不自动退役', 'v0.9.0 · adds a versioned installation roster and explicit reconciliation; confirmed installations are the default, replay never reactivates old disks and missing observations never retire them'), tx('v0.8.0 · 新增测试机PM883精确型号/固件规则，身份变化保持阻断，197/202不猜语义', 'v0.8.0 · adds an exact PM883 field profile, preserves identity-change blocking, and avoids guessing 197/202 semantics'), tx('v0.7.0 · 真实窗口覆盖与独立精确特征；历史重放episode去重修复，旧API完整性保持未知', 'v0.7.0 · real window coverage and independent exact features; replay-safe episode repair, with legacy API completeness unverified'), tx('v0.120.67 · 硬盘当前新鲜度独立于历史报告；受控六盘采样、精确增量和试运行停止门', 'v0.120.67 · live disk freshness separate from report cutoff; bounded six-disk sampling, exact deltas and pilot stop gates'), tx('v0.5.0 · D2 精确硬盘快照/episode 落库、只读 /api/v1/hardware/disks API 与在线缓存页面；GET 不执行采集、不发通知、不输出概率', 'v0.5.0 · D2 exact disk snapshot/episode persistence, read-only /api/v1/hardware/disks APIs, and online-cache UI; GET never collects, notifies, or emits probabilities'), tx('v0.4.0 · 增加实际三星企业 SATA 型号/固件规则，兼容旧解码器错误计数名称；pending 为当前状态，磨损归一值不作健康百分比', 'v0.4.0 · adds the field Samsung enterprise SATA model/firmware profile and legacy counter name; pending is a current gauge and normalized wear is not a health percentage'), tx('v0.3.2 · 修复内网 HTTP 页面报告导入；使用固定版本 SHA-256 实现，篡改和契约不一致仍阻断', 'v0.3.2 · fixes intranet HTTP report imports with a pinned SHA-256 implementation; tampering and inconsistent contracts remain blocked'), tx('v0.3.1 · 修正多 namespace NVMe 的控制器级显式广播读取；型号未匹配和范围不足仍阻断', 'v0.3.1 · fixes explicit controller-wide broadcast reads for multi-namespace NVMe; unmatched models and unverified scope remain blocked'), ...module.history],
-  } : module).map(module => module.id === 'feature' ? {
-    ...module,
-    version: 'v1.12.0',
-    status: tx('结构特征历史贯通', 'STRUCTURAL HISTORY ENABLED'),
-    desc: tx('历史预测覆盖 28 个候选指标族，并在正例、健康对照和单卡人工反馈的相同截止点聚合 8 项 presence/gap/flap/scrape 结构特征；缺失保持 unknown，结构质量与核心覆盖独立审计。', 'Historical prediction covers 28 candidate metric families and aggregates eight presence/gap/flap/scrape structural features at identical cutoffs for positives, healthy controls, and GPU-resolved manual feedback; missing values remain unknown and structural quality is audited independently from core coverage.'),
-    history: [tx('v1.12.0 · 历史正例、健康对照和人工反馈按同一截止点聚合 8 项结构可观测性特征，缺失保持 unknown 并独立报告覆盖与查询失败', 'v1.12.0 · historical positives, healthy controls, and manual feedback aggregate eight structural-observability features at the same cutoff, preserve missing as unknown, and report coverage/query failures separately'), tx('v1.11.0 · 为 7 天目标增加 3d/7d/30d 一小时粒度趋势，并保持 24h 五分钟特征和全链路变换一致', 'v1.11.0 · adds hourly 3d/7d/30d trends for the 7-day target while preserving 5-minute 24h features and end-to-end transform parity'), tx('v1.10.0 · 拆分核心覆盖与可选信号，扩展线上已核验的历史预测指标', 'v1.10.0 · separates core coverage from optional signals and expands production-verified historical prediction metrics'), ...module.history],
-  } : module).map(module => module.id === 'prediction' ? {
-    ...module,
-		version: 'v0.27.94',
-    status: tx('故障预警工作台', 'EARLY-WARNING WORKBENCH'),
-    desc: tx(
-      '当前故障预警能力保持 GPU-only、read-only shadow：已具备训练数据、标签 Manifest、训练样本 Evidence Bundle、模型治理卡、影子门禁、成熟 outcome、Ranking@K、naive baseline、HeaRank 7d node-risk challenger、数据/校准漂移、训练侧和 live-shadow 特征分布快照，并把故障前后数据反馈包列为重点入口；不触发告警、调度、维修或自动隔离。',
-      'Early warning remains GPU-only and read-only shadow: training data, label manifest, training-sample Evidence Bundle, model governance cards, shadow gates, mature outcomes, Ranking@K, naive baselines, a HeaRank 7d node-risk challenger, data/calibration drift, and training/live-shadow feature-distribution snapshots are available, with the pre/post-fault feedback pack promoted as a priority entry; no alert, scheduling, repair or automatic isolation is triggered.',
-    ),
-		history: [
-			tx('v0.27.94 · 历史证据惰性缓存与旧算法等价回归，不改特征或训练门', 'v0.27.94 · lazy history evidence caching with old-algorithm parity checks; features and training gates unchanged'),
-			tx('v0.27.93 · 独立B1研究产物与共同cohort对照', 'v0.27.93 · isolated B1 research artifacts and common cohort comparison'),
-			tx('v0.27.92 · B1独立特征组消融预处理，不训练或声明真实效果', 'v0.27.93 · isolated B1 feature ablation preprocessing, without training or efficacy claims'),
-			tx('v0.27.91 · 固定候选配置与分母对照，保持数据门', 'v0.27.91 · pinned candidate configuration and denominator comparisons preserve gates'),
-			tx('v0.27.90 · 版本化离线研究候选，训练侧fit与验证选择隔离', 'v0.27.90 · versioned offline research candidates isolate training fit and validation selection'),
-			tx('v0.27.89 · 独立目标函数软件夹具，不改现有训练器', 'v0.27.89 · isolated objective fixtures preserve the current trainer'),
-			tx('v0.27.88 · 冻结特征分层与描述性周期汇总，不训练或晋级', 'v0.27.88 · frozen-feature strata and descriptive period summaries without fitting or promotion'),
-			tx('v0.27.87 · 离线基线输入时间门与独立共同cohort对照，不认证生产来源或效果', 'v0.27.87 · temporal baseline input guards and joint cohort comparisons without source or efficacy certification'),
-			tx('v0.27.86 · 固定文件排序对照首包，不训练、不晋级或输出概率', 'v0.27.86 · pinned ranking evaluation without fitting, promotion or probability'),
-			tx('v0.27.85 · 运营状态按真实后端枚举展示，不改变执行或数据门', 'v0.27.85 · operations labels follow actual backend states without changing execution or data gates'),
-			tx('v0.27.84 · 只读运营状态接入风险页，独立开关和批次边界保持', 'v0.27.84 · risk page exposes read-only operations with independent switches and query boundaries'),
-			tx('v0.27.83 · 历史审计新增配置绑定指纹，旧记录保持未知，覆盖与标签门不变', 'v0.27.83 · history audits add configuration binding fingerprints; legacy records stay unknown and coverage and label gates remain unchanged'),
-			tx('v0.27.82 · 独立开关的持久运营编排、失败状态与覆盖缺口可见，不自动签署', 'v0.27.82 · independently gated durable operations expose failures and coverage gaps without automatic signing'),
-			tx('v0.27.81 · 事件审核准备区分同卡与同次故障，默认待审且不可训练', 'v0.27.81 · event review plans distinguish same-GPU links from episode confirmation and default to pending, ineligible candidates'),
-			tx('v0.27.80 · GPU 采集失败作为数据质量证据，保留未知与恢复边界，不自动形成硬件标签', 'v0.27.80 · GPU collection failures remain data-quality evidence with explicit unknown and recovery boundaries, never automatic hardware labels'),
-			tx('v0.27.79 · 硬件事件增量证据检查点，分离语义、观测和关联变化；不自动生成训练标签', 'v0.27.79 · incremental event evidence checkpoints separate semantic, observation and dependency changes without automatic training labels'),
-			tx('v0.27.78 · 自动核验系统上下文来源，并以独立 manifest 贯通可用字段数据集、训练、登记与评分', 'v0.27.78 · verifies system context provenance and binds available-context datasets, training, registration and scoring through a separate manifest'),
-			tx('v0.27.77 · core 来源缺口与审核模板只读准备，严格保留 cutoff 和修订语义', 'v0.27.77 · read-only core source gap and review worksheet preparation, preserving strict cutoff and revision semantics'),
-			tx('v0.27.76 · 三源 coverage 运营只读预检、固定时间证据及成员缺口，签署仍由责任人执行', 'v0.27.76 · read-only three-source coverage operations preflight, fixed-time evidence and member gaps; signing remains operator controlled'),
-			tx('v0.27.75 · 来源重建门、模型可用时间与训练实体隔离、原子候选评分；无自动晋级', 'v0.27.75 · provenance rebuild gates, model availability and training entity isolation, atomic candidate scores; no promotion'),
-			tx('v0.27.74 · 512/512/256 BN/ReLU逐行BCE、训练专用词表与Go逐节点parity；无模型晋级', 'v0.27.74 · 512/512/256 BN/ReLU row BCE, train-only vocabularies and per-node Go parity; no model promotion'),
-			tx('v0.27.73 · 历史来源v1与特征/数据集v2，显式严重度及未解决状态，未知保持阻断', 'v0.27.73 · history source v1 and feature/dataset v2, explicit severity and unresolved states, unknown sources remain blocked'),
-			tx('v0.27.72 · 固定批次数据集与特征/切分清单，未知不补零，完整core和训练就绪分开', 'v0.27.72 · pinned datasets, feature/split manifests, explicit unknowns and separate core/training readiness'),
-            tx('v0.27.71 · 排名结果与概率解耦；三来源完整性门、迟报修订和干预分态', 'v0.27.71 · probability-independent ranking outcomes, three-source completeness gates, late-label revisions and intervention states'),
-            tx('v0.27.70 · 新增概率无关的节点排名批次与完整分母，保留旧预测链路', 'v0.27.70 · adds probability-independent node ranking queries and complete denominators, preserving legacy prediction'),
-			tx('v0.27.69 · 增加PM883有限健康规则及版本化报告，旧身份与新设备严格隔离；不新增预测概率', 'v0.27.69 · adds limited PM883 health rules and versioned reports, isolating old identities from new devices; no prediction probabilities'),
-			tx('v0.27.68 · 磁盘历史窗口v2按覆盖与可比性分态，特征严格按窗口计算，episode历史重导可修复；保持只读且无概率/通知', 'v0.27.68 · disk history windows v2 gate coverage and comparability, compute per-window features and repair replayed episodes; read-only with no probabilities or notifications'),
-			tx('v0.27.67 · 硬盘只读观测试运行与当前新鲜度；预测评分/概率/通知仍关闭', 'v0.27.67 · read-only disk observation pilot and current freshness; prediction scoring, probabilities and notifications remain disabled'), tx('v0.27.66 · D2 硬盘历史数据面进入只读 shadow：report 导入落库、current/窗口趋势/API/UI/episode；仍无设备采集、通知、概率或 GPU 重启', 'v0.27.66 · D2 disk history enters read-only shadow with report import persistence, current/trend APIs, UI, and episodes; still no device collection, notifications, probabilities, or GPU restart'),
-			tx('v0.27.65 · 资产接入改用统一聚合平台，可独立同步元数据；保持硬盘规则、GPU 暂停、shadow/无概率及无通知边界', 'v0.27.65 · integrates the shared aggregation platform with independent metadata synchronization; disk rules, paused GPU work, shadow/no-probability and no-notification boundaries remain unchanged'),
-			tx('v0.27.64 · 已存实机快照新增企业 SATA profile 与版本化页面契约，旧报告仍可回放；不新增采样、GPU 模型或故障概率', 'v0.27.64 · adds an enterprise SATA profile and versioned UI contract from stored field snapshots while retaining old replays; no additional sampling, GPU model or failure probability'),
-			tx('v0.27.63 · 修复新集群 HTTP 页证据导入并校验篡改拒绝；仅影响本地报告展示，不新增采样、概率输出或通知', 'v0.27.63 · fixes evidence imports on the new cluster HTTP page and verifies tamper rejection; local report display only, with no additional sampling, probability outputs or notifications'),
-			tx('v0.27.62 · 实机发现并修复 NVMe namespace 范围误判，控制器广播读取有证据及反例；GPU 模型、预警通知与概率输出不变', 'v0.27.62 · fixes a field-discovered NVMe namespace-scope defect with explicit controller-broadcast evidence and counterexamples; GPU models, notifications and probability outputs are unchanged'),
-			tx('v0.27.61 · 交付首批 SATA HDD/SSD 健康规则、分维度报告和受控审计转换；不新增 GPU 能力或虚构故障概率', 'v0.27.61 · delivers initial SATA HDD/SSD health rules, dimensional reports and controlled audit conversion; no new GPU capability or invented failure probability'),
-			tx('v0.27.60 · 增加控制器级 EDAC 离线回放及内存证据展示，严格区分历史 UE、新增 UE 与计数重置；不新增 GPU 开发或生产采集', 'v0.27.60 · adds controller-scoped offline EDAC replay and memory evidence UI, separating historical UE, new UE, and counter resets; no new GPU development or production collection'),
-			tx('v0.27.59 · 独立交付硬盘离线规则与证据前端；缺失不作健康、保留已知严重风险，GPU 模型及评分不变', 'v0.27.59 · independently delivers offline disk rules and evidence UI; missing data is not healthy, known critical risk is retained, and GPU models and scoring are unchanged'),
-			tx('v0.27.58 · 增加新机房/迁移遥测就绪报告，按机房和未知机房拆分覆盖、24h burn-in 与 7d+24h 首次固定回放时间，不降低既有排序门禁', 'v0.27.58 · adds new-room/migration telemetry readiness, splitting coverage, 24h burn-in and 7d+24h first fixed replay timing by data center and unknown mapping without relaxing ranking gates'),
-			tx('v0.27.57 · 前瞻报告支持固定评估时点复核，统一锁定批次成熟度与标签可用时间；下载沿用页面时点，防止滚动选批混淆跨版本对照', 'v0.27.57 · adds fixed-time prospective report replay, pins cohort maturity and label availability to one evaluation time, and downloads using the displayed time to prevent rolling cohorts from confounding comparisons'),
-			tx('v0.27.56 · 将前瞻赛马扩展为结构可观测性与持久化健康分量两类共十四种固定策略，并增加至少三个唯一正例实体的独立性门，防止同一卡跨批复发伪造稳定性', 'v0.27.56 · expands the prospective race to fourteen fixed policies across structural observability and persisted health-score components, and adds a three-unique-positive-entity independence gate so repeat failures from one GPU cannot fabricate stability'),
-			tx('v0.27.55 · 在不改变独立 cohort 与未来标签的前提下固定赛马七种结构可观测性排序策略；逐策略审计覆盖、同分辨识力、Top-5% 与跨批一致性，并保留 max-gap v1 兼容字段', 'v0.27.55 · races seven fixed structural-observability ranking policies without changing independent cohorts or future labels; audits coverage, constant-score discrimination, Top-5% metrics, and cross-cohort consistency per policy while preserving v1 max-gap compatibility fields'),
-			tx('v0.27.54 · 新增脱离模型注册表的 7 天结构可观测性前瞻排序验证：按健康评估批次冻结 max-gap、匹配高质量未来标签，并验收独立 cohort Top-5% lift', 'v0.27.54 · adds model-registry-independent seven-day prospective observability ranking validation, freezing max-gap by health run, matching high-quality future labels, and validating Top-5% lift across independent cohorts'),
-			tx('v0.27.53 · HeaRank 新增 cutoff 前 24 小时内最新持久化 GPU max-gap 节点排序策略，严格排除等于或晚于 cutoff 的快照', 'v0.27.53 · adds a HeaRank node-ranking policy using the latest persisted GPU max-gap snapshot within 24 hours before cutoff, strictly excluding snapshots at or after cutoff'),
-			tx('v0.27.52 · 修正 HeaRank 节点排序分母，并按 shadow run 而非逐 GPU 时间戳对齐同批与时间 cohort', 'v0.27.52 · fixes the HeaRank node-ranking denominator and aligns frozen and temporal cohorts by shadow run instead of per-GPU timestamps'),
-			tx('v0.27.51 · 独立时间 cohort 新增节点 Top-5% 捕获率与 lift；跨批排序方向一致性改为直接验收 Top-5% lift', 'v0.27.51 · adds node Top-5% capture and lift to independent temporal cohorts; cross-cohort ranking direction now validates Top-5% lift directly'),
-			tx('v0.27.50 · 新增同矩阵结构特征平面消融：all_features / exclude_structural 策略贯穿数据库、模型工件、评估报告与模型赛马 v4', 'v0.27.50 · adds same-matrix structural feature-plane ablation with all_features / exclude_structural policies persisted through the database, model artifacts, evaluation reports, and model-race v4'),
-			tx('v0.27.49 · 历史特征 v6 补齐 8 项 presence/gap/flap/scrape 结构信号，正负样本保持 point-in-time 对称；结构查询可降级但覆盖与失败可审计，并修正 24h 窗口标签', 'v0.27.49 · historical features v6 adds eight presence/gap/flap/scrape signals with point-in-time parity across positives and controls; structural queries degrade safely with auditable coverage/failures, and the 24h window label is corrected'),
-			tx('v0.27.48 · 新增同矩阵 Logistic ≤24h/≤3d/≤7d/≤30d 时间窗消融，窗口策略写入数据库、报告和模型产物；模型赛马 v3 汇总每个窗口的实际入选特征数', 'v0.27.48 · adds same-matrix Logistic ≤24h/≤3d/≤7d/≤30d temporal ablation, persists the policy in the database, report, and artifact, and model-race v3 summarizes selected features by source window'),
-			tx('v0.27.47 · 修正 7 天多分辨率样本的连续性分母：24h@5m 连续性与 30d@1h 覆盖独立门禁，并修复运行中窗口进度虚高', 'v0.27.47 · fixes the continuity denominator for 7-day multi-resolution samples: 24h@5m continuity and 30d@1h coverage are gated independently, and running window progress no longer over-reports completion'),
-			tx('v0.27.46 · 历史特征 v5 为 7 天目标增加 3d/7d/30d@1h 多分辨率趋势，长周期覆盖与故障污染独立门禁，并贯通正样本、健康对照、回放、live coverage 和 shadow runtime', 'v0.27.46 · historical features v5 adds 3d/7d/30d@1h trends for the 7-day target, gates long-range coverage and fault contamination, and preserves parity across positives, controls, replay, live coverage, and shadow runtime'),
-			tx('v0.27.45 · 模型赛马 v2 固化每个算法与预测窗实际入选的独立原始信号族，直接识别“指标已采集但未被模型采用”的迭代缺口', 'v0.27.45 · model-race v2 records the independent source families actually selected by every algorithm and horizon, exposing signals that are collected but not adopted by a model'),
-			tx('v0.27.44 · 历史特征 v4 将核心遥测与稀疏故障/结构信号分开审计，新增 PCIe、ECC、Row Remap、NVLink、限制计数和 metric-family 信号，稀疏缺失不再压低核心覆盖率', 'v0.27.44 · historical features v4 separates core telemetry from sparse fault/structural signals, adds PCIe, ECC, row-remap, NVLink, violation-counter, and metric-family inputs, and stops sparse absence from reducing core coverage'),
-			tx('v0.27.43 · 新增不可变训练矩阵信号审计：区分衍生列与独立原始指标，公开目标安全指标数、缺失配置项、结构可观测性缺口、实际 lookback 和分 split 覆盖率', 'v0.27.43 · adds immutable training-matrix signal audits that separate derived columns from independent source metrics and expose target-safe breadth, missing configured/structural signals, actual lookbacks, and per-split coverage'),
-			tx('v0.27.42 · build 17 证明硬异常门在 24h 提高 precision 但严重损失召回；新增训练健康分布连续异常分 + 全量 Logistic 软级联，避免直接丢弃低异常样本', 'v0.27.42 · build 17 showed that a hard anomaly gate improves 24h precision but severely reduces recall; adds a continuous training-control anomaly score to full-cohort Logistic so low-anomaly rows are no longer discarded'),
-			tx('v0.27.41 · 新增训练集健康对照 robust anomaly → Logistic 离线级联 challenger，以及按显式 build ID、矩阵 SHA、特征契约和目标范围强约束的可复现模型赛马报告', 'v0.27.41 · adds a training-control robust-anomaly → Logistic offline cascade challenger plus reproducible model-race reports strictly bound to explicit build IDs, matrix SHA, feature contract, and target scope'),
-			tx('v0.27.40 · 新增同 cohort 的 Shallow GBDT 离线 challenger：训练集专用多样性筛选、非线性阈值学习、验证集校准与阈值、独立测试门禁；运行时未批准前显式禁止注册 shadow', 'v0.27.40 · adds a same-cohort offline Shallow GBDT challenger with training-only diversity selection, nonlinear threshold learning, validation-only calibration/thresholding, and independent-test gates; shadow registration is explicitly blocked until a runtime is approved'),
-			tx('v0.27.39 · v7 矩阵兼容旧 control artifact：缺失目标时只允许从不可变配对正样本继承，显式目标冲突仍阻断；P4 细化为子目标赛马、真实 episode 积累、硬件风险排序和校准预警四个里程碑', 'v0.27.39 · v7 matrices support legacy control artifacts by inheriting a missing target only from the immutable paired positive while explicit conflicts remain blocked; P4 is split into subtarget racing, real-episode accumulation, hardware risk ranking, and calibrated-warning milestones'),
-			tx('v0.27.38 · v6 训练矩阵不可变保留 prediction_target 并拒绝混合目标；仅高优先级 XID 目标可使用 cutoff 前可纠正 Row Remap 趋势，硬件损坏目标继续禁用全部错误事件指标', 'v0.27.38 · v6 matrices immutably preserve prediction_target and reject mixed targets; only the high-priority-XID target may use pre-cutoff correctable row-remap trends, while hardware-failure models continue excluding all error-event indicators'),
-			tx('v0.27.37 · 基线按 horizon 仅用训练集完成覆盖率过滤、效应排序和维度上限控制；验证/测试标签不参与特征选择，缓解多尺度扩展后的过拟合', 'v0.27.37 · each horizon now uses training data only for coverage filtering, effect ranking, and dimensionality caps; validation/test labels never select features, reducing overfit after multi-scale expansion'),
-			tx('v0.27.36 · 历史与在线影子评分共用 15m/1h/6h/24h 多尺度变换；基线阈值优先满足 precision≥70% 且 recall≥50%，发布门禁不再只检查稳定性和校准', 'v0.27.36 · historical extraction and live shadow scoring share 15m/1h/6h/24h transformations; baseline thresholds prioritize precision≥70% with recall≥50%, and release gates no longer check only stability and calibration'),
-			tx('v0.27.35 · 硬件故障历史 cohort 不再把自动 XID 代理当作硬件损坏正样本；只有明确人工接受的硬件证据可进入，自动事件保留在独立的高优先级 XID 目标', 'v0.27.35 · hardware-failure cohorts no longer treat automatic XID proxies as hardware-damage positives; only explicitly operator-accepted evidence is eligible, while automatic events remain in the separate high-priority-XID target'),
-			tx('v0.27.34 · 人工故障特征 Manifest 从故障时身份冻结 GPU 型号；历史样本清单新增独立的硬件故障与高优先级 XID 目标，后者纳入可重启恢复事件但不宣称硬件损坏', 'v0.27.34 · manual-fault manifests freeze the GPU model from fault-time identity; historical cohorts add separate hardware-failure and high-priority-XID targets, with the latter including restart-recovered events without claiming hardware damage'),
-			tx('v0.27.33 · 人工台账中已明确不进入 GPU 训练的节点/底板/上下文记录不再阻塞合格样本 Manifest；硬件失效与可重启恢复的高优先级 XID 正式拆为两个只读预测目标', 'v0.27.33 · node/baseboard/context ledger evidence intentionally excluded from GPU training no longer blocks eligible manifests; hardware failure and restart-recoverable high-priority XID are now separate read-only prediction targets'),
-			tx('v0.27.32 · 故障数据包准备和影子覆盖复核统一读取不可变复核后的起点、范围和故障时 GPU 身份，并将复核 SHA 绑定到数据包来源，原始台账字段保持不变', 'v0.27.32 · fault-pack preparation and shadow-coverage review consistently use the immutable reviewed onset, scope, and fault-time GPU identity, binding the review SHA into pack provenance while preserving raw ledger fields'),
-			tx('v0.27.31 · 新增真实故障价值报告，按 1h/6h/24h/7d 展示覆盖、阈值命中、描述性召回、中位提前量与 Ranking@5/10/20；风险排序不被表述为校准故障概率', 'v0.27.31 · adds a real-fault value report with coverage, threshold hits, descriptive recall, median lead time, and Ranking@5/10/20 for 1h/6h/24h/7d; risk rankings are not presented as calibrated failure probabilities'),
-			tx('v0.27.30 · 人工故障特征 Manifest 按确认起点减去 horizon 生成四个严格 point-in-time 窗口，旧记录没有不可变复核即被隔离', 'v0.27.30 · manual-fault feature manifests generate four strict point-in-time windows from confirmed onset minus horizon, and isolate legacy records without immutable reviews'),
-			tx('v0.27.29 · 同一来源工单或人工 episode 键合并为单一故障 episode，GPU 正例与节点/底板上下文分开治理', 'v0.27.29 · merges records sharing a source ticket or explicit episode key into one fault episode and governs GPU positives separately from node/baseboard context'),
-			tx('v0.27.28 · 故障记录可只读匹配历史监控候选与故障时点身份区间，候选证据具有独立 SHA 且不执行告警或处置', 'v0.27.28 · fault records can read-only match historical monitoring candidates and fault-time identity intervals; candidate evidence has an independent SHA and executes no alert or remediation'),
-			tx('v0.27.27 · 新增追加式人工复核 SHA 链；GPU 身份增量回填以最早/最晚边界合并并保留范围外历史，避免截断身份时间线；原始飞书行与时间不被覆盖', 'v0.27.27 · adds an append-only human-review SHA chain; incremental GPU identity backfills merge earliest/latest bounds and retain out-of-range history to prevent timeline truncation; raw Feishu rows and times are never overwritten'),
-      tx('v0.27.26 · 飞书硬件故障台账新增两阶段批量入口：本地时间按 Asia/Shanghai 解析，预检执行工单去重与 SN/主机名映射，显式导入后仍保持待监控确认且不可训练，并保留来源行 SHA 与原始记录', 'v0.27.26 · adds a two-phase Feishu hardware-fault ledger intake: local times parse as Asia/Shanghai, preview performs ticket deduplication and serial/hostname mapping, explicit imports remain pending monitoring confirmation and training-ineligible, and source-row SHA/raw provenance is retained'),
-      tx('v0.27.25 · HeaRank Challenger 按 GPU 建立时序索引，对严格 point-in-time cutoff 使用二分查询，并从计算完成时开始缓存；人工反馈和数据包页不再自动加载重型验证报告', 'v0.27.25 · HeaRank Challenger builds per-GPU time-series indexes, uses binary search for strict point-in-time cutoffs, and starts cache expiry after computation; human-feedback and feedback-pack tabs no longer auto-load heavy validation reports'),
-      tx('v0.27.24 · HeaRank Challenger 精简数据库列读取、复用一次 point-in-time 历史聚合并增加 30 秒防击穿缓存；重型验证报告改为独立容错加载，不再阻塞故障预警核心页面', 'v0.27.24 · HeaRank Challenger projects only required database columns, reuses one point-in-time history aggregation, and adds a 30-second stampede-safe cache; heavy validation reports now load independently and cannot block the core early-warning page'),
-      tx('v0.27.23 · MATRIX GATED readiness 新增训练候选 Gate 与样本积累目标面板：直接显示能否进入 baseline 候选、还需补多少故障/对照/GPU 覆盖，并按 fault/model/horizon 给出优先级', 'v0.27.23 · MATRIX GATED readiness adds a training-candidate gate and sample-accumulation targets: it shows whether baseline candidates are allowed, how many faults/controls/GPU identities are still needed, and priority by fault/model/horizon'),
-      tx('v0.27.22 · 训练矩阵 readiness manifest 新增结构化缺口与下一步动作：页面展示最大 shortfall、分层缺口和推荐后续运行，不再依赖解析 blocker 字符串判断还差什么', 'v0.27.22 · training-matrix readiness manifests now expose structured deficits and recommended next runs: the UI shows largest shortfalls, per-stratum gaps, and next actions without parsing blocker strings'),
-      tx('v0.27.21 · MATRIX GATED 治理态矩阵新增可读 readiness 报表：展示待切分正/负样本、GPU 覆盖、主要阻断短码和 pending_control_sampling 分层，帮助判断人工反馈样本还缺什么', 'v0.27.21 · MATRIX GATED governance matrices now show readable readiness reports: pending positives/controls, GPU coverage, top blocker short codes, and pending_control_sampling strata clarify what manual-feedback samples still lack'),
-      tx('v0.27.20 · 人工反馈正例与健康对照特征可生成治理态训练矩阵和 readiness manifest，状态为 MATRIX GATED；该产物只用于样本量/切分/配对审计，不会进入 baseline 训练', 'v0.27.20 · manual-feedback positives and healthy-control features can now produce a governance-only training matrix and readiness manifest with MATRIX GATED status; the artifact is for sample-size, split, and pairing audits only and is not eligible for baseline training'),
-      tx('v0.27.19 · 人工故障反馈训练准备候选会生成同 GPU 稳定身份健康对照请求，并允许健康对照特征 worker 消费该来源；训练矩阵仍等待下一步治理，不提前训练模型', 'v0.27.19 · manual fault-feedback training-preparation candidates now generate same-GPU stable-identity healthy-control requests and can feed the healthy-control feature worker; training matrix governance remains a later step and no model training is started'),
-      tx('v0.27.18 · 人工故障反馈特征聚合完成后可生成训练准备候选 artifact：合格正例进入 pending_control_sampling，质量门阻断样本保留原因和 SHA；仍不训练模型、不发告警、不执行动作', 'v0.27.18 · manual fault-feedback feature aggregations can now produce training-preparation candidate artifacts: eligible positives enter pending_control_sampling while gated samples retain exclusion reasons and SHA evidence; still no model training, alert, or action is executed'),
-      tx('v0.27.17 · 故障预警顶部概览从 6 张大指标卡改为紧凑状态条：当前 GPU、数据集就绪、确认标签、代理标签、在线历史和预警概率保持同等信息密度，但 loading/空值不再占据大面积视觉空间', 'v0.27.17 · the failure early-warning top overview changes from six large metric cards to a compact status strip: current GPUs, dataset readiness, confirmed labels, proxy labels, online retention, and warning probability keep the same signal coverage while loading/empty values no longer dominate the page'),
-      tx('v0.27.16 · 故障前后数据反馈包页改为单一流程线：刷新、准备离线数据、复核预警、生成 Manifest、离线聚合按状态顺序启用；特征请求和数据包状态统一短码展示，长 SHA/状态/路径默认省略，避免页面积压和文字溢出', 'v0.27.16 · the pre/post-fault feedback-pack page now uses a single workflow line: refresh, prepare offline data, review warning, build Manifest, and aggregate are enabled by state order; feature-request and pack statuses use compact labels with long SHA/status/path values ellipsized to avoid UI congestion and overflow'),
-      tx('v0.27.15 · 故障前后数据反馈包页直接展示最新人工反馈特征请求状态、Manifest SHA、阻断原因和离线聚合入口；点击生成 Manifest 后会在当前页显示明确成功/阻断提示，避免看起来没有变化', 'v0.27.15 · the pre/post-fault feedback-pack page now shows the latest manual feedback feature request status, Manifest SHA, blockers, and offline aggregation action directly; creating a Manifest displays explicit success/blocking feedback on the current page instead of appearing unchanged'),
-      tx('v0.27.14 · 人工故障反馈特征请求新增只读离线聚合 worker：从 Manifest 读取 pack-ready/预警已复核样本，按故障前 cutoff 查询历史监控并输出 features.jsonl、quality_report.json、覆盖率和 feature SHA；无原始遥测落库、无告警、无动作', 'v0.27.14 · adds a read-only offline aggregation worker for manual fault-feedback feature requests: it consumes pack-ready/warning-reviewed Manifest records, queries historical monitoring before the fault cutoff, and emits features.jsonl, quality_report.json, coverage metrics, and feature SHA; no raw telemetry is stored, no alert is emitted, and no action is executed'),
-      tx('v0.27.13 · 人工硬件故障反馈列表改为独立加载和提交后强制刷新，不再依赖整页预测接口批量加载；数据包页新增反馈列表刷新入口，避免其它接口异常时隐藏已提交记录', 'v0.27.13 · manual hardware-fault feedback list now loads independently and refreshes after submission instead of depending on the full prediction page batch; the data-pack tab adds an explicit feedback-list refresh action so submitted records are not hidden when unrelated APIs fail'),
-      tx('v0.27.12 · 故障预警三级子功能页签会在刷新后保留当前位置，人工反馈提交后继续停留在“故障前后数据反馈包”，避免新提交记录被默认页签隐藏', 'v0.27.12 · preserves the selected failure early-warning subfunction tab after refresh, keeping users on the pre/post-fault data-pack view after feedback submission so newly submitted records are not hidden by the default tab'),
-      tx('v0.27.11 · 人工硬件故障反馈支持单 GPU、多 GPU/槽位组、GPU 底板和整节点范围，并支持精确时间、仅日期和时间范围，避免把底板/节点级故障误标成单卡故障', 'v0.27.11 · manual hardware-fault feedback now supports single-GPU, multi-GPU/slot-group, GPU-baseboard, and node scopes with exact, date-only, or time-window precision, avoiding mislabeled baseboard/node faults as single-GPU failures'),
-      tx('v0.27.10 · 人工故障反馈训练闭环新增离线特征请求 Manifest：将 pack-ready、身份已解析、预警已复核的反馈固化为 worker 输入清单和 SHA，不读取原始遥测、不发告警、不执行动作', 'v0.27.10 · adds an offline feature-request manifest for the manual fault-feedback training loop, freezing pack-ready, identity-resolved, warning-reviewed feedback into worker input and SHA without reading raw telemetry, emitting alerts, or executing actions'),
-      tx('v0.27.9 · Human Feedback Manifest 和 Validation Readiness 纳入人工硬件故障反馈闭环，统计 pack-ready、预警复核、漏预警和阻断反馈，作为离线训练证据入口', 'v0.27.9 · Human Feedback Manifest and Validation Readiness now include the manual hardware-fault feedback loop, counting pack-ready, warning-reviewed, warning-miss, and blocked feedback as offline-training evidence gates'),
-      tx('v0.27.8 · 人工硬件故障反馈新增故障前影子预警覆盖复核：无 prior shadow 候选会记录为漏预警/覆盖复核证据，有候选则绑定匹配 prediction 证据，仍不发告警或动作', 'v0.27.8 · adds prior shadow-warning coverage review for manual hardware-fault feedback: no prior shadow candidate becomes false-negative/coverage review evidence, while matched candidates bind prediction evidence; still no alert or action is emitted'),
-      tx('v0.27.7 · 故障前后数据反馈包增加只读准备动作，先解析故障时刻 GPU 身份和历史源覆盖，再生成稳定 manifest SHA 或明确阻断原因', 'v0.27.7 · adds a read-only pre/post-fault pack preparation action that resolves fault-time GPU identity and history-source coverage before emitting a stable manifest SHA or explicit blockers'),
-      tx('v0.27.6 · 硬件故障人工反馈支持按 IP/UUID/GPU/型号搜索，并把换卡后的反馈标记为必须按故障时间解析历史 GPU 身份后才能入训练', 'v0.27.6 · adds IP/UUID/GPU/model search to hardware-fault feedback and marks post-replacement feedback as requiring fault-time historical GPU identity resolution before training'),
-      tx('v0.27.5 · 故障预警页改为内部三级功能选项，新增硬件故障人工反馈表单并创建离线故障前后监控历史数据包请求', 'v0.27.5 · converts the failure early-warning page to internal third-level options and adds hardware-fault human feedback intake that creates offline pre/post monitoring-history pack requests'),
-      tx('v0.27.4 · 故障预警工作台入口升级为真实顶部子菜单，默认进入故障前后数据反馈包；所有 prediction-* 子菜单都会加载预警数据并自动定位对应面板', 'v0.27.4 · Promotes the early-warning workbench entries into real top submenus, defaults to the pre/post-fault feedback pack, and makes every prediction-* submenu load early-warning data and auto-focus its panel'),
-      tx('v0.27.3 · 前端统一当前能力命名为故障预警，新增工作台子功能入口，并将故障前后数据反馈包置顶绑定人工反馈、Evidence Bundle、Outcome 和 Readiness 下载证据', 'v0.27.3 · Renames the current UI capability to failure early warning, adds workbench subfunction entries, and promotes the pre/post-fault feedback pack with human feedback, Evidence Bundle, Outcome, and Readiness evidence downloads'),
-      tx('v0.27.2 · Validation Readiness 与只读候选晋级决策绑定人工反馈 Manifest 版本、SHA、状态、匹配窗口和时间安全计数，反馈缺失或元数据阻断会进入晋级 blockers', 'v0.27.2 · Validation Readiness and the read-only promotion decision now bind the human feedback manifest version, SHA, status, matched windows, and point-in-time safety counts; missing or blocked feedback metadata enters promotion blockers'),
-      tx('v0.27.1 · 新增人工故障反馈 Manifest，绑定确认标签、人工 outcome 覆写、预测窗口匹配、元数据缺口和稳定 SHA；反馈只进入验证/训练证据，不触发自动处置', 'v0.27.1 · Adds a human fault-feedback manifest binding confirmed labels, human outcome overrides, prediction-window matches, metadata gaps, and a stable SHA; feedback is validation/training evidence only and triggers no automatic remediation'),
-      tx('v0.27.0 · 将同一缓存快照中的双轨验证、Readiness、跨批一致性、切片可比性和安全边界收束为带稳定 SHA 的只读候选晋级决策，不改变模型状态或启用任何线上动作', 'v0.27.0 · Reduces dual-track validation, readiness, cross-cohort consistency, slice comparability, and safety from the same cached snapshot into a stable-SHA read-only promotion decision without changing model state or enabling online actions'),
-      tx('v0.26.2 · 双轨验证与独立 Readiness 入口共享同一份 30 秒不可变报告缓存、刷新语义和条件请求，避免重复聚合及跨入口口径漂移', 'v0.26.2 · Dual-track validation and the standalone Readiness endpoint share one immutable 30-second report cache, refresh semantics, and conditional requests, preventing duplicate aggregation and cross-endpoint drift'),
-      tx('v0.26.1 · 双轨验证报告增加 30 秒防击穿缓存、ETag 条件请求和 outcome 变更后主动失效，短时刷新不再重复执行重聚合', 'v0.26.1 · Dual-track validation adds a 30-second stampede-safe cache, conditional ETag requests, and active invalidation after outcome changes, avoiding repeated heavy aggregation during short refresh intervals'),
-      tx('v0.26.0 · 排序轨与概率轨分别按型号、事件、机房和驱动维度检查可比较覆盖，任一必需维度样本不足均阻断晋级', 'v0.26.0 · Ranking and probability tracks independently require comparable coverage for model, event, data-center, and driver dimensions; any underpowered required dimension blocks promotion'),
-      tx('v0.25.2 · Validation Readiness 绑定切片契约、覆盖状态、分组数和两轨可比较切片数，缺少冻结维度时阻断晋级', 'v0.25.2 · Validation Readiness binds the slice contract, coverage status, group counts, and comparable slices for both tracks, blocking promotion when frozen dimensions are missing'),
-      tx('v0.25.1 · 仅对完整冻结且审计 ready 的型号、事件、机房和驱动维度计算分组 Ranking@K 与概率质量指标', 'v0.25.1 · Computes grouped Ranking@K and probability-quality metrics only for fully frozen model, event, data-center, and driver dimensions whose audit is ready'),
-      tx('v0.25.0 · 预测时冻结型号、事件、机房和驱动切片维度；标签质量仅作 outcome 审计，禁止作为预测前特征切片', 'v0.25.0 · Freezes model, event, data-center, and driver slice dimensions at prediction time; label quality remains outcome-only audit evidence and cannot be a pre-prediction feature slice'),
-      tx('v0.24.1 · 概率质量增加正负类计数、F1 和可解释状态；单类别 cohort 不再展示可比较 ROC/AP/BSS', 'v0.24.1 · Probability quality adds class counts, F1, and interpretation status; single-class cohorts no longer expose ROC/AP/BSS as comparable'),
-      tx('v0.24.0 · 同批概率轨新增 tie-safe ROC-AUC、Average Precision、10-bin ECE、Brier/BSS 和无效概率审计', 'v0.24.0 · Aligned probability cohorts add tie-safe ROC-AUC, Average Precision, 10-bin ECE, Brier/BSS, and invalid-probability auditing'),
-      tx('v0.23.1 · Validation Readiness 正式绑定并阻断未通过的排名/概率跨批一致性门，状态、计数和比例进入稳定 SHA', 'v0.23.1 · Validation Readiness binds and blocks failed ranking/probability temporal consistency gates, including statuses, counts, and ratios in its stable SHA'),
-      tx('v0.23.0 · 独立时间批次增加 Rank@3 lift 与 Brier Skill Score 方向一致性门，至少三个正向批次且占比不低于 2/3', 'v0.23.0 · Independent time cohorts add Rank@3 lift and Brier Skill Score direction gates, requiring at least three positive cohorts and a ratio of at least two-thirds'),
-      tx('v0.22.2 · 时间 cohort 无 Ranking@K 时后端固定返回空数组，前端兼容 null，避免全 pending 数据导致页面异常', 'v0.22.2 · Temporal cohorts return an empty array when Ranking@K is unavailable and the UI tolerates null, preventing all-pending data from breaking the page'),
-      tx('v0.22.1 · 双轨报告增加最近 12 个预测截点的时间 cohort，按完整 horizon 标记独立/重叠批次并逐批展示两轨状态', 'v0.22.1 · Dual-track reporting adds the latest 12 prediction-cutoff cohorts, marks independent versus overlapping batches by full horizon, and shows both track statuses per cohort'),
-      tx('v0.22.0 · 新增按 model spec、horizon 和 cutoff 精确对齐的双轨验证报告，独立展示排名轨与概率轨状态、指标和稳定 SHA', 'v0.22.0 · Adds a dual-track validation report precisely aligned by model spec, horizon, and cutoff, with independent ranking/probability statuses, metrics, and stable SHA'),
-      tx('v0.21.1 · Validation Readiness 绑定风险排名快照版本、SHA、shadow run、horizon、截点和节点/GPU 覆盖', 'v0.21.1 · Validation Readiness binds the risk-ranking snapshot version, SHA, shadow run, horizon, cutoff, and node/GPU coverage'),
-      tx('v0.21.0 · 新增最新 shadow run 节点风险排名快照，冻结 rank、percentile、模型、horizon、截点和稳定 SHA，明确相对优先级不等于绝对故障概率', 'v0.21.0 · Adds a latest-shadow-run node risk-ranking snapshot that freezes rank, percentile, model, horizon, cutoff, and stable SHA while distinguishing relative priority from absolute failure probability'),
-      tx('v0.20.8 · Challenger 仅由成熟、已评分、标签完整且节点可识别的评估行驱动证据查询；全 pending 时直接返回阻断报告', 'v0.20.8 · Challenger evidence queries are driven only by mature, scored, labeled, node-eligible rows; all-pending cohorts return a blocked report directly'),
-      tx('v0.20.7 · Challenger 按预测截点裁剪健康分与规则命中的 24h 查询窗口，并排除截点同刻和未来标签，降低生产聚合耗时', 'v0.20.7 · Challenger bounds health-score and rule-hit queries to the 24h cutoff window and excludes equal-cutoff/future labels, reducing production aggregation cost'),
-      tx('v0.20.6 · Outcomes 支持服务端分页与真实总数，OutcomeReport 复用单次结果快照并明确风险排序/时间窗口预测双轨验证', 'v0.20.6 · Outcomes supports server-side pagination and true totals; OutcomeReport reuses one result snapshot and formalizes risk-ranking / horizon-probability dual-track validation'),
-      tx('v0.20.5 · HeaRank challenger 增加稳定 SHA256、ETag 与机器可读下载，独立冻结排序验证证据', 'v0.20.5 · HeaRank challenger adds a stable SHA256, ETag, and machine-readable download to independently freeze ranking-validation evidence'),
-      tx('v0.20.4 · Challenger 按预测截点缓存并复用历史证据，保持分数与时间隔离语义不变，支持样本规模增长', 'v0.20.4 · Challenger caches and reuses historical evidence by prediction cutoff, preserving scores and time-isolation semantics as sample volume grows'),
-      tx('v0.20.3 · 健康分、规则命中和型号 cohort challenger 仅消费截点前 24 小时内的新鲜运行证据，旧遥测不再伪装成当前风险', 'v0.20.3 · health-score, rule-hit, and model-cohort challengers consume only fresh operational evidence from the 24 hours before cutoff so stale telemetry cannot masquerade as current risk'),
-      tx('v0.20.2 · HeaRank challenger 新增同型号历史标签事件密度基线：仅用截点前观测 GPU 数和 eligible 标签事件构造 cohort 信号', 'v0.20.2 · HeaRank challenger adds a same-model historical label-event-density baseline using only pre-cutoff observed GPUs and eligible label events'),
-      tx('v0.20.1 · HeaRank challenger 新增节点规则命中风险基线：按截点前每卡最新规则批次的严重度对节点最差卡排序', 'v0.20.1 · HeaRank challenger adds a node rule-hit-risk baseline: rank by each node’s worst GPU using severity from its latest pre-cutoff rule-hit batch'),
-      tx('v0.20.0 · HeaRank challenger 新增节点健康风险基线：取截点前每卡最新健康分并以节点最差卡风险排序', 'v0.20.0 · HeaRank challenger adds a node-health-risk baseline: use each GPU’s latest pre-cutoff health score and rank by the node’s worst-GPU risk'),
-      tx('v0.19.5 · HeaRank challenger 以 Logistic 为参考输出逐策略比较状态，样本量或信号不足时明确阻断比较', 'v0.19.5 · HeaRank challenger emits per-policy comparison states against Logistic and explicitly blocks comparison when sample or signal evidence is insufficient'),
-      tx('v0.19.4 · validation readiness 绑定 7d 历史 challenger 的聚合信号状态；证据不足时下载报告与页面同步提示不可比较', 'v0.19.4 · validation readiness binds the aggregate 7d historical-challenger signal state so downloaded reports and the UI consistently flag insufficient evidence as non-comparable'),
-      tx('v0.19.3 · HeaRank challenger 的历史 outcome 与标签必须严格早于预测截点；同一时刻证据排除，消除时间边界泄漏', 'v0.19.3 · HeaRank challenger requires historical outcomes and labels to be strictly earlier than the prediction cutoff; equal-timestamp evidence is excluded to eliminate boundary leakage'),
-      tx('v0.19.2 · HeaRank challenger 将信号覆盖明确标记为 no_signal / exploratory / covered，避免证据不足策略与可比较策略等价解读', 'v0.19.2 · HeaRank challenger marks signal coverage as no_signal / exploratory / covered so evidence-insufficient policies are not interpreted as comparable'),
-      tx('v0.19.1 · HeaRank challenger 展示各策略的非零历史信号样本/节点覆盖，避免零分主导的排序结果被误读', 'v0.19.1 · HeaRank challenger exposes non-zero signal-row/node coverage per policy so ranking dominated by zero scores is not misread'),
-      tx('v0.19.0 · HeaRank challenger 增加按故障类型严重度加权的历史标签基线；只消费预测截点前已可用、未排除的 confirmed / strong-proxy 标签', 'v0.19.0 · HeaRank challenger adds a severity-weighted historical-label baseline; it only consumes non-excluded confirmed / strong-proxy labels available before the prediction cutoff'),
-      tx('v0.18.9 · HeaRank challenger 增加 90 天半衰期历史故障新近度加权基线；所有历史分数仅消费预测截点前已关闭的 outcome 窗口，避免未来标签泄漏', 'v0.18.9 · HeaRank challenger adds a 90-day-half-life recency-weighted failure-history baseline; all history scores consume only outcome windows closed before the prediction cutoff to prevent future-label leakage'),
-      tx('v0.18.8 · Feature Distribution Archive 增加可比性状态、最小成对特征门槛、缺 training/live 特征列表，并纳入 validation readiness 阻断与 SHA', 'v0.18.8 · Feature Distribution Archive adds comparability status, a minimum paired-feature gate, missing training/live feature lists, and binds them into validation-readiness blockers and SHA'),
-      tx('v0.18.7 · validation readiness 绑定 scoped feature distribution archive 的版本、SHA、scope、训练/线上快照数和阻断原因，readiness SHA 随分布归档变化', 'v0.18.7 · validation readiness binds the scoped feature distribution archive version, SHA, scope, training/live snapshot counts, and blockers; readiness SHA changes with the distribution archive'),
-      tx('v0.18.6 · Feature Distribution Archive 增加 validation scope，绑定 shadow candidate、baseline、model spec、feature contract 和筛选条件，避免不同验证口径共用归档指纹', 'v0.18.6 · Feature Distribution Archive adds validation scope binding the shadow candidate, baseline, model spec, feature contract, and filters so different validation scopes cannot share one archive fingerprint'),
-      tx('v0.18.5 · Feature Distribution Snapshots 增加稳定 archive SHA256、机器可读下载入口和前端归档指纹展示，用于固定特征漂移验证证据', 'v0.18.5 · Feature Distribution Snapshots adds a stable archive SHA256, machine-readable download entry, and UI archive fingerprint to freeze feature-drift validation evidence'),
-      tx('v0.18.4 · validation readiness 绑定 feature drift blocking reasons 与 recommended next-run，并在就绪门卡片直接展示特征漂移具体缺口', 'v0.18.4 · validation readiness binds feature-drift blocking reasons and recommended next-run guidance, and shows the concrete feature-drift gap directly in the readiness gate card'),
-      tx('v0.18.3 · Feature Drift Report 升级为动态 next-run 口径，按缺失 training、缺失 live、分箱不兼容、review_required 或 passed 输出建议，并同步 sample feature 状态', 'v0.18.3 · Feature Drift Report now emits dynamic next-run guidance for missing training, missing live, incompatible bins, review_required, or passed states, and synchronizes sample feature statuses'),
-      tx('v0.18.2 · 前端展示逐特征 Feature Drift comparison 明细，按 review/blocking、PSI、KS 排序显示快照 ID、样本量、漂移值和阻断原因', 'v0.18.2 · exposes per-feature Feature Drift comparison details in the UI, sorted by review/blocking state, PSI, and KS with snapshot IDs, samples, drift values, and blockers'),
-      tx('v0.18.1 · shadow scoring 为已评分 GPU 生成 live-shadow 逐特征分布快照，并复用 training histogram bins，避免 PSI/KS 使用不兼容分箱', 'v0.18.1 · shadow scoring materializes live-shadow per-feature distribution snapshots for scored GPUs and reuses training histogram bins to avoid incompatible PSI/KS binning'),
-      tx('v0.18.0 · 从已完成 baseline 绑定的训练矩阵生成训练侧逐特征分布快照，只保存聚合统计和 histogram proportions，并刷新特征漂移与验证就绪报告', 'v0.18.0 · materializes training-side per-feature distribution snapshots from the completed baseline-bound training matrix, storing only aggregate statistics and histogram proportions while refreshing feature-drift and validation-readiness reports'),
-      tx('v0.17.2 · validation readiness 绑定逐特征漂移比较数、最大 PSI/KS 和需复核特征数，离线验证门可直接看到特征漂移指标', 'v0.17.2 · validation readiness binds compared feature count, maximum PSI/KS, and review-required feature count so the offline gate exposes feature-drift metrics directly'),
-      tx('v0.17.1 · 增加逐特征分布快照只读列表 API 与前端摘要，便于核对训练/live shadow 分布是否真实落库', 'v0.17.1 · adds read-only per-feature distribution snapshot listing API and UI summary to verify whether training/live-shadow distributions are actually persisted'),
-      tx('v0.17.0 · 增加逐特征分布快照数据结构，Feature Drift Report 可在训练/线上分布齐全时计算 per-feature PSI/KS，否则继续阻断缺口', 'v0.17.0 · adds per-feature distribution snapshot storage so Feature Drift Report can compute per-feature PSI/KS when training/live distributions exist, otherwise it continues to block missing evidence'),
-      tx('v0.16.0 · 增加 feature drift readiness report，绑定 baseline artifact 特征列、feature replay 和逐列分布缺口，明确 PSI/KS pending 并接入 validation readiness', 'v0.16.0 · adds feature drift readiness report binding baseline artifact feature columns, feature replay, and the missing per-column distribution store; PSI/KS stays pending and is bound into validation readiness'),
-      tx('v0.15.0 · 增加 calibration drift report，比较最近 baseline evaluation 的 ECE、Brier 和 Brier Skill Score，并绑定 validation readiness', 'v0.15.0 · adds calibration drift report comparing ECE, Brier, and Brier Skill Score from recent baseline evaluations, and binds it into validation readiness'),
-      tx('v0.14.0 · data drift report 增加 live coverage audit 质量漂移，比较 eligible、metric pass、missing、sparse 和 stale 比例，并纳入 readiness 展示', 'v0.14.0 · data drift report adds live-coverage quality drift across eligible, metric-pass, missing, sparse, and stale ratios, and exposes it in readiness'),
-      tx('v0.13.0 · 增加 shadow score data drift report、PSI/KS proxy、稳定 SHA256、下载入口，并接入 validation readiness', 'v0.13.0 · adds shadow-score data drift report, PSI/KS proxies, stable SHA256, download entry, and validation-readiness binding'),
-      tx('v0.12.1 · validation readiness 绑定 Evidence Bundle 版本、SHA256、正样本和排除样本数量，离线验证报告可固定完整证据链', 'v0.12.1 · validation readiness binds Evidence Bundle version, SHA256, positive-label count, and excluded-label count so offline validation can freeze the full evidence chain'),
-      tx('v0.12.0 · 增加训练样本 Evidence Bundle API、稳定 SHA256、下载入口和前端摘要，追溯正样本原因、人工确认引用与排除原因', 'v0.12.0 · adds training-sample Evidence Bundle API, stable SHA256, download entry, and UI summary for positive rationale, human-confirmation references, and exclusion reasons'),
-      tx('v0.11.0 · outcome report 增加成熟率、概率覆盖、正例数量、Ranking@K 可解释状态和误判复核提示', 'v0.11.0 · outcome report adds maturity-ratio, probability-coverage, positive-count, Ranking@K interpretation status, and misclassification review hints'),
-      tx('v0.10.0 · HeaRank challenger 增加 7d rows/nodes/positives 最小样本门槛和 confidence status，并接入 validation readiness', 'v0.10.0 · HeaRank challenger adds minimum 7d rows/nodes/positives gates and confidence status, wired into validation readiness'),
-      tx('v0.9.1 · validation readiness 增加稳定 SHA256、绑定报告版本、7d 样本摘要和机器可读 JSON 下载', 'v0.9.1 · validation readiness adds a stable SHA256, bound report versions, 7d sample summary, and machine-readable JSON download'),
-      tx('v0.9.0 · 增加离线验证就绪报告，统一汇总标签质量门、成熟 outcome 与 HeaRank 7d challenger 状态', 'v0.9.0 · adds an offline-validation readiness report combining the label quality gate, mature outcomes, and HeaRank 7d challenger status'),
-      tx('v0.8.2 · label manifest 增加 quality gate 状态、阻断原因和下一步建议，明确何时可进入离线模型验证', 'v0.8.2 · label manifest adds quality-gate status, blocking reasons, and next-run guidance to clarify when offline model validation may proceed'),
-      tx('v0.8.1 · label manifest 增加稳定 SHA256 指纹、证据范围、样本标签摘要和机器可读 JSON 下载入口', 'v0.8.1 · label manifest adds a stable SHA256 fingerprint, evidence scope, sample-label summary, and machine-readable JSON download'),
-      tx('v0.8.0 · 增加 label manifest 只读治理 API 与前端摘要，汇总正样本来源、质量层级、排除原因、人工确认依据和已知标签缺口', 'v0.8.0 · adds a read-only label manifest API and UI summary for positive-label sources, quality tiers, exclusion reasons, human-confirmation evidence, and known label gaps'),
-      tx('v0.7.0 · 增加 HeaRank 离线 challenger 报告入口，对比 Logistic 概率、节点历史故障次数和阈值二值信号的 7d 节点排序', 'v0.7.0 · adds a HeaRank offline challenger report comparing Logistic probability, node prior failure count, and threshold-binary signals for 7d node ranking'),
-      tx('v0.6.1 · outcome report 增加 all-negative / all-positive naive baseline 对比，统一成熟样本口径评估真实增益', 'v0.6.1 · outcome report adds all-negative/all-positive naive baselines on the same matured-sample denominator to measure real lift'),
-      tx('v0.6.0 · 增加 model card / dataset card / shadow gate 治理报告 API 与前端摘要，继续保持 read-only shadow', 'v0.6.0 · adds model card, dataset card and shadow-gate governance report API with UI summary while remaining read-only shadow'),
-      tx('v0.5.0 · outcome report API 与前端报告展示，汇总成熟样本、安全边界和下一步建议', 'v0.5.0 · outcome report API and UI summarize maturity, safety envelope and next-run guidance'),
-      tx('v0.4.0 · 增加 GPU / 节点级 Ranking@K outcome 指标，用于 HeaRank 风格验证对齐', 'v0.4.0 · adds GPU/node Ranking@K outcome metrics for HeaRank-style validation alignment'),
-      tx('v0.3.0 · 历史训练数据、基线模型、特征契约与只读 shadow scoring 闭环', 'v0.3.0 · closes historical training data, baseline model, feature contract and read-only shadow scoring loop'),
-      ...([tx('v0.32.0 · 首批前瞻评分发现 56% 超阈值和节点聚集，增加分位数与分布偏移门，将 HIGH/LOW 降级为待验证观测并阻断周期调度', 'v0.32.0 · the first prospective run found 56% threshold hits and node clustering; adds quantile/distribution-shift gates, downgrades HIGH/LOW to unvalidated observations, and blocks periodic scheduling'),
-      tx('v0.31.0 · 人工触发只读影子评分，每批重新验证模型哈希、数据覆盖和 70 列契约，保存概率与特征指纹但不发告警或执行动作', 'v0.31.0 · adds manually triggered read-only shadow scoring that rechecks artifact hash, live coverage, and all 70 columns, persisting probabilities and feature fingerprints without alerts or actions'),
-      tx('v0.30.0 · 逐卡审计当前 24 小时模型源指标的覆盖率与新鲜度，通过后仍保持评分关闭', 'v0.30.0 · audits trailing-24h coverage and freshness of every model source metric per GPU while keeping scoring disabled after a pass'),
-      tx('v0.29.0 · 在固定分层样本的原历史截止点重新查询 Prometheus，逐值比较 70 列并保存误差与失败列报告', 'v0.29.0 · re-queries Prometheus at fixed stratified historical cutoffs, compares all 70 values, and persists error and failed-column reports'),
-      tx('v0.28.0 · 训练与未来在线提取器共享同一套 24 小时统计实现，并持久化逐列契约等价性和回放阻断项', 'v0.28.0 · shares one trailing-24h statistics implementation between training and future online extraction, persisting column parity and replay blockers'),
-      tx('v0.27.0 · 将通过完整性、稳定性和校准门的窗口注册为只读影子候选，在线评分和任何操作仍保持关闭', 'v0.27.0 · registers horizons passing integrity, stability, and calibration gates as read-only shadow candidates while online scoring and every action remain disabled'),
-      tx('v0.26.0 · 仅使用验证集拟合 Platt 概率校准参数，测试集保持只读审计并对比校准前后 ECE/BSS', 'v0.26.0 · fits Platt probability calibration on validation only, keeps test labels audit-only, and compares pre/post ECE and BSS'),
-      tx('v0.25.0 · 以测试集 ECE、Brier Skill Score 和十档可靠性分箱阻断未校准概率进入影子候选', 'v0.25.0 · gates shadow candidacy on held-out ECE, Brier Skill Score, and ten-bin reliability diagnostics'),
-      tx('v0.24.0 · 验证集与测试集分别执行 GPU cluster Bootstrap，只有两者均稳定正向才标记跨时间稳健候选', 'v0.24.0 · bootstraps validation and test by GPU cluster independently and marks a robust cross-time candidate only when both remain stably positive'),
-      tx('v0.23.0 · 测试集按 GPU UUID 整体 Bootstrap 1000 次，输出 ROC/PR 95% 置信区间并标记候选、反向或不确定信号', 'v0.23.0 · runs 1,000 GPU-UUID cluster bootstraps on held-out tests, reports 95% ROC/PR confidence intervals, and classifies candidate, inverse, or inconclusive signals'),
-      tx('v0.22.2 · 修正就绪分层空阻断原因导致的白屏，并增加模块级渲染错误隔离', 'v0.22.2 · fixes blank pages caused by null blocking reasons on ready strata and adds module-level render error isolation'),
-      tx('v0.22.1 · 预警数据仅在进入故障预警子页时加载，GPU 就绪队列每页仅渲染 50 条', 'v0.22.1 · loads early-warning datasets only when the failure early-warning subpage opens and renders the GPU readiness queue in pages of 50'),
-      tx('v0.22.0 · 每次训练逐列审计禁用特征并记录排除原因，发现禁用列入模即阻断产物', 'v0.22.0 · audits prohibited features column by column with exclusion reasons and blocks artifacts whenever a prohibited column is selected'),
-      tx('v0.21.0 · 采样数仅用于连续性质量门且禁止入模，正样本核心遥测连续性必须达到 70%', 'v0.21.0 · sample counts are quality-gate-only and model-excluded; positive core telemetry continuity must reach 70%'),
-      tx('v0.20.0 · 只在通过数据充分性门的故障类型、GPU 型号和预测窗口上训练专用离线基线', 'v0.20.0 · trains scoped offline baselines only for fault type, GPU model and horizons that pass the data-sufficiency gate'),
-      tx('v0.19.0 · 按故障类型、GPU 型号和预测窗口统计三分割样本与独立 GPU，阻断数据不足分层', 'v0.19.0 · counts split samples and independent GPUs by fault type, GPU model and horizon, blocking data-insufficient strata'),
-      tx('v0.18.0 · 训练样本保留故障类型、驱动版本、规则版本与证据等级，基线按标签维度分层评估', 'v0.18.0 · preserves fault type, driver, rule version and evidence tier in training rows, with label-stratified baseline evaluation'),
-      tx('v0.17.0 · XID 109 运营高优先与训练确定性拆分、规则 v2 重放及按当前规则快速重建训练准备', 'v0.17.0 · separates XID 109 operational priority from training certainty, adds rule-v2 replay and fast preparation rebuilds under current labels'),
-      tx('v0.16.1 · 固定 PR-AUC 数据库列名并增加迁移回归测试', 'v0.16.1 · stabilized the PR-AUC database column name with a migration regression test'),
-      tx('v0.16.0 · 11 个预测窗离线 Logistic Regression、已发生故障特征排除、验证阈值与测试集评估', 'v0.16.0 · offline Logistic Regression for 11 horizons, occurred-fault feature exclusion, validation thresholds and held-out test evaluation'),
-      tx('v0.15.0 · 正负样本合并、稀疏缺失保留、类别权重及时间/实体/配对/契约泄漏审计', 'v0.15.0 · positive/control matrix assembly, sparse missingness, class weights, and time/entity/pairing/contract leakage audits'),
-      tx('v0.14.0 · 同卡健康对照去重查询、24 小时特征、遥测连续性与负载可比性门禁', 'v0.14.0 · deduplicated same-GPU healthy-control queries, trailing-24h features, telemetry continuity and load comparability gates'),
-      tx('v0.13.1 · 隔离跨节点同步事件批次，按唯一时间边界切分并强制验证/测试集最小占比', 'v0.13.1 · censor synchronized cross-node event batches, split on distinct time boundaries, and enforce minimum validation/test ratios'),
-      tx('v0.13.0 · 全量特征质量门、零遥测删失、GPU UUID 与时间双重隔离、同卡健康对照请求及校验产物', 'v0.13.0 · full-feature quality gate, zero-telemetry censoring, GPU UUID and time isolation, same-GPU healthy-control requests and checksummed artifacts'),
-      tx('v0.12.1 · 从历史身份区间补齐 GPU 型号，按型号支持范围计算应有指标覆盖率', 'v0.12.1 · enrich GPU model from historical identity intervals and calculate expected metric coverage by model support'),
-      tx('v0.12.0 · 按 GPU episode 批量读取 Prometheus/VM、24 小时统计特征、覆盖率报告和版本化产物', 'v0.12.0 · batched Prometheus/VM reads by GPU episode, trailing 24-hour statistics, coverage report and versioned artifacts'),
-      tx('v0.11.0 · 预测窗口成熟判定、规则/人工双结果、TP/FP/FN/TN 与准确率闭环', 'v0.11.0 · horizon maturity, rule/human dual outcomes, TP/FP/FN/TN and accuracy feedback loop'),
-      tx('v0.10.0 · 规则正代理/仅上下文/需人工分层、规则置信度、人工覆核优先和可重建加权样本', 'v0.10.0 · rule-positive/context/human-review tiers, rule confidence, human override precedence and rebuildable weighted samples'),
-      tx('v0.9.0 · 故障 episode 合并、point-in-time 多窗口清单、样本资格门和部署节点版本化产物', 'v0.9.0 · fault episode merging, point-in-time multi-horizon manifest, sample eligibility gates and deployment-node versioned artifacts'),
-      tx('v0.8.0 · UUID 前缀/大小写标准化、跨 exporter 去重、旧表无损迁移和回填成功后旧区间替换', 'v0.8.0 · UUID prefix/case normalization, cross-exporter deduplication, lossless legacy-table migration and post-success stale interval replacement'),
-      tx('v0.7.0 · 六小时稀疏身份区间、同槽位换卡候选、整机身份边界和历史故障候选关联', 'v0.7.0 · six-hour sparse identity intervals, same-slot replacement candidates, node boundaries and historical candidate linkage'),
-      tx('v0.6.0 · 历史候选审核 API、可重审训练用途、操作人/时间/备注审计和页面操作', 'v0.6.0 · candidate review API, repeatable training disposition, operator/time/note audit and UI actions'),
-      tx('v0.5.0 · 覆盖低/高优先 XID、恢复型 120/154、GPU 掉卡与不可恢复显存，并定义正常对照和污染窗口', 'v0.5.0 · low/high-priority XIDs, recovery-latched 120/154, GPU dropout, uncorrectable memory, matched controls and censor windows'),
-      tx('v0.4.0 · 七天分块的 ALERTS 起点扫描、XID episode 合并、幂等候选台账与任务进度', 'v0.4.0 · seven-day ALERTS onset scans, XID episode merging, idempotent candidate ledger, and durable task progress'),
-      tx('v0.3.0 · 历史监控源、远端本地执行、定时/人工审计、覆盖与缺失指标台账', 'v0.3.0 · historical monitoring sources, remote-local execution, scheduled/manual audits, and coverage/missing-metric ledger'),
-      tx('v0.2.0 · 健康特征/评分/规则命中保留期由 35 天改为可配置，生产默认一年', 'v0.2.0 · configurable health feature/score/rule-hit retention replaces the fixed 35-day cap, with one-year production default'),
-      tx('v0.2.0 · GPU 规则事件幂等物化为强弱代理标签，仅硬件人工确认可升级 confirmed', 'v0.2.0 · GPU rule episodes materialize idempotently as strong/weak proxy labels; only human-confirmed hardware resolutions upgrade to confirmed'),
-      tx('v0.1.0 · 预测模型/标签/结果持久化契约、GPU 数据就绪 API 与页面', 'v0.1.0 · persistent model/label/result contracts plus GPU readiness APIs and UI'),
-      tx('v0.1.0 · 明确弱标签、时间泄漏防护、实体隔离、概率校准和禁止自动动作', 'v0.1.0 · weak-label tiers, leakage prevention, entity isolation, calibration, and no-auto-action boundaries')].map(entry => `PIPELINE ${entry}`)),
-      ...module.history,
-    ],
-  } : module.id === 'analysis' ? {
-    ...module,
-    version: 'v0.2.0',
-    status: tx('恢复证据闭环', 'RECOVERY EVIDENCE LOOP'),
-    desc: tx(
-      '按事件生成确定性故障报告，并在可用性问题恢复后把启动历史、GPU 快照和时间窗内核日志直接关联到问题详情；仅展示证据，不自动宣称根因。',
-      'Generate deterministic event reports and link boot history, GPU snapshots, and bounded kernel logs directly to availability issue details after recovery. Evidence is presented without automatically claiming root cause.',
-    ),
-    history: [
-      tx('v0.2.0 · 节点失联恢复后的最新只读证据进入问题详情，保留来源、状态、截断与重试关系', 'v0.2.0 · latest post-outage read-only evidence is shown in issue details with provenance, status, truncation, and retry linkage'),
-      ...module.history,
-    ],
-  } : module.id === 'node-access' ? {
-    ...module,
-    version: 'v0.6.3',
-    desc: tx(
-      '硬件事件立即采集，节点失联恢复后补采故障证据；任务保留可分页审计历史，失败后可使用当前全局密码字典人工重试且不覆盖旧记录。',
-      'Hardware events collect immediately and outage evidence is collected after recovery. Tasks retain paginated audit history and failed collections can be retried manually with the current global credential dictionary without overwriting old records.',
-    ),
-    history: [
-      tx('v0.6.3 · 任务列表默认只看最新结果，旧失败和 partial 通过历史尝试开关单独查看', 'v0.6.3 · task list defaults to latest results while old failed and partial attempts move behind an explicit history toggle'),
-      tx('v0.6.2 · 任务总览按每个事件或状态的最新结果统计，旧失败仅保留在审计历史', 'v0.6.2 · task summary counts the latest result per event or condition while old failures remain audit history only'),
-      tx('v0.6.1 · journalctl 时间窗改用 systemd epoch 语法，兼容 Ubuntu 22.04 / systemd 249', 'v0.6.1 · journalctl windows use systemd epoch syntax for Ubuntu 22.04 / systemd 249 compatibility'),
-      tx('v0.6.0 · 最近 5 条证据任务、按需加载更多、失败原因与保留历史的人工只读重试', 'v0.6.0 · five recent evidence tasks, on-demand history, failure reasons, and manual read-only retry with preserved audit history'),
-      tx('v0.5.1 · 全局密码字典按优先级轮询，任一凭据成功不告警，仅全部耗尽后产生访问问题', 'v0.5.1 · global credential dictionary rotation by priority; any success suppresses access findings and only full exhaustion creates one'),
-      ...module.history,
-    ],
-  } : module);
-  const milestones = [
-    ['P0', tx('数据底座', 'Data Foundation'), tx('完成', 'COMPLETE')],
-    ['P1', tx('GPU 健康', 'GPU Health'), tx('基线完成', 'BASELINE')],
-    ['P2', tx('故障闭环', 'Incident Workflow'), tx('开发中', 'ACTIVE')],
-    ['P2.5', tx('性能验证', 'Performance Validation'), tx('开发中', 'ACTIVE')],
-    ['P3', tx('特征与异常检测', 'Features & Anomaly Detection'), tx('开发中', 'ACTIVE')],
-    ['P3.5', tx('只读证据与自动分析', 'Read-only Evidence & Analysis'), tx('开发中', 'ACTIVE')],
-    ['P4.1', tx('型号 / 故障子目标影子赛马', 'Model / Fault Subtarget Shadow Race'), tx('开发中', 'ACTIVE')],
-    ['P4.2', tx('真实硬件故障 Episode 积累', 'Real Hardware-fault Episode Accumulation'), tx('开发中', 'ACTIVE')],
-    ['P4.3', tx('全局硬件故障风险排序', 'Fleet Hardware-failure Risk Ranking'), tx('开发中', 'ACTIVE')],
-    ['GPU-R4B', tx('候选注册与独立评分接入（真实数据待验）', 'Candidate admission and separate scores (real data pending)'), tx('开发中', 'ACTIVE')],
-    ['GPU-R2', tx('节点故障反馈与未来结果（软件基线）', 'Node feedback and future outcomes (software baseline)'), tx('基线完成', 'BASELINE')],
-    ['GPU-R1', tx('全节点记录与只读榜单', 'Full-node records and read-only view'), tx('基线完成', 'BASELINE')],
-    ['P4.4', tx('校准预警与生产门禁', 'Calibrated Warning & Production Gates'), tx('规划', 'PLANNED')],
-  ];
-  const selectedModule = modules.find(module => module.id === moduleDetailID) || null;
-  return <>
-  <div className="grid">
-    <Card className="span-12 product-intro"><div><span>{platformConfig.product_name}</span><h2>Infrastructure Hardware Reliability Workbench</h2><p>{tx('ATLAS 是面向 GPU 集群并可扩展至服务器、存储和网络基础设施的硬件可靠性工作台，提供实时资产对账、监控数据质量发现、硬件健康评分、故障检测、只读证据与结构化故障报告、数据统计与处置、硬件故障预警、性能衰减识别、告警中心以及维修验证闭环。', 'ATLAS is a hardware reliability workbench for GPU clusters, extensible to server, storage and network infrastructure. It provides live asset reconciliation, monitoring data quality detection, hardware health scoring, fault detection, read-only evidence and structured fault reports, data analytics and resolution, hardware early warning, performance degradation analysis, alert center and repair validation workflows.')}</p></div><Badge value="PLATFORM / v0.120.115" kind="info" /></Card>
-    <Card className="span-12"><CardHead code="MILESTONES" title={tx('平台开发里程碑', 'Platform Development Milestones')} /><div className="platform-milestones">{milestones.map(([phase, name, status]) => <div key={phase}><code>{phase}</code><b>{name}</b><Badge value={status} kind={status === tx('完成', 'COMPLETE') || status === tx('基线完成', 'BASELINE') ? 'healthy' : status === tx('开发中', 'ACTIVE') ? 'info' : 'neutral'} /></div>)}</div></Card>
-    <Card className="span-12"><CardHead code="CAPABILITY MODULES" title={tx('平台能力模块', 'Platform Capability Modules')} action={<Badge value={`${modules.length} MODULES`} kind="info" />} /><div className="capability-modules">{modules.map(module => <article key={module.id}><header><code>{module.id.toUpperCase()}</code><Badge value={module.status} kind={module.status === tx('开发中', 'ACTIVE') ? 'info' : module.status.includes(tx('完成', 'BASELINE')) || module.status.includes('BASELINE') ? 'healthy' : 'neutral'} /></header><h3>{module.name}</h3><p>{module.desc}</p><div className="module-version"><span>{tx('当前版本', 'CURRENT VERSION')}</span><strong>{module.version}</strong></div><div className="module-history"><span>{tx('最近迭代', 'LATEST ITERATIONS')}</span>{module.history.slice(0, 3).map(item => <small key={item}>{item}</small>)}<button className="module-history-more" onClick={() => setModuleDetailID(module.id)}>{module.history.length > 3 ? tx(`查看全部 ${module.history.length} 次迭代`, `View all ${module.history.length} iterations`) : tx('版本详情', 'Version details')}<ChevronRight size={13} /></button></div></article>)}</div></Card>
-  </div>
-  <AnimatePresence>{selectedModule && <motion.div className="module-modal-layer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><button className="module-modal-bg" onClick={() => setModuleDetailID(null)} aria-label={tx('关闭版本详情', 'Close version details')} /><motion.section className="module-modal" role="dialog" aria-modal="true" aria-label={selectedModule.name} initial={{ y: 18, scale: .98 }} animate={{ y: 0, scale: 1 }} exit={{ y: 18, scale: .98 }}><header><div><code>{selectedModule.id.toUpperCase()}</code><h2>{selectedModule.name}</h2></div><button className="icon-btn" onClick={() => setModuleDetailID(null)} aria-label={tx('关闭', 'Close')}><X size={17} /></button></header><div className="module-modal-meta"><Badge value={selectedModule.status} kind={selectedModule.status.includes(tx('完成', 'BASELINE')) || selectedModule.status.includes('BASELINE') ? 'healthy' : 'neutral'} /><span>{tx('当前版本', 'CURRENT VERSION')} <strong>{selectedModule.version}</strong></span></div><p>{selectedModule.desc}</p><div className="module-modal-history"><span>{tx('完整迭代历史', 'FULL ITERATION HISTORY')}</span>{selectedModule.history.map((item, index) => <div key={item}><i /><small>{item}</small>{index === 0 && <Badge value={tx('最新', 'LATEST')} kind="info" />}</div>)}</div></motion.section></motion.div>}</AnimatePresence>
-  </>;
 }
 
 function PlatformSettings({ tx, value, onSaved }: { tx: Tx; value: PlatformConfig; onSaved: (config: PlatformConfig) => void }) {
@@ -3351,7 +1095,7 @@ function PlatformSettings({ tx, value, onSaved }: { tx: Tx; value: PlatformConfi
   return <div className="grid platform-settings">
     <Card className="span-7">
       <CardHead code="INSTANCE BRANDING" title={tx('平台展示配置', 'Platform Display Settings')} action={<Badge value="PUBLIC FIELDS ONLY" kind="info" />} />
-      <p className="settings-intro">{tx('这些字段只控制当前 Atlas 实例的展示身份，不会修改产品能力、采集地址、数据库或其他敏感运行参数。', 'These fields only control the display identity of this Atlas instance. They do not change product capabilities, collectors, databases or sensitive runtime settings.')}</p>
+      <p className="settings-intro">{tx('仅影响显示名称', 'Display identity only')}</p>
       <form className="settings-form" onSubmit={event => { event.preventDefault(); void save(); }}>
         <label><span>{tx('实例名称', 'Instance name')}<small>instance_name · 80</small></span><input maxLength={80} value={draft.instance_name} onChange={event => update('instance_name', event.target.value)} placeholder={tx('例如：智元集群', 'Example: Zhiyuan Cluster')} /></label>
         <label><span>{tx('产品名称', 'Product name')}<small>product_name · 40</small></span><input maxLength={40} value={draft.product_name} onChange={event => update('product_name', event.target.value)} placeholder="ATLAS" /></label>
@@ -3470,12 +1214,11 @@ function LXOPAssetSettings({ tx }: { tx: Tx }) {
 function FaultEventList({ tx, items }: { tx: Tx; items: FaultEvent[] }) { return <div className="event-list">{items.map(x => <div className="event-row" key={x.id}><Badge value={x.severity.toUpperCase()} kind={tone(x.severity)} /><span><b>{x.rule_code}</b><small>{x.node_ip} · GPU {x.gpu_index} · {x.evidence}</small></span><code>×{x.occurrence_count}</code></div>)}{items.length === 0 && <Empty tx={tx} title={tx('无未恢复硬件事件', 'No open hardware events')} />}</div>; }
 function Empty({ tx, title }: { tx: Tx; title: string }) { return <div className="empty"><Command size={20} /><b>{title}</b><span>{tx('等待数据', 'Waiting for data')}</span></div>; }
 
-function GlobalSearch({ tx, query, setQuery, pagesCopy, items, assets, close, navigate, select }: { tx: Tx; query: string; setQuery: (v: string) => void; pagesCopy: ReturnType<typeof pageCopy>; items: Ingestion[]; assets: GPUAsset[]; close: () => void; navigate: (p: PageId) => void; select: (id: number) => void }) {
+function GlobalSearch({ tx, query, setQuery, pagesCopy, assets, close, navigate }: { tx: Tx; query: string; setQuery: (v: string) => void; pagesCopy: ReturnType<typeof pageCopy>; assets: GPUAsset[]; close: () => void; navigate: (p: PageId, view?: string) => void }) {
   const input = useRef<HTMLInputElement>(null); useEffect(() => { input.current?.focus(); const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); }; window.addEventListener('keydown', escape); return () => window.removeEventListener('keydown', escape); }, [close]);
   const q = query.trim().toLowerCase(); const pageRows = pages.filter(x => !q || `${pagesCopy[x].label} ${pagesCopy[x].title} ${x}`.toLowerCase().includes(q));
-  const eventRows = q ? items.filter(x => [x.message, x.host, x.source, ...Object.entries(x.labels || {}).flat()].join(' ').toLowerCase().includes(q)).slice(0, 8) : items.slice(0, 4);
   const assetRows = q ? assets.filter(x => [x.node_ip, x.gpu_uuid, x.model_name, x.model, x.pci_bus_id, x.asset_key].join(' ').toLowerCase().includes(q)).slice(0, 8) : [];
-  return <motion.div className="modal-layer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><button className="modal-bg" onClick={close} aria-label={tx('关闭搜索', 'Close search')} /><motion.div className="search-modal" initial={{ y: -18, scale: .98 }} animate={{ y: 0, scale: 1 }}><div className="search-input"><Search size={18} /><input ref={input} value={query} onChange={e => setQuery(e.target.value)} placeholder={tx('搜索页面、主机、GPU、UUID、XID、事件', 'Search pages, hosts, GPUs, UUIDs, XIDs, incidents')} /><kbd>ESC</kbd><button onClick={close} aria-label={tx('关闭搜索', 'Close search')}><X size={16} /></button></div><div className="search-results"><label>{tx('页面', 'PAGES')}</label>{pageRows.map(id => { const Icon = pageIcons[id]; return <button key={id} onClick={() => { navigate(id); close(); }}><Icon size={16} /><span><b>{pagesCopy[id].label}</b><small>{pagesCopy[id].desc}</small></span><ChevronRight size={14} /></button>; })}{assetRows.length > 0 && <label>{tx('GPU 资产', 'GPU ASSETS')}</label>}{assetRows.map(x => <button key={x.asset_key} onClick={() => { navigate('gpus'); close(); }}><Cpu size={16} /><span><b>{x.gpu_uuid || 'UUID UNKNOWN'}</b><small>{x.node_ip} · GPU {x.gpu_index} · {x.model_name || x.model || 'UNKNOWN'}</small></span><Badge value={x.state.toUpperCase()} kind={x.state === 'active' ? 'healthy' : 'warning'} /></button>)}<label>{tx('事件', 'INCIDENTS')}</label>{eventRows.map(x => <button key={x.id} onClick={() => select(x.id)}><ShieldAlert size={16} /><span><b>{x.message}</b><small>{x.host} · {x.labels?.UUID || x.source}</small></span><Badge value={x.level} kind={tone(x.level)} /></button>)}{pageRows.length + assetRows.length + eventRows.length === 0 && <Empty tx={tx} title={tx('无结果', 'No results')} />}</div></motion.div></motion.div>;
+  return <motion.div className="modal-layer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><button className="modal-bg" onClick={close} aria-label={tx('关闭搜索', 'Close search')} /><motion.div className="search-modal" initial={{ y: -18, scale: .98 }} animate={{ y: 0, scale: 1 }}><div className="search-input"><Search size={18} /><input ref={input} value={query} onChange={e => setQuery(e.target.value)} placeholder={tx('页面、节点 IP、GPU UUID', 'Pages, node IPs, GPU UUIDs')} /><kbd>ESC</kbd><button onClick={close} aria-label={tx('关闭搜索', 'Close search')}><X size={16} /></button></div><div className="search-results"><label>{tx('页面', 'PAGES')}</label>{pageRows.map(id => { const Icon = pageIcons[id]; return <button key={id} onClick={() => { navigate(id); close(); }}><Icon size={16} /><span><b>{pagesCopy[id].label}</b><small>{pagesCopy[id].desc}</small></span><ChevronRight size={14} /></button>; })}{assetRows.length > 0 && <label>{tx('GPU 资产', 'GPU ASSETS')}</label>}{assetRows.map(x => <button key={x.asset_key} onClick={() => { navigate('gpu', 'inventory'); close(); }}><Cpu size={16} /><span><b>{x.gpu_uuid || 'UUID UNKNOWN'}</b><small>{x.node_ip} · GPU {x.gpu_index} · {x.model_name || x.model || 'UNKNOWN'}</small></span><Badge value={x.state.toUpperCase()} kind={x.state === 'active' ? 'healthy' : 'warning'} /></button>)}{pageRows.length + assetRows.length === 0 && <Empty tx={tx} title={tx('无结果', 'No results')} />}</div></motion.div></motion.div>;
 }
 
 function IssueDrawer({ tx, detail, lang, close, saved }: { tx: Tx; detail: IssueDetail; lang: string; close: () => void; saved: () => void }) {
@@ -3513,7 +1256,7 @@ function FaultReportDrawer({ tx, report, loading, error, lang, close }: { tx: Tx
         {loading && <Empty tx={tx} title={tx('正在聚合只读证据', 'Aggregating read-only evidence')} />}
         {error && <div className="report-error"><AlertTriangle size={18} /><b>{tx('报告生成失败', 'Report generation failed')}</b><span>{error}</span></div>}
         {report && <>
-          <div className="report-banner"><div><ShieldCheck size={18} /><span><b>{tx('只读确定性分析', 'Read-only deterministic analysis')}</b><small>{tx('仅聚合 Atlas 已有证据；未执行节点、任务、配置或重启操作。', 'Aggregates existing Atlas evidence only; no node, workload, configuration, or restart action was executed.')}</small></span></div><div><Badge value="DETERMINISTIC" kind="info" /><Badge value="READ-ONLY" kind="healthy" /><Badge value={report.no_action_executed ? 'NO ACTION EXECUTED' : 'ACTION UNKNOWN'} kind={report.no_action_executed ? 'healthy' : 'warning'} /></div></div>
+          <div className="report-banner"><div><ShieldCheck size={18} /><span><b>{tx('只读确定性分析', 'Read-only deterministic analysis')}</b><small>{tx('只读汇总，未执行任何操作', 'Read-only summary; no actions executed')}</small></span></div><div><Badge value="DETERMINISTIC" kind="info" /><Badge value="READ-ONLY" kind="healthy" /><Badge value={report.no_action_executed ? 'NO ACTION EXECUTED' : 'ACTION UNKNOWN'} kind={report.no_action_executed ? 'healthy' : 'warning'} /></div></div>
           <div className="drawer-meta"><Badge value={report.severity.toUpperCase()} kind={tone(report.severity)} /><Badge value={report.analysis_mode.toUpperCase()} kind="info" /><time>{time(report.generated_at, lang)}</time></div>
           <div className="detail-grid">{[[tx('节点', 'Node'), report.affected_entity.node_ip], ['GPU', String(report.affected_entity.gpu_index)], ['GPU UUID', report.affected_entity.gpu_uuid], [tx('型号', 'Model'), report.affected_entity.model_name]].map(item => <div key={item[0]}><small>{item[0]}</small><b>{item[1] || '—'}</b></div>)}</div>
           <section><CardHead code="SUMMARY" title={tx('报告摘要', 'Executive Summary')} /><p className="muted">{local(report.summary)}</p></section>
@@ -3530,6 +1273,3 @@ function FaultReportDrawer({ tx, report, loading, error, lang, close }: { tx: Tx
   </motion.div>;
 }
 
-function Drawer({ tx, item, report, lang, close }: { tx: Tx; item: Ingestion; report: Report | null; lang: string; close: () => void }) {
-  return <motion.div className="drawer-layer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><button className="drawer-bg" onClick={close} /><motion.aside className="drawer" initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}><header><div><span>INCIDENT / #{item.id}</span><h2>{item.message}</h2></div><button className="icon-btn" onClick={close}><X size={17} /></button></header><div className="drawer-body"><div className="drawer-meta"><Badge value={item.level} kind={tone(item.level)} /><span>{item.host || '—'}</span><time>{time(item.event_timestamp || item.created_at, lang)} · {item.event_timestamp ? tx('源事件时间', 'source event') : tx('接收时间', 'received')}</time></div><div className="detail-grid">{[['GPU UUID', item.labels?.UUID || item.labels?.uuid], ['PCI BUS ID', item.labels?.pci_bus_id], ['DEVICE', item.labels?.device || item.labels?.gpu], ['MODEL', item.labels?.modelName || item.labels?.model]].map(x => <div key={x[0]}><small>{x[0]}</small><b>{x[1] || '—'}</b></div>)}</div><section><CardHead code="ANALYSIS" title={tx('分析', 'Analysis')} action={report?.confidence != null ? <Badge value={`${Math.round(report.confidence * 100)}%`} kind="info" /> : undefined} />{report ? <div className="report"><p>{report.summary}</p>{report.probable_causes?.length ? <><b>{tx('可能原因', 'Probable causes')}</b><ul>{report.probable_causes.map(x => <li key={x}>{x}</li>)}</ul></> : null}{report.recommended_actions?.length ? <><b>{tx('处理建议', 'Actions')}</b><ol>{report.recommended_actions.map(x => <li key={x}>{x}</li>)}</ol></> : null}<small>{report.model} · DRAFT</small></div> : <p className="muted">{tx('无分析结果', 'No analysis result')}</p>}</section><section><CardHead code="DETAILS" title={tx('标签', 'Labels')} /><div className="labels">{Object.entries(item.labels || {}).map(([k, v]) => <div key={k}><small>{k}</small><b>{v}</b></div>)}</div></section><section><CardHead code="RAW" title="Payload" /><pre>{item.raw_payload || '—'}</pre></section></div></motion.aside></motion.div>;
-}

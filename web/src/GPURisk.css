@@ -22,3 +22,7 @@
 .gpu-risk-operations-stages article { flex: 1 1 230px; min-width: 0; padding: 14px; border: 1px solid var(--border); border-radius: 8px; }
 .gpu-risk-operations li { margin: 10px 0; line-height: 1.6; }
 .gpu-risk-operations code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.gpu-risk-tag { padding: 3px 8px; border: 1px solid var(--border); border-radius: 10px; color: var(--muted); font-size: 12px; }
+.gpu-risk-more { margin-top: 16px; padding: 12px 0 0; border-top: 1px solid var(--border); }
+.gpu-risk-more > summary { color: var(--muted); font-size: 13px; font-weight: 600; }
+.gpu-risk-more .gpu-risk-operations, .gpu-risk-more .gpu-risk-candidates { margin-top: 8px; border-top: 0; padding-top: 0; }

@@ -26,6 +26,7 @@ type Handler struct {
 	path    string
 	modTime time.Time
 	body    []byte
+	summary map[string][]byte // path -> light summary
 }
 
 // NewHandler reads <root>/<YYYY-MM-DD>/fleet-hw.json (latest day that has one).
@@ -70,11 +71,44 @@ func (h *Handler) load(day string) ([]byte, error) {
 	if err := json.Unmarshal(data, &probe); err != nil || probe.Schema != Schema {
 		return nil, os.ErrInvalid
 	}
+	if h.path == path {
+		delete(h.summary, path)
+	}
 	h.path, h.modTime, h.body = path, info.ModTime(), data
 	return data, nil
 }
 
-// HandleFleet: GET /api/v1/hardware/fleet[?day=YYYY-MM-DD]
+// summaryOf keeps only the light header fields of a snapshot (no per-disk,
+// per-node rows) so overview pages do not download the full fleet table.
+func (h *Handler) summaryOf(day string, body []byte) ([]byte, error) {
+	key := filepath.Join(h.root, day, "fleet-hw.json")
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if v, ok := h.summary[key]; ok && h.path == key {
+		return v, nil
+	}
+	var full map[string]json.RawMessage
+	if err := json.Unmarshal(body, &full); err != nil {
+		return nil, err
+	}
+	light := map[string]json.RawMessage{}
+	for _, key := range []string{"schema", "rule_version", "day", "previous_day", "collected_at", "generated_at", "coverage", "summary"} {
+		if v, ok := full[key]; ok {
+			light[key] = v
+		}
+	}
+	out, err := json.Marshal(light)
+	if err != nil {
+		return nil, err
+	}
+	if h.summary == nil {
+		h.summary = map[string][]byte{}
+	}
+	h.summary[key] = out
+	return out, nil
+}
+
+// HandleFleet: GET /api/v1/hardware/fleet[?day=YYYY-MM-DD][&summary=1]
 func (h *Handler) HandleFleet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -96,6 +130,12 @@ func (h *Handler) HandleFleet(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusNotFound, "fleet hardware snapshot unavailable for "+day)
 		return
+	}
+	if r.URL.Query().Get("summary") == "1" {
+		if body, err = h.summaryOf(day, body); err != nil {
+			writeError(w, http.StatusInternalServerError, "snapshot summary unavailable")
+			return
+		}
 	}
 	if len(days) > 14 {
 		days = days[:14]

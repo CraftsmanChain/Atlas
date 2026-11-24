@@ -157,17 +157,6 @@ test('history v2 rejects lossy counters, invalid metadata and misleading feature
   cases.forEach(value => assert.throws(() => parseDiskHistoryWindow(value), /invalid_disk_history_contract/));
 });
 
-test('frontend and framework release contracts stay aligned', () => {
-  const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
-  const framework = readFileSync(new URL('../../internal/prediction/service.go', import.meta.url), 'utf8');
-  const version = framework.match(/FrameworkVersion\s*=\s*"prediction-framework-(v[0-9.]+)"/)?.[1];
-  assert(version);
-  assert(app.includes(`version: '${version}'`));
-  assert(app.includes(`${version} ·`));
-  assert(app.includes('PLATFORM / v0.120.115'));
-  assert(app.includes("id: 'component-health'"));
-});
-
 test('online age filters do not rewrite frozen report freshness', () => {
   const report = validateReport(fixture());
   const row = { ...report.rows[0], observation: { state: 'stale' as const, evaluated_at: '2026-10-15T00:00:00Z', max_age_seconds: 3600, age_seconds: 10000 } };

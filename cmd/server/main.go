@@ -398,7 +398,7 @@ func main() {
 	// 7. 启动服务
 	port := cfg.Gateway.Port
 	fmt.Printf("Atlas Server listening on port %s\n", port)
-	if err := http.ListenAndServe(port, mux); err != nil {
+	if err := http.ListenAndServe(port, withGzip(mux)); err != nil {
 		log.Fatalf("Atlas Server failed to start: %v", err)
 	}
 }

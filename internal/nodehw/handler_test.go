@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -67,5 +68,32 @@ func TestHandleFleetRejectsBadInput(t *testing.T) {
 	h.HandleFleet(rec, httptest.NewRequest(http.MethodPost, "/x", nil))
 	if rec.Code != 405 {
 		t.Fatalf("post: %d", rec.Code)
+	}
+}
+
+func TestHandleFleetSummaryDropsRows(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "2026-11-21", `{"schema":"node-hw-fleet-v1","day":"2026-11-21","coverage":{"nodes_total":2},"summary":{"disk":{"total":1}},"disks":[{"ip":"a"}],"memory":[{"ip":"a"}],"nodes":[{"ip":"a"}]}`)
+	h := NewHandler(root)
+	for i := 0; i < 2; i++ { // second call hits the cache
+		rec := httptest.NewRecorder()
+		h.HandleFleet(rec, httptest.NewRequest(http.MethodGet, "/x?summary=1", nil))
+		var got struct {
+			Data map[string]json.RawMessage `json:"data"`
+		}
+		if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &got) != nil {
+			t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+		}
+		if _, ok := got.Data["disks"]; ok {
+			t.Fatal("summary must not include disks")
+		}
+		if string(got.Data["day"]) != `"2026-11-21"` || got.Data["coverage"] == nil || got.Data["summary"] == nil {
+			t.Fatalf("missing header fields: %s", rec.Body.String())
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.HandleFleet(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if !json.Valid(rec.Body.Bytes()) || !strings.Contains(rec.Body.String(), `"disks"`) {
+		t.Fatal("full snapshot must still include rows")
 	}
 }

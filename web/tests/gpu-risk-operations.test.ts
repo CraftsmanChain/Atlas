@@ -57,6 +57,7 @@ test('real backend operation states have explicit bilingual final labels', () =>
     waiting_schedule: ['等待计划时间', 'Waiting for schedule'],
     waiting_work: ['等待任务', 'Waiting for work'],
     manual_required: ['需要人工处理', 'Manual attention required'],
+    blocked: ['执行受阻', 'Execution blocked'],
     running: ['执行中', 'Running'], completed: ['执行完成', 'Execution completed'], failed: ['执行失败', 'Execution failed'],
   };
   assert.deepEqual(actual, Object.keys(labels).sort());
