@@ -20,6 +20,12 @@ Atlas is a reliability workbench for GPU clusters, with a path toward broader se
 
 Atlas is under active development. Available capabilities are continuously refined, and early-stage capabilities may evolve between releases.
 
+## Dashboard overview
+
+The Overview page summarizes GPU, memory, and disk health alongside hardware collection coverage. Below the summary, you can review recent GPU events and see how many GPUs of each model are in the cluster.
+
+![Atlas Overview dashboard in English](docs/screenshots/overview-en.png)
+
 ## Capabilities
 
 | Area | What Atlas provides | Status |
