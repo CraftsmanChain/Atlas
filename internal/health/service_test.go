@@ -32,6 +32,9 @@ func (f *fakePrometheus) Query(_ context.Context, query string) ([]prometheus.Sa
 				return nil, nil
 			}
 			labels := map[string]string{"UUID": "GPU-A"}
+			if strings.HasPrefix(spec.key, "xid_onsets_") {
+				labels["err_code"] = "79"
+			}
 			if spec.source == "gpu_exporter" {
 				labels = map[string]string{"uuid": strings.TrimPrefix("GPU-A", "GPU-")}
 			}
@@ -65,8 +68,8 @@ func TestEvaluatePersistsScoredAndUnknownAssets(t *testing.T) {
 	values["gpu_temp_max_15m"] = 65
 	values["memory_temp"] = 65
 	values["memory_temp_max_15m"] = 70
-	values["xid_current"] = 43
-	values["xid_changes_24h"] = 1
+	values["xid_onsets_24h"] = 1
+	values["xid_onsets_7d"] = 1
 	service := NewService(db, &fakePrometheus{values: values}, config.HealthConfig{RuleVersion: "test-v1"})
 	now := time.Date(2026, 7, 20, 8, 1, 0, 0, time.UTC)
 	service.now = func() time.Time { return now }

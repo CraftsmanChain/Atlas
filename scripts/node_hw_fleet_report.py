@@ -17,14 +17,17 @@ Rules (node-hw-rules-v1) are status/degradation rules only - no probability, no 
         (static CRC is NOT flagged - PM883/PM893 carry a model-wide historical CRC baseline)
   memory critical: SEL uncorrectable ECC in last 30d; HardwareCorrupted>0; kernel mem_offline; SEL 'Memory Device
                    Disabled' in last 30d
-        warning  : SEL correctable ECC >=100 in last 7d or 'logging limit reached' in 30d; kernel EDAC/MCE lines
-        attention: any SEL correctable ECC in last 30d; SEL uncorrectable ECC older than 30d
+        warning  : SEL correctable ECC >=100 in last 7d or 'logging limit reached' in 30d; kernel EDAC CE/UE lines
+        attention: any SEL correctable ECC in last 30d; SEL uncorrectable ECC older than 30d;
+                   kernel 'Machine check events logged' (undecoded MCE, no EDAC error line)
+  v1.1 (2026-11-24): kernel EDAC/MCE counts error lines only (driver-init lines ignored); per-slot memory
+                   issues mapped to dmidecode slot/SN/part ("dimm_issues"); unmonitored nodes moved to excluded.
   life (SSD only): remaining_days = power_on_hours*(100-wear)/wear/24 at the lifetime-average wear rate (wear>=1).
 """
 import csv, datetime as dt, glob, gzip, json, os, re, sys, urllib.parse, urllib.request
 from collections import Counter, defaultdict
 
-RULES = "node-hw-rules-v1"
+RULES = "node-hw-rules-v1.1"
 csv.field_size_limit(1 << 24)
 LEVEL_RANK = {"critical": 3, "warning": 2, "attention": 1, "clear": 0}
 
@@ -94,6 +97,81 @@ def monitored_ips():
         return None
 
 
+# Kernel lines that the KERNCNT pattern matches but are driver init / informational, not errors
+# (2026-11-24: boot-time "EDAC MC0: Giving out device", "MCE: In-kernel MCE decoding enabled" made
+# kernel_edac_mce fire on freshly rebooted nodes).
+KERN_NOISE = re.compile(r"EDAC MC: Ver|Giving out device|detected \(node|chip selects|EDAC amd64: MC: |MCT channel count|"
+                        r"decoding enabled|ECC (is )?(enabled|disabled)|registered|using x\d+ syndromes|EDAC [a-z0-9_]+: (Ver|F\w+h)|"
+                        r"Enabled MCE|mce: CPU\d+: (Core|Package) temperature|mce: \[Hardware Error\]: CPU \d+: Machine Check: 0 Bank|EDAC .*: Node \d+: DRAM ECC")
+KERN_EDAC = re.compile(r"EDAC.*(CE|UE|error|Error)|(Corrected|Uncorrected) error")
+KERN_MCE = re.compile(r"mce: \[Hardware Error\]|Machine check|Machine Check")
+
+
+def kern_errors(text):
+    """Error-only EDAC / MCE line counts from ##KERNLINES (tail 300 lines, so a lower bound)."""
+    edac = mce = 0
+    for line in section(text, "KERNLINES").splitlines():
+        if KERN_NOISE.search(line):
+            continue
+        if "EDAC" in line and KERN_EDAC.search(line):
+            edac += 1
+        elif KERN_MCE.search(line):
+            mce += 1
+    return edac, mce
+
+
+def sel_extra_locs(text):
+    """SEL rows whose slot sits in the 7th ipmitool column ('... | Asserted | CPU 1 DIMM 0'); sel.tsv drops it."""
+    out = {}
+    for line in section(text, "SEL").splitlines():
+        p = [x.strip() for x in line.split("|")]
+        if len(p) >= 7 and p[3].startswith("Memory") and p[6]:
+            out[p[0].lstrip()] = p[6]
+    return out
+
+
+def slot_key(name):
+    """(cpu, slot) from SEL/dmidecode slot names, e.g. DIMMH2(CPU1) / P1-DIMMH2 -> ('1','H2');
+    CPU2_DIMM_B5 / 'Processor2 Ch5 DIMM B5' -> ('2','B5'). None when the name has no CPU part."""
+    n = name.strip().upper()
+    for rx in (r"^DIMM([A-Z]\d+)\(CPU(\d+)\)$", r"^CPU(\d+)_DIMM_([A-Z]\d+)$", r"^P(\d+)-DIMM([A-Z]\d+)$",
+               r"^PROCESSOR(\d+) CH\d+ DIMM ([A-Z]\d+)$"):
+        m = re.match(rx, n)
+        if m:
+            a, b = m.groups()
+            return (b, a) if rx.startswith("^DIMM(") else (a, b)
+    return None
+
+
+def match_dimm(loc, dimms):
+    """Unique dmidecode record for a SEL slot name, else None (ambiguous or unmappable, e.g. '#0x08')."""
+    if not loc or loc.startswith("#"):
+        return None
+    u = loc.strip().upper()
+    hits = [d for d in dimms if d["slot"].upper() == u or d["slot"].upper().startswith(u + " ")]
+    if not hits:
+        k = slot_key(loc)
+        if k:
+            hits = [d for d in dimms if slot_key(d["slot"]) == k]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _slot_add(s, name, kind, iso, age):
+    if not name.startswith("#"):
+        s["locs"][name] += 1
+    e = s["slots"].setdefault(name, {"slot": name, "ce_30d": 0, "ue_30d": 0, "ue_total": 0, "ce_total": 0,
+                                     "disabled_30d": 0, "first": iso, "last": iso})
+    e["first"], e["last"] = min(e["first"], iso), max(e["last"], iso)
+    if kind == "ue":
+        e["ue_total"] += 1
+        if 0 <= age <= 30: e["ue_30d"] += 1
+    elif kind == "ce":
+        e["ce_total"] += 1
+        if 0 <= age <= 30: e["ce_30d"] += 1
+    elif kind == "disabled" and 0 <= age <= 30:
+        e["disabled_30d"] += 1
+
+
 def worst(levels):
     return max(levels, key=lambda x: LEVEL_RANK[x]) if levels else "clear"
 
@@ -117,13 +195,22 @@ def main():
         if r and r[0] and not r[0].startswith("#") and r[0] not in excluded and r[0] in nodes:
             excluded[r[0]] = {"ip": r[0], "kind": nodes[r[0]]["kind"], "host": nodes[r[0]]["host"] or (r[2] if len(r) > 2 else ""),
                               "reason": r[1] if len(r) > 1 else ""}
+    mon = monitored_ips()
+    # User decision 2026-11-24: nodes absent from monitoring (no node_exporter and no IPMI series in VM)
+    # are not shown; they are listed under excluded_nodes with this reason so the count stays auditable.
+    # Only uncollected ones are dropped: a node we did collect keeps its disk/memory data.
+    st_raw = {r["ip"]: r["status"] for r in rows(os.path.join(day_dir, "status.tsv"), True)}
+    if mon is not None:
+        for ip, n in list(nodes.items()):
+            st0 = st_raw.get(ip, "missing")
+            if ip not in excluded and not mon.get(ip) and not (st0 == "ok" or st0.startswith("partial")):
+                excluded[ip] = {"ip": ip, "kind": n["kind"], "host": n["host"], "reason": "不在监控（VM 无 node_exporter / IPMI）"}
     for ip in excluded:
         nodes.pop(ip, None)
     status = {r["ip"]: r for r in rows(os.path.join(day_dir, "status.tsv"), True) if r["ip"] not in excluded}
     follow = defaultdict(list)
     for r in rows(os.path.join(day_dir, "followup.tsv"), True):
         follow[r["ip"]].append(r["category"])
-    mon = monitored_ips()
 
     # ---------------- disks ----------------
     smart = [r for r in rows(os.path.join(day_dir, "smart.tsv"), True) if r.get("ip") not in excluded]
@@ -186,7 +273,7 @@ def main():
 
     # ---------------- memory ----------------
     sel = defaultdict(lambda: {"ce_7d": 0, "ce_30d": 0, "ue_30d": 0, "ue_total": 0, "ue_last": "", "ce_last": "",
-                               "disabled_30d": 0, "limit_30d": 0, "locs": Counter()})
+                               "disabled_30d": 0, "limit_30d": 0, "locs": Counter(), "slots": {}, "noloc": []})
     for r in rows(os.path.join(day_dir, "sel.tsv")):
         if len(r) < 6 or not r[4].startswith("Memory") or (len(r) > 6 and r[6].strip() == "Deasserted"):
             continue
@@ -215,31 +302,58 @@ def main():
             if 0 <= age <= 30: s["disabled_30d"] += 1
         else:
             continue
-        if loc and not loc.group(1).startswith("#"):
-            s["locs"][loc.group(1)] += 1
-    kern = defaultdict(Counter)
+        kind = ("ue" if "Uncorrectable ECC" in ev else "limit" if "logging limit reached" in ev
+                else "ce" if "Correctable ECC" in ev else "disabled")
+        name = loc.group(1) if loc else ""
+        if not name:
+            s["noloc"].append((r[1].strip(), kind, iso, age))
+            continue
+        _slot_add(s, name, kind, iso, age)
+    kern = defaultdict(Counter)  # legacy class counts (all matched lines); errors re-derived per node below
     for r in rows(os.path.join(day_dir, "kern.tsv")):
         if len(r) >= 4:
             kern[r[0]][r[2]] += num(r[3]) or 0
     dimms = defaultdict(lambda: [0, 0])
+    dimm_rec = defaultdict(list)
     for r in rows(os.path.join(day_dir, "dimm.tsv")):
         if len(r) >= 3:
             g = num(r[2].split()[0]) if r[2].split() else None
             dimms[r[0]][0] += 1
             dimms[r[0]][1] += g or 0
+            r = r + [""] * (7 - len(r))
+            dimm_rec[r[0]].append({"slot": r[1].strip(), "size": r[2].strip(), "vendor": r[3].strip(), "sn": r[4].strip(),
+                                   "part": r[5].strip(), "speed": r[6].strip()})
     memory = []
     for ip, st in sorted(status.items()):
         if st["status"] not in ("ok",) and not st["status"].startswith("partial"):
             continue
-        txt = section(node_text(day_dir, ip), "MEM")
+        full = node_text(day_dir, ip)
+        txt = section(full, "MEM")
         hc = re.search(r"HardwareCorrupted:\s+(\d+)", txt)
         s, k = sel.get(ip), kern.get(ip, Counter())
+        edac_err, mce_err = kern_errors(full)
         m = {"ip": ip, "host": nodes.get(ip, {}).get("host", ""), "kind": nodes.get(ip, {}).get("kind", ""),
              "dimms": dimms[ip][0], "mem_gb": dimms[ip][1], "hw_corrupted_kb": int(hc.group(1)) if hc else None,
-             "edac": k.get("edac", 0), "mce": k.get("mce", 0), "mem_offline": k.get("mem_offline", 0)}
+             "edac": edac_err, "mce": mce_err, "mem_offline": k.get("mem_offline", 0)}
         if s:
+            if s["noloc"]:
+                extra = sel_extra_locs(full)
+                for sel_id, kind, iso, age in s["noloc"]:
+                    _slot_add(s, extra.get(sel_id, "") or "#unknown", kind, iso, age)
             m.update({x: s[x] for x in ("ce_7d", "ce_30d", "ue_30d", "ue_total", "ue_last", "ce_last", "disabled_30d", "limit_30d")})
             m["locs"] = [l for l, _ in s["locs"].most_common(6)]
+            issues = []
+            for e in sorted(s["slots"].values(), key=lambda e: (-e["ue_30d"], -e["disabled_30d"], -e["ue_total"], -e["ce_30d"], -e["ce_total"], e["slot"])):
+                d = match_dimm(e["slot"], dimm_rec.get(ip, []))
+                row = dict(e)
+                if e["slot"].startswith("#"):
+                    row["slot"] = ""
+                    row["sensor"] = e["slot"] if e["slot"] != "#unknown" else ""
+                if d:
+                    row.update({"dmi_slot": d["slot"], "sn": d["sn"], "part": d["part"], "size": d["size"], "vendor": d["vendor"], "speed": d["speed"]})
+                row["mapped"] = bool(d)
+                issues.append(row)
+            m["dimm_issues"] = issues[:16]
         hits = []
         def hit(level, code):
             hits.append([level, code])
@@ -249,7 +363,8 @@ def main():
         if m.get("disabled_30d"): hit("critical", "dimm_disabled_30d")
         if m.get("ce_7d", 0) >= 100: hit("warning", "sel_ce_storm_7d")
         if m.get("limit_30d"): hit("warning", "sel_ce_limit_reached")
-        if m["edac"] or m["mce"]: hit("warning", "kernel_edac_mce")
+        if m["edac"]: hit("warning", "kernel_edac_mce")  # EDAC CE/UE error lines only (init lines filtered)
+        if m["mce"] and not m["edac"]: hit("attention", "kernel_mce_logged")  # 'Machine check events logged', undecoded
         if m.get("ce_30d") and m.get("ce_7d", 0) < 100: hit("attention", "sel_ce_30d")
         if m.get("ue_total") and not m.get("ue_30d"): hit("attention", "sel_ue_history")
         m["hits"] = [h[1] for h in sorted(hits, key=lambda h: -LEVEL_RANK[h[0]])]

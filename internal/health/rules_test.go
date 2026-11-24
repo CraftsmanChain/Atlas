@@ -13,8 +13,8 @@ func TestEvaluateRulesUnknownAndCritical(t *testing.T) {
 	}
 
 	critical := evaluateRules(api.FloatMap{
-		"xid_changes_24h":                      1,
-		"xid_current":                          43,
+		"xid_onsets_24h_79":                    1,
+		"xid_onsets_7d_79":                     1,
 		"uncorrectable_remapped_rows":          2,
 		"uncorrectable_remapped_rows_delta_1h": 1,
 		"gpu_temp_max_15m":                     70,
@@ -118,5 +118,38 @@ func TestEvaluateRulesUsesGPUExporterSupplementsWithoutDuplicateEquivalentDeduct
 	}, "NVIDIA H100 80GB HBM3", "A")
 	if result.score == nil || *result.score != 15 || result.level != "critical" || len(result.hits) != 3 {
 		t.Fatalf("equivalent volatile and aggregate ECC signals must produce one deduction: %+v", result)
+	}
+}
+
+func TestXIDGrading(t *testing.T) {
+	cases := []struct {
+		name     string
+		metrics  api.FloatMap
+		severity string
+		value    float64
+	}{
+		{"xid0 churn ignored", api.FloatMap{"xid_onsets_24h_0": 3, "xid_changes_24h": 5, "xid_current": 0}, "", 0},
+		{"legacy changes ignored", api.FloatMap{"xid_changes_24h": 2, "xid_current": 94}, "", 0},
+		{"single xid94 attention", api.FloatMap{"xid_onsets_24h_94": 1, "xid_onsets_7d_94": 1}, "attention", 94},
+		{"repeated xid94 warning", api.FloatMap{"xid_onsets_24h_94": 1, "xid_onsets_7d_94": 3}, "warning", 94},
+		{"core xid79 critical", api.FloatMap{"xid_onsets_24h_79": 1, "xid_onsets_7d_79": 1, "xid_onsets_24h_94": 1, "xid_onsets_7d_94": 4}, "critical", 79},
+		{"single xid43 evidence only", api.FloatMap{"xid_onsets_24h_43": 1, "xid_onsets_7d_43": 2}, "", 0},
+		{"frequent xid31 attention", api.FloatMap{"xid_onsets_24h_31": 1, "xid_onsets_7d_31": 5}, "attention", 31},
+		{"old 7d onset without 24h ignored", api.FloatMap{"xid_onsets_7d_79": 1}, "", 0},
+	}
+	for _, c := range cases {
+		hit, ok := xidHit(c.metrics)
+		if c.severity == "" {
+			if ok {
+				t.Fatalf("%s: unexpected hit %+v", c.name, hit)
+			}
+			continue
+		}
+		if !ok || hit.severity != c.severity || hit.value != c.value || hit.code != "recent_xid_change" {
+			t.Fatalf("%s: got %+v ok=%v", c.name, hit, ok)
+		}
+	}
+	if r := evaluateRules(api.FloatMap{"xid_onsets_24h_94": 1, "xid_onsets_7d_94": 1}, "NVIDIA H100 80GB HBM3", "A"); r.level != "attention" {
+		t.Fatalf("single XID 94 must not be critical: %+v", r)
 	}
 }

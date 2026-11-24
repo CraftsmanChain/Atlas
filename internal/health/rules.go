@@ -3,6 +3,7 @@ package health
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"atlas/pkg/api"
@@ -79,13 +80,8 @@ func evaluateRules(metrics api.FloatMap, model, confidence string) scoreResult {
 			fmt.Sprintf("new uncorrected ECC: volatile=%.0f aggregate_delta_24h=%.0f", volatileUncorrectedECC, aggregateUncorrectedDelta24h),
 		})
 	}
-	if v := value(metrics, "xid_changes_24h"); v > 0 {
-		xid := value(metrics, "xid_current")
-		deduction, severity := 20, "warning"
-		if criticalXID(int(math.Round(xid))) {
-			deduction, severity = 35, "critical"
-		}
-		add(ruleHit{"recent_xid_change", "stability", severity, deduction, xid, "changes_24h > 0", fmt.Sprintf("XID %.0f changed in last 24h", xid)})
+	if hit, ok := xidHit(metrics); ok {
+		add(hit)
 	}
 	if v := value(metrics, "gpu_temp_min_5m"); v >= 85 {
 		add(ruleHit{"gpu_temp_sustained_5m_critical", "thermal", "critical", 25, v, ">= 85C continuously for 5m", fmt.Sprintf("GPU temperature remained at or above 85C for 5m; floor=%.1fC", v)})
@@ -162,13 +158,68 @@ func clamp(value int) int {
 	return value
 }
 
-func criticalXID(code int) bool {
-	switch code {
-	case 31, 43, 48, 63, 64, 74, 79, 94, 95:
-		return true
-	default:
-		return false
+// XID grading (gpu-health-v1.7.0). Counts are onsets per (GPU, XID code): the
+// code reappearing after >=15 minutes of absence. XID 0 ("No Error") and label
+// churn are ignored; the old rule fired on any changes() of the raw series,
+// including XID 0 and exporter relabels.
+//   core XIDs (same set as the GPU risk ledger): any onset in 24h -> critical
+//   XID 94 (contained ECC): onset in 24h -> attention; >=3 onsets in 7d -> warning
+//   other XIDs (mostly workload-triggered: 13/31/43/45/109...): onset in 24h and
+//     >=5 onsets in 7d -> attention; otherwise evidence only
+const (
+	xidOnsets24hPrefix  = "xid_onsets_24h_"
+	xidOnsets7dPrefix   = "xid_onsets_7d_"
+	xid94WarnOnsets7d   = 3
+	xidOtherAttention7d = 5
+)
+
+var coreXIDs = map[int]bool{48: true, 62: true, 63: true, 64: true, 74: true, 79: true, 92: true, 95: true, 119: true, 120: true, 154: true}
+
+var xidNames = map[int]string{
+	13: "Graphics engine exception", 31: "GPU memory page fault", 32: "Invalid or corrupted push buffer", 43: "GPU stopped processing",
+	45: "Preemptive cleanup", 48: "Double-bit ECC error", 62: "Internal micro-controller halt", 63: "ECC page retirement / row remap event",
+	64: "ECC page retirement / row remap failure", 68: "Video processor exception", 69: "Graphics engine class error", 74: "NVLink error",
+	79: "GPU fallen off the bus", 92: "High single-bit ECC rate", 94: "Contained ECC error", 95: "Uncontained ECC error",
+	109: "Context switch timeout", 119: "GSP RPC timeout", 120: "GSP error", 137: "NVLink/PRIV error", 154: "GPU recovery action changed",
+}
+
+func xidLabel(code int) string {
+	if name, ok := xidNames[code]; ok {
+		return fmt.Sprintf("XID %d (%s)", code, name)
 	}
+	return fmt.Sprintf("XID %d", code)
+}
+
+func xidHit(metrics api.FloatMap) (ruleHit, bool) {
+	best, found := ruleHit{}, false
+	for key, n24 := range metrics {
+		if !strings.HasPrefix(key, xidOnsets24hPrefix) || n24 <= 0 {
+			continue
+		}
+		code, err := strconv.Atoi(strings.TrimPrefix(key, xidOnsets24hPrefix))
+		if err != nil || code == 0 {
+			continue
+		}
+		n7 := math.Max(metrics[xidOnsets7dPrefix+strconv.Itoa(code)], n24)
+		evidence := fmt.Sprintf("%s: %.0f new in 24h, %.0f in 7d", xidLabel(code), n24, n7)
+		var hit ruleHit
+		switch {
+		case coreXIDs[code]:
+			hit = ruleHit{"recent_xid_change", "stability", "critical", 35, float64(code), "core XID, any onset in 24h", evidence}
+		case code == 94 && n7 >= xid94WarnOnsets7d:
+			hit = ruleHit{"recent_xid_change", "stability", "warning", 20, float64(code), fmt.Sprintf("XID 94 >= %d onsets in 7d", xid94WarnOnsets7d), evidence}
+		case code == 94:
+			hit = ruleHit{"recent_xid_change", "stability", "attention", 8, float64(code), "XID 94 onset in 24h", evidence}
+		case n7 >= xidOtherAttention7d:
+			hit = ruleHit{"recent_xid_change", "stability", "attention", 8, float64(code), fmt.Sprintf("non-core XID >= %d onsets in 7d", xidOtherAttention7d), evidence}
+		default:
+			continue
+		}
+		if !found || riskRank(hit.severity) > riskRank(best.severity) || (riskRank(hit.severity) == riskRank(best.severity) && hit.value < best.value) {
+			best, found = hit, true
+		}
+	}
+	return best, found
 }
 
 func modelClockFloor(model string) float64 {

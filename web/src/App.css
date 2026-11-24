@@ -282,5 +282,26 @@ main { min-height:100vh; margin-left:var(--sidebar-width); }.topbar { position:s
 .card-head-actions { display:flex; align-items:center; gap:10px; }
 @media(max-width:1120px){.status-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:560px){.status-grid{grid-template-columns:1fr}}
+/* Overview v2 (11-24): status cards share one row; .card defaults to span 3 which stacked them */
+.status-grid>.status-card { grid-column:auto; padding:18px 18px 16px; gap:12px; }
+.status-bar { display:flex; gap:2px; height:6px; border-radius:3px; overflow:hidden; background:var(--surface-3); }
+.status-bar i { display:block; height:100%; }
+.status-bar .tone-danger { background:var(--red); }.status-bar .tone-warning { background:var(--amber); }.status-bar .tone-info { background:var(--cyan); }.status-bar .tone-healthy { background:color-mix(in srgb,var(--green) 55%,var(--surface-3)); }
+.overview-page .card-head h2 { font-size:15px; }
+.overview-events .event-list { max-height:520px; overflow:auto; }
+.overview-fleet .fleet-list>div { grid-template-columns:minmax(0,1fr) minmax(60px,1fr) 44px; }
+.overview-fleet .fleet-list>div>div { min-width:0; }
+@media(max-width:1120px){ .overview-page .span-8,.overview-page .span-4 { grid-column:span 12; } }
+/* GPU events table (11-24) */
+.events-table { table-layout:fixed; min-width:1080px; }
+.events-table td { vertical-align:top; }
+.events-table td.wrap b { white-space:normal; max-width:none; color:var(--text); }
+.events-table .ev-detail { margin:4px 0 0; color:var(--muted); font-size:12px; line-height:1.5; white-space:normal; overflow-wrap:anywhere; }
+.events-table td small.ev-meta { white-space:normal; max-width:none; margin-top:4px; color:var(--faint); font:12px ui-monospace,monospace; overflow-wrap:anywhere; }
+.events-table .num { text-align:right; }
+.short-id { display:block; margin-top:4px; padding:0; border:0; background:none; color:var(--faint); font:12px ui-monospace,monospace; text-align:left; cursor:pointer; overflow-wrap:anywhere; }
+.short-id:hover { color:var(--accent-text); text-decoration:underline dotted; }
+.short-id.open { color:var(--muted); }
+.short-id:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 /* Typography floor (F0): tabular figures for all numeric UI */
 td, .metric strong, .badge, .num, strong { font-variant-numeric: tabular-nums; }

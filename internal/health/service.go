@@ -18,7 +18,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentRuleVersion = "gpu-health-v1.6.0"
+const CurrentRuleVersion = "gpu-health-v1.7.0"
 
 type prometheusReader interface {
 	BaseURL() string
@@ -55,9 +55,18 @@ var metricSpecs = func() []metricSpec {
 	result = append(result,
 		metricSpec{key: "gpu_temp_min_15m", query: "min_over_time(DCGM_FI_DEV_GPU_TEMP[15m])", source: "dcgm_exporter"},
 		metricSpec{key: "gpu_temp_min_5m", query: "min_over_time(DCGM_FI_DEV_GPU_TEMP[5m])", source: "dcgm_exporter"},
+		// XID onsets per (GPU, code): code present now but absent 15m earlier. Collapses
+		// relabel churn (by UUID,err_code) and drops XID 0. Keys become <key>_<code>.
+		metricSpec{key: "xid_onsets_24h", query: xidOnsetQuery("24h"), source: "dcgm_exporter"},
+		metricSpec{key: "xid_onsets_7d", query: xidOnsetQuery("7d"), source: "dcgm_exporter"},
 	)
 	return result
 }()
+
+func xidOnsetQuery(window string) string {
+	series := `max by (UUID,err_code)(DCGM_FI_DEV_XID_ERRORS{err_code!="0"})`
+	return `sum by (UUID,err_code)(count_over_time((` + series + ` unless ` + series + ` offset 15m)[` + window + `:15m]))`
+}
 
 type metricObservation struct {
 	value      float64
@@ -174,13 +183,21 @@ func (s *Service) Evaluate(ctx context.Context) (*api.HealthEvaluationRun, error
 			if uuid == "" || math.IsNaN(row.Value) || math.IsInf(row.Value, 0) {
 				continue
 			}
+			key := spec.key
+			if strings.HasPrefix(key, "xid_onsets_") {
+				code := strings.TrimSpace(row.Metric["err_code"])
+				if code == "" || code == "0" {
+					continue
+				}
+				key += "_" + code
+			}
 			if candidates[uuid] == nil {
 				candidates[uuid] = make(map[string]map[string]metricObservation)
 			}
-			if candidates[uuid][spec.key] == nil {
-				candidates[uuid][spec.key] = make(map[string]metricObservation)
+			if candidates[uuid][key] == nil {
+				candidates[uuid][key] = make(map[string]metricObservation)
 			}
-			candidates[uuid][spec.key][spec.source] = metricObservation{value: row.Value, observedAt: row.Timestamp}
+			candidates[uuid][key][spec.source] = metricObservation{value: row.Value, observedAt: row.Timestamp}
 		}
 	}
 	if successfulQueries == 0 {
