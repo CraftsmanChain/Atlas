@@ -7,7 +7,7 @@ import {
   ChevronLeft, ChevronRight, CircleGauge, ClipboardList, Command, Cpu, Database, Download, Eye, Filter, Gauge,
   Languages, Layers3, MemoryStick, Menu, Moon, Network,
   Palette, RefreshCw, Save, Search, Server, ShieldAlert, ShieldCheck, Sun,
-  Thermometer, X, Zap,
+  Thermometer, X, Zap, Bot, Construction,
 } from 'lucide-react';
 import './App.css';
 const GPURisk = lazy(() => import('./GPURisk'));
@@ -84,10 +84,12 @@ type FleetSummary = {
   latest_sync: SyncRun | null;
 };
 
-const pageIcons = { overview: BarChart3, gpu: Cpu, memory: MemoryStick, disk: HardDrive, data: Database, settings: Settings2 };
+const pageIcons = { overview: BarChart3, gpu: Cpu, memory: MemoryStick, disk: HardDrive, data: Database, ai: Bot, settings: Settings2 };
 const pageGroups: { id: string; zh: string; en: string; pages: PageId[] }[] = [
-  { id: 'health', zh: '健康', en: 'HEALTH', pages: ['overview', 'gpu', 'memory', 'disk'] },
-  { id: 'system', zh: '系统', en: 'SYSTEM', pages: ['data', 'settings'] },
+  { id: 'hardware', zh: '硬件', en: 'HARDWARE', pages: ['overview', 'gpu', 'memory', 'disk'] },
+  { id: 'data', zh: '数据', en: 'DATA', pages: ['data'] },
+  { id: 'ai', zh: '智能运维', en: 'AIOPS', pages: ['ai'] },
+  { id: 'system', zh: '系统', en: 'SYSTEM', pages: ['settings'] },
 ];
 const pageCopy = (tx: Tx): Record<PageId, { label: string; title: string; desc: string }> => ({
   overview: { label: tx('总览', 'Overview'), title: tx('总览', 'Overview'), desc: tx('GPU、内存、硬盘健康状态汇总', 'GPU, memory and disk health at a glance') },
@@ -95,6 +97,7 @@ const pageCopy = (tx: Tx): Record<PageId, { label: string; title: string; desc: 
   memory: { label: tx('内存', 'Memory'), title: tx('内存', 'Memory'), desc: tx('GPU / CPU 算力节点的内存健康状态', 'Memory health of GPU / CPU compute nodes') },
   disk: { label: tx('硬盘', 'Disks'), title: tx('硬盘', 'Disks'), desc: tx('GPU / CPU 算力节点的硬盘健康状态', 'Disk health of GPU / CPU compute nodes') },
   data: { label: tx('数据采集', 'Data Collection'), title: tx('数据采集', 'Data Collection'), desc: tx('监控采集、资产对账与数据问题', 'Telemetry coverage, asset reconciliation and data issues') },
+  ai: { label: tx('AI 助手', 'AI Assistant'), title: tx('AI 助手', 'AI Assistant'), desc: tx('AI Agent + 运维技能：只读巡检、故障分析、辅助运维（建设中）', 'AI agent + ops skills: read-only checks, fault analysis, assisted operations (in development)') },
   settings: { label: tx('设置', 'Settings'), title: tx('设置', 'Settings'), desc: tx('平台、资产源与监控源', 'Platform, asset and monitoring sources') },
 });
 const subPages = (page: PageId, tx: Tx): SubPage[] => ({
@@ -102,10 +105,11 @@ const subPages = (page: PageId, tx: Tx): SubPage[] => ({
   gpu: [{ id: 'health', label: tx('健康', 'Health') }, { id: 'ranking', label: tx('风险排名', 'Risk Ranking') }, { id: 'events', label: tx('硬件事件', 'Hardware Events') }, { id: 'degradation', label: tx('性能衰减', 'Degradation') }, { id: 'inventory', label: tx('资产清单', 'Inventory') }],
   memory: [{ id: 'hits', label: tx('规则命中', 'Rule Hits') }, { id: 'list', label: tx('全部节点', 'All Nodes') }],
   disk: [{ id: 'hits', label: tx('规则命中', 'Rule Hits') }, { id: 'list', label: tx('全部磁盘', 'All Disks') }],
-  data: [{ id: 'targets', label: tx('采集覆盖', 'Coverage') }, { id: 'continuity', label: tx('指标连续性', 'Continuity') }, { id: 'hardware', label: tx('硬件采集', 'Hardware Collection') }, { id: 'assets', label: tx('资产对账', 'Asset Reconciliation') }, { id: 'issues', label: tx('问题台账', 'Issue Ledger') }],
-  settings: [{ id: 'platform', label: tx('平台配置', 'Platform') }, { id: 'audit', label: tx('资产核查', 'Asset Audit') }, { id: 'sync', label: tx('同步审计', 'Sync Audit') }],
+  data: [{ id: 'targets', label: tx('采集覆盖', 'Coverage') }, { id: 'continuity', label: tx('指标连续性', 'Continuity') }, { id: 'hardware', label: tx('硬件采集', 'Hardware Collection') }, { id: 'assets', label: tx('资产对账', 'Asset Reconciliation') }, { id: 'audit', label: tx('资产核查', 'Asset Audit') }, { id: 'issues', label: tx('问题台账', 'Issue Ledger') }],
+  ai: [{ id: 'inspection', label: tx('只读巡检', 'Read-only Checks') }, { id: 'diagnosis', label: tx('故障分析', 'Fault Analysis') }, { id: 'assistant', label: tx('运维助手', 'Ops Assistant') }, { id: 'skills', label: tx('运维技能', 'Ops Skills') }],
+  settings: [{ id: 'platform', label: tx('平台配置', 'Platform') }, { id: 'sync', label: tx('同步审计', 'Sync Audit') }],
 }[page]);
-const defaultSubPage: Record<PageId, string> = { overview: '', gpu: 'health', memory: 'hits', disk: 'hits', data: 'targets', settings: 'platform' };
+const defaultSubPage: Record<PageId, string> = { overview: '', gpu: 'health', memory: 'hits', disk: 'hits', data: 'targets', ai: 'inspection', settings: 'platform' };
 
 function time(value?: string, lang = 'zh-CN') {
   if (!value) return '—';
@@ -192,7 +196,8 @@ export default function App() {
   const navigate = (id: PageId, view?: string) => { const next = view || subPage[id]; if (view) setSubPage(current => ({ ...current, [id]: view })); setPage(id); setSidebar(false); window.location.hash = next ? `/${id}/${next}` : `/${id}`; window.scrollTo(0, 0); };
   const selectSubPage = (id: string) => { setSubPage(current => ({ ...current, [page]: id })); window.location.hash = `/${page}/${id}`; };
   useEffect(() => {
-    const onHash = () => { const [p, v] = parseRoute(window.location.hash); setPage(p); if (v) setSubPage(current => ({ ...current, [p]: v })); };
+    const onHash = () => { const [p, v] = parseRoute(window.location.hash); setPage(p); if (v) setSubPage(current => ({ ...current, [p]: v })); const canonical = v ? `#/${p}/${v}` : `#/${p}`; if (window.location.hash && window.location.hash !== canonical && window.location.hash.startsWith('#/settings/audit')) window.history.replaceState(null, '', canonical); };
+    onHash();
     window.addEventListener('hashchange', onHash); return () => window.removeEventListener('hashchange', onHash);
   }, []);
   const load = useCallback(async (signal?: AbortSignal) => {
@@ -360,7 +365,7 @@ export default function App() {
         <div className="top-actions"><LanguageButton i18n={i18n} zh={zh} /><ThemeButton tx={tx} /><button className="icon-btn" onClick={refresh} title={tx('刷新', 'Refresh')}><RefreshCw size={16} className={refreshing ? 'spin' : ''} /></button></div>
       </header>
       <div className="content">
-        <div className="page-head"><div><h1>{copy[page].title}</h1>{copy[page].desc && <p>{copy[page].desc}</p>}</div><div className="page-meta">{page === 'memory' || page === 'disk' ? <Badge value={tx('日更', 'DAILY')} kind="info" /> : <><Badge value={platformConfig.environment} kind="info" /><Badge value={`DATA ${freshnessStatus}`} kind={freshnessTone} />{collectionSources.length > 0 && <Badge value={overdueSources.length > 0 ? tx('采集超时', 'COLLECTION OVERDUE') : tx('采集中', 'COLLECTING')} kind={overdueSources.length > 0 ? 'warning' : 'info'} />}<span title={tx('源数据最新观测时间', 'Latest source observation')}>{freshnessLatest ? time(freshnessLatest, lang) : '—'}</span></>}</div></div>
+        <div className="page-head"><div><h1>{copy[page].title}</h1>{copy[page].desc && <p>{copy[page].desc}</p>}</div><div className="page-meta">{page === 'ai' ? <Badge value={tx('建设中', 'IN DEVELOPMENT')} kind="neutral" /> : page === 'memory' || page === 'disk' ? <Badge value={tx('日更', 'DAILY')} kind="info" /> : <><Badge value={platformConfig.environment} kind="info" /><Badge value={`DATA ${freshnessStatus}`} kind={freshnessTone} />{collectionSources.length > 0 && <Badge value={overdueSources.length > 0 ? tx('采集超时', 'COLLECTION OVERDUE') : tx('采集中', 'COLLECTING')} kind={overdueSources.length > 0 ? 'warning' : 'info'} />}<span title={tx('源数据最新观测时间', 'Latest source observation')}>{freshnessLatest ? time(freshnessLatest, lang) : '—'}</span></>}</div></div>
         {page !== 'memory' && page !== 'disk' && overdueSources.length > 0 && <div className="collection-alert"><AlertTriangle size={17} /><div><b>{tx('监控采集超过 10 分钟未完成', 'Collection overdue > 10 min')}</b><span>{overdueSources.map(([name, source]) => `${name.toUpperCase()} ${Math.floor((source.collection_age_seconds || 0) / 60)}m`).join(' · ')}</span></div></div>}
         {currentSubPages.length > 0 && <nav className="subnav" aria-label={tx('页面分区', 'Page sections')}>{currentSubPages.map(item => <button key={item.id} className={subPage[page] === item.id ? 'active' : ''} onClick={() => selectSubPage(item.id)}>{item.label}</button>)}</nav>}
         <AnimatePresence mode="wait"><motion.div key={page} className={page === 'overview' ? 'overview-page' : 'secondary-page'} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: .12 }}>
@@ -376,7 +381,8 @@ export default function App() {
           {page === 'data' && subPage.data === 'issues' && <Issues tx={tx} view="ledger" summary={issueSummary} rows={issues} meta={issueMeta} page={issueCursorHistory.length + 1} loading={issueLoading} category={issueCategory} setCategory={setIssueCategory} status={issueStatus} setStatus={setIssueStatus} query={issueQuery} setQuery={setIssueQuery} previousPage={previousIssuePage} nextPage={nextIssuePage} select={setSelectedIssueID} lang={lang} />}
           {page === 'data' && (subPage.data === 'targets' || subPage.data === 'continuity') && <Quality tx={tx} view={subPage.data} targets={targets} summary={summary} inventoryError={inventoryError} syncRuns={syncRuns} assetChanges={assetChanges} telemetry={telemetryQuality} telemetrySummary={telemetryQualitySummary} lang={lang} />}
           {page === 'settings' && subPage.settings === 'platform' && <PlatformSettings tx={tx} value={platformConfig} onSaved={setPlatformConfig} />}
-          {page === 'settings' && subPage.settings === 'audit' && <PageErrorBoundary title={tx('资产核查页面异常', 'Asset audit page error')}><AssetAuditCheck tx={tx} lang={lang} /></PageErrorBoundary>}
+          {page === 'ai' && <UnderConstruction tx={tx} view={subPage.ai} />}
+          {page === 'data' && subPage.data === 'audit' && <PageErrorBoundary title={tx('资产核查页面异常', 'Asset audit page error')}><AssetAuditCheck tx={tx} lang={lang} /></PageErrorBoundary>}
           {page === 'settings' && subPage.settings === 'sync' && <Quality tx={tx} view="audit" targets={targets} summary={summary} inventoryError={inventoryError} syncRuns={syncRuns} assetChanges={assetChanges} telemetry={telemetryQuality} telemetrySummary={telemetryQualitySummary} lang={lang} />}
         </motion.div></AnimatePresence>
       </div>
@@ -1244,6 +1250,16 @@ function LXOPAssetSettings({ tx }: { tx: Tx }) {
 }
 
 function FaultEventList({ tx, items }: { tx: Tx; items: FaultEvent[] }) { const lv: Record<string, string> = { critical: tx('严重', 'Critical'), warning: tx('警告', 'Warning'), attention: tx('关注', 'Attention') }; return <div className="event-list">{items.map(x => <div className="event-row" key={x.id}><Badge value={lv[x.severity] || x.severity} kind={tone(x.severity)} /><span><b>{ruleName[x.rule_code] ? tx(ruleName[x.rule_code][0], ruleName[x.rule_code][1]) : x.rule_code}</b><small>{x.node_ip} · GPU {x.gpu_index} · {x.evidence}</small></span><code>×{x.occurrence_count}</code></div>)}{items.length === 0 && <Empty tx={tx} title={tx('无未恢复事件，近 24h 无 XID', 'No open events, no XID in 24h')} />}</div>; }
+function UnderConstruction({ tx, view }: { tx: Tx; view: string }) {
+  const plan: Record<string, [string, string]> = {
+    inspection: ['按运维技能对节点做只读检查（GPU / 内存 / 硬盘 / 网络 / 日志），输出结论与证据，不做任何变更。', 'Skill-driven read-only node checks (GPU / memory / disk / network / logs) with conclusions and evidence; no changes.'],
+    diagnosis: ['把硬件事件、规则命中、节点证据串起来做故障定位，给出可能原因、置信度与下一步核查建议。', 'Correlate hardware events, rule hits and node evidence to localize faults, with likely causes, confidence and next checks.'],
+    assistant: ['对话式查询机队状态、生成处理建议与工单草稿；任何写操作需人工确认。', 'Conversational fleet queries, suggested actions and ticket drafts; any write action needs human approval.'],
+    skills: ['运维技能目录：每个技能声明触发条件、只读命令白名单与输出格式，带版本。', 'Ops skill catalog: each skill declares triggers, a read-only command allowlist and output format, versioned.'],
+  };
+  const text = plan[view] || plan.inspection;
+  return <div className="grid"><Card className="span-12"><div className="empty construction"><Construction size={22} /><b>{tx('建设中', 'In development')}</b><span>{tx(text[0], text[1])}</span></div></Card></div>;
+}
 function Empty({ tx, title }: { tx: Tx; title: string }) { return <div className="empty"><Command size={20} /><b>{title}</b><span>{tx('等待数据', 'Waiting for data')}</span></div>; }
 
 function GlobalSearch({ tx, query, setQuery, pagesCopy, assets, close, navigate }: { tx: Tx; query: string; setQuery: (v: string) => void; pagesCopy: ReturnType<typeof pageCopy>; assets: GPUAsset[]; close: () => void; navigate: (p: PageId, view?: string) => void }) {

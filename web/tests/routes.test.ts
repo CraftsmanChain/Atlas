@@ -16,3 +16,9 @@ test('pre-consolidation hashes map to their new home', () => {
   assert.deepEqual(parseRoute('#/quality'), ['data', 'targets']);
   assert.deepEqual(parseRoute('#/about'), ['settings', 'platform']);
 });
+
+test('moved sections and new pages', () => {
+  assert.deepEqual(parseRoute('#/settings/audit'), ['data', 'audit']);
+  assert.deepEqual(parseRoute('#/settings/sync'), ['settings', 'sync']);
+  assert.deepEqual(parseRoute('#/ai/inspection'), ['ai', 'inspection']);
+});

@@ -107,3 +107,36 @@
 .hf-facts div { display:contents; }
 .hf-facts dt { color:var(--muted); }.hf-facts dd { margin:0; font-variant-numeric:tabular-nums; color:var(--text); }
 @media (max-width:700px) { .hf-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+
+/* 11-24: clickable statistics + IP list */
+button.hf-kpi { font:inherit; text-align:left; color:inherit; background:transparent; border-top:0; border-left:0; cursor:pointer; }
+button.hf-kpi:hover { background:var(--surface-2); }
+.hf-kpi.active { background:var(--accent-soft); box-shadow:inset 0 -2px 0 var(--accent); }
+.hf-kpi.clickable span::after { content:" ›"; color:var(--faint); }
+.hf-hbars>button { display:grid; grid-template-columns:minmax(120px,190px) minmax(0,1fr) 36px; align-items:center; gap:10px; padding:3px 4px; margin:-3px -4px; border:0; border-radius:4px; background:transparent; color:inherit; font:inherit; font-size:12px; text-align:left; cursor:pointer; }
+.hf-hbars>button:hover,.hf-hbars>button.active { background:var(--surface-2); }
+.hf-hbars>button.active span { color:var(--accent-text); font-weight:600; }
+.hf-hist>button { flex:1; height:100%; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; gap:4px; padding:0; border:0; border-radius:4px; background:transparent; color:inherit; font:inherit; cursor:pointer; }
+.hf-hist>button:disabled { cursor:default; }
+.hf-hist>button:not(:disabled):hover,.hf-hist>button.active { background:var(--surface-2); }
+.hf-span { grid-column:1 / -1; }
+.hf-legend button { display:flex; align-items:center; gap:6px; padding:2px 6px; margin:-2px -6px; border:0; border-radius:4px; background:transparent; color:inherit; font:inherit; cursor:pointer; }
+.hf-legend button:hover,.hf-legend button.active { background:var(--surface-2); color:var(--text); }
+.hf-follow>button { padding:10px 12px; border:1px solid var(--border); border-radius:6px; background:transparent; color:inherit; font:inherit; text-align:left; cursor:pointer; }
+.hf-follow>button:hover { border-color:var(--border-strong); background:var(--surface-2); }
+.hf-follow>button.active { border-color:var(--accent); background:var(--accent-soft); }
+.hf-follow>button b { display:block; font-size:18px; font-variant-numeric:tabular-nums; }.hf-follow>button span { color:var(--muted); font-size:12px; }
+.hf-drillbar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 12px; border:1px solid var(--accent); border-radius:6px; background:var(--accent-soft); font-size:12px; color:var(--muted); }
+.hf-drillbar b { margin:0 8px; color:var(--text); }
+.hf-drillbar .hf-link { display:inline-flex; align-items:center; gap:4px; }
+.hf-ipbtn { display:inline-flex; align-items:center; gap:6px; height:32px; padding:0 10px; margin-left:auto; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:12px; cursor:pointer; white-space:nowrap; }
+.hf-ipbtn:hover:not(:disabled) { border-color:var(--border-strong); background:var(--surface-2); }
+.hf-ipbtn:disabled { opacity:.5; cursor:default; }
+.hf-ipbtn.primary { margin-left:0; border-color:var(--accent); background:var(--accent); color:#fff; }
+.hf-modal-layer { position:fixed; inset:0; z-index:130; display:grid; place-items:center; padding:16px; }
+.hf-modal-bg { position:absolute; inset:0; border:0; background:rgba(8,14,26,.55); }
+.hf-modal { position:relative; display:grid; gap:12px; width:min(420px,calc(100vw - 32px)); padding:16px; border:1px solid var(--border); border-radius:10px; background:var(--surface); box-shadow:0 24px 80px rgba(0,0,0,.28); }
+.hf-modal header { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+.hf-modal header b { display:block; font-size:14px; }.hf-modal header small { color:var(--muted); font-size:12px; }
+.hf-modal textarea { width:100%; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border); border-radius:6px; background:var(--surface-2); color:var(--text); font:12px/1.6 ui-monospace,monospace; resize:vertical; }
+.hf-modal footer { display:flex; justify-content:flex-end; }

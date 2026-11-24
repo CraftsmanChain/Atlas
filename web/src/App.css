@@ -305,3 +305,5 @@ main { min-height:100vh; margin-left:var(--sidebar-width); }.topbar { position:s
 .short-id:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 /* Typography floor (F0): tabular figures for all numeric UI */
 td, .metric strong, .badge, .num, strong { font-variant-numeric: tabular-nums; }
+
+.empty.construction { min-height:260px; text-align:center; }.empty.construction b { font-size:15px; color:var(--text); }.empty.construction span { max-width:560px; line-height:1.7; color:var(--muted); }

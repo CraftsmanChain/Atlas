@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, ChevronLeft, ChevronRight, Loader2, RefreshCw, Search, ServerCrash, ShieldAlert } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, ChevronLeft, ChevronRight, Copy, ListOrdered, Loader2, RefreshCw, Search, ServerCrash, ShieldAlert, X } from 'lucide-react';
 import './HardwareFleet.css';
 
 
@@ -91,6 +91,43 @@ function Pager({ total, page, size, setPage }: { total: number; page: number; si
   return <div className="hf-pager"><span>{total ? page * size + 1 : 0}–{Math.min(total, (page + 1) * size)} / {total}</span><button className="icon-btn" disabled={page === 0} onClick={() => setPage(page - 1)} aria-label="previous"><ChevronLeft size={15} /></button><button className="icon-btn" disabled={page >= last} onClick={() => setPage(page + 1)} aria-label="next"><ChevronRight size={15} /></button></div>;
 }
 
+// Drill-down from a statistic: a label plus a row predicate. Memory drills
+// test memory rows, disk drills test disk rows.
+type Drill = { label: string; mem?: (m: Memory) => boolean; disk?: (d: Disk) => boolean };
+const byIP = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true });
+const uniqueIPs = (ips: string[]) => [...new Set(ips)].sort(byIP);
+
+function IpListButton({ ips, title, tx }: { ips: string[]; title: string; tx: Tx }) {
+  const [open, setOpen] = useState(false);
+  const list = uniqueIPs(ips);
+  return <>
+    <button type="button" className="hf-ipbtn" disabled={!list.length} onClick={() => setOpen(true)} title={tx('列出所有节点 IP，一行一个', 'List all node IPs, one per line')}><ListOrdered size={14} />{tx(`统计 IP（${list.length}）`, `IPs (${list.length})`)}</button>
+    {open && <IpListModal ips={list} title={title} tx={tx} onClose={() => setOpen(false)} />}
+  </>;
+}
+function IpListModal({ ips, title, tx, onClose }: { ips: string[]; title: string; tx: Tx; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const text = ips.join('\n');
+  useEffect(() => { const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, [onClose]);
+  const areaRef = useRef<HTMLTextAreaElement>(null);
+  const copy = async () => {
+    const area = areaRef.current;
+    try {
+      if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
+      else { area?.select(); document.execCommand('copy'); }
+      setCopied(true); window.setTimeout(() => setCopied(false), 1500);
+    } catch { area?.select(); }
+  };
+  return <div className="hf-modal-layer" role="dialog" aria-modal="true" aria-label={title}>
+    <button type="button" className="hf-modal-bg" onClick={onClose} aria-label={tx('关闭', 'Close')} />
+    <div className="hf-modal">
+      <header><div><b>{title}</b><small>{tx(`${ips.length} 个节点，一行一个`, `${ips.length} nodes, one per line`)}</small></div><button type="button" className="icon-btn" onClick={onClose} aria-label={tx('关闭', 'Close')}><X size={16} /></button></header>
+      <textarea ref={areaRef} readOnly value={text} rows={Math.min(18, Math.max(4, ips.length))} onFocus={e => e.currentTarget.select()} spellCheck={false} />
+      <footer><button type="button" className="hf-ipbtn primary" onClick={() => void copy()}><Copy size={14} />{copied ? tx('已复制', 'Copied') : tx('复制全部', 'Copy all')}</button></footer>
+    </div>
+  </div>;
+}
+
 export type HardwareKind = 'memory' | 'disk' | 'coverage';
 export default function HardwareHealth({ tx, kind, view }: { tx: Tx; lang?: string; kind: HardwareKind; view?: string }) {
   const [fleet, setFleet] = useState<Fleet | null>(null);
@@ -98,6 +135,7 @@ export default function HardwareHealth({ tx, kind, view }: { tx: Tx; lang?: stri
   const [day, setDay] = useState('');
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
+  const [drill, setDrill] = useState<Drill | null>(null);
   const requestKey = `${day}|${reload}`;
   const [doneKey, setDoneKey] = useState('');
   const loading = doneKey !== requestKey;
@@ -122,46 +160,61 @@ export default function HardwareHealth({ tx, kind, view }: { tx: Tx; lang?: stri
       </div>
     </div>
     {error && <div className="hf-error" role="alert"><AlertTriangle size={16} /><div><b>{tx('未能读取机队硬件快照', 'Fleet hardware snapshot unavailable')}</b><span>{error}</span></div></div>}
-    {fleet && kind !== 'coverage' && <Overview fleet={fleet} tx={tx} kind={kind} />}
+    {fleet && kind !== 'coverage' && <Overview fleet={fleet} tx={tx} kind={kind} drill={drill} setDrill={setDrill} />}
     {!fleet ? <div className="hf-empty">{loading ? <Loader2 size={18} className="spin" /> : tx('暂无数据', 'No data')}</div>
-      : kind === 'coverage' ? <><CoverageHead fleet={fleet} tx={tx} /><Coverage fleet={fleet} tx={tx} /></>
+      : kind === 'coverage' ? <CoverageView fleet={fleet} tx={tx} />
+      : drill ? <RiskList key={drill.label} fleet={fleet} tx={tx} kind={kind} drill={drill} clearDrill={() => setDrill(null)} />
       : view === 'list' ? (kind === 'disk' ? <DiskTable fleet={fleet} tx={tx} /> : <MemoryTable fleet={fleet} tx={tx} />)
       : <RiskList fleet={fleet} tx={tx} kind={kind} />}
   </div>;
 }
 
-function CoverageHead({ fleet, tx }: { fleet: Fleet; tx: Tx }) {
+function CoverageView({ fleet, tx }: { fleet: Fleet; tx: Tx }) {
+  const [filter, setFilter] = useState('failed');
+  return <><CoverageHead fleet={fleet} tx={tx} filter={filter} setFilter={setFilter} /><Coverage fleet={fleet} tx={tx} filter={filter} setFilter={setFilter} /></>;
+}
+function CoverageHead({ fleet, tx, filter, setFilter }: { fleet: Fleet; tx: Tx; filter: string; setFilter: (v: string) => void }) {
   const c = fleet.coverage;
   const segments = statusOrder.map(id => ({ id, n: c.by_status[id] || 0 })).concat(Object.entries(c.by_status).filter(([k]) => !statusOrder.includes(k)).map(([id, n]) => ({ id, n }))).filter(s => s.n > 0);
   return <section className="hf-coverage">
     <header><h2>{tx(`${c.collected} / ${c.nodes_total} 节点已采集`, `${c.collected} / ${c.nodes_total} nodes collected`)}</h2></header>
     <div className="hf-bar" role="img" aria-label={segments.map(s => `${statusText(s.id, tx)} ${s.n}`).join(', ')}>{segments.map(s => <span key={s.id} className={`hf-seg hf-seg-${s.id}`} style={{ flexGrow: s.n }} title={`${statusText(s.id, tx)} ${s.n}`} />)}</div>
-    <ul className="hf-legend">{segments.map(s => <li key={s.id}><i className={`hf-seg-${s.id}`} />{statusText(s.id, tx)}<b>{s.n}</b></li>)}</ul>
+    <ul className="hf-legend">{segments.map(s => <li key={s.id}><button type="button" className={filter === s.id ? 'active' : ''} onClick={() => setFilter(s.id)} title={tx('查看这些节点', 'Show these nodes')}><i className={`hf-seg-${s.id}`} />{statusText(s.id, tx)}<b>{s.n}</b></button></li>)}</ul>
     <p>{tx(`SMART ${c.smart_disks} 块盘 / ${c.smart_nodes} 节点 · 无 SMART ${c.collected_without_smart} 节点${c.excluded ? ` · 范围外 ${c.excluded} 节点` : ''}`, `SMART ${c.smart_disks} disks / ${c.smart_nodes} nodes · no SMART ${c.collected_without_smart} nodes${c.excluded ? ` · ${c.excluded} out of scope` : ''}`)}</p>
   </section>;
 }
 
-function Kpi({ label, value, tone }: { label: string; value: number | string; tone?: string }) {
-  return <div className={`hf-kpi${tone ? ` hf-kpi-${tone}` : ''}`}><span>{label}</span><strong>{typeof value === 'number' ? value : value}</strong></div>;
+function Kpi({ label, value, tone, active, onClick }: { label: string; value: number | string; tone?: string; active?: boolean; onClick?: () => void }) {
+  const cls = `hf-kpi${tone ? ` hf-kpi-${tone}` : ''}${active ? ' active' : ''}`;
+  if (!onClick || !value) return <div className={cls}><span>{label}</span><strong>{value}</strong></div>;
+  return <button type="button" className={`${cls} clickable`} onClick={onClick} aria-pressed={active} title={label}><span>{label}</span><strong>{value}</strong></button>;
 }
-function Overview({ fleet, tx, kind }: { fleet: Fleet; tx: Tx; kind: 'memory' | 'disk' }) {
+function Overview({ fleet, tx, kind, drill, setDrill }: { fleet: Fleet; tx: Tx; kind: 'memory' | 'disk'; drill: Drill | null; setDrill: (d: Drill | null) => void }) {
+  const pick = (d: Drill) => setDrill(drill?.label === d.label ? null : d);
+  const on = (label: string) => drill?.label === label;
   if (kind === 'disk') {
     const d = fleet.summary.disk.by_level;
     const wearValues = fleet.disks.map(x => x.wear).filter((x): x is number => x !== null);
     const buckets = [[0, 10], [10, 30], [30, 50], [50, 80], [80, 101]].map(([lo, hi]) => wearValues.filter(v => v >= lo && v < hi).length);
     const max = Math.max(1, ...buckets);
     const grown = fleet.disks.filter(x => Object.entries(x.delta || {}).some(([k, v]) => k !== 'wear' && v > 0)).length;
+    const diskRules = Object.entries(fleet.summary.disk.by_rule).sort((a, b) => b[1] - a[1]);
+    const diskMax = Math.max(1, ...diskRules.map(r => r[1]));
     return <section className="hf-overview">
       <div className="hf-kpis">
-        <Kpi label={tx('磁盘', 'Disks')} value={fleet.summary.disk.total} />
-        <Kpi label={tx('严重', 'Critical')} value={d.critical} tone={d.critical ? 'critical' : undefined} />
-        <Kpi label={tx('警告', 'Warning')} value={d.warning} tone={d.warning ? 'warning' : undefined} />
-        <Kpi label={tx('关注', 'Attention')} value={d.attention} tone={d.attention ? 'attention' : undefined} />
-        <Kpi label={tx('寿命 ≥50%', 'Wear ≥50%')} value={buckets[3] + buckets[4]} />
-        <Kpi label={tx('日新增错误', 'New errors (1d)')} value={grown} tone={grown ? 'warning' : undefined} />
+        {([
+          [tx('磁盘', 'Disks'), fleet.summary.disk.total, undefined, null],
+          [tx('严重', 'Critical'), d.critical, 'critical', (x: Disk) => x.level === 'critical'],
+          [tx('警告', 'Warning'), d.warning, 'warning', (x: Disk) => x.level === 'warning'],
+          [tx('关注', 'Attention'), d.attention, 'attention', (x: Disk) => x.level === 'attention'],
+          [tx('寿命 ≥50%', 'Wear ≥50%'), buckets[3] + buckets[4], undefined, (x: Disk) => (x.wear ?? -1) >= 50],
+          [tx('日新增错误', 'New errors (1d)'), grown, 'warning', (x: Disk) => Object.entries(x.delta || {}).some(([k, v]) => k !== 'wear' && v > 0)],
+        ] as [string, number, string | undefined, ((x: Disk) => boolean) | null][]).map(([label, n, tone, test]) => <Kpi key={label} label={label} value={n} tone={n ? tone : undefined} active={on(label)} onClick={test ? () => pick({ label, disk: test }) : undefined} />)}
       </div>
       <div className="hf-chart"><h3>{tx('寿命消耗分布', 'Wear distribution')}<small>{tx(`${wearValues.length} 块有磨损指标`, `${wearValues.length} with wear indicator`)}</small></h3>
-        <div className="hf-hist">{buckets.map((n, i) => <div key={i}><b>{n}</b><i className={i >= 3 ? 'hot' : ''} style={{ height: `${Math.max(2, n / max * 100)}%` }} /><em>{['0–10', '10–30', '30–50', '50–80', '≥80'][i]}%</em></div>)}</div></div>
+        <div className="hf-hist">{buckets.map((n, i) => { const [lo, hi] = [[0, 10], [10, 30], [30, 50], [50, 80], [80, 101]][i]; const label = tx(`寿命消耗 ${['0–10', '10–30', '30–50', '50–80', '≥80'][i]}%`, `Wear ${['0–10', '10–30', '30–50', '50–80', '≥80'][i]}%`); return <button type="button" key={i} disabled={!n} className={on(label) ? 'active' : ''} onClick={() => pick({ label, disk: x => x.wear !== null && x.wear >= lo && x.wear < hi })} title={label}><b>{n}</b><i className={i >= 3 ? 'hot' : ''} style={{ height: `${Math.max(2, n / max * 100)}%` }} /><em>{['0–10', '10–30', '30–50', '50–80', '≥80'][i]}%</em></button>; })}</div></div>
+      {diskRules.length > 0 && <div className="hf-chart hf-span"><h3>{tx('规则命中分布', 'Rule hits')}<small>{tx('按磁盘计，点击查看', 'disks per rule, click to drill')}</small></h3>
+        <div className="hf-hbars">{diskRules.map(([code, n]) => { const label = ruleText(code, tx); return <button type="button" key={code} className={on(label) ? 'active' : ''} onClick={() => pick({ label, disk: x => x.hits.includes(code) })}><span>{label}</span><i style={{ width: `${n / diskMax * 100}%` }} /><b>{n}</b></button>; })}</div></div>}
     </section>;
   }
   const m = fleet.summary.memory.by_level;
@@ -172,16 +225,19 @@ function Overview({ fleet, tx, kind }: { fleet: Fleet; tx: Tx; kind: 'memory' | 
   const max = Math.max(1, ...rules.map(r => r[1]));
   return <section className="hf-overview">
     <div className="hf-kpis">
-      <Kpi label={tx('节点', 'Nodes')} value={fleet.summary.memory.nodes} />
+      {([
+        [tx('节点', 'Nodes'), fleet.summary.memory.nodes, undefined, null],
+        [tx('严重', 'Critical'), m.critical, 'critical', (x: Memory) => x.level === 'critical'],
+        [tx('警告', 'Warning'), m.warning, 'warning', (x: Memory) => x.level === 'warning'],
+        [tx('关注', 'Attention'), m.attention, 'attention', (x: Memory) => x.level === 'attention'],
+        [tx('30 天 UE 节点', 'UE nodes (30d)'), ue30, 'critical', (x: Memory) => (x.ue_30d || 0) > 0],
+        [tx('坏页隔离节点', 'Pages offlined'), corrupted, 'critical', (x: Memory) => (x.hw_corrupted_kb || 0) > 0],
+        [tx('30 天 CE 节点', 'CE nodes (30d)'), ceNodes, undefined, (x: Memory) => (x.ce_30d || 0) > 0],
+      ] as [string, number, string | undefined, ((x: Memory) => boolean) | null][]).map(([label, n, tone, test]) => <Kpi key={label} label={label} value={n} tone={n ? tone : undefined} active={on(label)} onClick={test ? () => pick({ label, mem: test }) : undefined} />)}
       <Kpi label={tx('内存条', 'DIMMs')} value={fleet.summary.memory.dimms} />
-      <Kpi label={tx('严重', 'Critical')} value={m.critical} tone={m.critical ? 'critical' : undefined} />
-      <Kpi label={tx('警告', 'Warning')} value={m.warning} tone={m.warning ? 'warning' : undefined} />
-      <Kpi label={tx('30 天 UE 节点', 'UE nodes (30d)')} value={ue30} tone={ue30 ? 'critical' : undefined} />
-      <Kpi label={tx('坏页隔离节点', 'Pages offlined')} value={corrupted} tone={corrupted ? 'critical' : undefined} />
-      <Kpi label={tx('30 天 CE 节点', 'CE nodes (30d)')} value={ceNodes} />
     </div>
-    <div className="hf-chart"><h3>{tx('规则命中分布', 'Rule hits')}<small>{tx('按节点计', 'nodes per rule')}</small></h3>
-      <div className="hf-hbars">{rules.map(([code, n]) => <div key={code}><span>{ruleText(code, tx)}</span><i style={{ width: `${n / max * 100}%` }} /><b>{n}</b></div>)}{rules.length === 0 && <span className="hf-zero">{tx('无命中', 'No hits')}</span>}</div></div>
+    <div className="hf-chart"><h3>{tx('规则命中分布', 'Rule hits')}<small>{tx('按节点计，点击查看', 'nodes per rule, click to drill')}</small></h3>
+      <div className="hf-hbars">{rules.map(([code, n]) => { const label = ruleText(code, tx); return <button type="button" key={code} className={on(label) ? 'active' : ''} onClick={() => pick({ label, mem: x => x.hits.includes(code) })}><span>{label}</span><i style={{ width: `${n / max * 100}%` }} /><b>{n}</b></button>; })}{rules.length === 0 && <span className="hf-zero">{tx('无命中', 'No hits')}</span>}</div></div>
   </section>;
 }
 
@@ -236,17 +292,20 @@ function DiskPart({ d, tx }: { d: Disk; tx: Tx }) {
   </div></div>;
 }
 
-function RiskList({ fleet, tx, kind }: { fleet: Fleet; tx: Tx; kind: 'memory' | 'disk' }) {
+function RiskList({ fleet, tx, kind, drill, clearDrill }: { fleet: Fleet; tx: Tx; kind: 'memory' | 'disk'; drill?: Drill; clearDrill?: () => void }) {
   const [level, setLevel] = useState('');
   const [q, setQ] = useState('');
   const needle = q.trim().toLowerCase();
-  const mem = useMemo(() => fleet.memory.filter(m => m.level !== 'clear' && (!level || m.level === level) && (!needle || [m.ip, m.host, ...(m.dimm_issues || []).map(e => `${e.slot} ${e.sn || ''}`)].some(v => v.toLowerCase().includes(needle))))
-    .sort((a, b) => rank[b.level] - rank[a.level] || a.ip.localeCompare(b.ip, undefined, { numeric: true })), [fleet, level, needle]);
-  const disks = useMemo(() => fleet.disks.filter(d => d.level !== 'clear' && (!level || d.level === level) && (!needle || [d.ip, d.host, d.serial, d.model].some(v => v.toLowerCase().includes(needle))))
-    .sort((a, b) => rank[b.level] - rank[a.level] || a.ip.localeCompare(b.ip, undefined, { numeric: true })), [fleet, level, needle]);
+  const mem = useMemo(() => fleet.memory.filter(m => (drill?.mem ? drill.mem(m) : m.level !== 'clear') && (!level || m.level === level) && (!needle || [m.ip, m.host, ...(m.dimm_issues || []).map(e => `${e.slot} ${e.sn || ''}`)].some(v => v.toLowerCase().includes(needle))))
+    .sort((a, b) => rank[b.level] - rank[a.level] || a.ip.localeCompare(b.ip, undefined, { numeric: true })), [fleet, level, needle, drill]);
+  const disks = useMemo(() => fleet.disks.filter(d => (drill?.disk ? drill.disk(d) : d.level !== 'clear') && (!level || d.level === level) && (!needle || [d.ip, d.host, d.serial, d.model].some(v => v.toLowerCase().includes(needle))))
+    .sort((a, b) => rank[b.level] - rank[a.level] || a.ip.localeCompare(b.ip, undefined, { numeric: true })), [fleet, level, needle, drill]);
   const n = kind === 'disk' ? disks.length : mem.length;
+  const ips = kind === 'disk' ? disks.map(d => d.ip) : mem.map(m => m.ip);
+  const title = drill ? drill.label : kind === 'disk' ? tx('规则命中磁盘', 'Disks with rule hits') : tx('规则命中节点', 'Nodes with rule hits');
   return <section className="hf-panel">
-    <div className="hf-toolbar"><label className="hf-search"><Search size={14} /><input value={q} onChange={e => setQ(e.target.value)} placeholder={kind === 'disk' ? tx('节点、型号、SN', 'Node, model, SN') : tx('节点、槽位、SN', 'Node, slot, SN')} /></label><select value={level} onChange={e => setLevel(e.target.value)} aria-label={tx('等级', 'Level')}><option value="">{tx('全部等级', 'All levels')}</option><option value="critical">{tx('严重', 'Critical')}</option><option value="warning">{tx('警告', 'Warning')}</option><option value="attention">{tx('关注', 'Attention')}</option></select><span>{tx(`${n} 项`, `${n} items`)}</span></div>
+    {drill && <div className="hf-drillbar"><span>{tx('筛选', 'Filter')}<b>{drill.label}</b>{kind === 'disk' ? tx(`${n} 块盘 / ${uniqueIPs(ips).length} 节点`, `${n} disks / ${uniqueIPs(ips).length} nodes`) : tx(`${n} 节点`, `${n} nodes`)}</span><button type="button" className="hf-link" onClick={clearDrill}><X size={13} />{tx('清除筛选', 'Clear filter')}</button></div>}
+    <div className="hf-toolbar"><label className="hf-search"><Search size={14} /><input value={q} onChange={e => setQ(e.target.value)} placeholder={kind === 'disk' ? tx('节点、型号、SN', 'Node, model, SN') : tx('节点、槽位、SN', 'Node, slot, SN')} /></label><select value={level} onChange={e => setLevel(e.target.value)} aria-label={tx('等级', 'Level')}><option value="">{tx('全部等级', 'All levels')}</option><option value="critical">{tx('严重', 'Critical')}</option><option value="warning">{tx('警告', 'Warning')}</option><option value="attention">{tx('关注', 'Attention')}</option></select><span>{tx(`${n} 项`, `${n} items`)}</span><IpListButton ips={ips} title={title} tx={tx} /></div>
     {n === 0 ? <div className="hf-empty"><ShieldAlert size={20} />{tx('没有命中规则的项', 'No rule hits')}</div> :
     <div className="hf-scroll"><table className="hf-table hf-hits"><colgroup><col style={{ width: 76 }} /><col style={{ width: 190 }} /><col style={{ width: 170 }} /><col /><col style={{ width: 220 }} /></colgroup>
       <thead><tr><th>{tx('等级', 'Level')}</th><th>{tx('节点', 'Node')}</th><th>{tx('命中规则', 'Rule hits')}</th><th>{kind === 'disk' ? tx('问题硬盘（槽位 / SN / 型号与容量）', 'Disk (slot / SN / model & size)') : tx('问题内存条（槽位 / SN / 规格）', 'DIMM (slot / SN / spec)')}</th><th>{tx('证据', 'Evidence')}</th></tr></thead>
@@ -274,6 +333,7 @@ function DiskTable({ fleet, tx }: { fleet: Fleet; tx: Tx }) {
       <select value={proto} onChange={e => { setProto(e.target.value); setPage(0); }} aria-label={tx('协议', 'Protocol')}><option value="">{tx('全部协议', 'All protocols')}</option>{Object.entries(fleet.summary.disk.by_protocol).map(([p, n]) => <option key={p} value={p}>{p} ({n})</option>)}</select>
       <select value={level} onChange={e => { setLevel(e.target.value); setPage(0); }} aria-label={tx('等级', 'Level')}><option value="">{tx('全部等级', 'All levels')}</option><option value="critical">{tx('严重', 'Critical')}</option><option value="warning">{tx('警告', 'Warning')}</option><option value="attention">{tx('关注', 'Attention')}</option><option value="clear">{tx('未命中', 'Clear')}</option></select>
       <select value={sort} onChange={e => { setSort(e.target.value); setPage(0); }} aria-label={tx('排序', 'Sort')}><option value="risk">{tx('风险优先', 'Risk first')}</option><option value="wear">{tx('寿命消耗最高', 'Highest wear')}</option><option value="life">{tx('剩余寿命最短', 'Shortest remaining life')}</option><option value="temp">{tx('温度最高', 'Hottest')}</option><option value="poh">{tx('通电时间最长', 'Longest power-on')}</option></select>
+      <IpListButton ips={rows.map(d => d.ip)} title={tx('全部磁盘（当前筛选）', 'All disks (current filter)')} tx={tx} />
     </div>
     <div className="hf-scroll"><table className="hf-table"><thead><tr><th>{tx('等级', 'Level')}</th><th>{tx('节点', 'Node')}</th><th>{tx('槽位 / 型号 / SN', 'Slot / model / SN')}</th><th className="num">{tx('容量', 'Size')}</th><th className="num">{tx('通电', 'Power-on')}</th><th className="num">{tx('温度', 'Temp')}</th><th className="num">{tx('寿命消耗', 'Wear')}</th><th className="num">{tx('估计剩余', 'Est. left')}</th><th>{tx('错误计数 / 日增量', 'Error counters / daily delta')}</th></tr></thead>
       <tbody>{visible.map(d => <tr key={`${d.ip}-${d.serial}-${d.dev}`}><td><LevelTag level={d.level} tx={tx} />{d.hits.map(h => <small key={h}>{ruleText(h, tx)}</small>)}</td><td><b>{d.ip}</b><small>{d.host}</small></td><td><b>{d.model || '—'}</b><small>{slotOf(d)} · {d.proto}{d.raid ? ` · RAID ${d.raid.state}` : ''}</small><small>SN {d.serial || '—'}</small></td><td className="num">{capText(d.cap_gb)}</td><td className="num">{d.poh !== null ? tx(`${Math.round(d.poh / 24)} 天`, `${Math.round(d.poh / 24)} d`) : '—'}</td><td className="num">{fmt(d.temp, '°C')}</td><td className="num"><span className="hf-wearcell"><i style={{ width: `${Math.min(100, d.wear ?? 0)}%` }} className={(d.wear ?? 0) >= 50 ? 'hot' : ''} />{fmt(d.wear, '%')}</span></td><td className="num">{lifeText(d.life_days, tx)}</td><td><code>{[d.proto === 'NVMe' ? `media ${fmt(d.media)} · spare ${fmt(d.spare, '%')} · errlog ${fmt(d.errlog)}` : `realloc ${fmt(d.realloc)} · pending ${fmt(d.pending)} · crc ${fmt(d.crc)}`, delta(d) && `Δ ${delta(d)}`].filter(Boolean).join('  ')}</code></td></tr>)}</tbody></table></div>
@@ -293,23 +353,24 @@ function MemoryTable({ fleet, tx }: { fleet: Fleet; tx: Tx }) {
   }, [fleet, q, level]);
   const visible = rows.slice(page * size, (page + 1) * size);
   return <section className="hf-panel">
-    <div className="hf-toolbar"><label className="hf-search"><Search size={14} /><input value={q} onChange={e => { setQ(e.target.value); setPage(0); }} placeholder={tx('节点 IP 或主机名', 'Node IP or hostname')} /></label><select value={level} onChange={e => { setLevel(e.target.value); setPage(0); }} aria-label={tx('等级', 'Level')}><option value="">{tx('全部等级', 'All levels')}</option><option value="critical">{tx('严重', 'Critical')}</option><option value="warning">{tx('警告', 'Warning')}</option><option value="attention">{tx('关注', 'Attention')}</option><option value="clear">{tx('未命中', 'Clear')}</option></select></div>
+    <div className="hf-toolbar"><label className="hf-search"><Search size={14} /><input value={q} onChange={e => { setQ(e.target.value); setPage(0); }} placeholder={tx('节点 IP 或主机名', 'Node IP or hostname')} /></label><select value={level} onChange={e => { setLevel(e.target.value); setPage(0); }} aria-label={tx('等级', 'Level')}><option value="">{tx('全部等级', 'All levels')}</option><option value="critical">{tx('严重', 'Critical')}</option><option value="warning">{tx('警告', 'Warning')}</option><option value="attention">{tx('关注', 'Attention')}</option><option value="clear">{tx('未命中', 'Clear')}</option></select><IpListButton ips={rows.map(m => m.ip)} title={tx('全部节点（当前筛选）', 'All nodes (current filter)')} tx={tx} /></div>
     <div className="hf-scroll"><table className="hf-table"><thead><tr><th>{tx('等级', 'Level')}</th><th>{tx('节点', 'Node')}</th><th className="num">{tx('内存', 'Memory')}</th><th className="num">{tx('CE 7 天', 'CE 7d')}</th><th className="num">{tx('CE 30 天', 'CE 30d')}</th><th className="num">{tx('UE 30 天 / 累计', 'UE 30d / total')}</th><th className="num">HardwareCorrupted</th><th className="num">{tx('内核 EDAC / MCE', 'Kernel EDAC / MCE')}</th><th>{tx('涉及槽位', 'Slots named')}</th></tr></thead>
       <tbody>{visible.map(m => <tr key={m.ip}><td><LevelTag level={m.level} tx={tx} />{m.hits.map(h => <small key={h}>{ruleText(h, tx)}</small>)}</td><td><b>{m.ip}</b><small>{m.host}</small></td><td className="num">{m.dimms ? `${m.dimms} × · ${m.mem_gb} GB` : '—'}</td><td className="num">{fmt(m.ce_7d ?? 0)}</td><td className="num">{fmt(m.ce_30d ?? 0)}</td><td className="num">{m.ue_30d || 0} / {m.ue_total || 0}{m.ue_last && <small>{m.ue_last}</small>}</td><td className="num">{m.hw_corrupted_kb === null ? '—' : `${m.hw_corrupted_kb} kB`}</td><td className="num">{m.edac} / {m.mce}{m.mem_offline ? <small>offline {m.mem_offline}</small> : null}</td><td>{m.dimm_issues?.length ? m.dimm_issues.slice(0, 3).map((e, i) => <small key={i}>{e.mapped ? `${e.dmi_slot} · SN ${e.sn}` : e.slot || e.sensor}</small>) : '—'}</td></tr>)}</tbody></table></div>
     <Pager total={rows.length} page={page} size={size} setPage={setPage} />
   </section>;
 }
 
-function Coverage({ fleet, tx }: { fleet: Fleet; tx: Tx }) {
-  const [status, setStatus] = useState('failed');
+function Coverage({ fleet, tx, filter: status, setFilter }: { fleet: Fleet; tx: Tx; filter: string; setFilter: (v: string) => void }) {
   const [page, setPage] = useState(0);
+  const setStatus = (v: string) => { setFilter(v); setPage(0); };
   const size = 50;
-  const rows = fleet.nodes.filter(n => status === 'failed' ? !(n.status === 'ok' || n.status.startsWith('partial')) : status === 'issues' ? n.followup.length > 0 : n.status === status);
+  const rows = fleet.nodes.filter(n => status === 'failed' ? !(n.status === 'ok' || n.status.startsWith('partial')) : status === 'issues' ? n.followup.length > 0 : status.startsWith('follow:') ? n.followup.includes(status.slice(7)) : n.status === status);
+  const filterLabel = status === 'failed' ? tx('未采集节点', 'Uncollected nodes') : status === 'issues' ? tx('有待处理项的节点', 'Nodes with follow-ups') : status === 'excluded' ? tx('已移出范围', 'Out of scope') : status.startsWith('follow:') ? followText(status.slice(7), tx) : statusText(status, tx);
   const vmKnown = fleet.nodes.some(n => n.node_exporter !== undefined);
   const excluded = fleet.excluded_nodes || [];
   return <section className="hf-panel">
-    <div className="hf-follow">{Object.entries(fleet.coverage.followup).sort((a, b) => b[1] - a[1]).map(([k, n]) => <div key={k}><b>{n}</b><span>{followText(k, tx)}</span></div>)}</div>
-    <div className="hf-toolbar"><select value={status} onChange={e => { setStatus(e.target.value); setPage(0); }} aria-label={tx('节点筛选', 'Node filter')}><option value="failed">{tx('未采集节点', 'Uncollected nodes')}</option><option value="issues">{tx('有待处理项的节点', 'Nodes with follow-ups')}</option>{Object.keys(fleet.coverage.by_status).map(s => <option key={s} value={s}>{statusText(s, tx)} ({fleet.coverage.by_status[s]})</option>)}{excluded.length > 0 && <option value="excluded">{tx(`已移出范围 (${excluded.length})`, `Out of scope (${excluded.length})`)}</option>}</select><span>{status === 'excluded' ? excluded.length : rows.length}</span></div>
+    <div className="hf-follow">{Object.entries(fleet.coverage.followup).sort((a, b) => b[1] - a[1]).map(([k, n]) => <button type="button" key={k} className={status === `follow:${k}` ? 'active' : ''} onClick={() => setStatus(status === `follow:${k}` ? 'issues' : `follow:${k}`)} title={tx('查看这些节点', 'Show these nodes')}><b>{n}</b><span>{followText(k, tx)}</span></button>)}</div>
+    <div className="hf-toolbar"><select value={status} onChange={e => setStatus(e.target.value)} aria-label={tx('节点筛选', 'Node filter')}><option value="failed">{tx('未采集节点', 'Uncollected nodes')}</option><option value="issues">{tx('有待处理项的节点', 'Nodes with follow-ups')}</option>{Object.entries(fleet.coverage.followup).map(([k, n]) => <option key={k} value={`follow:${k}`}>{tx('待处理：', 'Follow-up: ')}{followText(k, tx)} ({n})</option>)}{Object.keys(fleet.coverage.by_status).map(s => <option key={s} value={s}>{statusText(s, tx)} ({fleet.coverage.by_status[s]})</option>)}{excluded.length > 0 && <option value="excluded">{tx(`已移出范围 (${excluded.length})`, `Out of scope (${excluded.length})`)}</option>}</select><span>{tx(`${status === 'excluded' ? excluded.length : rows.length} 个节点`, `${status === 'excluded' ? excluded.length : rows.length} nodes`)}</span><IpListButton ips={status === 'excluded' ? excluded.map(n => n.ip) : rows.map(n => n.ip)} title={filterLabel} tx={tx} /></div>
     {status === 'excluded' ? <><div className="hf-scroll"><table className="hf-table"><thead><tr><th>{tx('节点', 'Node')}</th><th>{tx('类型', 'Kind')}</th><th>{tx('移出原因', 'Reason')}</th></tr></thead>
       <tbody>{excluded.slice(page * size, (page + 1) * size).map(n => <tr key={n.ip}><td><b>{n.ip}</b><small>{n.host}</small></td><td>{n.kind === 'gpu_node' ? 'GPU' : 'CPU'}</td><td>{n.reason}</td></tr>)}</tbody></table></div>
       <Pager total={excluded.length} page={page} size={size} setPage={setPage} /></>
