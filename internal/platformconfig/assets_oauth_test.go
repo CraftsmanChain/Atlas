@@ -1,6 +1,7 @@
 package platformconfig
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"encoding/pem"
@@ -43,6 +44,15 @@ func TestOAuthAssetSnapshotMappingAtomicityAndStableIDs(t *testing.T) {
 		if mode == "move" {
 			ip = "10.0.0.2"
 		}
+		if mode == "mixed" || mode == "mixed_unknown" {
+			if mode == "mixed_unknown" {
+				dc = ""
+			}
+			writer := gzip.NewWriter(w)
+			defer writer.Close()
+			fmt.Fprintf(writer, `{"success":true,"errorCode":0,"data":{"list":[{"id":"foreign-machine","dataCenterId":"other"},{"id":"machine-id","dataCenterId":%q,"ipAddress":"10.0.0.1","state":"运行","type":"服务器"}],"total":2,"current":1,"pageSize":200}}`, dc)
+			return
+		}
 		fmt.Fprintf(w, `{"success":true,"errorCode":0,"data":{"list":[{"id":"machine-id","dataCenterId":%q,"ipAddress":%q,"name":"cpu","state":"运行","type":"服务器","sn":"fixture-sn"}],"total":1,"current":1,"pageSize":200}}`, dc, ip)
 	}))
 	defer server.Close()
@@ -82,7 +92,16 @@ func TestOAuthAssetSnapshotMappingAtomicityAndStableIDs(t *testing.T) {
 	if host.Model != "cpu-model" || host.State != "运行" || !host.InUse || host.EntityKind != "cpu_node" || host.SourceID != "host-id" {
 		t.Fatal("linked machine was not normalized or power state defined lifecycle")
 	}
-	for _, next := range []string{"fail", "wrong_dc"} {
+	mode = "mixed"
+	result, err = source.Sync(context.Background())
+	if err != nil || result.OpsHosts != 1 || result.Machines != 1 {
+		t.Fatalf("mixed snapshot did not retain only selected assets: %v", err)
+	}
+	var foreignCount int64
+	if err := db.Model(&api.InfrastructureAsset{}).Where("source_id = ?", "foreign-machine").Count(&foreignCount).Error; err != nil || foreignCount != 0 {
+		t.Fatalf("foreign machine persisted: count=%d, err=%v", foreignCount, err)
+	}
+	for _, next := range []string{"fail", "wrong_dc", "mixed_unknown"} {
 		mode = next
 		if _, err := source.Sync(context.Background()); err == nil {
 			t.Fatal("partial/foreign scope accepted")

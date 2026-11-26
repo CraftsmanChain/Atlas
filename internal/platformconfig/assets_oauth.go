@@ -160,20 +160,22 @@ func (s *AssetSource) fetchSources(ctx context.Context, config api.LXOPAssetConf
 		return nil, nil, err
 	}
 	results := make([][]LXOPAsset, 2)
+	sources := [2]string{"ops host", "asset machine"}
 	for i, endpoint := range []string{config.OpsHostURL, config.AssetMachineURL} {
 		raws, err := client.List(ctx, endpoint)
 		if err != nil {
-			return nil, nil, fmt.Errorf("platform source %d: %w", i+1, err)
+			return nil, nil, fmt.Errorf("platform %s source: %w", sources[i], err)
 		}
+		var scoped, foreign, unscoped int
 		for _, raw := range raws {
 			var item LXOPAsset
 			if json.Unmarshal(raw, &item) != nil {
 				return nil, nil, errors.New("invalid platform asset fields")
 			}
 			if item.DataCenterID != "" && item.DataCenterID != config.DataCenterID {
-				return nil, nil, errors.New("platform asset outside selected data center")
+				foreign++
+				continue
 			}
-			item.DataCenterID = config.DataCenterID
 			if i == 0 {
 				var host struct {
 					DeviceType string     `json:"deviceType"`
@@ -185,7 +187,10 @@ func (s *AssetSource) fetchSources(ctx context.Context, config api.LXOPAssetConf
 				item.Type = host.DeviceType
 				if host.Machine != nil {
 					if host.Machine.DataCenterID != "" && host.Machine.DataCenterID != config.DataCenterID {
-						return nil, nil, errors.New("linked machine outside selected data center")
+						return nil, nil, fmt.Errorf("platform %s source: linked machine outside selected data center", sources[i])
+					}
+					if item.DataCenterID == "" {
+						item.DataCenterID = host.Machine.DataCenterID
 					}
 					if item.SerialNumber != "" && host.Machine.SerialNumber != "" && item.SerialNumber != host.Machine.SerialNumber {
 						return nil, nil, errors.New("host and linked machine identities conflict")
@@ -193,7 +198,15 @@ func (s *AssetSource) fetchSources(ctx context.Context, config api.LXOPAssetConf
 					item.Model, item.Type, item.State = host.Machine.Model, host.Machine.Type, host.Machine.State
 				}
 			}
+			if item.DataCenterID == "" {
+				unscoped++
+				continue
+			}
+			scoped++
 			results[i] = append(results[i], item)
+		}
+		if (foreign > 0 && scoped == 0) || unscoped > 0 {
+			return nil, nil, fmt.Errorf("platform %s source: cannot establish selected data center snapshot (%d matching, %d outside, %d missing data center)", sources[i], scoped, foreign, unscoped)
 		}
 	}
 	return results[0], results[1], nil

@@ -3,6 +3,8 @@
 package opsplatform
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -64,6 +66,18 @@ func (c *Client) read(req *http.Request, limit int64) ([]byte, int, error) {
 	body, err := io.ReadAll(io.LimitReader(res.Body, limit+1))
 	if err != nil || int64(len(body)) > limit {
 		return nil, res.StatusCode, errors.New("platform response unreadable or over byte budget")
+	}
+	// The gateway sometimes sends gzip bytes without Content-Encoding.
+	if bytes.HasPrefix(body, []byte{0x1f, 0x8b}) {
+		reader, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, res.StatusCode, errors.New("invalid platform gzip response")
+		}
+		defer reader.Close()
+		body, err = io.ReadAll(io.LimitReader(reader, limit+1))
+		if err != nil || int64(len(body)) > limit {
+			return nil, res.StatusCode, errors.New("platform gzip response unreadable or over byte budget")
+		}
 	}
 	return body, res.StatusCode, nil
 }
