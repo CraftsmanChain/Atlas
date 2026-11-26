@@ -157,6 +157,7 @@ type LXOPAssetConfig struct {
 	OpsHostURL             string     `json:"ops_host_url"`
 	AssetMachineURL        string     `json:"asset_machine_url"`
 	DataCenterID           string     `json:"data_center_id" gorm:"index"`
+	AssetDataCenterID      string     `json:"asset_data_center_id"`
 	APIKeyCiphertext       []byte     `json:"-" gorm:"not null"`
 	AuthType               string     `json:"auth_type"`
 	TokenURL               string     `json:"token_url"`

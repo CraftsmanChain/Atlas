@@ -22,7 +22,7 @@ type PlatformConfig = { instance_name: string; product_name: string; product_tag
 type LXOPAssetConfig = {
   auth_type: 'api_key' | 'oauth_client_credentials'; token_url: string;
   client_id_configured: boolean; client_secret_configured: boolean; ca_cert_pem: string;
-  ops_host_url: string; asset_machine_url: string; data_center_id: string;
+  ops_host_url: string; asset_machine_url: string; data_center_id: string; asset_data_center_id: string;
   insecure_skip_verify: boolean; enabled: boolean; api_key_configured: boolean;
   last_sync_status: string; last_sync_error?: string; last_sync_at?: string;
   last_ops_host_count: number; last_machine_count: number; updated_at?: string;
@@ -1159,7 +1159,7 @@ function PlatformSettings({ tx, value, onSaved }: { tx: Tx; value: PlatformConfi
 
 const emptyAssetConfig: LXOPAssetConfig = {
   auth_type: 'oauth_client_credentials', token_url: '', client_id_configured: false, client_secret_configured: false, ca_cert_pem: '',
-  ops_host_url: '', asset_machine_url: '', data_center_id: '', insecure_skip_verify: false,
+  ops_host_url: '', asset_machine_url: '', data_center_id: '', asset_data_center_id: '', insecure_skip_verify: false,
   enabled: true, api_key_configured: false, last_sync_status: 'not_configured',
   last_ops_host_count: 0, last_machine_count: 0,
 };
@@ -1193,7 +1193,7 @@ function LXOPAssetSettings({ tx }: { tx: Tx }) {
         body: syncOnly ? undefined : JSON.stringify({
           auth_type: config.auth_type, token_url: config.token_url, client_id: clientID, client_secret: clientSecret, ca_cert_pem: config.ca_cert_pem,
           ops_host_url: config.ops_host_url, asset_machine_url: config.asset_machine_url,
-          data_center_id: config.data_center_id, api_key: apiKey,
+          data_center_id: config.data_center_id, asset_data_center_id: config.asset_data_center_id, api_key: apiKey,
           insecure_skip_verify: config.insecure_skip_verify, enabled: config.enabled,
         }),
       });
@@ -1218,9 +1218,16 @@ function LXOPAssetSettings({ tx }: { tx: Tx }) {
       <form className="settings-form" onSubmit={event => { event.preventDefault(); void save(); }}>
         <label><span>{tx('鉴权方式', 'Authentication')}</span><select aria-label={tx('鉴权方式', 'Authentication')} value={config.auth_type} onChange={event => { update('auth_type', event.target.value as LXOPAssetConfig['auth_type']); setAPIKey(''); setClientID(''); setClientSecret(''); }}><option value="oauth_client_credentials">OAuth 2.0 · Client Credentials</option><option value="api_key">X-API-Key · Legacy</option></select></label>
         <label><span>{tx('运维主机接口', 'Ops host endpoint')}<small>GET · FULL URL</small></span><input value={config.ops_host_url} onChange={event => update('ops_host_url', event.target.value)} placeholder="https://host:7090/openapi/v1/ops/host/list" /></label>
-        <label><span>{tx('资产设备接口', 'Asset machine endpoint')}<small>GET · FULL URL</small></span><input value={config.asset_machine_url} onChange={event => update('asset_machine_url', event.target.value)} placeholder="https://host:7090/openapi/v1/asset/machine/list" /></label>
-        <label><span>{tx('数据中心 ID', 'Data center ID')}<small>{oauth ? 'X-Dc-Id' : 'dataCenterId'}</small></span><input value={config.data_center_id} onChange={event => update('data_center_id', event.target.value)} /></label>
+        <label><span>{tx('资产设备接口', 'Asset machine endpoint')}<small>GET · FULL URL</small></span><input value={config.asset_machine_url} onChange={event => update('asset_machine_url', event.target.value)} placeholder="https://host:7090/api/v1/asset-new/machine/list" /></label>
+        <label><span>{tx('集群数据中心 ID', 'Cluster data center ID')}<small>{oauth ? 'X-Dc-Id' : 'dataCenterId'}</small></span><input value={config.data_center_id} onChange={event => update('data_center_id', event.target.value)} /></label>
         {oauth ? <>
+          <label><span>{tx('设备所属机房', 'Asset data center')}<small>assetDataCenterId</small></span>
+            <select value={config.asset_data_center_id} onChange={event => update('asset_data_center_id', event.target.value)}>
+              <option value="">{tx('兼容模式 · 按旧数据中心 ID 核对全量列表', 'Legacy · filter full list by cluster ID')}</option>
+              <option value="5ffbc4d0-daab-4cf5-9d61-0f37c39c98ea">{tx('算力小镇', 'Compute Town')}</option>
+              <option value="3e77ca12-042f-4b10-82d4-27d12c64064c">{tx('中卫电信', 'Zhongwei Telecom')}</option>
+              <option value="068ac402-72e0-4f03-8d7b-255e09430525">{tx('银川滨河', 'Yinchuan Binhe')}</option>
+            </select></label>
           <label><span>{tx('Token 接口', 'Token endpoint')}</span><input aria-label={tx('Token 接口', 'Token endpoint')} value={config.token_url} onChange={event => update('token_url', event.target.value)} placeholder="https://host/openapi/v1/oauth/token" /></label>
           <label><span>Client ID<small>{config.client_id_configured ? tx('已配置 · 留空保持', 'CONFIGURED · BLANK KEEPS CURRENT') : tx('首次配置必填', 'REQUIRED INITIALLY')}</small></span><input aria-label="Client ID" type="password" autoComplete="off" value={clientID} onChange={event => setClientID(event.target.value)} /></label>
           <label><span>Client Secret<small>{config.client_secret_configured ? tx('已加密保存 · 留空保持', 'ENCRYPTED · BLANK KEEPS CURRENT') : tx('首次配置必填', 'REQUIRED INITIALLY')}</small></span><input aria-label="Client Secret" type="password" autoComplete="new-password" value={clientSecret} onChange={event => setClientSecret(event.target.value)} /></label>

@@ -29,14 +29,15 @@ import (
 const lxopKeyVersion = "aes-256-gcm-v1"
 
 type LXOPAsset struct {
-	ID           string `json:"id"`
-	DataCenterID string `json:"dataCenterId"`
-	IPAddress    string `json:"ipAddress"`
-	Name         string `json:"name"`
-	Type         string `json:"type"`
-	Model        string `json:"model"`
-	State        string `json:"state"`
-	SerialNumber string `json:"sn"`
+	ID                string `json:"id"`
+	DataCenterID      string `json:"dataCenterId"`
+	AssetDataCenterID string `json:"assetDataCenterId"`
+	IPAddress         string `json:"ipAddress"`
+	Name              string `json:"name"`
+	Type              string `json:"type"`
+	Model             string `json:"model"`
+	State             string `json:"state"`
+	SerialNumber      string `json:"sn"`
 }
 
 type AssetSyncResult struct {
@@ -127,6 +128,7 @@ type AssetConfigView struct {
 	OpsHostURL             string     `json:"ops_host_url"`
 	AssetMachineURL        string     `json:"asset_machine_url"`
 	DataCenterID           string     `json:"data_center_id"`
+	AssetDataCenterID      string     `json:"asset_data_center_id"`
 	InsecureSkipVerify     bool       `json:"insecure_skip_verify"`
 	Enabled                bool       `json:"enabled"`
 	APIKeyConfigured       bool       `json:"api_key_configured"`
@@ -143,7 +145,7 @@ func assetConfigView(row api.LXOPAssetConfig) AssetConfigView {
 		AuthType: assetAuthType(row.AuthType), TokenURL: row.TokenURL, CACertPEM: row.CACertPEM,
 		ClientIDConfigured: row.ClientID != "", ClientSecretConfigured: len(row.ClientSecretCiphertext) > 0,
 		OpsHostURL: row.OpsHostURL, AssetMachineURL: row.AssetMachineURL,
-		DataCenterID: row.DataCenterID, InsecureSkipVerify: row.InsecureSkipVerify,
+		DataCenterID: row.DataCenterID, AssetDataCenterID: row.AssetDataCenterID, InsecureSkipVerify: row.InsecureSkipVerify,
 		Enabled: row.Enabled, APIKeyConfigured: len(row.APIKeyCiphertext) > 0,
 		LastSyncStatus: row.LastSyncStatus, LastSyncError: row.LastSyncError,
 		LastSyncAt: row.LastSyncAt, LastOpsHostCount: row.LastOpsHostCount,
@@ -152,17 +154,18 @@ func assetConfigView(row api.LXOPAssetConfig) AssetConfigView {
 }
 
 type AssetConfigInput struct {
-	AuthType           string `json:"auth_type"`
-	TokenURL           string `json:"token_url"`
-	ClientID           string `json:"client_id"`
-	ClientSecret       string `json:"client_secret"`
-	CACertPEM          string `json:"ca_cert_pem"`
-	OpsHostURL         string `json:"ops_host_url"`
-	AssetMachineURL    string `json:"asset_machine_url"`
-	DataCenterID       string `json:"data_center_id"`
-	APIKey             string `json:"api_key"`
-	InsecureSkipVerify bool   `json:"insecure_skip_verify"`
-	Enabled            bool   `json:"enabled"`
+	AuthType           string  `json:"auth_type"`
+	TokenURL           string  `json:"token_url"`
+	ClientID           string  `json:"client_id"`
+	ClientSecret       string  `json:"client_secret"`
+	CACertPEM          string  `json:"ca_cert_pem"`
+	OpsHostURL         string  `json:"ops_host_url"`
+	AssetMachineURL    string  `json:"asset_machine_url"`
+	DataCenterID       string  `json:"data_center_id"`
+	AssetDataCenterID  *string `json:"asset_data_center_id"`
+	APIKey             string  `json:"api_key"`
+	InsecureSkipVerify bool    `json:"insecure_skip_verify"`
+	Enabled            bool    `json:"enabled"`
 }
 
 func (s *AssetSource) GetConfig() (api.LXOPAssetConfig, error) {
@@ -195,7 +198,11 @@ func (s *AssetSource) SaveConfig(input AssetConfigInput) (api.LXOPAssetConfig, e
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		row.ID = singletonID
 	}
-	connectionChanged := row.OpsHostURL != input.OpsHostURL || row.AssetMachineURL != input.AssetMachineURL || row.DataCenterID != input.DataCenterID || (input.AuthType != "" && assetAuthType(row.AuthType) != input.AuthType) || row.TokenURL != input.TokenURL || input.ClientSecret != "" || input.APIKey != ""
+	previousAssetDC := row.AssetDataCenterID
+	if input.AssetDataCenterID != nil {
+		row.AssetDataCenterID = strings.TrimSpace(*input.AssetDataCenterID)
+	}
+	connectionChanged := previousAssetDC != row.AssetDataCenterID || row.OpsHostURL != input.OpsHostURL || row.AssetMachineURL != input.AssetMachineURL || row.DataCenterID != input.DataCenterID || (input.AuthType != "" && assetAuthType(row.AuthType) != input.AuthType) || row.TokenURL != input.TokenURL || input.ClientSecret != "" || input.APIKey != ""
 	if input.AuthType == "" {
 		input.AuthType = assetAuthType(row.AuthType)
 	}

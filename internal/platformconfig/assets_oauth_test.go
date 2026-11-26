@@ -28,7 +28,17 @@ func TestOAuthAssetSnapshotMappingAtomicityAndStableIDs(t *testing.T) {
 			t.Error("incorrect authentication")
 		}
 		if r.URL.Path == "/ops" {
+			if r.URL.Query().Has("assetDataCenterId") {
+				t.Error("asset scope sent to ops source")
+			}
 			fmt.Fprint(w, `{"success":true,"errorCode":0,"data":{"list":[{"id":"host-id","dataCenterID":"dc-1","ipAddress":"10.0.0.1","name":"cpu","sn":"fixture-sn","powerState":"off","machine":{"state":"运行","type":"服务器","model":"cpu-model","sn":"fixture-sn","dataCenterId":"dc-1"},"sudoPassword":"must-not-persist"}],"total":1,"current":1,"pageSize":200}}`)
+			return
+		}
+		if mode == "asset_dc" {
+			if r.URL.Query().Get("assetDataCenterId") != "town" {
+				t.Error("missing machine scope")
+			}
+			fmt.Fprint(w, `{"success":true,"errorCode":0,"data":{"list":[{"id":"town-machine","dataCenterId":"legacy-2","assetDataCenterId":"town"},{"id":"foreign-machine","dataCenterId":"dc-1","assetDataCenterId":"other"}],"total":2,"current":1,"pageSize":200}}`)
 			return
 		}
 		if mode == "fail" {
@@ -127,6 +137,21 @@ func TestOAuthAssetSnapshotMappingAtomicityAndStableIDs(t *testing.T) {
 	input.ClientID, input.ClientSecret = "", ""
 	if _, err := source.SaveConfig(input); err != nil {
 		t.Fatal("blank secret did not retain current credentials")
+	}
+	assetDC := "town"
+	input.AssetDataCenterID = &assetDC
+	saved, err := source.SaveConfig(input)
+	if err != nil || assetConfigView(saved).AssetDataCenterID != assetDC {
+		t.Fatalf("save machine scope: %v", err)
+	}
+	mode = "asset_dc"
+	result, err = source.Sync(context.Background())
+	if err != nil || result.Machines != 1 || result.OpsHosts != 1 {
+		t.Fatalf("asset center sync: %v", err)
+	}
+	var matched api.InfrastructureAsset
+	if err := db.Where("source_id = ? AND present = ?", "town-machine", true).First(&matched).Error; err != nil || matched.DataCenterID != "dc-1" {
+		t.Fatalf("selected machine not in cluster inventory: %v", err)
 	}
 	input.ClientID = "changed"
 	if _, err := source.SaveConfig(input); err == nil {

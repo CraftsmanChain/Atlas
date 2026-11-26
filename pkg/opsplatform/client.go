@@ -118,6 +118,10 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 // List returns a complete, bounded snapshot or an error. Callers must not apply
 // removals from a partial page, drifting total, duplicate ID or invalid scope.
 func (c *Client) List(ctx context.Context, endpoint string) ([]json.RawMessage, error) {
+	return c.ListInAssetCenter(ctx, endpoint, "")
+}
+
+func (c *Client) ListInAssetCenter(ctx context.Context, endpoint, assetDataCenterID string) ([]json.RawMessage, error) {
 	u, err := ParseURL(endpoint)
 	if err != nil {
 		return nil, err
@@ -134,6 +138,9 @@ func (c *Client) List(ctx context.Context, endpoint string) ([]json.RawMessage, 
 	budget := 0
 	for page := 1; page <= maxRows/PageSize+1; page++ {
 		q := u.Query()
+		if assetDataCenterID != "" {
+			q.Set("assetDataCenterId", assetDataCenterID)
+		}
 		q.Set("current", fmt.Sprint(page))
 		q.Set("pageSize", fmt.Sprint(PageSize))
 		u.RawQuery = q.Encode()

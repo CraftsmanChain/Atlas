@@ -162,7 +162,11 @@ func (s *AssetSource) fetchSources(ctx context.Context, config api.LXOPAssetConf
 	results := make([][]LXOPAsset, 2)
 	sources := [2]string{"ops host", "asset machine"}
 	for i, endpoint := range []string{config.OpsHostURL, config.AssetMachineURL} {
-		raws, err := client.List(ctx, endpoint)
+		assetDC := ""
+		if i == 1 {
+			assetDC = config.AssetDataCenterID
+		}
+		raws, err := client.ListInAssetCenter(ctx, endpoint, assetDC)
 		if err != nil {
 			return nil, nil, fmt.Errorf("platform %s source: %w", sources[i], err)
 		}
@@ -171,6 +175,18 @@ func (s *AssetSource) fetchSources(ctx context.Context, config api.LXOPAssetConf
 			var item LXOPAsset
 			if json.Unmarshal(raw, &item) != nil {
 				return nil, nil, errors.New("invalid platform asset fields")
+			}
+			if assetDC != "" {
+				if item.AssetDataCenterID == "" {
+					unscoped++
+					continue
+				}
+				if item.AssetDataCenterID != assetDC {
+					foreign++
+					continue
+				}
+				// Keep Atlas inventory keys in the configured cluster namespace.
+				item.DataCenterID = config.DataCenterID
 			}
 			if item.DataCenterID != "" && item.DataCenterID != config.DataCenterID {
 				foreign++
