@@ -1,0 +1,11 @@
+[Unit]
+Description=Atlas read-only Redfish memory poll (memory plan v1.2 3.5; HTTP GET only, one try per BMC)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Push target on the deploy node (needs an SSH key from this host to the deploy node):
+Environment=ATLAS_REDFISH_PUSH=root@10.80.192.232:/data/atlas-research/node-hw-redfish/
+ExecStart=/opt/atlas-redfish/node_hw_redfish_daily.sh
+Nice=10
+TimeoutStartSec=30min

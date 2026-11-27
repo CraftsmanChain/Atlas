@@ -12,27 +12,41 @@
 #   4. one row per clear goes to $LEDGER/sel_reset_events.tsv (by=atlas) so windows and the page know the reset.
 # Only the IPMI SEL is cleared. BMC vendor event logs (iBMC Log1, XCC EventLog, Redfish) are never touched.
 #
-# Usage: node_hw_sel_rotate.sh <day_dir> [--execute] [--max N] [--min-used PCT] [--only IP]
+# Usage: node_hw_sel_rotate.sh <day_dir> [--execute] [--max N] [--min-used PCT] [--only IP] [--reason full|pre_replacement]
+#   Before a DIMM swap (memory plan v1.2 section 2.1): --only <ip> --min-used 0 --execute  (reason defaults to
+#   pre_replacement when --only is combined with --min-used 0; the node is rotated whatever its SEL usage).
+# Plan v1.2 decision A1 (2026-11-27): no BMC-count gate; the part1 archive keeps the full raw listing for replay.
 set -euo pipefail
 DAY_DIR="${1:?day dir}"; shift
-EXECUTE=0; MAX=20; MIN_USED=80; ONLY=""
+EXECUTE=0; MAX=20; MIN_USED=80; ONLY=""; REASON=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --execute) EXECUTE=1 ;; --max) MAX=$2; shift ;; --min-used) MIN_USED=$2; shift ;; --only) ONLY=$2; shift ;;
+    --reason) REASON=$2; shift ;;
     *) echo "unknown arg $1" >&2; exit 2 ;;
   esac; shift
 done
+[ -n "$REASON" ] || { [ -n "$ONLY" ] && [ "$MIN_USED" = 0 ] && REASON=pre_replacement || REASON=full; }
+case "$REASON" in full|pre_replacement) ;; *) echo "--reason must be full or pre_replacement" >&2; exit 2 ;; esac
 SCRIPTS="${ATLAS_SCRIPTS:-/ops/atlas/scripts}"
 LEDGER="${ATLAS_HW_LEDGER_ROOT:-/data/atlas-research/node-hw-ledger}"
 ARCH="${ATLAS_HW_SEL_ARCHIVE:-/data/atlas-research/node-hw-sel-archive}"
 TS="$(TZ=Asia/Shanghai date +%Y%m%dT%H%M%S)"
+export ATLAS_ROTATE_DAY="$(basename "${DAY_DIR%/}")"   # verify() must judge BMC-time validity like the fleet report
 WORK="$DAY_DIR/rotate"; mkdir -p "$WORK" "$ARCH"; chmod 700 "$ARCH"
 LOG="$WORK/rotate-$TS.log"
 log() { echo "$(date +%T) $*" | tee -a "$LOG" >&2; }
 # mawk has no strtonum: portable hex parser for SEL record ids
 HEXFN='function hex(s,  i,c,v){v=0; s=tolower(s); for(i=1;i<=length(s);i++){c=index("0123456789abcdef",substr(s,i,1)); if(c==0) return -1; v=v*16+c-1}; return v}'
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new)
-[ -f "$LEDGER/sel_reset_events.tsv" ] || printf 'ip\ttime\tby\tmode\tpre_entries\tpre_used_pct\tpost_entries\tmem_part1\tmem_part2\tverified\tarchive\tsha256\n' > "$LEDGER/sel_reset_events.tsv"
+RESET_HEAD='ip\ttime\tby\tmode\tpre_entries\tpre_used_pct\tpost_entries\tmem_part1\tmem_part2\tverified\tarchive\tsha256\treason'
+mkdir -p "$LEDGER"
+if [ ! -f "$LEDGER/sel_reset_events.tsv" ]; then printf "$RESET_HEAD\n" > "$LEDGER/sel_reset_events.tsv"
+elif ! head -1 "$LEDGER/sel_reset_events.tsv" | grep -q 'reason$'; then  # v1.2: add the reason column (old rows = full)
+  { printf "$RESET_HEAD\n"; tail -n +2 "$LEDGER/sel_reset_events.tsv" | awk -F'\t' 'BEGIN{OFS="\t"} NF{print $0, "full"}'; } > "$LEDGER/sel_reset_events.tsv.tmp"
+  mv "$LEDGER/sel_reset_events.tsv.tmp" "$LEDGER/sel_reset_events.tsv"
+fi
+: > "$WORK/archived.tsv"; : > "$WORK/verified.tsv"; : > "$WORK/cleared.tsv"
 
 # ---- 1. candidates: SEL full / overflow, or Percent Used >= MIN_USED, from today's per-node SELINFO ----
 sec() { LC_ALL=C awk -v s="##$2" '/^##[A-Z]+$/{on=($0==s); next} on' "$1"; }
@@ -44,11 +58,11 @@ for gz in "$DAY_DIR"/nodes/*.txt.gz; do
   used=$(echo "$info" | sed -nE 's/^Percent Used +: *([0-9]+)%.*/\1/p' | head -1)
   ent=$(echo "$info" | sed -nE 's/^Entries +: *([0-9]+).*/\1/p' | head -1)
   full=$(echo "$info" | grep -qiE "Free Space +: 0 bytes|Overflow +: true" && echo 1 || echo 0)
-  if [ "$full" = 1 ] || { [ -n "$used" ] && [ "$used" -ge "$MIN_USED" ]; }; then
+  if [ "$full" = 1 ] || [ "$MIN_USED" = 0 ] || { [ -n "$used" ] && [ "$used" -ge "$MIN_USED" ]; }; then
     printf '%s\t%s\t%s\t%s\n' "$ip" "${ent:-}" "${used:-}" "$full" >> "$WORK/candidates.tsv"
   fi
 done
-n=$(wc -l < "$WORK/candidates.tsv"); log "candidates: $n (min_used=$MIN_USED%, max=$MAX, execute=$EXECUTE)"
+n=$(wc -l < "$WORK/candidates.tsv"); log "candidates: $n (min_used=$MIN_USED%, max=$MAX, execute=$EXECUTE, reason=$REASON)"
 [ "$n" -eq 0 ] && exit 0
 head -n "$MAX" "$WORK/candidates.tsv" > "$WORK/batch.tsv"
 [ "$EXECUTE" = 1 ] || { log "dry run; would rotate:"; cat "$WORK/batch.tsv" | tee -a "$LOG" >&2; exit 0; }
@@ -81,7 +95,7 @@ merge() { # ip file
 report() { python3 "$SCRIPTS/node_hw_fleet_report.py" "$DAY_DIR" >> "$WORK/fleet-hw-rotate.log" 2>&1; }
 verify() { # ip file -> prints "<mem_records> <missing>"
   python3 - "$1" "$2" "$LEDGER/mem_events.tsv" "$SCRIPTS" <<'PY'
-import re, sys
+import os, re, sys
 ip, f, led, scripts = sys.argv[1:5]
 sys.path.insert(0, scripts)
 import node_hw_ledger as L
@@ -93,19 +107,15 @@ for line in open(f, errors="replace"):
         on = line == "##SEL"; continue
     if not on:
         continue
-    c = [x.strip() for x in line.split("|")]
-    if len(c) < 5 or not c[3].startswith("Memory") or (len(c) > 5 and c[5] == "Deasserted"):
+    c = [x.strip() for x in line.split("|")] + [""] * 6
+    if len(line.split("|")) < 5:
         continue
-    m = re.fullmatch(r"(\d\d)/(\d\d)/(\d{4})", c[1])
-    if not m:
-        continue
-    ev = c[4]
-    kind = "ue" if "Uncorrectable ECC" in ev else "limit" if "logging limit reached" in ev else \
-        "ce" if "Correctable ECC" in ev else "disabled" if "Memory Device Disabled" in ev else None
-    if not kind:
+    # same parser as the fleet report (plan v1.2 R-2: Pre-Init / invalid BMC time is kept, keyed by the raw date)
+    rec, why = L.parse_sel_row(c[0], c[1], c[2], c[3], c[4], c[5], os.environ.get("ATLAS_ROTATE_DAY") or "2100-01-01")
+    if rec is None:
         continue
     n += 1
-    k = L.mem_key({"ip": ip, "sel_id": c[0], "date": "%s-%s-%s" % (m.group(3), m.group(1), m.group(2)), "time": c[2], "kind": kind})
+    k = L.mem_key({"ip": ip, "sel_id": rec["sel_id"], "date": rec["date"], "bmc_date": rec["bmc_date"], "time": rec["time"], "kind": rec["kind"]})
     miss += k not in keys
 print(n, miss)
 PY
@@ -141,7 +151,7 @@ REMOTE
   if sec "$f2" CLEAR | grep -qiE "clearing sel|clear.*(complete|initiated)" || { [ -n "$post" ] && [ "$post" -lt "${ent:-999999}" ]; }; then
     sha=$(cat "$f.sha256"); sha256sum "$f2" | cut -d' ' -f1 > "$f2.sha256"
     np2=$(sec "$f2" SEL | grep -c 'Memory' || true)
-    printf '%s\t%s\tatlas\tipmitool_inband\t%s\t%s\t%s\t%s\t%s\tpending\t%s\t%s\n' "$ip" "$(TZ=Asia/Shanghai date '+%F %T')" "$ent" "$used" "${post:-}" "$nm" "$np2" "$f" "$sha" >> "$LEDGER/sel_reset_events.tsv"
+    printf '%s\t%s\tatlas\tipmitool_inband\t%s\t%s\t%s\t%s\t%s\tpending\t%s\t%s\t%s\n' "$ip" "$(TZ=Asia/Shanghai date '+%F %T')" "$ent" "$used" "${post:-}" "$nm" "$np2" "$f" "$sha" "$REASON" >> "$LEDGER/sel_reset_events.tsv"
     log "$ip CLEARED (pre $ent entries / $used%, post ${post:-?}); part2 memory records: $np2"
     printf '%s\t%s\n' "$ip" "$f2" >> "$WORK/cleared.tsv"
   else

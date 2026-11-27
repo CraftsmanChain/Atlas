@@ -18,17 +18,30 @@ type Memory = {
   ce_7d?: number; ce_30d?: number; ue_30d?: number; ue_total?: number; ue_last?: string; ce_last?: string; disabled_30d?: number; limit_30d?: number; locs?: string[];
   dimm_issues?: DimmIssue[];
   hits: string[]; level: Level;
+  // rules v2 (node-hw-rules-v2.0, memory plan v1.2)
+  board?: string; observability?: Observability; presence?: { code: string; [k: string]: unknown }[]; dimm_warnings?: number;
+  vendor_ue_30d?: number; time_invalid?: number; sel_unparsed?: Record<string, number>; notes?: string[]; quality?: string[]; bmc_dimm_sensors?: string[];
 };
-type DimmIssue = { slot: string; sensor?: string; ce_30d: number; ue_30d: number; ue_total: number; ce_total: number; disabled_30d: number; first: string; last: string; mapped: boolean; dmi_slot?: string; sn?: string; part?: string; size?: string; vendor?: string; speed?: string };
-type LedgerEvent = { type: 'memory' | 'disk'; ip: string; host: string; date: string; time: string; kind: string; count?: number; new?: number; slot: string; sn: string; part: string; size: string | number; first_seen: string; mapped: boolean; before?: number | string; after?: number | string };
+type ObsLevel = 'full' | 'limited' | 'blind';
+type Observability = { level: ObsLevel; codes: string[]; platform: string; ce_source: string; ceiling: string; sel_clears_7d?: { time: string; by: string; pre: string; post: string }[] };
+type DimmIssue = { slot: string; sensor?: string; ce_30d: number; ue_30d: number; ue_total: number; ce_total: number; disabled_30d: number; first: string; last: string; mapped: boolean; dmi_slot?: string; sn?: string; part?: string; size?: string; vendor?: string; speed?: string;
+  ce_7d?: number; first_ce?: string; ce_24h_max?: number; ce_days_14d?: number; hits?: string[]; replaced?: { date: string; reason: string; new_sn: string; censored: boolean }; suppressed?: string[]; bmc_health?: string; sources?: string };
+type LedgerEvent = { type: 'memory' | 'disk'; ip: string; host: string; date: string; time: string; kind: string; count?: number; new?: number; slot: string; sn: string; part: string; size: string | number; first_seen: string; mapped: boolean; before?: number | string; after?: number | string;
+  new_sn?: string; reason?: string; basis?: string; sn_match?: string; source?: string; by?: string; time_invalid?: boolean };
+type RtEvent = { time: string; ip: string; signal: string; before: string; after: string; detail?: string; by?: string };
 type NodeRow = { ip: string; host: string; kind: string; status: string; flags: string[]; followup: string[]; node_exporter?: boolean | null; ipmi?: boolean | null };
 type LevelCount = Record<Level, number>;
 type Fleet = {
   schema: string; rule_version: string; day: string; previous_day: string | null; collected_at: string | null; generated_at: string;
   coverage: { nodes_total: number; collected: number; by_status: Record<string, number>; by_kind: Record<string, Record<string, number>>; flags: Record<string, number>; followup: Record<string, number>; smart_nodes: number; smart_disks: number; collected_without_smart: number; failed_not_in_vm: number | null; excluded?: number; excluded_by_reason?: Record<string, number> };
-  summary: { disk: { total: number; by_level: LevelCount; by_rule: Record<string, number>; by_protocol: Record<string, number>; with_delta_baseline: number; models: [string, number][] }; memory: { nodes: number; by_level: LevelCount; by_rule: Record<string, number>; dimms: number } };
+  summary: { disk: { total: number; by_level: LevelCount; by_rule: Record<string, number>; by_protocol: Record<string, number>; with_delta_baseline: number; models: [string, number][] }; memory: MemSummary };
   disks: Disk[]; memory: Memory[]; nodes: NodeRow[]; events?: LedgerEvent[]; ledger?: { version: string; mem_new?: number; mem_total?: number; disk_new?: number; kern_new?: number }; excluded_nodes?: { ip: string; kind: string; host: string; reason: string }[];
 };
+
+type MemSummary = { nodes: number; by_level: LevelCount; by_rule: Record<string, number>; dimms: number;
+  observability?: Record<ObsLevel, number>; observability_by_code?: Record<string, number>; ce_visible_nodes?: number; ce_visible_dimms?: number; ce_visible_ratio?: number | null;
+  quality?: { dimm_warnings: number; node_warnings: number; new_dimm_warnings: number; new_node_warnings: number; new_dimm_warnings_7d: number; new_node_warnings_7d: number };
+  recon?: { compared: number; ok: number; mismatch: number } | null; platform_matrix?: string };
 
 const rank: Record<Level, number> = { critical: 3, warning: 2, attention: 1, clear: 0 };
 const statusOrder = ['ok', 'partial_timeout', 'ssh_auth_failed', 'ssh_unreachable', 'incomplete_rc255'];
@@ -50,6 +63,16 @@ function ruleText(code: string, tx: Tx): string {
     sel_ce_storm_7d: ['7 天可纠正 ECC ≥100', '≥100 corrected ECC in 7d'], sel_ce_limit_reached: ['可纠正 ECC 记录达上限', 'Corrected-ECC log limit reached'],
     kernel_edac_mce: ['内核 EDAC 内存错误', 'Kernel EDAC memory errors'], sel_ce_30d: ['30 天内可纠正 ECC', 'Corrected ECC in 30d'],
     sel_ue_history: ['历史不可纠正 ECC（>30 天）', 'Uncorrectable ECC >30d ago'], kernel_mce_logged: ['内核 MCE 记录（未解码）', 'Kernel MCE logged (undecoded)'],
+    // node-hw-rules-v2.0 (memory plan v1.2)
+    mem_h1_ue: ['30 天内不可纠正错误（SEL / 厂商日志）', 'Uncorrectable error in 30d (SEL / vendor log)'], mem_h2_disabled: ['30 天内内存条被禁用', 'DIMM disabled in 30d'],
+    mem_h3_bad_page: ['坏页：内核隔离 / 下线内存页', 'Bad pages offlined by the kernel'], mem_h4_ce_storm: ['CE 风暴（单条 24 小时 ≥50 或 7 天 ≥100）', 'CE storm (one DIMM ≥50/24h or ≥100/7d)'],
+    mem_h5_ce_limit: ['CE 记录达上限', 'CE logging limit reached'], mem_h6_ce_persistent: ['CE 持续（14 天内 ≥3 天有 CE）', 'Persistent CE (≥3 days in 14)'],
+    mem_h7_channel_multi: ['同通道多条内存有 CE', 'Several DIMMs on one channel with CE'], mem_h8_ce_after_swap: ['换条后新条仍有 CE', 'CE on the replacement DIMM'],
+    mem_h9_edac: ['内核 EDAC 内存错误', 'Kernel EDAC memory errors'], mem_h10_ce_rising: ['CE 上升（7 天为前 7 天 2 倍以上）', 'CE rising (7d > 2× previous 7d)'],
+    mem_h11_ce: ['30 天内有 CE', 'CE in 30d'], mem_h12_ue_history: ['历史不可纠正错误（>30 天）', 'Uncorrectable error >30d ago'],
+    mem_h13_mce_undecoded: ['内核 MCE 记录（未解码）', 'Kernel MCE logged (undecoded)'], mem_h14_platform_ce: ['平台型 CE（同日 ≥8 根、跨两颗 CPU）', 'Platform-wide CE (≥8 DIMMs, both CPUs)'],
+    mem_h15_bmc_health: ['BMC 判定内存条异常', 'BMC reports a DIMM unhealthy'], mem_s1_dimm_missing: ['内存条缺失', 'DIMM missing'],
+    mem_s3_capacity_drop: ['总容量下降', 'Memory capacity dropped'], mem_s4_config: ['配置异常（混插 / 降速运行）', 'Configuration (mixed / below rated speed)'],
   };
   const v = map[code];
   return v ? tx(v[0], v[1]) : code;
@@ -67,9 +90,26 @@ function followText(code: string, tx: Tx): string {
     collect_failed: ['采集失败', 'Collection failed'], collect_partial: ['部分采集', 'Partial collection'], device_access_hang: ['设备访问卡住（lsblk/lspci/storcli）', 'Device access hang'],
     sel_full: ['SEL 已满', 'SEL full'], sel_unreadable: ['SEL 无法读取', 'SEL unreadable'], smartmontools_missing: ['未安装 smartctl', 'smartctl missing'],
     smartmontools_pkg_broken: ['smartmontools 安装不完整', 'smartmontools half-installed'], smartd_active: ['节点自带 smartd 在运行', 'smartd already running'],
+    sel_incomplete: ['SEL 读取不完整', 'SEL listing incomplete'],
   };
   const v = map[code];
   return v ? tx(v[0], v[1]) : code;
+}
+function obsCodeText(code: string, tx: Tx): string {
+  const map: Record<string, [string, string]> = {
+    mem_o1_sel_full: ['SEL 已满', 'SEL full'], mem_o2_platform_no_ce: ['平台不记 CE', 'Platform does not record CE'],
+    mem_o3_slot_unresolved: ['槽位无法定位到 SN', 'Slot not resolvable to a serial'], mem_o4_bmc_time_invalid: ['BMC 时间无效（按首次看到计）', 'Invalid BMC time (first-seen used)'],
+    mem_o5_sel_unreadable: ['SEL 不可读 / 读取不完整', 'SEL unreadable / incomplete'], mem_o6_sel_cleared: ['近 7 天 SEL 被清', 'SEL cleared in 7d'],
+    mem_o7_redfish_unreadable: ['Redfish 不可读', 'Redfish unreadable'],
+  };
+  const v = map[code];
+  return v ? tx(v[0], v[1]) : code;
+}
+function ObsTag({ o, tx }: { o?: Observability; tx: Tx }) {
+  if (!o) return null;
+  const label = { full: tx('可观测：完整', 'Observability: full'), limited: tx('可观测：受限', 'Observability: limited'), blind: tx('可观测：不可见', 'Observability: blind') }[o.level];
+  const why = o.codes.filter(c => c !== 'mem_o4_bmc_time_invalid' && c !== 'mem_o6_sel_cleared').map(c => obsCodeText(c, tx)).join('；');
+  return <small className={`hf-obs hf-obs-${o.level}`} title={[o.platform, why].filter(Boolean).join(' · ')}>{label}{why ? ` · ${why}` : ''}</small>;
 }
 function LevelTag({ level, tx }: { level: Level; tx: Tx }) {
   const label = { critical: tx('严重', 'Critical'), warning: tx('警告', 'Warning'), attention: tx('关注', 'Attention'), clear: tx('未命中', 'Clear') }[level];
@@ -219,7 +259,8 @@ function Overview({ fleet, tx, kind, drill, setDrill }: { fleet: Fleet; tx: Tx; 
         <div className="hf-hbars">{diskRules.map(([code, n]) => { const label = ruleText(code, tx); return <button type="button" key={code} className={on(label) ? 'active' : ''} onClick={() => pick({ label, disk: x => x.hits.includes(code) })}><span>{label}</span><i style={{ width: `${n / diskMax * 100}%` }} /><b>{n}</b></button>; })}</div></div>}
     </section>;
   }
-  const m = fleet.summary.memory.by_level;
+  const ms = fleet.summary.memory;
+  const m = ms.by_level;
   const ue30 = fleet.memory.filter(x => (x.ue_30d || 0) > 0).length;
   const corrupted = fleet.memory.filter(x => (x.hw_corrupted_kb || 0) > 0).length;
   const ceNodes = fleet.memory.filter(x => (x.ce_30d || 0) > 0).length;
@@ -237,9 +278,14 @@ function Overview({ fleet, tx, kind, drill, setDrill }: { fleet: Fleet; tx: Tx; 
         [tx('30 天 CE 节点', 'CE nodes (30d)'), ceNodes, undefined, (x: Memory) => (x.ce_30d || 0) > 0],
       ] as [string, number, string | undefined, ((x: Memory) => boolean) | null][]).map(([label, n, tone, test]) => <Kpi key={label} label={label} value={n} tone={n ? tone : undefined} active={on(label)} onClick={test ? () => pick({ label, mem: test }) : undefined} />)}
       <Kpi label={tx('内存条', 'DIMMs')} value={fleet.summary.memory.dimms} />
+      {ms.quality && <Kpi label={tx('条级警告', 'DIMM warnings')} value={ms.quality.dimm_warnings} tone={ms.quality.dimm_warnings ? 'warning' : undefined} active={on(tx('条级警告', 'DIMM warnings'))} onClick={() => pick({ label: tx('条级警告', 'DIMM warnings'), mem: x => (x.dimm_warnings || 0) > 0 })} />}
     </div>
+    {ms.observability && <div className="hf-chart hf-span"><h3>{tx('可观测性', 'Observability')}<small>{tx(`没看见 ≠ 正常。CE 可见平台 ${ms.ce_visible_nodes ?? 0} 台（${Math.round((ms.ce_visible_ratio || 0) * 100)}%）、${ms.ce_visible_dimms ?? 0} 根条；其余平台只能看到不可纠正错误、禁用和坏页${ms.platform_matrix ? ` · 矩阵 ${ms.platform_matrix}` : ''}`, `Not seen ≠ healthy. CE-visible platforms: ${ms.ce_visible_nodes ?? 0} nodes (${Math.round((ms.ce_visible_ratio || 0) * 100)}%); other platforms show only UE, disabled DIMMs and bad pages`)}</small></h3>
+      <div className="hf-kpis">{(['full', 'limited', 'blind'] as ObsLevel[]).map(k => { const label = { full: tx('完整', 'Full'), limited: tx('受限', 'Limited'), blind: tx('不可见', 'Blind') }[k]; const lab = tx(`可观测性：${label}`, `Observability: ${label}`); return <Kpi key={k} label={lab} value={ms.observability![k]} tone={k === 'full' ? undefined : 'attention'} active={on(lab)} onClick={() => pick({ label: lab, mem: x => x.observability?.level === k })} />; })}</div>
+      <div className="hf-hbars">{Object.entries(ms.observability_by_code || {}).sort((a, b) => b[1] - a[1]).map(([code, n]) => { const label = obsCodeText(code, tx); const mx = Math.max(1, ...Object.values(ms.observability_by_code || {})); return <button type="button" key={code} className={on(label) ? 'active' : ''} onClick={() => pick({ label, mem: x => (x.observability?.codes || []).includes(code) })}><span>{label}</span><i style={{ width: `${n / mx * 100}%` }} /><b>{n}</b></button>; })}</div></div>}
     <div className="hf-chart"><h3>{tx('规则命中分布', 'Rule hits')}<small>{tx('按节点计，点击查看', 'nodes per rule, click to drill')}</small></h3>
       <div className="hf-hbars">{rules.map(([code, n]) => { const label = ruleText(code, tx); return <button type="button" key={code} className={on(label) ? 'active' : ''} onClick={() => pick({ label, mem: x => x.hits.includes(code) })}><span>{label}</span><i style={{ width: `${n / max * 100}%` }} /><b>{n}</b></button>; })}{rules.length === 0 && <span className="hf-zero">{tx('无命中', 'No hits')}</span>}</div></div>
+    {ms.quality && <p className="hf-note">{tx(`告警质量：条级警告较上一快照新增 ${ms.quality.new_dimm_warnings}（7 天 ${ms.quality.new_dimm_warnings_7d}，目标每周 ≤5）；节点级警告/严重新增 ${ms.quality.new_node_warnings}（7 天 ${ms.quality.new_node_warnings_7d}，目标每周 ≤10）${ms.recon ? `；BMC 计数对账 ${ms.recon.ok}/${ms.recon.compared} 一致` : ''}。`, `Alert quality: new DIMM warnings ${ms.quality.new_dimm_warnings} (7d ${ms.quality.new_dimm_warnings_7d}, target ≤5/week); new node warnings ${ms.quality.new_node_warnings} (7d ${ms.quality.new_node_warnings_7d}, target ≤10/week)${ms.recon ? `; BMC counter reconciliation ${ms.recon.ok}/${ms.recon.compared} match` : ''}.`)}</p>}
   </section>;
 }
 
@@ -270,6 +316,14 @@ function memEvidence(m: Memory, tx: Tx) {
   if (m.edac) p.push([tx('EDAC 错误行', 'EDAC error lines'), m.edac]);
   if (m.mce) p.push([tx('MCE 记录', 'MCE logged'), m.mce]);
   if (m.mem_offline) p.push([tx('内存页下线', 'Pages offlined'), m.mem_offline]);
+  if (m.vendor_ue_30d) p.push([tx('厂商日志 UE', 'Vendor-log UE'), m.vendor_ue_30d]);
+  if (m.time_invalid) p.push([tx('BMC 时间无效记录', 'Records with invalid BMC time'), m.time_invalid]);
+  if (m.bmc_dimm_sensors?.length) p.push([tx('BMC 内存传感器', 'BMC DIMM sensors'), m.bmc_dimm_sensors.join(', ')]);
+  for (const pr of m.presence || []) {
+    if (pr.code === 'mem_s1_dimm_missing') p.push([tx('在位条数', 'DIMMs present'), `${pr.now} / ${tx('14 天最多', 'max 14d')} ${pr.max_14d}${(pr.slots_gone as string[] | undefined)?.length ? ` · ${(pr.slots_gone as string[]).join(', ')}` : ''}`]);
+    if (pr.code === 'mem_s2_replaced') p.push([tx('30 天换条', 'Replaced in 30d'), String(pr.n_30d)]);
+  }
+  for (const c of m.observability?.sel_clears_7d || []) p.push([tx('SEL 被清', 'SEL cleared'), `${c.time} · ${c.by === 'atlas' ? tx('Atlas 轮转', 'Atlas rotation') : tx('外部', 'external')} · ${c.pre}→${c.post}`]);
   return p;
 }
 function Facts({ items }: { items: [string, string | number][] }) {
@@ -283,6 +337,7 @@ function DimmList({ m, tx }: { m: Memory; tx: Tx }) {
     <div className="hf-part-id"><b>{e.mapped ? e.dmi_slot : e.slot || (e.sensor ? tx(`传感器 ${e.sensor}`, `Sensor ${e.sensor}`) : tx('未知槽位', 'Unknown slot'))}</b>{e.mapped && e.slot && e.slot !== e.dmi_slot && <small>{tx(`BMC 记为 ${e.slot}`, `BMC: ${e.slot}`)}</small>}</div>
     {e.mapped ? <div className="hf-part-spec"><span>SN <code>{e.sn || '—'}</code></span><span>{[e.vendor, e.part, e.size, e.speed].filter(Boolean).join(' / ')}</span></div>
       : <div className="hf-part-spec muted">{e.slot ? tx('SEL 槽位名缺通道信息，无法唯一对应 SN', 'SEL slot lacks channel; SN not unique') : tx('SEL 只给出传感器号，无法对应槽位', 'SEL gives only a sensor number')}</div>}
+    {(e.hits?.length || e.replaced || e.bmc_health) ? <div className="hf-part-spec">{(e.hits || []).map(h => <span key={h} className="hf-rule">{ruleText(h, tx)}</span>)}{e.bmc_health && <span className="hf-rule">{tx(`BMC 健康 ${e.bmc_health}`, `BMC health ${e.bmc_health}`)}</span>}{e.replaced && <span className="hf-rule">{tx(`已换下 ${e.replaced.date}${e.replaced.censored ? '（删失，不计正样本）' : ''}`, `Replaced ${e.replaced.date}${e.replaced.censored ? ' (censored)' : ''}`)}</span>}</div> : null}
     <div className="hf-part-count">{[e.ue_30d ? tx(`UE ${e.ue_30d}（30 天）`, `UE ${e.ue_30d} (30d)`) : e.ue_total ? tx(`UE ${e.ue_total}（历史）`, `UE ${e.ue_total} (history)`) : '', e.disabled_30d ? tx(`禁用 ${e.disabled_30d}`, `disabled ${e.disabled_30d}`) : '', e.ce_30d ? tx(`CE ${e.ce_30d}（30 天）`, `CE ${e.ce_30d} (30d)`) : e.ce_total ? tx(`CE ${e.ce_total}（历史）`, `CE ${e.ce_total} (history)`) : ''].filter(Boolean).join('，')}<small>{e.first === e.last ? e.last : `${e.first} → ${e.last}`}</small></div>
   </div>)}</div>;
 }
@@ -312,7 +367,7 @@ function RiskList({ fleet, tx, kind, drill, clearDrill }: { fleet: Fleet; tx: Tx
     <div className="hf-scroll"><table className="hf-table hf-hits"><colgroup><col style={{ width: 76 }} /><col style={{ width: 190 }} /><col style={{ width: 170 }} /><col /><col style={{ width: 220 }} /></colgroup>
       <thead><tr><th>{tx('等级', 'Level')}</th><th>{tx('节点', 'Node')}</th><th>{tx('命中规则', 'Rule hits')}</th><th>{kind === 'disk' ? tx('问题硬盘（槽位 / SN / 型号与容量）', 'Disk (slot / SN / model & size)') : tx('问题内存条（槽位 / SN / 规格）', 'DIMM (slot / SN / spec)')}</th><th>{tx('证据', 'Evidence')}</th></tr></thead>
       <tbody>{kind === 'disk' ? disks.map(d => <tr key={`${d.ip}-${d.serial}-${d.dev}`}><td><LevelTag level={d.level} tx={tx} /></td><td><b>{d.ip}</b><small>{d.host}</small></td><td>{d.hits.map(h => <span key={h} className="hf-rule">{ruleText(h, tx)}</span>)}</td><td><DiskPart d={d} tx={tx} /></td><td><Facts items={diskEvidence(d, tx)} /></td></tr>)
-        : mem.map(m => <tr key={m.ip}><td><LevelTag level={m.level} tx={tx} /></td><td><b>{m.ip}</b><small>{m.host}</small><small>{tx(`${m.dimms} 根，共 ${m.mem_gb} GB`, `${m.dimms} DIMMs, ${m.mem_gb} GB`)}</small></td><td>{m.hits.map(h => <span key={h} className="hf-rule">{ruleText(h, tx)}</span>)}</td><td><DimmList m={m} tx={tx} /></td><td><Facts items={memEvidence(m, tx)} /></td></tr>)}</tbody></table></div>}
+        : mem.map(m => <tr key={m.ip}><td><LevelTag level={m.level} tx={tx} /></td><td><b>{m.ip}</b><small>{m.host}</small><small>{tx(`${m.dimms} 根，共 ${m.mem_gb} GB`, `${m.dimms} DIMMs, ${m.mem_gb} GB`)}</small><ObsTag o={m.observability} tx={tx} /></td><td>{m.hits.map(h => <span key={h} className="hf-rule">{ruleText(h, tx)}</span>)}</td><td><DimmList m={m} tx={tx} /></td><td><Facts items={memEvidence(m, tx)} /></td></tr>)}</tbody></table></div>}
   </section>;
 }
 
@@ -324,6 +379,7 @@ function EventLedger({ fleet, tx, kind }: { fleet: Fleet; tx: Tx; kind: 'memory'
   const rows = all.filter(e => (!k || e.kind === k) && (!needle || [e.ip, e.host, e.slot, e.sn, e.part].some(v => String(v || '').toLowerCase().includes(needle))));
   const kindText: Record<string, [string, string, Level]> = {
     ue: ['不可纠正 ECC', 'Uncorrectable ECC', 'critical'], disabled: ['内存条被禁用', 'DIMM disabled', 'critical'], ce: ['可纠正 ECC', 'Correctable ECC', 'attention'],
+    replaced: ['换条', 'DIMM replaced', 'clear'], sel_clear: ['SEL 被清', 'SEL cleared', 'attention'],
     realloc: ['重映射扇区增加', 'Reallocated +', 'warning'], pending: ['待映射扇区增加', 'Pending +', 'critical'], media: ['介质错误增加', 'Media errors +', 'critical'], unc: ['不可纠正增加', 'Uncorrectable +', 'critical'],
     offunc: ['离线不可纠正增加', 'Offline uncorrectable +', 'critical'], errlog: ['NVMe 错误日志增加', 'NVMe error log +', 'attention'], crc: ['链路 CRC 增加', 'Link CRC +', 'attention'], timeout: ['命令超时增加', 'Command timeouts +', 'attention'],
   };
@@ -332,6 +388,7 @@ function EventLedger({ fleet, tx, kind }: { fleet: Fleet; tx: Tx; kind: 'memory'
   const located = all.filter(e => e.mapped).length;
   if (!fleet.events) return <div className="hf-empty">{tx('该日快照没有事件台账（台账从 2026-11-24 起生成）', 'No ledger in this snapshot (ledger starts 2026-11-24)')}</div>;
   return <section className="hf-panel">
+    {kind === 'memory' && <RtEvents tx={tx} />}
     <p className="hf-note">{kind === 'memory'
       ? tx(`近 30 天，按"节点 + 内存条 + 类型 + 日期"合并。不可纠正与禁用全部列出；可纠正只列当天新出现的。台账跨天累计，BMC 日志写满被覆盖后也不会丢。${all.length} 条，${located} 条已定位到 SN。`, `Last 30 days, merged per node + DIMM + type + day. ${all.length} rows, ${located} located to a serial.`)
       : tx(`近 30 天，SMART / RAID 错误计数比前一天增加的硬盘。${all.length} 条，涉及 ${days} 天。`, `Last 30 days, disks whose SMART / RAID error counters grew day over day. ${all.length} rows over ${days} days.`)}</p>
@@ -344,11 +401,36 @@ function EventLedger({ fleet, tx, kind }: { fleet: Fleet; tx: Tx; kind: 'memory'
         <td><b>{e.date}</b>{e.time && <small>{e.time}</small>}</td>
         <td>{kt ? <LevelTag level={kt[2]} tx={tx} /> : null}<small>{kt ? tx(kt[0], kt[1]) : e.kind}</small></td>
         <td><b>{e.ip}</b><small>{e.host}</small></td>
-        <td>{e.mapped ? <div className="hf-ledger-part"><b>{e.slot}</b><span>SN <code>{e.sn}</code></span><span>{[e.part, e.size && (e.type === 'disk' ? capText(Number(e.size)) : e.size)].filter(Boolean).join(' / ')}</span></div>
+        <td>{e.kind === 'replaced' ? <div className="hf-ledger-part"><b>{e.slot || '—'}</b><span>SN <code>{e.sn}</code> → <code>{e.new_sn || '?'}</code></span><span>{[e.source, e.reason && tx(`原因 ${e.reason}`, `reason ${e.reason}`), e.basis && tx(`依据 ${e.basis}`, `basis ${e.basis}`), e.sn_match && e.sn_match !== 'unknown' && tx(`SN 核对 ${e.sn_match}`, `SN match ${e.sn_match}`)].filter(Boolean).join(' · ')}</span></div>
+          : e.kind === 'sel_clear' ? <div className="hf-ledger-part"><b>{e.by === 'atlas' ? tx('Atlas 轮转', 'Atlas rotation') : tx('外部清空', 'Cleared externally')}</b><span className="muted">{tx(`来源 ${e.source}`, `seen via ${e.source}`)}</span></div>
+          : e.mapped ? <div className="hf-ledger-part"><b>{e.slot}</b><span>SN <code>{e.sn}</code></span><span>{[e.part, e.size && (e.type === 'disk' ? capText(Number(e.size)) : e.size), e.source === 'redfish' && tx('厂商日志', 'vendor log')].filter(Boolean).join(' / ')}</span></div>
           : <div className="hf-ledger-part"><b>{e.slot || tx('未知槽位', 'Unknown slot')}</b><span className="muted">{tx('无法对应到具体内存条', 'Not resolvable to a DIMM')}</span></div>}</td>
-        <td className="num">{e.type === 'disk' ? `${e.before} → ${e.after}` : <>{e.count}{e.new ? <small>{tx(`新增 ${e.new}`, `${e.new} new`)}</small> : null}</>}</td>
+        <td className="num">{e.type === 'disk' || e.kind === 'sel_clear' ? `${e.before ?? ''} → ${e.after ?? ''}` : <>{e.count}{e.new ? <small>{tx(`新增 ${e.new}`, `${e.new} new`)}</small> : null}{e.time_invalid ? <small>{tx('BMC 时间无效', 'invalid BMC time')}</small> : null}</>}</td>
         <td>{e.first_seen}</td></tr>; })}</tbody></table></div>}
   </section>;
+}
+
+function RtEvents({ tx }: { tx: Tx }) {
+  const [rows, setRows] = useState<RtEvent[] | null>(null);
+  const [meta, setMeta] = useState<{ enabled?: boolean; last_run?: string; last_error?: string }>({});
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('/api/v1/hardware/memory/rt-events?hours=48', { signal: controller.signal }).then(r => r.json())
+      .then(body => { setRows(body.events || []); setMeta({ enabled: body.enabled, last_run: body.last_run, last_error: body.last_error }); })
+      .catch(() => { if (!controller.signal.aborted) setRows([]); });
+    return () => controller.abort();
+  }, []);
+  const text: Record<string, [string, string, Level]> = {
+    ue_increase: ['不可纠正错误新增', 'New uncorrectable error', 'critical'], ce_burst_1h: ['1 小时 CE ≥50', '≥50 CE within 1h', 'warning'],
+    sel_cleared: ['SEL 被清', 'SEL cleared', 'attention'], hw_corrupted_up: ['坏页增加', 'Bad pages increased', 'critical'], dimm_sensor_alarm: ['BMC 内存传感器告警', 'BMC DIMM sensor alarm', 'warning'],
+  };
+  if (rows === null) return null;
+  const list = [...rows].reverse();
+  return <div className="hf-rt">
+    <p className="hf-note">{meta.enabled === false ? tx('近实时检测（MEM-RT）未启用。', 'Near-real-time detection (MEM-RT) is disabled.') : tx(`最近事件（近实时，每 5 分钟查一次监控，48 小时 ${rows.length} 条${meta.last_run ? `，最近一次 ${meta.last_run.slice(11, 16)}` : ''}${meta.last_error ? `，最近一次出错：${meta.last_error}` : ''}）。只读，不做处置；次日日采集会把对应记录写入下方台账。`, `Recent events (near-real-time, VictoriaMetrics every 5 min; ${rows.length} in 48 h). Read-only.`)}</p>
+    {list.length > 0 && <div className="hf-scroll"><table className="hf-table hf-hits"><thead><tr><th>{tx('时间', 'Time')}</th><th>{tx('信号', 'Signal')}</th><th>{tx('节点', 'Node')}</th><th className="num">{tx('前 → 后', 'Before → after')}</th><th>{tx('说明', 'Detail')}</th></tr></thead>
+      <tbody>{list.slice(0, 50).map((e, i) => { const t = text[e.signal]; return <tr key={`${e.time}-${e.ip}-${e.signal}-${i}`}><td><b>{e.time.slice(5, 16)}</b></td><td>{t ? <LevelTag level={t[2]} tx={tx} /> : null}<small>{t ? tx(t[0], t[1]) : e.signal}</small></td><td><b>{e.ip}</b></td><td className="num">{e.before} → {e.after}</td><td>{[e.detail, e.by && (e.by === 'atlas' ? tx('Atlas 轮转', 'Atlas rotation') : tx('外部', 'external'))].filter(Boolean).join(' · ')}</td></tr>; })}</tbody></table></div>}
+  </div>;
 }
 
 function DiskTable({ fleet, tx }: { fleet: Fleet; tx: Tx }) {
@@ -391,8 +473,8 @@ function MemoryTable({ fleet, tx }: { fleet: Fleet; tx: Tx }) {
   const visible = rows.slice(page * size, (page + 1) * size);
   return <section className="hf-panel">
     <div className="hf-toolbar"><label className="hf-search"><Search size={14} /><input value={q} onChange={e => { setQ(e.target.value); setPage(0); }} placeholder={tx('节点 IP 或主机名', 'Node IP or hostname')} /></label><select value={level} onChange={e => { setLevel(e.target.value); setPage(0); }} aria-label={tx('等级', 'Level')}><option value="">{tx('全部等级', 'All levels')}</option><option value="critical">{tx('严重', 'Critical')}</option><option value="warning">{tx('警告', 'Warning')}</option><option value="attention">{tx('关注', 'Attention')}</option><option value="clear">{tx('未命中', 'Clear')}</option></select><IpListButton ips={rows.map(m => m.ip)} title={tx('全部节点（当前筛选）', 'All nodes (current filter)')} tx={tx} /></div>
-    <div className="hf-scroll"><table className="hf-table"><thead><tr><th>{tx('等级', 'Level')}</th><th>{tx('节点', 'Node')}</th><th className="num">{tx('内存', 'Memory')}</th><th className="num">{tx('CE 7 天', 'CE 7d')}</th><th className="num">{tx('CE 30 天', 'CE 30d')}</th><th className="num">{tx('UE 30 天 / 累计', 'UE 30d / total')}</th><th className="num">HardwareCorrupted</th><th className="num">{tx('内核 EDAC / MCE', 'Kernel EDAC / MCE')}</th><th>{tx('涉及槽位', 'Slots named')}</th></tr></thead>
-      <tbody>{visible.map(m => <tr key={m.ip}><td><LevelTag level={m.level} tx={tx} />{m.hits.map(h => <small key={h}>{ruleText(h, tx)}</small>)}</td><td><b>{m.ip}</b><small>{m.host}</small></td><td className="num">{m.dimms ? `${m.dimms} × · ${m.mem_gb} GB` : '—'}</td><td className="num">{fmt(m.ce_7d ?? 0)}</td><td className="num">{fmt(m.ce_30d ?? 0)}</td><td className="num">{m.ue_30d || 0} / {m.ue_total || 0}{m.ue_last && <small>{m.ue_last}</small>}</td><td className="num">{m.hw_corrupted_kb === null ? '—' : `${m.hw_corrupted_kb} kB`}</td><td className="num">{m.edac} / {m.mce}{m.mem_offline ? <small>offline {m.mem_offline}</small> : null}</td><td>{m.dimm_issues?.length ? m.dimm_issues.slice(0, 3).map((e, i) => <small key={i}>{e.mapped ? `${e.dmi_slot} · SN ${e.sn}` : e.slot || e.sensor}</small>) : '—'}</td></tr>)}</tbody></table></div>
+    <div className="hf-scroll"><table className="hf-table"><thead><tr><th>{tx('等级', 'Level')}</th><th>{tx('节点', 'Node')}</th><th className="num">{tx('内存', 'Memory')}</th><th className="num">{tx('CE 7 天', 'CE 7d')}</th><th className="num">{tx('CE 30 天', 'CE 30d')}</th><th className="num">{tx('UE 30 天 / 累计', 'UE 30d / total')}</th><th className="num">HardwareCorrupted</th><th className="num">{tx('内核 EDAC / MCE', 'Kernel EDAC / MCE')}</th><th>{tx('涉及槽位', 'Slots named')}</th><th>{tx('可观测性', 'Observability')}</th></tr></thead>
+      <tbody>{visible.map(m => <tr key={m.ip}><td><LevelTag level={m.level} tx={tx} />{m.hits.map(h => <small key={h}>{ruleText(h, tx)}</small>)}</td><td><b>{m.ip}</b><small>{m.host}</small></td><td className="num">{m.dimms ? `${m.dimms} × · ${m.mem_gb} GB` : '—'}</td><td className="num">{fmt(m.ce_7d ?? 0)}</td><td className="num">{fmt(m.ce_30d ?? 0)}</td><td className="num">{m.ue_30d || 0} / {m.ue_total || 0}{m.ue_last && <small>{m.ue_last}</small>}</td><td className="num">{m.hw_corrupted_kb === null ? '—' : `${m.hw_corrupted_kb} kB`}</td><td className="num">{m.edac} / {m.mce}{m.mem_offline ? <small>offline {m.mem_offline}</small> : null}</td><td>{m.dimm_issues?.length ? m.dimm_issues.slice(0, 3).map((e, i) => <small key={i}>{e.mapped ? `${e.dmi_slot} · SN ${e.sn}` : e.slot || e.sensor}</small>) : '—'}</td><td><ObsTag o={m.observability} tx={tx} /></td></tr>)}</tbody></table></div>
     <Pager total={rows.length} page={page} size={size} setPage={setPage} />
   </section>;
 }

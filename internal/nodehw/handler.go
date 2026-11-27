@@ -151,6 +151,70 @@ func (h *Handler) HandleFleet(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`}`))
 }
 
+var ipPattern = regexp.MustCompile(`^\d{1,3}(\.\d{1,3}){3}$`)
+
+// HandleSwapList: GET /api/v1/hardware/memory/swaplist?ip=<ip>[&day=YYYY-MM-DD]
+// Pre-replacement DIMM list for one node (memory plan v1.2 section 2.1): the
+// node's problem DIMMs with slot, SN, part, CE 30d, first CE and rule hits, so
+// ops can match the SN on the pulled DIMM's label. Read-only.
+func (h *Handler) HandleSwapList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	ip := strings.TrimSpace(r.URL.Query().Get("ip"))
+	if !ipPattern.MatchString(ip) {
+		writeError(w, http.StatusBadRequest, "ip is required")
+		return
+	}
+	day := r.URL.Query().Get("day")
+	if day == "" {
+		days := h.Days()
+		if len(days) == 0 {
+			writeError(w, http.StatusNotFound, "no fleet hardware snapshot available")
+			return
+		}
+		day = days[0]
+	} else if !dayPattern.MatchString(day) {
+		writeError(w, http.StatusBadRequest, "day must be YYYY-MM-DD")
+		return
+	}
+	body, err := h.load(day)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "fleet hardware snapshot unavailable for "+day)
+		return
+	}
+	var snap struct {
+		RuleVersion string                       `json:"rule_version"`
+		Memory      []map[string]json.RawMessage `json:"memory"`
+	}
+	if err := json.Unmarshal(body, &snap); err != nil {
+		writeError(w, http.StatusInternalServerError, "snapshot unreadable")
+		return
+	}
+	for _, row := range snap.Memory {
+		var rowIP string
+		_ = json.Unmarshal(row["ip"], &rowIP)
+		if rowIP != ip {
+			continue
+		}
+		out := map[string]json.RawMessage{}
+		for _, k := range []string{"ip", "host", "board", "level", "hits", "observability", "dimms", "dimm_issues", "presence"} {
+			if v, ok := row[k]; ok {
+				out[k] = v
+			}
+		}
+		meta, _ := json.Marshal(map[string]any{"day": day, "rule_version": snap.RuleVersion, "read_only": true,
+			"how_to_register": "deploy/node-hw/dimm-replacement-template.tsv -> node-hw-ledger/dimm_replacements.ops.tsv"})
+		out["snapshot"] = meta
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		_ = json.NewEncoder(w).Encode(out)
+		return
+	}
+	writeError(w, http.StatusNotFound, ip+" is not in the "+day+" snapshot (not collected or out of scope)")
+}
+
 func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)

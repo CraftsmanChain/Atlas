@@ -144,3 +144,8 @@ button.hf-kpi:hover { background:var(--surface-2); }
 .hf-ledger-part b { font:600 12px ui-monospace,monospace; color:var(--text); }
 .hf-ledger-part code { color:var(--text); font-size:12px; user-select:all; }
 .hf-ledger-part .muted { color:var(--faint); }
+/* memory plan v1.2: observability tag + near-real-time events */
+.hf-obs { display:block; margin-top:3px; font-size:11px; color:var(--text-2, #666); }
+.hf-obs-limited { color:#9a6700; }
+.hf-obs-blind { color:#b42318; }
+.hf-rt { margin-bottom:14px; }

@@ -174,13 +174,23 @@ func (c *Client) activeTargetsFromUp(ctx context.Context) ([]Target, error) {
 }
 
 func (c *Client) Query(ctx context.Context, query string) ([]Sample, error) {
+	return c.query(ctx, url.Values{"query": []string{query}})
+}
+
+// QueryAt evaluates an instant query at a given time (Prometheus "time"
+// parameter); used for replaying near-real-time rules over history.
+func (c *Client) QueryAt(ctx context.Context, query string, at time.Time) ([]Sample, error) {
+	return c.query(ctx, url.Values{"query": []string{query}, "time": []string{strconv.FormatInt(at.Unix(), 10)}})
+}
+
+func (c *Client) query(ctx context.Context, values url.Values) ([]Sample, error) {
 	var result struct {
 		Result []struct {
 			Metric map[string]string `json:"metric"`
 			Value  []json.RawMessage `json:"value"`
 		} `json:"result"`
 	}
-	if err := c.get(ctx, "/api/v1/query", url.Values{"query": []string{query}}, &result); err != nil {
+	if err := c.get(ctx, "/api/v1/query", values, &result); err != nil {
 		return nil, err
 	}
 	samples := make([]Sample, 0, len(result.Result))

@@ -10,11 +10,22 @@ Usage (on a host that can reach the BMCs and holds the ipmi_exporter config, e.g
       --targets targets.tsv --out /tmp/redfish-probe-$(date +%F).json
 targets.tsv: bmc_ip<TAB>module<TAB>host_ip<TAB>board   (module = ipmi_exporter module name, e.g. nxxz_new)
 
+Daily mode (memory plan v1.2 section 3.5, runs on 10.80.32.234 at 01:00 via scripts/node_hw_redfish_daily.sh):
+  python3 node_hw_redfish_probe.py --daily --config <ipmi_remote.yml> --out redfish-mem-<day>.json \
+      [--targets t.tsv | --targets-from-vm] [--fleet-url http://10.80.192.232:7077/api/v1/hardware/fleet]
+  Minimal requests per platform: XFUSION 2 (Memory $expand + iBMC Log1 first page), Lenovo 1 (EventLog), MSB3
+  Memory list + one GET per DIMM, X13DEG MemoryMetrics only on Mondays (or --x13). Each BMC is tried ONCE with the
+  module from its target row (no fallback to other credentials: 10.80.168.14 has a 'user locked' history), no
+  retry after 401/timeout, at most 8 BMCs in parallel, default exclusions --exclude 10.80.168.14 (host IP).
+  Output schema node-hw-redfish-mem-v1: targets[] {host_ip, bmc, module, platform, status, calls, dimms[], events[]}
+  events[]: {created (+08:00), kind ue|disabled|replaced|config|other, slot, sn, old_sn, new_sn, message_id, message}.
+
 Output JSON per target: service root vendor/version; Memory collection (per DIMM: Id, DeviceLocator, SerialNumber,
 Status, Oem keys, MemoryMetrics CE-related fields); every LogService under Systems/* and Managers/* with entry count
 and up to --max-entries newest entries whose Message/MessageId/SensorType mention memory/ECC/DIMM.
 """
-import argparse, base64, json, re, ssl, sys, time, urllib.request, urllib.error
+from collections import Counter
+import argparse, base64, concurrent.futures as cf, datetime as dt, json, os, re, ssl, sys, time, urllib.parse, urllib.request, urllib.error
 
 MEM_RE = re.compile(r"memory|dimm|ecc|correctable|mem\b|ras|mca|ppr", re.I)
 CTX = ssl.create_default_context()
@@ -172,16 +183,211 @@ def probe(ip, user, pw, args):
     return res
 
 
+# ------------------------------------------------------------------ daily mode
+TZ8 = dt.timezone(dt.timedelta(hours=8))
+
+
+def platform_of_board(board):
+    b = (board or "").upper()
+    if "BC16MBSBA" in b or "2258H" in b:
+        return "xfusion"
+    if "WR5225" in b:
+        return "lenovo"
+    if "MSB3" in b:
+        return "msb3"
+    if "X13DEG" in b:
+        return "x13"
+    return ""
+
+
+def local_time(created):
+    """Redfish 'Created' -> 'YYYY-MM-DDTHH:MM:SS+08:00' (ISO with offset, or 'YYYY/MM/DD HH:MM:SS' already local)."""
+    c = (created or "").strip()
+    try:
+        t = dt.datetime.fromisoformat(c.replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=TZ8)
+        return t.astimezone(TZ8).isoformat(timespec="seconds")
+    except ValueError:
+        m = re.match(r"(\d{4})/(\d\d)/(\d\d) (\d\d:\d\d:\d\d)", c)
+        return "%s-%s-%sT%s+08:00" % m.groups() if m else c
+
+
+def classify_event(platform, e):
+    msg = str(e.get("Message") or "")
+    mid = str(e.get("MessageId") or "")
+    slot = re.search(r"DIMM ?_?[A-Z0-9_]+", msg)
+    slot = slot.group(0).replace(" ", "") if slot else ""
+    sn = re.search(r"\(SN:([0-9A-Za-z]+)\)", msg)
+    out = {"created": local_time(e.get("Created")), "slot": slot, "sn": sn.group(1) if sn else "", "message_id": mid,
+           "message": msg[:300], "severity": e.get("Severity")}
+    if "MemoryReplaced" in mid or re.search(r"is replaced from SN", msg):
+        r = re.search(r"from SN\(([0-9A-Za-z]+)\) to SN\(([0-9A-Za-z]+)\)", msg)
+        out.update({"kind": "replaced", "old_sn": r.group(1) if r else "", "new_sn": r.group(2) if r else ""})
+    elif re.search(r"Uncorrectable|uncorrectable error", mid + " " + msg, re.I) and re.search(r"DIMM|Memory", mid + msg, re.I):
+        out["kind"] = "ue"
+    elif re.search(r"Memory Device Disabled", msg, re.I):
+        out["kind"] = "disabled"
+        r = re.search(r"Disabled - (.+)$", msg)
+        out["reason"] = r.group(1).strip() if r else ""
+    elif re.search(r"Dimm Population|Configuration error", msg, re.I):
+        out["kind"] = "config"
+    elif platform != "lenovo" and re.search(r"correctable", msg, re.I):
+        out["kind"] = "ce"
+    else:
+        return None
+    return out
+
+
+def poll_one(t, mods, args):
+    """One BMC, one credential try, minimal GETs. Never raises."""
+    res = {"host_ip": t["host_ip"], "bmc": t["bmc"], "module": t["module"], "platform": t["platform"], "board": t.get("board", ""),
+           "status": "ok", "calls": 0, "dimms": [], "events": []}
+    if t["module"] not in mods:
+        res["status"] = "no_module"
+        return res
+    u, p = mods[t["module"]]
+    rf = RF(t["bmc"], u, p, args.timeout)
+
+    def get(path):
+        st, j = rf.get(path)
+        res["calls"] = rf.calls
+        if st == 401 or st == 403:
+            raise PermissionError
+        if st == 0:
+            raise TimeoutError((j or {}).get("_error", "error"))
+        return st, (j if isinstance(j, dict) else {})
+
+    try:
+        pf = t["platform"]
+        if pf == "xfusion":
+            st, j = get("/redfish/v1/Systems/1/Memory?$expand=." + urllib.parse.quote("($levels=1)"))
+            mem = j.get("Members", [])
+            if mem and "Status" not in mem[0]:
+                res["note"] = "expand_unsupported"
+                mem = [get(m["@odata.id"])[1] for m in mem[:32] if m.get("@odata.id")]
+            for d in mem:
+                if (d.get("Status") or {}).get("State") == "Absent":
+                    continue
+                res["dimms"].append({"loc": d.get("DeviceLocator") or d.get("Id"), "sn": d.get("SerialNumber"),
+                                     "health": (d.get("Status") or {}).get("Health"), "state": (d.get("Status") or {}).get("State")})
+            st, j = get("/redfish/v1/Systems/1/LogServices/Log1/Entries")
+            items = j.get("Members", [])
+        elif pf == "lenovo":
+            st, j = get("/redfish/v1/Managers/1/LogServices/EventLog/Entries")
+            items = j.get("Members", [])
+        elif pf in ("msb3", "x13"):
+            sysp = "/redfish/v1/Systems/Self" if pf == "msb3" else "/redfish/v1/Systems/1"
+            st, j = get(sysp + "/Memory")
+            items = []
+            for m in j.get("Members", [])[: args.max_dimms]:
+                mp = m.get("@odata.id", "")
+                if not mp or "/GPU_" in mp:
+                    continue
+                _, d = get(mp)
+                if (d.get("Status") or {}).get("State") == "Absent":
+                    continue
+                row = {"loc": d.get("DeviceLocator") or d.get("Id"), "sn": d.get("SerialNumber"),
+                       "health": (d.get("Status") or {}).get("Health"), "state": (d.get("Status") or {}).get("State")}
+                if pf == "x13" and (d.get("Metrics") or {}).get("@odata.id"):
+                    _, mm = get(d["Metrics"]["@odata.id"])
+                    row["metrics"] = pick_metrics(mm)
+                res["dimms"].append(row)
+        else:
+            res["status"] = "skipped"
+            return res
+        for e in items:
+            ev = classify_event(pf, e)
+            if ev:
+                res["events"].append(ev)
+    except PermissionError:
+        res["status"] = "auth_failed"
+    except TimeoutError as e:
+        res["status"] = "timeout"
+        res["error"] = str(e)
+    except Exception as e:  # noqa: BLE001
+        res["status"] = "error"
+        res["error"] = type(e).__name__
+    return res
+
+
+def targets_from_vm(vm, fleet_url):
+    """BMC targets: ipmi_up{collector="ipmi"} gives instance (BMC), host_ip, module; board from the Atlas fleet API."""
+    q = vm.rstrip("/") + "/query?" + urllib.parse.urlencode({"query": 'max by (instance, host_ip, module) (ipmi_up{collector="ipmi"})'})
+    res = json.load(urllib.request.urlopen(q, timeout=60))["data"]["result"]
+    boards = {}
+    if fleet_url:
+        fj = json.load(urllib.request.urlopen(fleet_url, timeout=120))
+        for m in (fj.get("data") or fj).get("memory", []):
+            boards[m["ip"]] = m.get("board", "")
+    out = []
+    for r in res:
+        m = r["metric"]
+        hip = m.get("host_ip", "")
+        out.append({"bmc": re.sub(r":\d+$", "", m.get("instance", "")), "module": m.get("module", ""), "host_ip": hip,
+                    "board": boards.get(hip, "")})
+    return out
+
+
+def daily(a):
+    mods = load_modules(a.config)
+    if a.targets:
+        tg = []
+        for line in open(a.targets):
+            if not line.strip() or line.startswith("#"):
+                continue
+            f = line.rstrip("\n").split("\t") + ["", "", ""]
+            tg.append({"bmc": f[0], "module": f[1], "host_ip": f[2], "board": f[3]})
+    else:
+        tg = targets_from_vm(a.vm, a.fleet_url)
+    monday = dt.datetime.now(TZ8).weekday() == 0
+    excl = set(a.exclude.split(",")) if a.exclude else set()
+    todo, skipped = [], Counter()
+    for t in tg:
+        t["platform"] = platform_of_board(t["board"])
+        if not t["platform"]:
+            skipped["no_redfish_need"] += 1
+        elif t["host_ip"] in excl or t["bmc"] in excl:
+            skipped["excluded"] += 1
+        elif t["platform"] == "x13" and not (monday or a.x13):
+            skipped["x13_weekly"] += 1
+        else:
+            todo.append(t)
+    with cf.ThreadPoolExecutor(max_workers=max(1, min(8, a.parallel))) as ex:
+        results = list(ex.map(lambda t: poll_one(t, mods, a), todo))
+    out = {"schema": "node-hw-redfish-mem-v1", "day": dt.datetime.now(TZ8).date().isoformat(),
+           "generated_at": dt.datetime.now(TZ8).isoformat(timespec="seconds"), "read_only": True,
+           "skipped": dict(skipped), "excluded": sorted(excl), "targets": results,
+           "by_status": dict(Counter(r["status"] for r in results))}
+    tmp = a.out + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(out, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, a.out)
+    print("redfish daily: %d polled %s, skipped %s, calls %d" % (len(results), out["by_status"], dict(skipped),
+          sum(r["calls"] for r in results)), file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
-    ap.add_argument("--targets", required=True)
+    ap.add_argument("--targets")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--daily", action="store_true")
+    ap.add_argument("--targets-from-vm", action="store_true")
+    ap.add_argument("--vm", default=os.environ.get("ATLAS_HW_VM_BASE", "http://10.80.192.252:28481/select/0/prometheus/api/v1"))
+    ap.add_argument("--fleet-url", default=os.environ.get("ATLAS_FLEET_URL", "http://10.80.192.232:7077/api/v1/hardware/fleet"))
+    ap.add_argument("--exclude", default="10.80.168.14")
+    ap.add_argument("--parallel", type=int, default=8)
+    ap.add_argument("--x13", action="store_true")
     ap.add_argument("--timeout", type=float, default=20)
     ap.add_argument("--max-dimms", type=int, default=64)
     ap.add_argument("--scan-entries", type=int, default=500)
     ap.add_argument("--max-entries", type=int, default=20)
     a = ap.parse_args()
+    if a.daily:
+        return daily(a)
+    if not a.targets:
+        ap.error("--targets is required outside --daily")
     mods = load_modules(a.config)
     out = []
     for line in open(a.targets):

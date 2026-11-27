@@ -25,13 +25,22 @@ Rules (node-hw-rules-v1) are status/degradation rules only - no probability, no 
   v1.2 (2026-11-24): memory windows counted from the cross-day ledger (node_hw_ledger.py); DIMM slot decoded from raw
                    SEL event data per board (selraw.tsv/board.tsv); disk 'slot'; snapshot gains 'ledger' + 'events'.
   life (SSD only): remaining_days = power_on_hours*(100-wear)/wear/24 at the lifetime-average wear rate (wear>=1).
+  v2.0 (2026-11-27, memory plan v1.2): memory rules replaced by node-hw-rules-v2.0 (scripts/node_hw_mem_rules.py:
+                   presence MEM-S1..S4, observability MEM-O1..O7 with the visibility matrix configs/node-hw-mem-platforms.tsv,
+                   health MEM-H1..H15; hit codes mem_*); dimm_issues one row per SN (R-1); SEL rows parsed by
+                   node_hw_ledger.parse_sel_row (invalid BMC time kept, out of windows; unparsed rows -> sel_unparsed.tsv);
+                   BMC counter reconciliation mem_bmc_recon.tsv (R-4); SEL clears (R-5); DIMM replacements (R-8);
+                   Redfish poll redfish-mem.json; mem_state.tsv history; mem-report.md for the daily report. Disk rules
+                   unchanged (rule_versions.disk = node-hw-rules-v1.2).
 """
 import csv, datetime as dt, glob, gzip, json, os, re, sys, urllib.parse, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import node_hw_ledger as ledger  # noqa: E402
+import node_hw_mem_rules as R  # noqa: E402
 from collections import Counter, defaultdict
 
-RULES = "node-hw-rules-v1.2"
+RULES = R.RULES                  # memory node-hw-rules-v2.0 (plan v1.2); disk rules unchanged since v1.2
+DISK_RULES = "node-hw-rules-v1.2"
 csv.field_size_limit(1 << 24)
 LEVEL_RANK = {"critical": 3, "warning": 2, "attention": 1, "clear": 0}
 
@@ -84,6 +93,8 @@ def section(text, name):
 
 def monitored_ips():
     """node_exporter presence in VictoriaMetrics over the last day (best effort; None if VM unreachable)."""
+    if os.environ.get("ATLAS_HW_VM_OFF") == "1":
+        return None
     url = os.environ.get("ATLAS_HW_VM_URL", "http://10.80.192.252:28481/select/0/prometheus/api/v1/query")
     out = {}
     try:
@@ -208,26 +219,99 @@ def resolve_slot(ip, sel_id, text_loc, board, selraw, dimms):
     return {"key": sensor or "#unknown", "slot": "", "sensor": sensor, "dimm": None, "via": ""}
 
 
-def _slot_add(s, r, kind, iso, age):
-    name = r["key"]
-    if r.get("dimm") or (r.get("slot") and not r["slot"].startswith("#")):
-        s["locs"][r["dimm"]["slot"] if r.get("dimm") else r["slot"]] += 1
-    e = s["slots"].setdefault(name, {"slot": r.get("slot", ""), "sensor": r.get("sensor", ""), "dimm": r.get("dimm"), "via": r.get("via", ""),
-                                     "ce_30d": 0, "ue_30d": 0, "ue_total": 0, "ce_total": 0,
-                                     "disabled_30d": 0, "first": iso, "last": iso})
-    e["first"], e["last"] = min(e["first"], iso), max(e["last"], iso)
-    if kind == "ue":
-        e["ue_total"] += 1
-        if 0 <= age <= 30: e["ue_30d"] += 1
-    elif kind == "ce":
-        e["ce_total"] += 1
-        if 0 <= age <= 30: e["ce_30d"] += 1
-    elif kind == "disabled" and 0 <= age <= 30:
-        e["disabled_30d"] += 1
+def collected_ref(day_dir, day):
+    """Collection reference time (Asia/Shanghai): nodes.tsv mtime, else <day> 01:40."""
+    try:
+        t = dt.datetime.fromtimestamp(os.path.getmtime(os.path.join(day_dir, "nodes.tsv")), R.TZ)
+        if t.date().isoformat() == day:
+            return t
+    except OSError:
+        pass
+    return dt.datetime.fromisoformat(day + "T01:40:00").replace(tzinfo=R.TZ)
+
+
+def read_dimms(path):
+    out = defaultdict(list)
+    for r in rows(path):
+        if len(r) >= 3:
+            r = r + [""] * (10 - len(r))
+            out[r[0]].append({"slot": r[1].strip(), "size": r[2].strip(), "vendor": r[3].strip(), "sn": r[4].strip(),
+                              "part": r[5].strip(), "speed": r[6].strip(), "bank": r[7].strip(), "cfg_speed": r[8].strip(),
+                              "rank": r[9].strip()})
+    return out
+
+
+def read_rt_events(root, ref, hours=48):
+    """MEM-RT events (internal/nodehw memrt, mem_rt_events.tsv) of the last <hours> before ref, for the report."""
+    p = os.path.join(root, "mem_rt_events.tsv")
+    out = []
+    if not os.path.exists(p):
+        return out
+    lo = (ref - dt.timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+    hi = ref.strftime("%Y-%m-%d %H:%M:%S")
+    for r in rows(p, True):
+        if lo <= r.get("time", "") <= hi:
+            out.append(r)
+    return out[-500:]
 
 
 def worst(levels):
     return max(levels, key=lambda x: LEVEL_RANK[x]) if levels else "clear"
+
+
+def replacement_summary(repl, memory):
+    """Plan v1.2 2.3: decode accuracy = sn_match yes / (yes + no) per platform; basis=atlas_page counted separately
+    (adoption, not accuracy evidence); CE-triggered swaps are intervention censoring, not positives."""
+    plat = {m["ip"]: m["observability"]["platform"] or m["board"] for m in memory}
+    acc = defaultdict(Counter)
+    for r in repl:
+        acc[plat.get(r["ip"], "?")][r.get("sn_match") or "unknown"] += 1
+    return {"total": len(repl), "by_source": dict(Counter(r.get("source", "") for r in repl)),
+            "by_reason": dict(Counter(r.get("reason") or "unregistered" for r in repl)),
+            "atlas_page": sum(1 for r in repl if r.get("basis") == "atlas_page"),
+            "censored_ce_storm": sum(1 for r in repl if r.get("reason") == "ce_storm"),
+            "decode_accuracy": {p: {"yes": c["yes"], "no": c["no"], "unknown": c["unknown"],
+                                    "rate": round(c["yes"] / (c["yes"] + c["no"]), 3) if c["yes"] + c["no"] else None} for p, c in acc.items()}}
+
+
+def write_mem_report(day_dir, report, extra):
+    """Memory section of the daily report (appended to summary.md by the collector as daily-latest.md)."""
+    ms = report["summary"]["memory"]
+    L = ["", "## 内存（规则 %s，可见性矩阵 %s）" % (report["rule_versions"]["memory"], ms["platform_matrix"]), ""]
+    o = ms["observability"]
+    L.append("- 节点 %d：严重 %d / 警告 %d / 关注 %d；可观测性 完整 %d / 受限 %d / 不可见 %d；CE 可见平台 %d 台（%.0f%%）、%d 根条" % (
+        ms["nodes"], ms["by_level"]["critical"], ms["by_level"]["warning"], ms["by_level"]["attention"], o["full"], o["limited"], o["blind"],
+        ms["ce_visible_nodes"], 100 * (ms["ce_visible_ratio"] or 0), ms["ce_visible_dimms"]))
+    q = ms["quality"]
+    L.append("- 告警质量：条级警告 %d 根（较上一快照新增 %d，7 天新增 %d，目标 ≤5/周）；节点级警告+严重 %d 台（新增 %d，7 天新增 %d，目标 ≤10/周）" % (
+        q["dimm_warnings"], q["new_dimm_warnings"], q["new_dimm_warnings_7d"], q["node_warnings"], q["new_node_warnings"], q["new_node_warnings_7d"]))
+    rc = ms["recon"]
+    if rc is None:
+        L.append("- BMC 计数对账：VM 不可用，未做")
+    else:
+        L.append("- BMC 计数对账（ipmi_exporter，CE = correctable − uncorrectable，取采集时刻前 3 小时内最后一个值）：%d 台，一致 %d，不一致 %d，BMC 侧无数据 %d" % (
+            rc["compared"], rc["ok"], rc["mismatch"], rc.get("no_bmc_series", 0)))
+        for x in (report.get("memory_recon") or [])[:30]:
+            L.append("  - %s BMC CE/UE %s/%s，台账 CE/UE %s/%s（limit %s）原因：%s" % (x["ip"], x["bmc_ce"], x["bmc_ue"], x["atlas_ce"], x["atlas_ue"], x["atlas_limit"], x["reasons"] or "未知"))
+    cl = [c for c in extra["clears"] if c["time"][:10] >= (dt.date.fromisoformat(report["day"]) - dt.timedelta(days=7)).isoformat()]
+    L.append("- SEL 被清（近 7 天）：%d 次（Atlas %d / 外部 %d）" % (len(cl), sum(1 for c in cl if c["by"] == "atlas"), sum(1 for c in cl if c["by"] != "atlas")))
+    for c in cl[-20:]:
+        L.append("  - %s %s by=%s 来源 %s %s→%s" % (c["time"], c["ip"], c["by"], c["source"], c["pre"], c["post"]))
+    if extra["unparsed"]:
+        L.append("- 未能解析的内存 SEL 记录：%d 台（见 sel_unparsed.tsv）：%s" % (len(extra["unparsed"]), "；".join(
+            "%s %s" % (ip, ",".join("%s=%d" % kv for kv in c.items())) for ip, c in sorted(extra["unparsed"].items())[:15])))
+    rp = ms["replacements"]
+    L.append("- 换条：累计 %d（来源 %s；原因 %s）；页面采纳 %d；CE 触发（删失）%d" % (rp["total"], rp["by_source"], rp["by_reason"], rp["atlas_page"], rp["censored_ce_storm"]))
+    rt = extra["rt_events"]
+    L.append("- 近实时事件（48 小时，MEM-RT）：%d 条" % len(rt))
+    for e in rt[-15:]:
+        L.append("  - %s %s %s %s→%s" % (e.get("time"), e.get("ip"), e.get("signal"), e.get("before"), e.get("after")))
+    if ms["redfish"]:
+        L.append("- Redfish 日轮询：%d 个 BMC，%s" % (ms["redfish"]["targets"], ms["redfish"]["by_status"]))
+    else:
+        L.append("- Redfish 日轮询：当日无 redfish-mem.json")
+    with open(os.path.join(day_dir, "mem-report.md"), "w") as f:
+        f.write("\n".join(L) + "\n")
 
 
 def main():
@@ -330,49 +414,49 @@ def main():
     disk_ledger, disk_new = ledger.update_disk(day, disks)
     ledger_stats["disk_new"] = disk_new
 
-    # ---------------- memory ----------------
+    # ---------------- memory (rules v2, memory plan v1.2) ----------------
     # Every memory SEL record seen today is resolved to a DIMM (raw event data > BMC text) and added to the
-    # cross-day ledger (scripts/node_hw_ledger.py); the 7/30-day windows below are counted from the ledger, so a
-    # BMC SEL that wraps (97 nodes have a full SEL) or a node missing a day does not lose events.
-    kern = defaultdict(Counter)  # legacy class counts (all matched lines); errors re-derived per node below
+    # cross-day ledger (scripts/node_hw_ledger.py); windows are counted from the ledger, so a BMC SEL that wraps or a
+    # node missing a day does not lose events. Rules: scripts/node_hw_mem_rules.py (node-hw-rules-v2.0).
+    ref = collected_ref(day_dir, day)
+    kern = defaultdict(Counter)
     kern_rows = []
     for r in rows(os.path.join(day_dir, "kern.tsv")):
         if len(r) >= 4:
             kern[r[0]][r[2]] += num(r[3]) or 0
             kern_rows.append((r[0], r[1], r[2], r[3]))
-    dimms = defaultdict(lambda: [0, 0])
-    dimm_rec = defaultdict(list)
-    for r in rows(os.path.join(day_dir, "dimm.tsv")):
-        if len(r) >= 3:
-            g = num(r[2].split()[0]) if r[2].split() else None
-            dimms[r[0]][0] += 1
-            dimms[r[0]][1] += g or 0
-            r = r + [""] * (8 - len(r))
-            dimm_rec[r[0]].append({"slot": r[1].strip(), "size": r[2].strip(), "vendor": r[3].strip(), "sn": r[4].strip(),
-                                   "part": r[5].strip(), "speed": r[6].strip(), "bank": r[7].strip()})
+    dimm_rec = read_dimms(os.path.join(day_dir, "dimm.tsv"))
+    prev_dimm = read_dimms(os.path.join(prev, "dimm.tsv")) if prev else {}
     board = {r[0]: " ".join(r[1:3]) for r in rows(os.path.join(day_dir, "board.tsv")) if r}
     selraw = {(r[0], r[1].strip().lower().lstrip("0")): (r[2].strip().lower(), r[3].strip().lower())
               for r in rows(os.path.join(day_dir, "selraw.tsv")) if len(r) >= 4}
     extra_cache = {}
     today_recs = []
+    unparsed = defaultdict(Counter)   # R-2/R-3 diagnostics: memory-like SEL rows the parser could not use
+    unparsed_samples = []
+    atlas_sel = defaultdict(Counter)  # R-4: memory SEL records in the SEL right now, any direction / time
     for r in rows(os.path.join(day_dir, "sel.tsv")):
-        if len(r) < 6 or not r[4].startswith("Memory") or r[0] in excluded or (len(r) > 6 and r[6].strip() == "Deasserted"):
+        if len(r) < 6 or r[0] in excluded:
             continue
-        m = re.fullmatch(r"(\d\d)/(\d\d)/(\d{4})", r[2])
-        if not m:
-            continue
-        try:
-            date = dt.date(int(m.group(3)), int(m.group(1)), int(m.group(2)))
-        except ValueError:
-            continue
-        ev = r[5]
-        if "Uncorrectable ECC" in ev: kind = "ue"
-        elif "logging limit reached" in ev: kind = "limit"
-        elif "Correctable ECC" in ev: kind = "ce"
-        elif "Memory Device Disabled" in ev: kind = "disabled"
-        else: continue
+        r = r + [""] * (7 - len(r))
         ip, sel_id = r[0], r[1].strip()
-        loc = re.search(r"@([^)]*\))", ev) or re.search(r"Memory (\S+)$", r[4])
+        k0 = ledger.sel_kind(r[5]) if (r[4].startswith("Memory") or re.search(r"ECC|Memory Device Disabled", r[5], re.I)) else None
+        if k0:
+            atlas_sel[ip][k0] += 1
+            if r[6].strip() == "Deasserted":
+                atlas_sel[ip]["deasserted"] += 1
+        rec, why = ledger.parse_sel_row(sel_id, r[2], r[3], r[4], r[5], r[6], day)
+        if rec is None:
+            if why != "not_memory":
+                key = why.split(":")[0]
+                unparsed[ip][key] += 1
+                if key != "deasserted" and len(unparsed_samples) < 200:
+                    unparsed_samples.append([ip, sel_id, r[2], r[3], r[4], r[5], r[6]])
+            continue
+        if rec["time_valid"] == "0":
+            unparsed[ip]["time_invalid"] += 1
+        ev, kind = r[5], rec["kind"]
+        loc = re.search(r"@([^)]*\))", ev) or re.search(r"Memory (\S+)$", r[4].strip())
         name = loc.group(1) if loc else ""
         if not name:
             if ip not in extra_cache:
@@ -381,91 +465,110 @@ def main():
         raw = selraw.get((ip, sel_id.lower().lstrip("0")))
         rs = resolve_slot(ip, sel_id, name, board.get(ip, ""), selraw, dimm_rec.get(ip, [])) if kind != "limit" else {"dimm": None}
         d = rs.get("dimm") or {}
-        today_recs.append({"ip": ip, "sel_id": sel_id, "date": date.isoformat(), "time": r[3].strip(), "kind": kind,
+        today_recs.append({"ip": ip, "sel_id": sel_id, "date": rec["date"], "time": rec["time"], "kind": kind,
                            "text_loc": name, "sensor": ("0x" + raw[0]) if raw else "", "raw": raw[1] if raw else "",
                            "slot": d.get("slot", ""), "bank": d.get("bank", ""), "sn": d.get("sn", ""), "part": d.get("part", ""),
-                           "size": d.get("size", ""), "vendor": d.get("vendor", ""), "via": rs.get("via", "") if d else ""})
-    ledger_rows, ledger_new = ledger.update_mem(day, today_recs)
+                           "size": d.get("size", ""), "vendor": d.get("vendor", ""), "via": rs.get("via", "") if d else "",
+                           "bmc_date": rec["bmc_date"], "time_valid": rec["time_valid"], "source": "sel"})
+    rf = R.load_redfish(day_dir)
+    rf_recs = [x for x in R.redfish_ledger_records(rf) if x["ip"] not in excluded]
+    for x in rf_recs:  # vendor-log events: resolve the DIMM by SN from today's dmidecode
+        d = next((y for y in dimm_rec.get(x["ip"], []) if x["sn"] and y["sn"] == x["sn"]), None)
+        if d:
+            x.update({"slot": d["slot"], "bank": d.get("bank", ""), "part": d["part"], "size": d["size"], "vendor": d["vendor"]})
+    ledger_rows, ledger_new = ledger.update_mem(day, today_recs + rf_recs)
     ledger_stats["mem_new"] = ledger_new
     ledger_stats["mem_total"] = len(ledger_rows)
     kern_ledger, kern_new = ledger.update_kern(day, kern_rows, day_date.year)
     ledger_stats["kern_new"] = kern_new
-    sel = defaultdict(lambda: {"ce_7d": 0, "ce_30d": 0, "ue_30d": 0, "ue_total": 0, "ue_last": "", "ce_last": "",
-                               "disabled_30d": 0, "limit_30d": 0, "locs": Counter(), "slots": {}, "new_today": 0})
+    ledger_by_ip = defaultdict(list)
     for e in ledger_rows:
-        if e["ip"] in excluded or e["date"] > day:
-            continue
-        s, kind, iso = sel[e["ip"]], e["kind"], e["date"]
-        age = (day_date - dt.date.fromisoformat(iso)).days
-        if e["first_seen"] == day and kind in ("ue", "disabled", "ce"):
-            s["new_today"] += 1
-        if kind == "ue":
-            s["ue_total"] += 1
-            s["ue_last"] = max(s["ue_last"], iso)
-            if 0 <= age <= 30: s["ue_30d"] += 1
-        elif kind == "limit":
-            if 0 <= age <= 30: s["limit_30d"] += 1
-            continue
-        elif kind == "ce":
-            s["ce_last"] = max(s["ce_last"], iso)
-            if 0 <= age <= 30: s["ce_30d"] += 1
-            if 0 <= age <= 7: s["ce_7d"] += 1
-        elif kind == "disabled":
-            if 0 <= age <= 30: s["disabled_30d"] += 1
-        if e["sn"]:
-            rs = {"key": e["slot"] + "|" + e["bank"], "slot": e["text_loc"] if not e["text_loc"].startswith("#") else "",
-                  "dimm": {k: e[k] for k in ("slot", "bank", "sn", "part", "size", "vendor")} | {"speed": ""}, "via": e["via"]}
-        elif e["text_loc"] and not e["text_loc"].startswith("#"):
-            rs = {"key": e["text_loc"], "slot": e["text_loc"], "dimm": None, "via": ""}
-        else:
-            sensor = e["text_loc"] or ("#" + e["sensor"] if e["sensor"] else "")
-            rs = {"key": sensor or "#unknown", "slot": "", "sensor": sensor, "dimm": None, "via": ""}
-        _slot_add(s, rs, kind, iso, age)
-    memory = []
+        if e["ip"] not in excluded:
+            ledger_by_ip[e["ip"]].append(e)
+
+    # replacements (R-8): dmidecode SN change (P-2) + iBMC MemoryReplaced + ops registrations
+    auto = []
+    for ip, recs in dimm_rec.items():
+        if ip in prev_dimm and ip not in excluded:
+            auto += R.dmidecode_swaps(ip, recs, prev_dimm[ip], day, ledger._valid_sn)
+    auto += [x for x in R.ibmc_swaps(rf) if x["ip"] not in excluded]
+    repl_rows, repl_new = ledger.update_replacements(day, auto)
+    ledger_stats["replacements_new"] = repl_new
+    repl_by_ip = defaultdict(list)
+    for x in repl_rows:
+        if x.get("date", "") <= day:
+            repl_by_ip[x["ip"]].append(x)
+
+    # SEL clears (R-5 / MEM-O6)
+    today_si, prev_si = R.selinfo_rows(day_dir), (R.selinfo_rows(prev) if prev else {})
+    vm_ev = R.vm_clears(ref - dt.timedelta(days=1), ref) if os.environ.get("ATLAS_HW_VM_OFF") != "1" else None
+    if vm_ev is not None:
+        vm_ev = [v for v in vm_ev if v["ip"] in nodes]   # in-scope nodes only (excluded already dropped from nodes)
+    resets = R.atlas_resets(ledger.root())
+    clear_rows, clear_new = ledger.update_clears(day, R.detect_clears(day, today_si, prev_si, vm_ev, resets, ref))
+    ledger_stats["sel_clears_new"] = clear_new
+    clears_by_ip = defaultdict(list)
+    for c in clear_rows:
+        if c["time"][:10] <= day and c["ip"] not in excluded:
+            clears_by_ip[c["ip"]].append(c)
+    clears_today = {c["ip"] for c in clear_rows if (ref - dt.datetime.strptime(c["time"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=R.TZ)).total_seconds() <= 86400
+                    and c["time"][:10] <= day}
+
+    # VictoriaMetrics side inputs (best effort; a VM outage degrades to "unknown", never breaks the report)
+    bmc_cnt = sensors = None
+    if os.environ.get("ATLAS_HW_VM_OFF") != "1":
+        try:
+            bmc_cnt = R.bmc_counts(ref)
+        except Exception as e:  # noqa: BLE001
+            print("vm bmc counters skipped: %s" % e, file=sys.stderr)
+        try:
+            sensors = R.bmc_dimm_sensors(ref)
+        except Exception as e:  # noqa: BLE001
+            print("vm dimm sensors skipped: %s" % e, file=sys.stderr)
+    matrix, matrix_version = R.load_platforms()
+    ctx = {"day": day, "ref": ref, "ledger_by_ip": ledger_by_ip, "repl_by_ip": repl_by_ip, "clears_by_ip": clears_by_ip,
+           "redfish": rf, "bmc_sensors": sensors, "history": R.read_history(day_dir), "prev_dimms": prev_dimm,
+           "platform_of": lambda b: R.platform_of(matrix, b.get("board", ""), b.get("product", ""))}
+    memory, state_rows = [], []
     for ip, st in sorted(status.items()):
         if st["status"] not in ("ok",) and not st["status"].startswith("partial"):
             continue
         full = node_text(day_dir, ip)
         txt = section(full, "MEM")
+        meta = section(full, "META")
         hc = re.search(r"HardwareCorrupted:\s+(\d+)", txt)
-        s, k = sel.get(ip), kern.get(ip, Counter())
-        edac_err, mce_err = kern_errors(full)
-        m = {"ip": ip, "host": nodes.get(ip, {}).get("host", ""), "kind": nodes.get(ip, {}).get("kind", ""),
-             "dimms": dimms[ip][0], "mem_gb": dimms[ip][1], "hw_corrupted_kb": int(hc.group(1)) if hc else None,
-             "edac": edac_err, "mce": mce_err, "mem_offline": k.get("mem_offline", 0), "board": board.get(ip, "")}
-        if s:
-            m.update({x: s[x] for x in ("ce_7d", "ce_30d", "ue_30d", "ue_total", "ue_last", "ce_last", "disabled_30d", "limit_30d", "new_today")})
-            m["locs"] = [l for l, _ in s["locs"].most_common(6)]
-            issues = []
-            for e in sorted(s["slots"].values(), key=lambda e: (-e["ue_30d"], -e["disabled_30d"], -e["ue_total"], -e["ce_30d"], -e["ce_total"], e["slot"])):
-                e = dict(e)
-                d = e.pop("dimm")
-                row = dict(e)
-                if not row.get("sensor") or row["sensor"] == "#unknown":
-                    row.pop("sensor", None)
-                if d:
-                    bank = d.get("bank", "")
-                    row.update({"dmi_slot": d["slot"] + (" / " + bank if bank and "CHANNEL" in bank.upper() else ""),
-                                "sn": d["sn"], "part": d["part"], "size": d["size"], "vendor": d["vendor"], "speed": d.get("speed", "")})
-                row["mapped"] = bool(d)
-                issues.append(row)
-            m["dimm_issues"] = issues[:16]
-        hits = []
-        def hit(level, code):
-            hits.append([level, code])
-        if m.get("ue_30d"): hit("critical", "sel_ue_30d")
-        if (m["hw_corrupted_kb"] or 0) > 0: hit("critical", "hardware_corrupted")
-        if m["mem_offline"]: hit("critical", "kernel_page_offline")
-        if m.get("disabled_30d"): hit("critical", "dimm_disabled_30d")
-        if m.get("ce_7d", 0) >= 100: hit("warning", "sel_ce_storm_7d")
-        if m.get("limit_30d"): hit("warning", "sel_ce_limit_reached")
-        if m["edac"]: hit("warning", "kernel_edac_mce")  # EDAC CE/UE error lines only (init lines filtered)
-        if m["mce"] and not m["edac"]: hit("attention", "kernel_mce_logged")  # 'Machine check events logged', undecoded
-        if m.get("ce_30d") and m.get("ce_7d", 0) < 100: hit("attention", "sel_ce_30d")
-        if m.get("ue_total") and not m.get("ue_30d"): hit("attention", "sel_ue_history")
-        m["hits"] = [h[1] for h in sorted(hits, key=lambda h: -LEVEL_RANK[h[0]])]
-        m["level"] = worst([h[0] for h in hits])
+        mt = re.search(r"MemTotal:\s+(\d+)", txt)
+        prod = re.search(r"^product=(.*)$", meta, re.M)
+        k = kern.get(ip, Counter())
+        if re.search(r"^collector=node-hw-collect-v2", meta, re.M):   # C-3: whole-window error counts
+            edac_err, mce_err = k.get("edac_err", 0), k.get("mce_err", 0)
+        else:                                                           # older days: 300-line tail (lower bound)
+            edac_err, mce_err = kern_errors(full)
+        base = {"ip": ip, "host": nodes.get(ip, {}).get("host", ""), "kind": nodes.get(ip, {}).get("kind", ""),
+                "board": board.get(ip, ""), "product": prod.group(1).strip() if prod else "", "dimm_rec": dimm_rec.get(ip, []),
+                "hw_corrupted_kb": int(hc.group(1)) if hc else None, "memtotal_kb": int(mt.group(1)) if mt else None,
+                "edac": edac_err, "mce": mce_err, "mem_offline": k.get("mem_offline", 0), "flags": st.get("flags", "")}
+        m = R.evaluate_node(ip, ctx, base)
+        if unparsed.get(ip):
+            m["sel_unparsed"] = dict(unparsed[ip])
         memory.append(m)
+        sizes = [R.size_gb(d["size"]) for d in base["dimm_rec"] if R.size_gb(d["size"])]
+        state_rows.append({"ip": ip, "dimms": len(base["dimm_rec"]), "memtotal_kb": base["memtotal_kb"] or "",
+                           "hw_corrupted_kb": "" if base["hw_corrupted_kb"] is None else base["hw_corrupted_kb"],
+                           "min_dimm_gb": min(sizes) if sizes else ""})
+    R.write_state(day_dir, state_rows)
+    collected_ips = {m["ip"] for m in memory}
+    recon = R.reconcile(bmc_cnt, atlas_sel, unparsed, {ip: s.get("flags", "") for ip, s in status.items()}, clears_today, collected_ips) if bmc_cnt is not None else None
+    if recon is not None:
+        with open(os.path.join(day_dir, "mem_bmc_recon.tsv"), "w") as f:
+            cols = ["ip", "bmc_ce", "bmc_ue", "atlas_ce", "atlas_ue", "atlas_limit", "bmc_ce_1d", "verdict", "reasons"]
+            f.write("\t".join(cols) + "\n")
+            for x in recon:
+                f.write("\t".join(str(x[c]) for c in cols) + "\n")
+    with open(os.path.join(day_dir, "sel_unparsed.tsv"), "w") as f:
+        f.write("ip\tsel_id\tdate\ttime\tsensor\tevent\tdirection\n")
+        for x in unparsed_samples:
+            f.write("\t".join(x) + "\n")
 
     # ledger: memory events for the page, aggregated per (node, DIMM, kind, day), last 30 days, in scope.
     # UE / DIMM disabled always listed; CE only on days where that DIMM logged a CE newly seen in the ledger.
@@ -479,15 +582,35 @@ def main():
         a_ = agg.get(k)
         if a_ is None:
             a_ = agg[k] = {"type": "memory", "ip": e["ip"], "host": nodes.get(e["ip"], {}).get("host", ""), "date": e["date"],
-                           "time": e["time"], "kind": e["kind"], "count": 0, "new": 0,
+                           "time": e["time"] if e.get("time_valid", "1") != "0" else "", "kind": e["kind"], "count": 0, "new": 0,
                            "slot": e["slot"] + (" / " + e["bank"] if e["bank"] and "CHANNEL" in e["bank"].upper() else "") if e["sn"] else (e["text_loc"] or ("#" + e["sensor"] if e["sensor"] else "")),
-                           "sn": e["sn"], "part": e["part"], "size": e["size"], "first_seen": e["first_seen"], "mapped": bool(e["sn"])}
+                           "sn": e["sn"], "part": e["part"], "size": e["size"], "first_seen": e["first_seen"], "mapped": bool(e["sn"]),
+                           "source": e.get("source") or "sel"}
+            if e.get("time_valid") == "0":
+                a_["time_invalid"] = True
         a_["count"] += 1
-        a_["time"] = min(a_["time"], e["time"])
+        if a_["time"] and e.get("time_valid", "1") != "0":
+            a_["time"] = min(a_["time"], e["time"])
         a_["first_seen"] = min(a_["first_seen"], e["first_seen"])
         if e["first_seen"] == day:
             a_["new"] += 1
     recent = [v for v in agg.values() if v["kind"] in ("ue", "disabled") or v["new"] > 0]
+    for x in repl_rows:
+        if x["ip"] not in excluded and since <= x.get("date", "") <= day:
+            recent.append({"type": "memory", "ip": x["ip"], "host": nodes.get(x["ip"], {}).get("host", ""), "date": x["date"], "time": "",
+                           "kind": "replaced", "count": 1, "new": 0, "slot": x.get("slot", ""), "sn": x["old_sn"], "new_sn": x.get("new_sn", ""),
+                           "part": "", "size": "", "first_seen": x["date"], "mapped": True, "source": x.get("source", ""),
+                           "reason": x.get("reason", ""), "basis": x.get("basis", ""), "sn_match": x.get("sn_match", "")})
+    for c in clear_rows:
+        if c["ip"] not in excluded and since <= c["time"][:10] <= day:
+            recent.append({"type": "memory", "ip": c["ip"], "host": nodes.get(c["ip"], {}).get("host", ""), "date": c["time"][:10],
+                           "time": c["time"][11:], "kind": "sel_clear", "count": 1, "new": 0, "slot": "", "sn": "", "part": "", "size": "",
+                           "first_seen": c["first_seen"], "mapped": False, "source": c["source"], "by": c["by"], "before": c["pre"], "after": c["post"]})
+    rt_events = read_rt_events(ledger.root(), ref)
+    mem_extra = {"matrix_version": matrix_version, "recon": recon, "clears": [c for c in clear_rows if since <= c["time"][:10] <= day and c["ip"] not in excluded],
+                 "replacements": [x for x in repl_rows if x["ip"] not in excluded], "rt_events": rt_events,
+                 "unparsed": {ip: dict(c) for ip, c in unparsed.items()}, "redfish": None if rf is None else {
+                     "targets": len(rf), "by_status": dict(Counter(t.get("status", "?") for t in rf.values()))}}
 
     # ---------------- coverage ----------------
     node_rows = []
@@ -528,7 +651,53 @@ def main():
         started = dt.datetime.fromtimestamp(os.path.getmtime(os.path.join(day_dir, "nodes.tsv")), dt.timezone.utc).isoformat()
     except OSError:
         pass
-    report = {"schema": "node-hw-fleet-v1", "rule_version": RULES, "day": day,
+    # rule quality (plan v1.1 section 3 / v1.2 R-7): new DIMM-level / node-level warnings vs the previous snapshot
+    def warn_keys(mem):
+        dk = {(x["ip"], e.get("sn") or e.get("slot") or e.get("sensor", "")) for x in mem for e in x.get("dimm_issues", [])
+              if any(R.RULE_LEVEL.get(h) == "warning" for h in e.get("hits", []))}
+        nk = {x["ip"] for x in mem if x["level"] in ("warning", "critical")}
+        return dk, nk
+    dk, nk = warn_keys(memory)
+    week_new_d = week_new_n = 0
+    prev_dk = prev_nk = None
+    for back in sorted((d for d in os.listdir(os.path.dirname(os.path.abspath(day_dir))) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d)
+                        and (day_date - dt.timedelta(days=6)).isoformat() <= d < day), reverse=True):
+        pj = os.path.join(os.path.dirname(os.path.abspath(day_dir)), back, "fleet-hw.json")
+        try:
+            pr = json.load(open(pj))
+        except (OSError, ValueError):
+            continue
+        q = ((pr.get("summary") or {}).get("memory") or {}).get("quality") or {}
+        if prev_dk is None:
+            if pr.get("rule_version") == RULES:
+                prev_dk, prev_nk = warn_keys(pr.get("memory", []))
+            else:
+                prev_dk, prev_nk = set(), set()
+        week_new_d += q.get("new_dimm_warnings", 0) if pr.get("rule_version") == RULES else 0
+        week_new_n += q.get("new_node_warnings", 0) if pr.get("rule_version") == RULES else 0
+    new_d = len(dk - prev_dk) if prev_dk is not None else len(dk)
+    new_n = len(nk - prev_nk) if prev_nk is not None else len(nk)
+    obs = Counter(m["observability"]["level"] for m in memory)
+    quality = {"dimm_warnings": len(dk), "node_warnings": len(nk), "new_dimm_warnings": new_d, "new_node_warnings": new_n,
+               "new_dimm_warnings_7d": week_new_d + new_d, "new_node_warnings_7d": week_new_n + new_n,
+               "baseline": "first rules-v2 snapshot" if prev_dk is None or not prev_dk and not prev_nk and week_new_d == 0 else "previous rules-v2 snapshot"}
+    vis_nodes = [m for m in memory if m["observability"]["ce_source"].startswith("sel")]
+    recon_rows = mem_extra["recon"] or []
+    mem_summary = {"nodes": len(memory), "by_level": lv(memory), "by_rule": dict(rulem.most_common()),
+                   "dimms": sum(m["dimms"] for m in memory), "quality": quality,
+                   "observability": {k: obs.get(k, 0) for k in ("full", "limited", "blind")},
+                   "observability_by_code": dict(Counter(c for m in memory for c in m["observability"]["codes"]).most_common()),
+                   "ce_visible_nodes": len(vis_nodes), "ce_visible_dimms": sum(m["dimms"] for m in vis_nodes),
+                   "ce_visible_ratio": round(len(vis_nodes) / len(memory), 3) if memory else None,
+                   "by_platform": {p: {"nodes": n} for p, n in Counter(m["observability"]["platform"] or "未登记平台" for m in memory).most_common()},
+                   "platform_matrix": mem_extra["matrix_version"],
+                   "recon": None if mem_extra["recon"] is None else {"compared": len(recon_rows), "ok": sum(1 for x in recon_rows if x["verdict"] == "ok"),
+                                                                     "mismatch": sum(1 for x in recon_rows if x["verdict"] == "mismatch"),
+                                                                     "no_bmc_series": sum(1 for x in recon_rows if x["verdict"] == "no_bmc_series")},
+                   "unparsed_nodes": len(mem_extra["unparsed"]), "sel_clears_30d": Counter(c["by"] for c in mem_extra["clears"]),
+                   "replacements": replacement_summary(mem_extra["replacements"], memory),
+                   "redfish": mem_extra["redfish"], "rt_events_48h": len(mem_extra["rt_events"])}
+    report = {"schema": "node-hw-fleet-v1", "rule_version": RULES, "rule_versions": {"memory": RULES, "disk": DISK_RULES}, "day": day,
               "previous_day": os.path.basename(prev) if prev else None,
               "collected_at": started, "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
               "read_only": True, "actions_executed": False,
@@ -537,9 +706,11 @@ def main():
                                    "by_protocol": dict(Counter(d["proto"] or "unknown" for d in disks)),
                                    "with_delta_baseline": len([d for d in disks if d["serial"] in prev_smart]),
                                    "models": [[m, c] for m, c in models.most_common(15)]},
-                          "memory": {"nodes": len(memory), "by_level": lv(memory), "by_rule": dict(rulem.most_common()),
-                                     "dimms": sum(m["dimms"] for m in memory)}},
+                          "memory": mem_summary},
               "disks": disks, "memory": memory, "nodes": node_rows, "ledger": ledger_stats,
+              "memory_recon": [x for x in recon_rows if x["verdict"] != "ok"] if mem_extra["recon"] is not None else None,
+              "sel_clears": mem_extra["clears"][-200:], "dimm_replacements": mem_extra["replacements"][-300:],
+              "rt_events": mem_extra["rt_events"],
               "events": sorted(recent + [{"type": "disk", "ip": r["ip"], "host": nodes.get(r["ip"], {}).get("host", ""), "date": r["day"], "time": "",
                                           "kind": r["counter"], "slot": r["slot"], "sn": r["serial"], "part": r["model"], "size": r["cap_gb"],
                                           "before": r["before"], "after": r["after"], "first_seen": r["day"], "mapped": True}
@@ -550,6 +721,7 @@ def main():
     with open(tmp, "w") as f:
         json.dump(report, f, ensure_ascii=False, separators=(",", ":"))
     os.replace(tmp, out_path)
+    write_mem_report(day_dir, report, mem_extra)
     print("fleet-hw %s: disks %d %s; memory nodes %d %s; prev=%s" % (day, len(disks), lv(disks), len(memory), lv(memory), report["previous_day"]))
 
 

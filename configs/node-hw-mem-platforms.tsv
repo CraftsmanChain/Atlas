@@ -1,0 +1,19 @@
+# Memory CE visibility matrix (memory plan v1.1 section 1 + v1.2 A2). Matrix version: mem-platforms-v1 (2026-11-27).
+# Key: board = /sys/class/dmi/id/board_vendor + " " + board_name (regex, case-insensitive, full match);
+#      product = /sys/class/dmi/id/product_name (regex, "*" = any). First matching row wins.
+# ce_source: sel_inband = in-band IPMI SEL logs every CE (visible -> ceiling L2/L3); none = platform does not record CE;
+#            unproven = no positive example to verify. Anything not "sel_*", and any platform NOT in this file, is
+#            "受限" (MEM-O2, plan v1.2 R-6: limited by default, full only after proven visible).
+# redfish: what the daily Redfish poll on 10.80.32.234 provides (none / ue_replaced / disabled / dimm_health / metrics_weekly).
+# Change only with evidence; bump the matrix version and verified_at. Frozen with node-hw-rules-v2.0 at pre-registration (12-18).
+board	product	platform	ce_source	ceiling	redfish	verified_at	evidence
+GOOXI G3DCTR-B PCBA	*	GOOXI G3DCTR-B (4090)	sel_inband	L2+L3	none	2026-11-27	hw-memory-plan-review-2026-11-27; SEL raw decode evidence/hw-sel-decode-2026-11-24
+SuperCloud R8428 A12	*	SuperCloud R8428 A12 (4090)	sel_inband	L2+L3	none	2026-11-27	hw-memory-plan-review-2026-11-27 (CE->UE chain)
+SuperCloud H12DSG-O-CPU	*	SuperCloud H12DSG (4090)	sel_inband	L2	none	2026-11-27	evidence/hw-redfish-probe-2026-11-27 (Log1 = SEL)
+ASUSTeK COMPUTER INC\. KMPG-D32 Series	*	ASUS KMPG-D32 (4090)	sel_inband	L2	none	2026-11-27	hw-memory-plan-review-2026-11-27
+H3C RS33M2C9SA?	*	H3C RS33M2C9S/C9SA (CPU)	sel_inband	L2	none	2026-11-27	hw-memory-plan-v1.1-assessment 2.3 (36.5 CE, 36.11/64.182 UE in SEL); decision A2
+(OEM|XFUSION) BC16MBSBA	*	XFUSION 2258H V8 (CPU)	none	L1	ue_replaced	2026-11-27	evidence/hw-redfish-probe-2026-11-27 (EccCount always 0; iBMC Log1 UE + MemoryReplaced)
+Lenovo WR5225 G3	*	Lenovo WR5225 G3 (CPU)	none	L1	disabled	2026-11-27	evidence/hw-redfish-probe-2026-11-27 (no CE counter/event; disabled reasons)
+Supermicro X13DEG-OAD	*	Supermicro X13DEG-OAD (H100)	unproven	L1	metrics_weekly	2026-11-27	evidence/hw-redfish-probe-2026-11-27 (MemoryMetrics all 0, Log1 empty)
+Supermicro H12DSG-O-CPU	*	Supermicro H12DSG (4090)	none	L1	none	2026-11-27	hw-memory-plan-review-2026-11-27 (UE/disabled only)
+Giga Computing MSB3-G40-000	*	Giga MSB3-G40 (H100)	none	L1	dimm_health	2026-11-27	evidence/hw-redfish-probe-2026-11-27 (per-DIMM Health locates bad DIMM)

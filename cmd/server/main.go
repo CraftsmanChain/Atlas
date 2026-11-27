@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -339,7 +340,32 @@ func main() {
 	if strings.TrimSpace(nodeHWRoot) == "" {
 		nodeHWRoot = "/data/atlas-research/node-hw-daily"
 	}
-	mux.HandleFunc("/api/v1/hardware/fleet", nodehw.NewHandler(nodeHWRoot).HandleFleet)
+	nodeHWHandler := nodehw.NewHandler(nodeHWRoot)
+	mux.HandleFunc("/api/v1/hardware/fleet", nodeHWHandler.HandleFleet)
+	mux.HandleFunc("/api/v1/hardware/memory/swaplist", nodeHWHandler.HandleSwapList)
+	// MEM-RT (memory plan v1.2 3.3): read-only 5-minute VictoriaMetrics rules for serious memory signals; writes
+	// node-hw-ledger/mem_rt_events.tsv only. ATLAS_NODE_HW_MEMRT_ENABLED=false switches it off.
+	nodeHWLedger := strings.TrimSpace(os.Getenv("ATLAS_HW_LEDGER_ROOT"))
+	if nodeHWLedger == "" {
+		nodeHWLedger = "/data/atlas-research/node-hw-ledger"
+	}
+	var memRT *nodehw.MemRT
+	if !strings.EqualFold(os.Getenv("ATLAS_NODE_HW_MEMRT_ENABLED"), "false") && strings.TrimSpace(monitoringBaseURL) != "" {
+		if c, err := promclient.NewClient(monitoringBaseURL, 60*time.Second); err != nil {
+			log.Printf("MEM-RT disabled: %v", err)
+		} else {
+			memRT = nodehw.NewMemRT(c, filepath.Join(nodeHWLedger, "mem_rt_events.tsv"), filepath.Join(nodeHWLedger, "sel_reset_events.tsv"), nodeHWRoot)
+			go memRT.Run(context.Background(), 5*time.Minute)
+		}
+	}
+	mux.HandleFunc("/api/v1/hardware/memory/rt-events", func(w http.ResponseWriter, r *http.Request) {
+		if memRT == nil {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_, _ = w.Write([]byte(`{"version":"` + nodehw.MemRTVersion + `","enabled":false,"events":[]}`))
+			return
+		}
+		memRT.HandleEvents(w, r)
+	})
 	mux.HandleFunc("/api/v1/degradation/summary", degradationHandler.HandleSummary)
 	mux.HandleFunc("/api/v1/degradation/candidates", degradationHandler.HandleCandidates)
 	mux.HandleFunc("/api/v1/prediction/overview", predictionHandler.HandleOverview)

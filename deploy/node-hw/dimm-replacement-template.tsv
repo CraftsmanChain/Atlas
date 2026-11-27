@@ -1,0 +1,22 @@
+# DIMM replacement registration (memory plan v1.2 section 2.2). Copy rows into
+#   /data/atlas-research/node-hw-ledger/dimm_replacements.ops.tsv   (on the Atlas deploy node; tab separated)
+# The daily fleet report merges these rows with automatic detections (dmidecode SN change next day, XFUSION iBMC
+# MemoryReplaced) into dimm_replacements.tsv by (ip, old_sn). Do not edit dimm_replacements.tsv itself.
+#
+# BEFORE pulling a DIMM (section 2.1): archive + clear the node's SEL once, then print the swap list:
+#   bash /ops/atlas/scripts/node_hw_sel_rotate.sh /data/atlas-research/node-hw-daily/<today> --only <ip> --min-used 0 --execute
+#   curl -s "http://<atlas>/api/v1/hardware/memory/swaplist?ip=<ip>"      (or: python3 /ops/atlas/scripts/node_hw_swaplist.py <ip>)
+# Check the SN printed on the pulled DIMM label against the list; that is how slot decoding is verified (MEM-G).
+#
+# Columns:
+#   ip        node IP (required)
+#   slot      slot as on the swap list, e.g. "DIMM 0 / P0 CHANNEL C"
+#   old_sn    SN on the pulled DIMM label (required)
+#   new_sn    SN of the new DIMM (may be left empty; filled from dmidecode the next day)
+#   date      YYYY-MM-DD of the swap
+#   reason    ce_storm | ue | disabled | post_fail | other
+#   basis     what the decision was based on: atlas_page | bmc_log | bios | swap_test | vendor
+#   sn_match  yes | no | unknown   (pulled DIMM SN equals the SN on the Atlas swap list for that slot?)
+#   source    leave "ops"
+#   note      free text
+ip	slot	old_sn	new_sn	date	reason	basis	sn_match	source	note
