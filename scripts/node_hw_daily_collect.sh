@@ -285,6 +285,12 @@ set -e -o pipefail
 gzip -f "$OUT"/nodes/*.txt   # SHA256SUMS refers to the uncompressed text (zcat | sha256sum)
 # Fleet disk/memory snapshot for the web page (/api/v1/hardware/fleet); failure must not break collection.
 python3 /ops/atlas/scripts/node_hw_fleet_report.py "$OUT" > "$OUT/fleet-hw.log" 2>&1 || echo "fleet-hw report failed (see $OUT/fleet-hw.log)" >&2
+# SEL rotation (D-M3, 2026-11-27): archive -> ledger -> verify -> clear, only for SEL full / >= 80% used.
+# Off unless ATLAS_HW_SEL_ROTATE=1 (dry run with ATLAS_HW_SEL_ROTATE=dry). Never blocks the daily report.
+case "${ATLAS_HW_SEL_ROTATE:-0}" in
+  1) bash /ops/atlas/scripts/node_hw_sel_rotate.sh "$OUT" --execute --max "${ATLAS_HW_SEL_ROTATE_MAX:-20}" || echo "sel rotate failed" >&2 ;;
+  dry) bash /ops/atlas/scripts/node_hw_sel_rotate.sh "$OUT" || true ;;
+esac
 cp "$OUT/summary.md" "$REPORT_DIR/daily-latest.md"
 cp "$OUT/status.tsv" "$REPORT_DIR/status-latest.tsv"
 cp "$OUT/followup.tsv" "$REPORT_DIR/followup-latest.tsv"
